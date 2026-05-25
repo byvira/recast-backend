@@ -1,17 +1,86 @@
-"""Hook generator — produces attention-grabbing opening lines."""
+"""
+Generate 3 alternative opening hooks per content piece.
+Maps to extras.hookVariations toggle in ConfigPanel ExtrasToggles.
+Only runs when hookVariations is True.
+"""
+
+import logging
+from app.models.text import AgentTask, AgentResult
+from app.shared.llm import call_llm_structured
+
+logger = logging.getLogger(__name__)
 
 
-async def generate_hooks(content: str) -> list[str]:
-    """Generate a list of engaging hooks from the provided content.
-
-    Analyses the content and produces multiple alternative opening lines
-    optimised for social media engagement and scroll-stopping copy.
-
-    Args:
-        content: Full text content to derive hooks from.
-
-    Returns:
-        List of hook strings, typically 3–5 variations.
+async def run_hook_agent(task: AgentTask) -> AgentResult:
     """
-    # Placeholder: send content to LLM with hook-generation system prompt
-    return []
+    Generate 3 hook variants using three structurally different approaches.
+    Score each 1-10 for scroll-stopping power.
+    Return the recommended index (highest score).
+    """
+    platform_label = task.platform.value if task.platform else "social media"
+
+    prompt = f"""
+{task.brand_context}
+
+Generate exactly 3 alternative opening hooks for the content below.
+Each hook must use a distinctly different structural approach.
+
+Hook 1 — Contrarian: Challenge a common belief or assumption the audience holds.
+Hook 2 — Specific outcome: Lead with a concrete number, result, timeframe, or outcome.
+Hook 3 — Question: Open with a direct question the audience feels personally.
+
+Rules for all hooks:
+- Maximum 2 sentences each
+- Must match the brand voice exactly
+- Must be suitable for {platform_label}
+- Score each 1-10 for scroll-stopping power (be honest — most hooks are 5-7)
+
+CONTENT:
+{task.content[:600]}
+
+Return valid JSON only:
+{{
+  "hooks": [
+    {{"text": "...", "style": "Contrarian", "score": 8}},
+    {{"text": "...", "style": "Specific outcome", "score": 7}},
+    {{"text": "...", "style": "Question", "score": 9}}
+  ],
+  "recommended": 2
+}}
+
+The recommended field is the index (0, 1, or 2) of the highest scoring hook.
+"""
+
+    result = await call_llm_structured(prompt)
+
+    if not result or "hooks" not in result:
+        logger.warning("Hook agent failed for session %s — returning empty hooks", task.session_id)
+        return AgentResult(
+            agent="hook",
+            platform=task.platform,
+            output={"hooks": [], "recommended": 0},
+            success=False,
+        )
+
+    return AgentResult(agent="hook", platform=task.platform, output=result, success=True)
+
+
+def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: int) -> str:
+    """
+    Replace the opening line of generated content with the recommended hook.
+    Finds the first non-empty line and replaces it.
+    """
+    if not hooks or recommended_index >= len(hooks):
+        return content
+
+    recommended = hooks[recommended_index].get("text", "")
+    if not recommended:
+        return content
+
+    lines = content.strip().split("\n")
+    for i, line in enumerate(lines):
+        if line.strip():
+            lines[i] = recommended
+            break
+
+    return "\n".join(lines)
