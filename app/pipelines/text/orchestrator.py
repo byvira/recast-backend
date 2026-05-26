@@ -29,6 +29,8 @@ from app.pipelines.text.normalizer import normalise_input
 from app.pipelines.text.repurpose import run_repurpose_agent
 from app.pipelines.text.generator import validate_content
 from app.agents.text.nodes import _extract_enforcement_data
+from app.pipelines.text.seo import run_seo_agent, should_run_seo
+from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
 
 logger = logging.getLogger(__name__)
 
@@ -122,9 +124,11 @@ async def _run_single_platform(
 
     pieces = final_state.get("pieces", [])
     if pieces:
-        return GeneratedPiece(**pieces[-1])
+        piece = GeneratedPiece(**pieces[-1])
+        # FIX Issue 13 — set repurposed flag from graph state
+        piece.repurposed = final_state.get("is_repurpose", False)
+        return piece
 
-    # Should never reach here — collect_output_node always appends a piece
     logger.error(
         "Graph returned no pieces for %s session %s",
         platform, normalised.session_id,
@@ -138,6 +142,7 @@ async def _run_single_platform(
         quality_issues=["Graph returned no output"],
         flagged_for_review=True,
     )
+
 
 async def run_text_pipeline(
     source_type: InputSourceType,
@@ -184,7 +189,15 @@ async def run_text_pipeline(
                     content=normalised.raw_content,
                     brand_context=brand_context,
                     session_id=normalised.session_id,
-                    metadata=metadata,
+                    metadata={
+                        **metadata,
+                        # FIX Issue 11 — enforcement data passed to agent prompt
+                        "banned_words": enforcement["banned_words"],
+                        "required_phrases": enforcement.get("required_phrases", []),
+                        "approved_openers": enforcement["approved_openers"],
+                        "approved_closers": enforcement["approved_closers"],
+                        "preferred_synonyms": enforcement.get("preferred_synonyms", []),
+                    },
                 ),
                 source_platform,
             )
@@ -210,11 +223,13 @@ async def run_text_pipeline(
             elif result.success:
                 content_str = result.output.get("content", "")
 
+                # ── Initial validation ────────────────────────────────────
                 is_valid, issues = validate_content(
                     content=content_str,
                     platform=platform,
                     banned_words=enforcement["banned_words"],
-                    required_phrases=[],
+                    # FIX Issue 12 — was required_phrases=[] silently skipping enforcement
+                    required_phrases=enforcement.get("required_phrases", []),
                     approved_openers=enforcement["approved_openers"],
                     approved_closers=enforcement["approved_closers"],
                 )
@@ -222,13 +237,25 @@ async def run_text_pipeline(
                 # ── Retry once if hard quality gates failed ───────────────
                 if not is_valid:
                     hard_issues = [i for i in issues if not i.startswith("Advisory:")]
-                    retry_metadata = {
-                        **metadata,
-                        "retry_feedback": (
-                            "REWRITE FEEDBACK — fix every issue listed below.\n"
-                            + "\n".join(hard_issues)
-                        ),
-                    }
+
+                    # Build full enforcement context for retry — not just issue names
+                    banned_list = ", ".join(enforcement["banned_words"]) if enforcement["banned_words"] else "none"
+                    required_list = ", ".join(
+                        p.get("text", "") for p in enforcement.get("required_phrases", [])
+                        if p.get("text", "")
+                    ) or "none"
+                    opener_list = " | ".join(enforcement["approved_openers"][:3]) if enforcement["approved_openers"] else "none"
+                    closer_list = " | ".join(enforcement["approved_closers"][:3]) if enforcement["approved_closers"] else "none"
+
+                    retry_feedback = (
+                        "REWRITE FEEDBACK — fix every issue listed below. Do not repeat these mistakes.\n\n"
+                        + "\n".join(f"  ✗ {issue}" for issue in hard_issues)
+                        + f"\n\nENFORCEMENT CONTEXT FOR THIS RETRY:\n"
+                        + f"  Banned words (never use any of these): {banned_list}\n"
+                        + f"  Required phrases (every one must appear): {required_list}\n"
+                        + f"  Approved openers (pick exactly one): {opener_list}\n"
+                        + f"  Approved closers (pick exactly one): {closer_list}\n"
+                    )
 
                     retry_result = await run_repurpose_agent(
                         AgentTask(
@@ -238,7 +265,15 @@ async def run_text_pipeline(
                             brand_context=brand_context,
                             session_id=normalised.session_id,
                             retry_count=1,
-                            metadata=retry_metadata,
+                            metadata={
+                                **metadata,
+                                "banned_words": enforcement["banned_words"],
+                                "required_phrases": enforcement.get("required_phrases", []),
+                                "approved_openers": enforcement["approved_openers"],
+                                "approved_closers": enforcement["approved_closers"],
+                                "preferred_synonyms": enforcement.get("preferred_synonyms", []),
+                                "retry_feedback": retry_feedback,
+                            },
                         ),
                         source_platform,
                     )
@@ -249,7 +284,7 @@ async def run_text_pipeline(
                             content=retry_content,
                             platform=platform,
                             banned_words=enforcement["banned_words"],
-                            required_phrases=[],
+                            required_phrases=enforcement.get("required_phrases", []),
                             approved_openers=enforcement["approved_openers"],
                             approved_closers=enforcement["approved_closers"],
                         )
@@ -264,15 +299,81 @@ async def run_text_pipeline(
                             platform,
                         )
 
+                # ── Hook enrichment ───────────────────────────────────────
+                hooks = []
+                recommended_hook_index = 0
+                if metadata.get("hook_variations") and content_str:
+                    try:
+                        hook_task = AgentTask(
+                            agent="hook",
+                            platform=platform,
+                            content=content_str,
+                            brand_context=brand_context,
+                            session_id=normalised.session_id,
+                            metadata={
+                                **metadata,
+                                "banned_words": enforcement["banned_words"],
+                                "banned_openings": [
+                                    "are you tired of",
+                                    "have you ever wondered",
+                                    "what if you could",
+                                    "in today's world",
+                                    "we all know",
+                                    "it's no secret",
+                                ],
+                            },
+                        )
+                        hook_result = await run_hook_agent(hook_task)
+                        if hook_result.success:
+                            hooks = hook_result.output.get("hooks", [])
+                            recommended_hook_index = hook_result.output.get("recommended", 0)
+                            content_str = apply_recommended_hook(
+                                content_str, hooks, recommended_hook_index
+                            )
+                            logger.info(
+                                "Repurpose hooks generated for %s — %d variants",
+                                platform, len(hooks),
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Hook agent failed on repurpose path for %s: %s", platform, e
+                        )
+
+                # ── SEO enrichment ────────────────────────────────────────
+                seo_package = {}
+                if should_run_seo(platform, metadata.get("seo_meta", False)) and content_str:
+                    try:
+                        seo_task = AgentTask(
+                            agent="seo",
+                            platform=platform,
+                            content=content_str,
+                            brand_context=brand_context,
+                            session_id=normalised.session_id,
+                            metadata=metadata,
+                        )
+                        seo_result = await run_seo_agent(seo_task, content_str)
+                        if seo_result.success:
+                            seo_package = seo_result.output
+                            logger.info("Repurpose SEO generated for %s", platform)
+                    except Exception as e:
+                        logger.warning(
+                            "SEO agent failed on repurpose path for %s: %s", platform, e
+                        )
+
+                # FIX Issue 14 — schedule fields forwarded to repurpose pieces
                 pieces.append(GeneratedPiece(
                     platform=platform,
                     content=content_str,
                     word_count=len(content_str.split()),
                     char_count=len(content_str),
+                    hooks=hooks,
+                    seo=seo_package,
                     quality_passed=is_valid,
                     quality_issues=issues,
                     flagged_for_review=not is_valid,
                     repurposed=True,
+                    publish_status=schedule_mode,
+                    publish_scheduled_at=scheduled_at,
                 ))
 
             else:
@@ -296,6 +397,7 @@ async def run_text_pipeline(
                 metadata=metadata,
                 schedule_mode=schedule_mode,
                 scheduled_at=scheduled_at,
+                is_repurpose=is_repurpose,
                 batch_day_index=batch_day_index,
             )
             for platform in platforms
@@ -333,6 +435,7 @@ async def run_text_pipeline(
         created_at=datetime.now(timezone.utc),
     )
 
+
 async def run_batch_pipeline(
     topic_cluster: str,
     platforms: list[Platform],
@@ -341,6 +444,8 @@ async def run_batch_pipeline(
     extras,
     days: int = 7,
     detected_intent=None,
+    is_repurpose: bool = False,
+    source_platform: Optional[Platform] = None,
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
@@ -377,6 +482,8 @@ Return valid JSON only:
             extras=extras,
             intent=detected_intent or ContentIntent.AUTO,
             batch_day_index=i,
+            is_repurpose=is_repurpose,
+            source_platform=source_platform,
         )
         result.batch_mode = True
         results.append(result)

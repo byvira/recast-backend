@@ -45,7 +45,7 @@ async def scrape_url(url: str) -> str:
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Only http and https URLs are supported.")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         text = await loop.run_in_executor(_executor, _fetch_and_extract, url)
     except Exception as e:

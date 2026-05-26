@@ -186,6 +186,7 @@ class GeneratedPiece(BaseModel):
     seo: dict = {}
     quality_passed: bool = True
     quality_issues: list[str] = []
+    
     flagged_for_review: bool = False
     repurposed: bool = False
     # Publish fields — populated when publish_targets are set

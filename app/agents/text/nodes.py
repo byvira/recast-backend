@@ -388,6 +388,12 @@ async def hooks_node(state: TextAgentState) -> dict:
             "are you tired of",
             "have you ever wondered",
             "what if you could",
+            "in today's world",
+            "we all know",
+            "it's no secret",
+            "i am excited to share",
+            "as someone who",
+            "as a [profession]",
         ],
     },
 )
@@ -490,8 +496,9 @@ async def rewrite_node(state: TextAgentState) -> dict:
     Builds specific rewrite feedback from quality_issues.
     Increments retry_count.
     Re-runs generation with feedback injected.
-    Only hard and quality standard issues are included in feedback.
-    Advisory issues are excluded.
+    Only hard issues included in feedback — advisory excluded.
+    Enforcement context (banned words, required phrases, openers, closers)
+    included in retry feedback so LLM knows exactly what to fix and use instead.
     Writes: generated_content, retry_count, extras (updated with retry_feedback)
     """
     hard_issues = [
@@ -499,10 +506,27 @@ async def rewrite_node(state: TextAgentState) -> dict:
         if not issue.startswith("Advisory:")
     ]
 
+    # ── Build enforcement context for retry ───────────────────────────────
+    banned_words = state["extras"].get("banned_words", [])
+    required_phrases = state["extras"].get("required_phrases", [])
+    approved_openers = state["extras"].get("approved_openers", [])
+    approved_closers = state["extras"].get("approved_closers", [])
+
+    banned_list = ", ".join(banned_words) if banned_words else "none"
+    required_list = ", ".join(
+        p.get("text", "") for p in required_phrases if p.get("text", "")
+    ) if required_phrases else "none"
+    opener_list = " | ".join(approved_openers[:3]) if approved_openers else "none"
+    closer_list = " | ".join(approved_closers[:3]) if approved_closers else "none"
+
     retry_feedback = (
-        "REWRITE FEEDBACK — fix every issue listed below. "
-        "Do not change anything else.\n"
-        + "\n".join(hard_issues)
+        "REWRITE FEEDBACK — fix every issue listed below. Do not repeat these mistakes.\n\n"
+        + "\n".join(f"  ✗ {issue}" for issue in hard_issues)
+        + f"\n\nENFORCEMENT CONTEXT FOR THIS RETRY:\n"
+        + f"  Banned words (never use any of these): {banned_list}\n"
+        + f"  Required phrases (every one must appear): {required_list}\n"
+        + f"  Approved openers (pick exactly one): {opener_list}\n"
+        + f"  Approved closers (pick exactly one): {closer_list}\n"
     )
 
     updated_extras = {**state["extras"], "retry_feedback": retry_feedback}
@@ -540,7 +564,6 @@ async def rewrite_node(state: TextAgentState) -> dict:
         "retry_count": state["retry_count"] + 1,
         "extras": updated_extras,
     }
-
 
 async def flag_node(state: TextAgentState) -> dict:
     """

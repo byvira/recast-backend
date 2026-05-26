@@ -19,6 +19,40 @@ from app.models.brand_profile import (
 router = APIRouter()
 
 
+def normalise_brand_keys(data: dict) -> dict:
+    """
+    Normalise camelCase frontend keys to snake_case before saving to MongoDB.
+    Ensures all reads can use snake_case without dual fallback workaround.
+    """
+    key_map = {
+        "bannedWords":        "banned_words",
+        "preferredSynonyms":  "preferred_synonyms",
+        "productName":        "product_name",
+        "brandType":          "brand_type",
+        "voiceTone":          "voice_tone",
+        "manualData":         "manual_data",
+        "primaryPainPoint":   "primary_pain_point",
+        "readingLevel":       "reading_level",
+        "knowledgeBase":      "knowledge_base",
+        "buyingMotivations":  "buying_motivations",
+        "valueMetrics":       "value_metrics",
+        "companyName":        "company_name",
+        "positioningData":    "positioning_data",
+    }
+
+    def _normalise(obj):
+        if isinstance(obj, dict):
+            return {
+                key_map.get(k, k): _normalise(v)
+                for k, v in obj.items()
+            }
+        if isinstance(obj, list):
+            return [_normalise(i) for i in obj]
+        return obj
+
+    return _normalise(data)
+
+
 def _doc_to_brand_profile(doc: dict) -> BrandProfile:
     """Convert a raw MongoDB document to a BrandProfile model instance."""
     from app.models.brand_profile import AudienceProfile, VoiceTone
@@ -163,6 +197,7 @@ def _build_step_update(
 async def create_brand_profile(
     request: Request,
     body: CreateBrandProfileBody,
+
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, str]:
     """
@@ -265,13 +300,6 @@ async def save_brand_step(
     body: SaveStepBody,
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """
-    Save data for a single onboarding step.
-
-    Maps step numbers to correct document fields based on brand type.
-    Person has 6 steps (2-6), others have 7 steps (2-7).
-    Advances onboarding_step only when moving forward.
-    """
     doc = await brand_profiles.find_one({"id": brand_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
@@ -279,15 +307,15 @@ async def save_brand_step(
         raise HTTPException(status_code=403, detail="Access denied.")
 
     brand_type = doc["brand_type"]
+    normalised_data = normalise_brand_keys(body.data)  
 
     step_update = _build_step_update(
         step=body.step,
-        data=body.data,
+        data=normalised_data,                          
         brand_type=brand_type,
         setup_path=doc.get("setup_path"),
     )
 
-    # Advance onboarding_step only if moving forward
     if body.step > doc.get("onboarding_step", 1):
         step_update["onboarding_step"] = body.step
 
@@ -298,7 +326,6 @@ async def save_brand_step(
         "step": body.step,
         "next_step": body.step + 1,
     }
-
 
 @router.put("/{brand_id}/complete")
 @limiter.limit("20/minute")

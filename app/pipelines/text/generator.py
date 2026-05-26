@@ -455,30 +455,35 @@ def validate_content(
 
     # ── Advisory — approved opener used ───────────────────────────────────
     if approved_openers:
-        first_line = content.split('\n')[0].strip().lower()
+        first_line = content.strip().split('\n')[0].strip().lower()
         used_approved = any(
-            opener.lower()[:40] in first_line
+            opener.strip().lower()[:50] in first_line
+            or first_line[:50] in opener.strip().lower()
             for opener in approved_openers
         )
         if not used_approved:
             advisory_issues.append(
-                f"Advisory: Approved opener not used. First line: '{content.split(chr(10))[0].strip()[:80]}'"
+                f"Advisory: Approved opener not used. First line: '{content.strip().split(chr(10))[0].strip()[:80]}'"
             )
 
     # ── Advisory — approved closer used ───────────────────────────────────
     if approved_closers:
         lines = [l.strip() for l in content.strip().split('\n') if l.strip()]
-        last_lines = lines[-3:] if len(lines) >= 3 else lines
-        last_block = ' '.join(last_lines).lower()
-        last_block_clean = re.sub(r'#\w+', '', last_block).strip()
+        # Strip hashtag lines from end before checking closer
+        while lines and lines[-1].startswith('#'):
+            lines.pop()
+        last_line = lines[-1].lower() if lines else ""
+        last_block = ' '.join(lines[-3:]).lower() if len(lines) >= 3 else last_line
+        last_block = re.sub(r'#\w+', '', last_block).strip()
 
         used_approved = any(
-            closer.lower()[:40] in last_block_clean
+            closer.strip().lower()[:50] in last_block
+            or last_line[:50] in closer.strip().lower()
             for closer in approved_closers
         )
         if not used_approved:
             advisory_issues.append(
-                f"Advisory: Approved closer not used. Last line: '{lines[-1][:80]}'"
+                f"Advisory: Approved closer not used. Last line: '{lines[-1][:80] if lines else ''}'"
             )
 
     all_issues = hard_issues + advisory_issues
@@ -489,14 +494,13 @@ def validate_content(
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN GENERATOR
 # ─────────────────────────────────────────────────────────────────────────────
-
 async def generate_for_platform(task: AgentTask) -> AgentResult:
     """
     Generate content for a single platform with full brand enforcement.
 
     Flow:
       1. Build prompt with all 12 context layers
-      2. Call Gemini structured output — parse JSON
+      2. Call structured output — parse JSON
       3. Fallback to Groq plain text if structured fails
       4. Validate output against brand rules
       5. Return AgentResult with quality data attached
@@ -521,18 +525,30 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
     approved_copy_instruction = build_approved_copy_instruction(task)
     banned_instruction = build_banned_words_instruction(banned_words, preferred_synonyms)
 
-    hashtag_instruction = (
-        HASHTAG_RULES.get(task.platform, "")
-        if task.metadata.get("hashtags", True)
-        else "Do NOT include any hashtags anywhere in the content."
-    )
+    # ── Hashtag instruction — brand vocabulary aware ──────────────────────
+    if task.metadata.get("hashtags", True):
+        base_hashtag_rule = HASHTAG_RULES.get(task.platform, "")
+        if banned_words and base_hashtag_rule:
+            banned_vocab = ", ".join(f"#{w.replace(' ', '')}" for w in banned_words)
+            hashtag_instruction = (
+                f"{base_hashtag_rule}\n"
+                f"HASHTAG RULE: Never use these brand-banned hashtags or variations: {banned_vocab}\n"
+                f"Use brand vocabulary instead — draw from: product name, core features, "
+                f"brand phrases, and the specific topic of this piece."
+            )
+        else:
+            hashtag_instruction = base_hashtag_rule
+    else:
+        hashtag_instruction = "Do NOT include any hashtags anywhere in the content."
 
+    # ── CTA instruction ───────────────────────────────────────────────────
     cta_instruction = (
         CTA_RULES.get(task.platform, "")
         if task.metadata.get("auto_cta", False)
         else ""
     )
 
+    # ── Retry block ───────────────────────────────────────────────────────
     retry_block = ""
     if retry_feedback and retry_count > 0:
         retry_block = (
@@ -590,7 +606,6 @@ Return valid JSON in exactly this format:
             "Structured output failed for %s — falling back to Groq plain text",
             task.platform,
         )
-        # Fallback uses the same full prompt — just removes the JSON instruction
         fallback_prompt = prompt.replace(
             'Return valid JSON in exactly this format:\n{\n  "content": "the full generated content here",\n  "word_count": 0,\n  "char_count": 0,\n  "platform": "' + task.platform.value + '"\n}',
             "Output only the final content. No JSON. No explanation."
