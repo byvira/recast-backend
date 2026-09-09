@@ -23,7 +23,6 @@ def build_single_platform_graph():
     """
     graph = StateGraph(TextAgentState)
 
-    # Register all nodes — names must not match any TextAgentState field name
     graph.add_node("normalise",       nodes.normalise_node)
     graph.add_node("build_context",   nodes.build_context_node)
     graph.add_node("generate",        nodes.generate_node)
@@ -54,7 +53,6 @@ def build_single_platform_graph():
             "flag":   "flag_review",
         }
     )
-
     # Rewrite loops back to quality_check — one retry maximum
     graph.add_edge("rewrite",        "quality_check")
     graph.add_edge("flag_review",    "collect_output")

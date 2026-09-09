@@ -368,6 +368,81 @@ async def call_llm_structured(
         return {}
 
 
+async def call_llm_chat(
+    messages: list[dict[str, str]],
+    system: str = "",
+    model: GroqModel = GroqModel.BALANCED,
+    max_tokens: int = 2500,
+) -> str:
+    """
+    Conversational generation with full message history.
+
+    Messages format:
+      [
+        {"role": "user",      "content": "make this punchier"},
+        {"role": "assistant", "content": "previous refined version"},
+        {"role": "user",      "content": "now shorten it by half"},
+      ]
+
+    System prompt is prepended as a system message.
+    Brand context and banned words injected via system by the caller.
+
+    Used for: iterative content refinement per piece.
+    Each turn refines the previous version.
+    Full history sent on every turn for context continuity.
+    """
+    client = get_groq_client()
+
+    full_messages: list[dict[str, str]] = []
+    if system:
+        full_messages.append({"role": "system", "content": system})
+    full_messages.extend(messages)
+
+    capped = _safe_max_tokens(
+        prompt=messages[-1]["content"] if messages else "",
+        system=system,
+        ceiling=max_tokens,
+    )
+
+    try:
+        return await _backoff_retry(
+            lambda: _chat_complete(client, model, full_messages, capped),
+            label=f"call_llm_chat({model.name})",
+        )
+    except RateLimitError:
+        logger.warning("Groq rate limit on chat — falling back to FAST model")
+        try:
+            return await _chat_complete(client, GroqModel.FAST, full_messages, capped)
+        except Exception:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM rate limit. Please try again in 60 seconds.",
+            )
+    except APIConnectionError as exc:
+        logger.error("Groq connection error in chat: %s", exc)
+        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    except Exception as exc:
+        logger.error("Unexpected call_llm_chat error: %s", exc)
+        raise HTTPException(status_code=500, detail="Unexpected error during chat.")
+
+
+async def _chat_complete(
+    client: AsyncGroq,
+    model: GroqModel,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+) -> str:
+    """Internal helper — single chat completion call."""
+    resp = await client.chat.completions.create(
+        model=model.value,
+        messages=messages,
+        temperature=0.7,
+        max_tokens=max_tokens,
+    )
+    _log_if_truncated(resp, f"call_llm_chat({model.name})")
+    _record_usage(model.value, resp.usage)
+    return _raw_text(resp)
+
 # ─────────────────────────────────────────────────────────────
 # 4. Vision / image analysis — Gemini only
 # ─────────────────────────────────────────────────────────────

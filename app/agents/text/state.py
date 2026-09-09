@@ -9,7 +9,8 @@ in the text pipeline.
 
 from typing import Any, Optional
 from typing_extensions import TypedDict
-
+from app.agents.text.event_emitter import EventEmitter
+from uuid import uuid4
 from app.models.text import (
     ContentIntent,
     ContentGoal,
@@ -44,6 +45,7 @@ class TextAgentState(TypedDict):
     session_id: str
     user_id: str
     brand_id: str
+    emitter:Any
 
     # ─────────────────────────────────────────────────────────────
     # RAW INPUT — set by orchestrator, read by normalise_node
@@ -205,6 +207,8 @@ def build_initial_state(
     batch_mode: bool = False,
     batch_day_index: Optional[int] = None,
     batch_angle: Optional[str] = None,
+    emitter: Any = None, 
+    session_id: str = "", 
 ) -> TextAgentState:
     """
     Build a clean initial state for one platform graph run.
@@ -214,17 +218,16 @@ def build_initial_state(
     """
     return TextAgentState(
         # Identity
-        session_id="",
+     session_id=session_id or str(uuid4()),
         user_id=user_id,
         brand_id=brand_id,
-
+        emitter=emitter or EventEmitter(),
         # Raw input
         raw_input=raw_input,
         source_type=source_type,
         target_platforms=target_platforms,
         current_platform=current_platform,
         language=language,
-
         # User intent
         intent=intent,
         goal=goal,

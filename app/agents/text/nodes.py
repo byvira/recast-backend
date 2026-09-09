@@ -30,6 +30,8 @@ from app.pipelines.text.hook_agent import apply_recommended_hook, run_hook_agent
 from app.pipelines.text.normalizer import clean_raw_content, extract_content_brief
 from app.pipelines.text.quality import run_quality_gate
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
+from app.agents.text.event_emitter import EventEmitter
+from app.agents.text.narration import msg
 import random
 
 
@@ -254,7 +256,20 @@ async def normalise_node(state: TextAgentState) -> dict:
     This node does the final clean pass and pre-analysis only.
     Writes: normalised_content, content_brief
     """
+    emitter: EventEmitter = state.get("emitter")
+
     cleaned = await clean_raw_content(state["raw_input"])
+    word_count = len(cleaned.split())
+
+    if emitter:
+        await emitter.emit_log(msg.analyzing_source(word_count=word_count))
+        source_type = str(
+            state["source_type"].value
+            if hasattr(state.get("source_type"), "value")
+            else state.get("source_type", "text")
+        )
+        await emitter.emit_log(msg.source_type_detected(source_type))
+
     brief = await extract_content_brief(cleaned)
 
     return {
@@ -317,6 +332,24 @@ async def build_context_node(state: TextAgentState) -> dict:
         **enforcement,
     }
 
+    # ── Emit brand voice loaded ───────────────────────────────────────────
+    emitter: EventEmitter = state.get("emitter")
+    if emitter:
+        identity = brand_profile.get("identity") or {}
+        brand_name = (
+            identity.get("productName")
+            or identity.get("name")
+            or "Brand"
+        )
+        rules_count = (
+            len(enforcement["banned_words"])
+            + len(enforcement["approved_openers"])
+            + len(enforcement["approved_closers"])
+            + len(enforcement["required_phrases"])
+        )
+        await emitter.emit_log(msg.brand_voice_loaded(rules_count=rules_count, brand_name=brand_name))
+        await emitter.emit_log(msg.banned_words_loaded(count=len(enforcement["banned_words"])))
+
     return {
         "brand_context": brand_context,
         "goal_context": goal_context,
@@ -331,6 +364,17 @@ async def generate_node(state: TextAgentState) -> dict:
     Passes all context layers and enforcement data through task metadata.
     Writes: generated_content
     """
+    emitter: EventEmitter = state.get("emitter")
+    platform_str = str(
+        state["current_platform"].value
+        if hasattr(state["current_platform"], "value")
+        else state["current_platform"]
+    )
+
+    if emitter:
+        await emitter.emit_log(msg.generating_platform(platform=platform_str, angle="Auto"))
+        await emitter.emit_log(msg.platform_formatting(platform=platform_str))
+
     all_phrases = state["extras"].get("required_phrases", [])
     selected_phrases = random.sample(all_phrases, min(2, len(all_phrases)))
 
@@ -368,11 +412,21 @@ async def hooks_node(state: TextAgentState) -> dict:
     Applies recommended hook to generated_content.
     Writes: hooks, recommended_hook_index, generated_content (hook applied)
     """
+    emitter: EventEmitter = state.get("emitter")
+    platform_str = str(
+        state["current_platform"].value
+        if hasattr(state["current_platform"], "value")
+        else state["current_platform"]
+    )
+
     if not state["extras"].get("hook_variations", True):
         return {
             "hooks": [],
             "recommended_hook_index": 0,
         }
+
+    if emitter:
+        await emitter.emit_log(msg.generating_hooks(platform=platform_str))
 
     task = AgentTask(
     agent="hook",
@@ -413,6 +467,13 @@ async def hooks_node(state: TextAgentState) -> dict:
     hooks = hook_result.output.get("hooks", [])
     recommended_index = hook_result.output.get("recommended", 0)
 
+    if emitter:
+        # Score each hook variant in the log
+        for i, hook in enumerate(hooks):
+            hook_score = hook.get("score", 0) if isinstance(hook, dict) else 0
+            await emitter.emit_log(msg.hook_scored(version=i + 1, score=hook_score, threshold=75))
+        await emitter.emit_log(msg.hook_selected(version=recommended_index + 1, score=hooks[recommended_index].get("score", 0) if hooks and isinstance(hooks[recommended_index], dict) else 0))
+
     content_with_hook = apply_recommended_hook(
         state["generated_content"], hooks, recommended_index
     )
@@ -430,11 +491,16 @@ async def seo_node(state: TextAgentState) -> dict:
     Skipped for all other platforms or when seo_meta is False.
     Writes: seo_package
     """
+    emitter: EventEmitter = state.get("emitter")
     platform = state["current_platform"]
     seo_meta = state["extras"].get("seo_meta", False)
 
     if not should_run_seo(platform, seo_meta):
         return {"seo_package": {}}
+
+    platform_str = str(platform.value if hasattr(platform, "value") else platform)
+    if emitter:
+        await emitter.emit_log(f"Generating SEO package for {platform_str}...")
 
     task = AgentTask(
         agent="seo",
@@ -465,7 +531,16 @@ async def quality_check_node(state: TextAgentState) -> dict:
     Banned words come from extras — build_context_node stored them there.
     Writes: quality_passed, quality_issues, readability_score
     """
+    emitter: EventEmitter = state.get("emitter")
     banned_words = state["extras"].get("banned_words", [])
+    platform_str = str(
+        state["current_platform"].value
+        if hasattr(state["current_platform"], "value")
+        else state["current_platform"]
+    )
+
+    if emitter:
+        await emitter.emit_log(msg.scoring_readability(platform=platform_str))
 
     # ── Debug log ─────────────────────────────────────────────────────────
     logger.info(
@@ -483,6 +558,19 @@ async def quality_check_node(state: TextAgentState) -> dict:
         avoid_blacklist=state["extras"].get("avoid_blacklist", True),
         grammar_check=state["extras"].get("grammar_check", False),
     )
+
+    if emitter:
+        readability_level = getattr(quality, "readability_level", "Standard") or "Standard"
+        hook_score = state.get("hooks", [{}])[0].get("score", 0) if state.get("hooks") and isinstance(state["hooks"][0], dict) else 0
+        await emitter.emit_log(msg.scores_complete(
+            platform=platform_str,
+            hook=hook_score,
+            readability=readability_level,
+        ))
+        if not quality.passed:
+            hard_issues = [i for i in quality.issues if not i.startswith("Advisory:")]
+            for issue in hard_issues:
+                await emitter.emit_log(f"Quality gate failed: {issue}")
 
     return {
         "quality_passed": quality.passed,
@@ -559,6 +647,15 @@ async def rewrite_node(state: TextAgentState) -> dict:
         state["retry_count"] + 1,
     )
 
+    emitter: EventEmitter = state.get("emitter")
+    platform_str = str(
+        state["current_platform"].value
+        if hasattr(state["current_platform"], "value")
+        else state["current_platform"]
+    )
+    if emitter:
+        await emitter.emit_log(msg.retrying(platform=platform_str, attempt=state["retry_count"] + 1))
+
     return {
         "generated_content": rewritten_content,
         "retry_count": state["retry_count"] + 1,
@@ -572,12 +669,26 @@ async def flag_node(state: TextAgentState) -> dict:
     Frontend shows a review indicator on flagged pieces.
     Writes: flagged_for_review
     """
+    emitter: EventEmitter = state.get("emitter")
+    platform_str = str(
+        state["current_platform"].value
+        if hasattr(state["current_platform"], "value")
+        else state["current_platform"]
+    )
+
     logger.warning(
         "Content flagged for review — %s session %s — issues: %s",
         state["current_platform"],
         state["session_id"],
         state["quality_issues"],
     )
+
+    if emitter:
+        hard_issues = [i for i in state["quality_issues"] if not i.startswith("Advisory:")]
+        reason = hard_issues[0] if hard_issues else "quality gate failed after retry"
+        await emitter.emit_log(msg.platform_failed(platform=platform_str, reason=reason))
+        await emitter.emit_log(f"⚠ {platform_str} flagged for human review — content saved as draft")
+
     return {"flagged_for_review": True}
 
 
@@ -586,6 +697,8 @@ async def collect_output_node(state: TextAgentState) -> dict:
     Assembles the final GeneratedPiece from all state fields.
     Serialises to dict — TypedDict cannot hold Pydantic models directly.
     Appends to pieces list.
+    Emits output_complete via SSE emitter — fires even when flagged,
+    so the frontend card always transitions out of the queued state.
     Writes: pieces (appended)
     """
     content = state["generated_content"]
@@ -597,16 +710,61 @@ async def collect_output_node(state: TextAgentState) -> dict:
         char_count=len(content),
         hooks=state["hooks"],
         seo=state["seo_package"],
+        readability_score=state.get("readability_score"),
         quality_passed=state["quality_passed"],
         quality_issues=state["quality_issues"],
         flagged_for_review=state["flagged_for_review"],
-        readability_score=state["readability_score"],
         publish_target=state["publish_target"],
         publish_status="scheduled" if state["schedule_mode"] == "scheduled" else "pending",
         publish_scheduled_at=state["scheduled_at"],
     )
 
-    return {"pieces": state["pieces"] + [piece.model_dump()]}
+    pieces = state["pieces"] + [piece.model_dump()]
+
+    # ── Emit output_complete so the SSE panel transitions the card ────────
+    # Fires regardless of flagged_for_review — frontend needs the signal
+    # either way to move the card from queued → awaiting_approval.
+    emitter: EventEmitter = state.get("emitter")
+    platform = str(
+        state["current_platform"].value
+        if hasattr(state["current_platform"], "value")
+        else state["current_platform"]
+    )
+
+    if emitter:
+        latest_piece = pieces[-1]
+        hook_score = latest_piece.get("hook_score", 0) or 0
+        is_flagged = latest_piece.get("flagged_for_review", False)
+
+        commentary = msg.build_card_commentary(
+            angle_name="Auto",
+            angle_score=0,
+            hook_version=1,
+            hook_score=hook_score,
+            threshold=75,
+        )
+        if is_flagged:
+            commentary += " · ⚠ Flagged for review"
+
+        await emitter.emit_output_complete(
+            platform=platform,
+            content=latest_piece.get("content", ""),
+            hook_score=hook_score,
+            readability_score=latest_piece.get("readability_score", 0) or 0,
+            readability_level=latest_piece.get("readability_level", "Standard") or "Standard",
+            agent_commentary=commentary,
+            decisions=[],
+            angle_used="auto",
+            angle_score=0,
+            hook_version=1,
+            generation_time=0.0,
+            piece_id=latest_piece.get("piece_id", ""),
+            hashtags=latest_piece.get("hashtags", []) or [],
+            hook_alternatives=[],
+        )
+        await emitter.emit_log(msg.platform_complete(platform=platform, hook_score=hook_score))
+
+    return {"pieces": pieces}
 
 
 def route_after_quality(state: TextAgentState) -> str:

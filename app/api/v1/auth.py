@@ -98,6 +98,8 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
         bio=user.get("bio", ""),
         website=user.get("website", ""),
         timezone=user.get("timezone", "UTC"),
+        email=user.get("email"),     
+        phone=user.get("phone"),        
         language=user.get("language", "en"),
         preferred_platforms=user.get("preferred_platforms", []),
         plan=user.get("plan", UserPlan.FREE),
@@ -486,7 +488,7 @@ async def logout(
         try:
             payload = jwt.decode(
                 refresh_token,
-                settings.JWT_SECRET_KEY,
+                settings.SECRET_KEY,
                 algorithms=[settings.JWT_ALGORITHM],
             )
             # Only blacklist if token has remaining validity

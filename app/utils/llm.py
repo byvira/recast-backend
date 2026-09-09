@@ -35,3 +35,6 @@ async def generate_image(prompt: str) -> bytes:
     """
     # Placeholder: will call image generation API
     return b""
+
+
+

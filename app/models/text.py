@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field
-
+from enum import Enum as PyEnum
 
 class Platform(str, Enum):
     LINKEDIN = "LinkedIn"
@@ -16,11 +16,10 @@ class Platform(str, Enum):
     NEWSLETTER = "Newsletter"
     YOUTUBE = "YouTube"
 
-
 class InputSourceType(str, Enum):
     TEXT = "text"          # write mode
     TOPIC = "topic"        # prompt mode
-    URL = "url"            # url mode
+    URL = "url"            # url mod
     TRANSCRIPT = "transcript"  # from audio/video pipeline
 
 
@@ -186,9 +185,10 @@ class GeneratedPiece(BaseModel):
     seo: dict = {}
     quality_passed: bool = True
     quality_issues: list[str] = []
-    
+    readability_score: Optional[float] = None 
     flagged_for_review: bool = False
     repurposed: bool = False
+    readability_score: Optional[float] = None  
     # Publish fields — populated when publish_targets are set
     publish_target: Optional[str] = None
     publish_status: Optional[str] = None
@@ -217,3 +217,110 @@ class BatchGenerateRequest(BaseModel):
     extras: ExtrasConfig = ExtrasConfig()
     days: int = Field(7, ge=1, le=30)
     detected_intent: ContentIntent = ContentIntent.AUTO
+
+
+class ApprovalStatus(str, PyEnum):
+    PENDING   = "pending"
+    APPROVED  = "approved"
+    REJECTED  = "rejected"
+
+
+class PublishStatus(str, PyEnum):
+    PENDING    = "pending"
+    SCHEDULED  = "scheduled"
+    PUBLISHED  = "published"
+    FAILED     = "failed"
+
+
+class ContentSession(BaseModel):
+    """
+    One session = one API call to /generate, /repurpose, or /batch.
+    Contains metadata about the request. Pieces are stored separately.
+    """
+    session_id: str
+    user_id: str
+    brand_id: str
+    source_type: str
+    platforms: list[str]
+    goal: Optional[str] = None
+    tone: Optional[str] = None
+    batch_mode: bool = False
+    batch_day_index: Optional[int] = None
+    pieces_count: int = 0
+    is_repurpose: bool = False
+    schedule_mode: str = "now"
+    scheduled_at: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContentPiece(BaseModel):
+    """
+    One piece = one platform output from a session.
+    Stores the full generated content plus all quality metadata.
+    """
+    piece_id: str
+    session_id: str
+    user_id: str
+    brand_id: str
+    platform: str
+    content: str
+    word_count: int = 0
+    char_count: int = 0
+    hooks: list[dict] = []
+    seo: dict = {}
+    quality_passed: bool = True
+    quality_issues: list[str] = []
+    flagged_for_review: bool = False
+    readability_score: Optional[float] = None
+    approval_status: ApprovalStatus = ApprovalStatus.PENDING
+    repurposed: bool = False
+    publish_status: PublishStatus = PublishStatus.PENDING
+    publish_scheduled_at: Optional[str] = None
+    publish_target: Optional[str] = None
+    publish_job_id: Optional[str] = None
+    version_count: int = 1
+    created_at: datetime
+    updated_at: datetime
+
+
+class ContentPieceVersion(BaseModel):
+    """
+    One version = one snapshot of a piece's content.
+    Version 1 is always the original generated content.
+    Version N is created on every chip application or chat refinement.
+    """
+    version_id: str
+    piece_id: str
+    session_id: str
+    user_id: str
+    version_number: int
+    content: str
+    word_count: int
+    char_count: int
+    action: str        # "original", "make_punchier", "shorten", "chat_turn_1" etc
+    instruction: str   
+    platform: str
+    created_at: datetime
+
+
+     
+class RegenerateRequest(BaseModel):
+    """Request body for single-platform content regeneration."""
+    platform:  str
+    brand_id:  str
+    piece_id:  Optional[str] = None   # used to pull original source content
+    content:   Optional[str] = None   # fallback if piece_id not provided
+    tone:      Optional[str] = "brand"
+    goal:      Optional[str] = None
+ 
+ 
+class RegenerateResponse(BaseModel):
+    platform:          str
+    content:           str
+    hook_score:        int  = 0
+    readability_score: int  = 0
+    readability_level: str  = "Standard"
+    piece_id:          str  = ""
+    hashtags:          list[str] = []
+    hook_alternatives: list[str] = []

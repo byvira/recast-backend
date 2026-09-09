@@ -3,9 +3,37 @@
 from datetime import datetime
 from enum import Enum
 from typing import Optional
-
+from typing import Any
 from pydantic import BaseModel, Field
 
+
+class SocialAccount(BaseModel):
+    """
+    Connected social media account for a user.
+    Tokens are stored encrypted in MongoDB — never exposed in API responses.
+    """
+    platform: str                           # linkedin, instagram, threads, facebook, reddit, bluesky
+    username: str = ""                      # display name on the platform
+    platform_user_id: str = ""             # platform's own ID for this user
+    is_active: bool = True
+    connected_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
+    # NOTE: access_token and refresh_token are NOT in this model
+    # They live only in MongoDB encrypted — never in Pydantic responses
+
+
+class SocialAccountResponse(BaseModel):
+    """
+    Safe public-facing social account — no tokens ever.
+    Used in API responses when listing connected accounts.
+    """
+    platform: str
+    username: str
+    platform_user_id: str
+    is_active: bool
+    connected_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
 
 class UserPlan(str, Enum):
     """Subscription tier for a user account."""
@@ -95,29 +123,33 @@ class UserProfile(BaseModel):
     credits_used: int = 0
     credits_limit: int = 100
     onboarding_done: bool = False
+    social_accounts: list[SocialAccount] = []    
     brand_profiles: list[str] = []
     created_at: datetime
     last_active: datetime
 
 
 class UserProfileResponse(BaseModel):
-    """Safe public-facing profile — strips email, phone, and credits internals."""
-
-    id: str
-    name: str
-    username: str
-    avatar_url: str
-    bio: str
-    website: str
-    timezone: str
-    language: str
-    preferred_platforms: list[str]
-    plan: UserPlan
-    credits_used: int
-    credits_limit: int
-    onboarding_done: bool
-    brand_profiles: list[str]
-    created_at: datetime
+    id:                  str
+    name:                str
+    username:            str
+    email: str | None = None  
+    phone: str | None = None  
+    avatar_url:          str        = ""
+    bio:                 str        = ""
+    website:             str        = ""
+    timezone:            str        = "UTC"
+    language:            str        = "en"
+    preferred_platforms: list[str]  = []
+    plan:                str        = "free"
+    credits_used:        int        = 0
+    credits_limit:       int        = 100
+    onboarding_done:     bool       = False
+    brand_profiles:      list[str]  = []
+    social_accounts:     list[Any]  = []       
+    auth_identifiers:    list[str]  = []    
+    last_active:         datetime | None = None # 
+    created_at:          datetime
 
 
 class PublicProfileResponse(BaseModel):

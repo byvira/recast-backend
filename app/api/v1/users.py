@@ -23,11 +23,11 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
         UserProfileResponse instance.
     """
     from app.models.user import UserPlan
-
     return UserProfileResponse(
         id=user["id"],
         name=user["name"],
         username=user["username"],
+        email=user.get("email", ""),                        
         avatar_url=user.get("avatar_url", ""),
         bio=user.get("bio", ""),
         website=user.get("website", ""),
@@ -39,6 +39,9 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
         credits_limit=user.get("credits_limit", 100),
         onboarding_done=user.get("onboarding_done", False),
         brand_profiles=user.get("brand_profiles", []),
+        social_accounts=user.get("social_accounts", []), 
+        auth_identifiers=user.get("auth_identifiers", []), 
+        last_active=user.get("last_active"),          
         created_at=user["created_at"],
     )
 
@@ -149,6 +152,7 @@ async def get_public_profile(
     return PublicProfileResponse(
         username=user["username"],
         name=user["name"],
+        email=user['email'],
         avatar_url=user.get("avatar_url", ""),
         bio=user.get("bio", ""),
         website=user.get("website", ""),
