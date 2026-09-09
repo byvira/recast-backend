@@ -6,6 +6,7 @@ uvicorn[standard]==0.32.1
 pydantic==2.10.3
 pydantic-settings==2.6.1
 python-multipart==0.0.12
+scalar-fastapi>=1.0.3
 
 # ─────────────────────────────────────────
 # Auth

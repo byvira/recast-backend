@@ -156,7 +156,7 @@ async def request_otp(
     )
 
 
-@router.post("/verify-otp", response_model=VerifyOTPResponse)
+@router.post("/verify-otp", response_model=VerifyOTPResponse, summary="Verify OTP")
 @limiter.limit("20/minute")
 async def verify_otp_route(
     request: Request,
