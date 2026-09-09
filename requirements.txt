@@ -73,3 +73,9 @@ pyotp>=2.9.0
 user-agents>=2.2.0
 python-slugify>=8.0.0
 phonenumbers>=8.13.0
+
+# ─────────────────────────────────────────
+# Scheduling & scraping
+# ─────────────────────────────────────────
+apscheduler>=3.10.4
+trafilatura>=1.12.0
