@@ -139,6 +139,7 @@ async def _run_single_platform(
     tone_enum   = ToneOverride(tone_value) if tone_value else ToneOverride.BRAND
 
     initial_state = build_initial_state(
+        workspace_id=normalised.workspace_id,
         user_id=normalised.user_id,
         brand_id=normalised.brand_id,
         raw_input=normalised.raw_content,
@@ -162,9 +163,25 @@ async def _run_single_platform(
         batch_angle=batch_angle,
     )
 
-    # ── Run graph ─────────────────────────────────────────────────────────
+    # ── Run graph (traced to LangSmith: agent:text_pipeline, ws:<id>) ─────
     try:
-        final_state = await _text_graph.ainvoke(initial_state)
+        from app.core.tracing import ainvoke_traced
+        final_state, _trace_url = await ainvoke_traced(
+            _text_graph,
+            initial_state,
+            run_name="text_pipeline_platform",
+            agent="text_pipeline",
+            workspace_id=normalised.workspace_id,
+            user_id=normalised.user_id,
+            extra_tags=[f"platform:{_platform_str(platform)}"],
+            metadata={
+                "session_id": session_id or "",
+                "platform": _platform_str(platform),
+                "is_repurpose": is_repurpose,
+                "batch_mode": batch_mode,
+                "brand_id": normalised.brand_id,
+            },
+        )
     except Exception as e:
         logger.error(
             "Graph invocation failed for %s session %s: %s",
@@ -215,6 +232,7 @@ async def run_text_pipeline(
     content: str,
     platforms: list[Platform],
     brand_id: str,
+    workspace_id: str,
     user_id: str,
     extras,
     emitter=None,
@@ -237,7 +255,7 @@ async def run_text_pipeline(
     GUARANTEE: always emits pipeline_complete after all platforms finish,
     regardless of how many platforms failed.
     """
-    brand_profile = await brand_profiles.find_one({"id": brand_id})
+    brand_profile = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
     if not brand_profile:
         raise ValueError(f"Brand profile not found: {brand_id}")
 
@@ -246,6 +264,7 @@ async def run_text_pipeline(
         source_type=source_type,
         content=content,
         platforms=platforms,
+        workspace_id=workspace_id,
         user_id=user_id,
         brand_id=brand_id,
         language=language,
@@ -319,6 +338,7 @@ async def run_text_pipeline(
 
     return TextPipelineResult(
         session_id=normalised.session_id,
+        workspace_id=workspace_id,
         user_id=user_id,
         brand_id=brand_id,
         pieces=pieces,
@@ -327,7 +347,25 @@ async def run_text_pipeline(
         scheduled_at=scheduled_at,
         batch_mode=False,
         created_at=datetime.now(timezone.utc),
+        assistant_nudge=await _safe_assistant_nudge(workspace_id, user_id),
     )
+
+
+async def _safe_assistant_nudge(workspace_id: str, user_id: str):
+    """Cached, LLM-free voice-alignment read for the caller — attached to the
+    pipeline response. Hard 150 ms cap; any slowness or error → None. This is a
+    single indexed find_one, never a generation or embedding call, so it cannot
+    add meaningful latency to the response.
+    """
+    try:
+        from app.agents.personal.assist import cached_nudge
+        from app.agents.personal.thresholds import NUDGE_CACHE_TIMEOUT_S
+
+        return await asyncio.wait_for(
+            cached_nudge(workspace_id, user_id), timeout=NUDGE_CACHE_TIMEOUT_S
+        )
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 — nudge is best-effort
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -609,6 +647,7 @@ async def run_batch_pipeline(
     topic_cluster: str,
     platforms: list[Platform],
     brand_id: str,
+    workspace_id: str,
     user_id: str,
     extras,
     days: int = 7,
@@ -647,6 +686,7 @@ Return valid JSON only:
             content=angle,
             platforms=platforms,
             brand_id=brand_id,
+            workspace_id=workspace_id,
             user_id=user_id,
             extras=extras,
             intent=detected_intent or ContentIntent.AUTO,

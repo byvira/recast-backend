@@ -41,3 +41,6 @@ htmlcov/
 # ── Logs ─────────────────────────────────────────────────────────────────────
 *.log
 logs/
+
+# ── Local smoke / integration scripts (hit real MongoDB/Redis/Groq/Gemini/LangSmith) ──
+scripts/

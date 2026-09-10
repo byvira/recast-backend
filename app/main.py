@@ -23,7 +23,10 @@ from app.api.v1 import workspace, invites
 from app.core.logger import logger, setup_logging
 from app.core.middleware import RequestLoggingMiddleware, limiter
 from app.db.mongo import create_indexes, get_client as get_mongo_client
+from app.db.migrations import run_startup_migrations
 from app.api.v1 import text_stream
+from app.api.v1 import assistant as assistant_router
+from app.api.v1 import supervisor as supervisor_router
 from app.db.redis import close_redis
 from app.workers.scheduled_posts import process_scheduled_posts
 from app.workers.token_refresh import refresh_expiring_tokens
@@ -41,9 +44,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Starting application...")
 
+    from app.core.tracing import init_tracing
+    init_tracing()
+
     get_mongo_client()
     await create_indexes()
-    logger.info("MongoDB connected and indexes created")
+    await run_startup_migrations()
+    logger.info("MongoDB connected, indexes created, migrations applied")
 
     # Start scheduler
     scheduler.add_job(process_scheduled_posts, "interval", minutes=1, id="scheduled_posts")
@@ -56,6 +63,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Shutting down application...")
     scheduler.shutdown()
+    from app.agents.supervisor.service import close_arq_pool
+    await close_arq_pool()
     get_mongo_client().close()
     await close_redis()
     logger.info("Connections closed successfully")
@@ -76,6 +85,8 @@ OPENAPI_TAGS = [
     {"name": "Video", "description": "Video content generation pipeline."},
     {"name": "Image", "description": "Image content generation pipeline."},
     {"name": "Analytics", "description": "Cross-platform post performance analytics and insights."},
+    {"name": "Assistant", "description": "Per-member personal assistant — voice persona, drift signals, and draft alignment."},
+    {"name": "Supervisor", "description": "Workspace supervisor (admin-only) — insights, flags, and dashboard for workspace health."},
     {"name": "Pipeline", "description": "Real-time streaming endpoints for the text generation pipeline."},
     {"name": "Health", "description": "Service health checks."},
 ]
@@ -132,8 +143,8 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONRe
 # --- Routers ---
 app.include_router(auth_router.router,    prefix="/api/v1/auth",       tags=["Auth"])
 app.include_router(oauth.router,          prefix="/api/v1/oauth",      tags=["OAuth"])
-app.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
-app.include_router(invites.router, prefix="/invites", tags=["Invites"])
+app.include_router(workspace.router, prefix="/api/v1/workspaces", tags=["Workspace"])
+app.include_router(invites.router, prefix="/api/v1/invites", tags=["Invites"])
 app.include_router(publish.router,        prefix="/api/v1/publish",    tags=["Publish"])
 app.include_router(users_router.router,   prefix="/api/v1/users",      tags=["Users"])
 app.include_router(brand_router.router,   prefix="/api/v1/brand",      tags=["Brand"])
@@ -144,6 +155,8 @@ app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Au
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
 app.include_router(image.router,          prefix="/api/v1/image",      tags=["Image"])
 app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["Analytics"])
+app.include_router(assistant_router.router, prefix="/api/v1/assistant", tags=["Assistant"])
+app.include_router(supervisor_router.router, prefix="/api/v1/supervisor", tags=["Supervisor"])
 app.include_router(
     text_stream.router,
     prefix="/api/v1/pipeline",

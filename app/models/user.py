@@ -102,6 +102,7 @@ class UserUpdateBody(BaseModel):
     timezone: Optional[str] = None
     language: Optional[str] = None
     preferred_platforms: Optional[list[str]] = None
+    default_workspace_id: Optional[str] = None   # must be a workspace the caller belongs to
 
 
 class UserProfile(BaseModel):
@@ -123,8 +124,9 @@ class UserProfile(BaseModel):
     credits_used: int = 0
     credits_limit: int = 100
     onboarding_done: bool = False
-    social_accounts: list[SocialAccount] = []    
+    social_accounts: list[SocialAccount] = []
     brand_profiles: list[str] = []
+    default_workspace_id: Optional[str] = None   # active workspace when X-Workspace-Id header absent
     created_at: datetime
     last_active: datetime
 
@@ -146,9 +148,10 @@ class UserProfileResponse(BaseModel):
     credits_limit:       int        = 100
     onboarding_done:     bool       = False
     brand_profiles:      list[str]  = []
-    social_accounts:     list[Any]  = []       
-    auth_identifiers:    list[str]  = []    
-    last_active:         datetime | None = None # 
+    social_accounts:     list[Any]  = []
+    auth_identifiers:    list[str]  = []
+    default_workspace_id: str | None = None
+    last_active:         datetime | None = None #
     created_at:          datetime
 
 

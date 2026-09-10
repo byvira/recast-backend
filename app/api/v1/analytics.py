@@ -1,30 +1,31 @@
 """
-Analytics API endpoints.
+Analytics API endpoints — workspace-scoped.
 GET  /api/v1/analytics/accounts  — account-level metrics across all platforms
 GET  /api/v1/analytics/posts     — post-level metrics for published content
 GET  /api/v1/analytics/summary   — unified cross-platform summary
 GET  /api/v1/analytics/refresh   — manually trigger metrics refresh
 POST /api/v1/analytics/ask       — natural language analytics query (agent)
 GET  /api/v1/analytics/ask       — full dashboard report (agent, no question needed)
+
+All routes require workspace membership.
 """
 
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace
 from app.db.mongo import get_db
 from app.pipelines.analytics.aggregator import (
     fetch_account_metrics_all,
     fetch_post_metrics_all,
     summarize,
 )
-from app.agents.analytics.graph import analytics_graph
-from app.agents.analytics.state import build_initial_state
+from app.agents.analytics.graph import run_analytics
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -39,13 +40,13 @@ class AnalyticsAskRequest(BaseModel):
 async def get_account_metrics(
     request: Request,
     platforms: str = Query(None, description="Comma-separated e.g. instagram,threads"),
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     platform_list = platforms.split(",") if platforms else None
     since = datetime.now(timezone.utc) - timedelta(days=7)
     until = datetime.now(timezone.utc)
     metrics = await fetch_account_metrics_all(
-        user_id=current_user["id"],
+        workspace_id=ctx.workspace_id,
         platforms=platform_list,
         since=since,
         until=until,
@@ -62,11 +63,11 @@ async def get_account_metrics(
 async def get_post_metrics(
     request: Request,
     limit: int = Query(20, ge=1, le=100),
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     db = get_db()
     metrics = await db["post_metrics"].find(
-        {"user_id": current_user["id"]},
+        {"workspace_id": ctx.workspace_id},
         sort=[("fetched_at", -1)],
     ).to_list(length=limit)
     for m in metrics:
@@ -78,15 +79,14 @@ async def get_post_metrics(
 @limiter.limit("20/minute")
 async def get_summary(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    db      = get_db()
-    user_id = current_user["id"]
+    db = get_db()
     account_docs = await db["account_metrics"].find(
-        {"user_id": user_id}
+        {"workspace_id": ctx.workspace_id}
     ).to_list(length=20)
     post_docs = await db["post_metrics"].find(
-        {"user_id": user_id},
+        {"workspace_id": ctx.workspace_id},
         sort=[("fetched_at", -1)],
     ).to_list(length=100)
     from app.pipelines.analytics.base import AccountMetrics, PostMetrics
@@ -99,23 +99,23 @@ async def get_summary(
 @limiter.limit("5/minute")
 async def trigger_refresh(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    db      = get_db()
-    user_id = current_user["id"]
-    since   = datetime.now(timezone.utc) - timedelta(days=7)
-    until   = datetime.now(timezone.utc)
+    db  = get_db()
+    ws  = ctx.workspace_id
+    since = datetime.now(timezone.utc) - timedelta(days=7)
+    until = datetime.now(timezone.utc)
     account_metrics = await fetch_account_metrics_all(
-        user_id=user_id,
+        workspace_id=ws,
         since=since,
         until=until,
     )
     for m in account_metrics:
         await db["account_metrics"].update_one(
-            {"user_id": user_id, "platform": m.platform},
+            {"workspace_id": ws, "platform": m.platform},
             {"$set": {
                 **m.model_dump(),
-                "user_id":    user_id,
+                "workspace_id": ws,
                 "updated_at": datetime.now(timezone.utc),
             }},
             upsert=True,
@@ -132,13 +132,13 @@ async def trigger_refresh(
 async def ask_analytics(
     request: Request,
     body: AnalyticsAskRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    state  = build_initial_state(
-        user_id=current_user["id"],
+    result = await run_analytics(
+        workspace_id=ctx.workspace_id,
         question=body.question,
+        user_id=ctx.user_id,
     )
-    result = await analytics_graph.ainvoke(state)
     return {
         "question":          result["question"],
         "report":            result["report"],
@@ -153,13 +153,13 @@ async def ask_analytics(
 @limiter.limit("10/minute")
 async def get_dashboard_report(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    state  = build_initial_state(
-        user_id=current_user["id"],
+    result = await run_analytics(
+        workspace_id=ctx.workspace_id,
         question="Give me a full performance overview for the last 7 days.",
+        user_id=ctx.user_id,
     )
-    result = await analytics_graph.ainvoke(state)
     return {
         "report":          result["report"],
         "analysis":        result["analysis"],
@@ -176,38 +176,11 @@ async def get_calendar(
     request:       Request,
     year:          int  = Query(default=None),
     month:         int  = Query(default=None),
-    current_user:  dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """
     Return all content pieces for a given month organized by date.
     Used by the calendar view on the Performance page.
-
-    Query params:
-      year:  int (defaults to current year)
-      month: int (defaults to current month, 1-12)
-
-    Returns:
-      {
-        year: 2026,
-        month: 6,
-        days: {
-          "2026-06-08": [
-            {
-              id, title, content_preview, platforms,
-              status, scheduled_at, published_at,
-              platform_results
-            }
-          ],
-          "2026-06-10": [...]
-        },
-        summary: {
-          total:      12,
-          published:  8,
-          scheduled:  2,
-          queued:     1,
-          draft:      1,
-        }
-      }
     """
     from datetime import datetime, timezone
     import calendar
@@ -216,7 +189,6 @@ async def get_calendar(
     year  = year  or now.year
     month = month or now.month
 
-    # Build date range for the month
     _, last_day = calendar.monthrange(year, month)
     start = datetime(year, month, 1,        tzinfo=timezone.utc)
     end   = datetime(year, month, last_day, hour=23, minute=59, second=59, tzinfo=timezone.utc)
@@ -225,10 +197,9 @@ async def get_calendar(
 
     pieces = await db["content_pieces"].find(
         {
-            "user_id": current_user["id"],
+            "workspace_id": ctx.workspace_id,
             "deleted": {"$ne": True},
             "$or": [
-                # Published in this month
                 {
                     "publish_status": "published",
                     "platform_results": {
@@ -237,11 +208,9 @@ async def get_calendar(
                         }
                     }
                 },
-                # Scheduled for this month
                 {
                     "publish_scheduled_at": {"$gte": start, "$lte": end}
                 },
-                # Created this month (drafts/queued)
                 {
                     "publish_status": {"$in": ["draft", "queued"]},
                     "created_at":     {"$gte": start, "$lte": end}
@@ -251,13 +220,11 @@ async def get_calendar(
         sort=[("created_at", -1)],
     ).to_list(length=500)
 
-    # Organize by date
     days: dict[str, list] = {}
     summary = {"total": 0, "published": 0, "scheduled": 0, "queued": 0, "draft": 0}
 
     for piece in pieces:
         if piece.get("publish_status") == "published":
-            # Use the first successful published_at from platform_results
             published_dates = [
                 r["published_at"]
                 for r in piece.get("platform_results", [])
@@ -269,7 +236,6 @@ async def get_calendar(
         else:
             display_date = piece["created_at"]
 
-        # Normalize to date string YYYY-MM-DD
         if isinstance(display_date, datetime):
             date_key = display_date.strftime("%Y-%m-%d")
         else:
@@ -278,7 +244,6 @@ async def get_calendar(
         if date_key not in days:
             days[date_key] = []
 
-        # Extract platforms from platform_results
         platforms = list({
             r["platform"]
             for r in piece.get("platform_results", [])
@@ -302,7 +267,6 @@ async def get_calendar(
             ],
         })
 
-        # Update summary
         status = piece.get("publish_status", "draft")
         summary["total"] += 1
         if status in summary:

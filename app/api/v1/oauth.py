@@ -13,8 +13,8 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 import httpx
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.pipelines.publish.registry import get_publisher
 from app.core.config import settings
 from app.pipelines.publish.token_store import (
@@ -34,9 +34,13 @@ class BlueskyConnectRequest(BaseModel):
     app_password: str
 
 
-def _create_state(user_id: str, platform: str) -> str:
+def _create_state(user_id: str, platform: str, workspace_id: str) -> str:
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = {"user_id": user_id, "platform": platform}
+    _oauth_states[state] = {
+        "user_id": user_id,
+        "platform": platform,
+        "workspace_id": workspace_id,
+    }
     return state
 
 
@@ -61,10 +65,10 @@ def _consume_state(state: str) -> dict | None:
 @limiter.limit("30/minute")
 async def list_accounts(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    """List all connected social accounts for the current user."""
-    accounts = await get_all_tokens(current_user["id"])
+    """List all connected social accounts for the active workspace."""
+    accounts = await get_all_tokens(ctx.workspace_id)
     return {
         "accounts": accounts,
         "total":    len(accounts),
@@ -76,10 +80,10 @@ async def list_accounts(
 async def connect_bluesky(
     request: Request,
     body: BlueskyConnectRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
     """
-    Connect a Bluesky account using handle + app password.
+    Connect a Bluesky account to the active workspace using handle + app password.
     No OAuth redirect needed — ATP handles auth directly.
     """
     from app.pipelines.publish.bluesky.publisher import BlueSkyPublisher
@@ -91,20 +95,21 @@ async def connect_bluesky(
             f"{body.handle}|{body.app_password}"
         )
     except Exception as exc:
-        logger.error("Bluesky connect failed for user %s: %s", current_user["id"], exc)
+        logger.error("Bluesky connect failed for workspace %s: %s", ctx.workspace_id, exc)
         raise HTTPException(
             status_code=400,
             detail="Failed to connect Bluesky. Check your handle and app password.",
         )
 
     await save_token(
-        user_id=current_user["id"],
+        workspace_id=ctx.workspace_id,
         platform="bluesky",
         access_token=token_data["access_token"],
         refresh_token=token_data.get("refresh_token"),
         expires_at=token_data.get("expires_at"),
         platform_user_id=token_data.get("platform_user_id", ""),
         username=token_data.get("username", body.handle),
+        connected_by=ctx.user_id,
     )
 
     return {
@@ -120,14 +125,14 @@ async def connect_bluesky(
 @limiter.limit("10/minute")
 async def connect_meta(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
     """
     Start Meta OAuth flow — covers Instagram + Threads + Facebook.
     One connect flow, three platforms connected simultaneously.
     """
     from app.pipelines.publish.meta.oauth import build_auth_url
-    state    = _create_state(current_user["id"], "meta")
+    state    = _create_state(ctx.user_id, "meta", ctx.workspace_id)
     auth_url = build_auth_url(state, platform="meta")
 
     return {
@@ -178,6 +183,7 @@ async def meta_callback(
         )
 
     user_id = state_data["user_id"]
+    workspace_id = state_data.get("workspace_id", "")
 
     try:
         from app.pipelines.publish.meta.oauth import exchange_code
@@ -194,13 +200,14 @@ async def meta_callback(
     # ── Instagram — only if Business account linked to Facebook Page ──────
     if token_data.get("ig_user_id"):
         await save_token(
-            user_id=user_id,
+            workspace_id=workspace_id,
             platform="instagram",
             access_token=token_data["access_token"],
             refresh_token=None,
             expires_at=token_data.get("expires_at"),
             platform_user_id=token_data["ig_user_id"],
             username=token_data.get("username", ""),
+            connected_by=user_id,
         )
         connected.append("instagram")
         logger.info("Instagram connected for user %s", user_id)
@@ -216,13 +223,14 @@ async def meta_callback(
     if pages:
         first_page = pages[0]
         await save_token(
-            user_id=user_id,
+            workspace_id=workspace_id,
             platform="facebook",
             access_token=first_page["access_token"],
             refresh_token=None,
             expires_at=token_data.get("expires_at"),
             platform_user_id=first_page["id"],
             username=first_page.get("name", ""),
+            connected_by=user_id,
         )
         connected.append("facebook")
         logger.info(
@@ -280,13 +288,13 @@ async def meta_callback(
 @limiter.limit("10/minute")
 async def connect_threads(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
     """
     Start Threads OAuth flow — separate from Facebook Login.
     Threads uses threads.net/oauth/authorize not Facebook.
     """
-    state    = _create_state(current_user["id"], "threads")
+    state    = _create_state(ctx.user_id, "threads", ctx.workspace_id)
     params   = {
         "client_id":     settings.THREADS_APP_ID,
         "redirect_uri":  settings.THREADS_REDIRECT_URI,
@@ -323,6 +331,7 @@ async def threads_callback(
         raise HTTPException(status_code=400, detail="Invalid or expired state.")
 
     user_id = state_data["user_id"]
+    workspace_id = state_data.get("workspace_id", "")
 
     try:
         async with httpx.AsyncClient() as client:
@@ -378,13 +387,14 @@ async def threads_callback(
         raise HTTPException(status_code=500, detail="Failed to connect Threads.")
 
     await save_token(
-        user_id=user_id,
+        workspace_id=workspace_id,
         platform="threads",
         access_token=access_token,
         refresh_token=None,
         expires_at=expires_at,
         platform_user_id=user_id_threads,
         username=username,
+        connected_by=user_id,
     )
 
     return {
@@ -402,14 +412,14 @@ async def threads_callback(
 @limiter.limit("10/minute")
 async def connect_google(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
     """
     Start Google OAuth flow.
     Covers YouTube (and other Google products as scopes are added).
     """
     from app.pipelines.publish.google.oauth import build_auth_url
-    state    = _create_state(current_user["id"], "google")
+    state    = _create_state(ctx.user_id, "google", ctx.workspace_id)
     auth_url = build_auth_url(state, platform="google")
 
     return {
@@ -447,6 +457,7 @@ async def google_callback(
         )
 
     user_id = state_data["user_id"]
+    workspace_id = state_data.get("workspace_id", "")
 
     try:
         from app.pipelines.publish.google.oauth import exchange_code
@@ -461,26 +472,28 @@ async def google_callback(
     connected = []
 
     await save_token(
-        user_id=user_id,
+        workspace_id=workspace_id,
         platform="google",
         access_token=token_data["access_token"],
         refresh_token=token_data.get("refresh_token"),
         expires_at=token_data.get("expires_at"),
         platform_user_id=token_data["platform_user_id"],
         username=token_data.get("username", ""),
+        connected_by=user_id,
     )
     connected.append("google")
     logger.info("Google connected for user %s — %s", user_id, token_data.get("email"))
 
     if token_data.get("youtube_channel_id"):
         await save_token(
-            user_id=user_id,
+            workspace_id=workspace_id,
             platform="youtube",
             access_token=token_data["access_token"],
             refresh_token=token_data.get("refresh_token"),
             expires_at=token_data.get("expires_at"),
             platform_user_id=token_data["youtube_channel_id"],
             username=token_data.get("youtube_channel_name", token_data.get("username", "")),
+            connected_by=user_id,
         )
         connected.append("youtube")
         logger.info(
@@ -525,7 +538,7 @@ async def google_callback(
 async def connect_platform(
     request: Request,
     platform: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
     """Start OAuth flow for a platform."""
     try:
@@ -536,7 +549,7 @@ async def connect_platform(
             detail=f"Platform '{platform}' not supported.",
         )
 
-    state    = _create_state(current_user["id"], platform)
+    state    = _create_state(ctx.user_id, platform, ctx.workspace_id)
     auth_url = publisher.build_auth_url(state)
 
     return {
@@ -570,6 +583,7 @@ async def oauth_callback(
         raise HTTPException(status_code=400, detail="Platform mismatch in OAuth state.")
 
     user_id = state_data["user_id"]
+    workspace_id = state_data.get("workspace_id", "")
 
     try:
         publisher  = get_publisher(platform)
@@ -582,13 +596,14 @@ async def oauth_callback(
         )
 
     await save_token(
-        user_id=user_id,
+        workspace_id=workspace_id,
         platform=platform,
         access_token=token_data["access_token"],
         refresh_token=token_data.get("refresh_token"),
         expires_at=token_data.get("expires_at"),
         platform_user_id=token_data.get("platform_user_id", ""),
         username=token_data.get("username", ""),
+        connected_by=user_id,
     )
 
     return {
@@ -604,10 +619,10 @@ async def oauth_callback(
 async def disconnect_platform(
     request: Request,
     platform: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
-    """Remove a platform connection for the current user."""
-    await delete_token(current_user["id"], platform)
+    """Remove a platform connection from the active workspace."""
+    await delete_token(ctx.workspace_id, platform)
     return {
         "platform":    platform,
         "disconnected": True,
@@ -619,7 +634,7 @@ async def disconnect_platform(
 @limiter.limit("10/minute")
 async def debug_meta(
     request: Request,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
     """
     Debug Meta token step by step.

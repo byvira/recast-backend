@@ -12,15 +12,27 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "manage_billing",
         "publish_content",
         "manage_workspace_settings",
+        "manage_connections",
+        "create_content",
+        "edit_content",
+        "approve_content",
+        "view_workspace_insights",
     },
     "admin": {
         "invite_members",
         "remove_members",
         "edit_brand_voice",
         "publish_content",
+        "manage_connections",
+        "create_content",
+        "edit_content",
+        "approve_content",
+        "view_workspace_insights",
     },
     "editor": {
         "publish_content",
+        "create_content",
+        "edit_content",
     },
     "viewer": set(),
 }
@@ -55,10 +67,22 @@ async def require_permission(workspace_id: str, user_id: str, permission: str) -
         HTTPException 403: Not a member, or role lacks the permission.
     """
     member = await get_member(workspace_id, user_id)
-    allowed = ROLE_PERMISSIONS.get(member["role"], set())
+    assert_permission(member, permission)
+    return member
+
+
+def assert_permission(member: dict, permission: str) -> None:
+    """Assert an already-loaded membership row grants a permission (no DB hit).
+
+    Used by ``app.core.workspace.require`` where ``get_current_workspace`` has
+    already resolved the member.
+
+    Raises:
+        HTTPException 403: The member's role lacks the permission.
+    """
+    allowed = ROLE_PERMISSIONS.get(member.get("role", ""), set())
     if permission not in allowed:
         raise HTTPException(
             status_code=403,
-            detail=f"Role '{member['role']}' does not have permission: {permission}.",
+            detail=f"Role '{member.get('role')}' does not have permission: {permission}.",
         )
-    return member

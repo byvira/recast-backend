@@ -2,6 +2,8 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Optional
+
 from pydantic import BaseModel, Field
 
 
@@ -35,8 +37,29 @@ class Workspace(BaseModel):
     tier: WorkspaceTier
     tier_config: TierConfig      # snapshot at creation — never re-read from tiers.py after
     owner_id: str
+    is_personal: bool = False    # auto-created at signup; non-deletable, single-seat
     created_at: datetime
     updated_at: datetime
+
+
+class WorkspaceConnection(BaseModel):
+    """A third-party platform account connected to a workspace.
+
+    Replaces the per-user ``users.social_accounts[]`` array. Access and refresh
+    tokens are stored encrypted alongside this document in MongoDB — never in
+    this model, same convention as ``SocialAccount``.
+    """
+
+    id: str
+    workspace_id: str
+    platform: str                              # linkedin, instagram, threads, facebook, bluesky, google
+    platform_user_id: str = ""
+    username: str = ""
+    is_active: bool = True
+    connected_by: str = ""                     # user_id of the member who connected it (audit)
+    connected_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    last_refreshed_at: Optional[datetime] = None
 
 
 class WorkspaceMember(BaseModel):

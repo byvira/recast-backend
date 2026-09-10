@@ -56,6 +56,7 @@ class DraftResponse(BaseModel):
     OnboardingState directly without any transformation.
     """
 
+    workspace_id:      Optional[str]            = None
     brand_id:          Optional[str]
     brand_type:        Optional[str]
     current_step:      int

@@ -16,7 +16,8 @@ from typing_extensions import TypedDict
 class AnalyticsAgentState(TypedDict):
 
     # ── Identity ──────────────────────────────────────────────────────────
-    user_id:  str
+    workspace_id: str
+    user_id:  str   # caller (audit)
     question: str   # natural language question e.g. "how am I performing this week?"
 
     # ── Platform data — filled by check_platforms_node ───────────────────
@@ -36,10 +37,12 @@ class AnalyticsAgentState(TypedDict):
 
 
 def build_initial_state(
-    user_id: str,
+    workspace_id: str,
     question: str = "Give me a full performance overview.",
+    user_id: str = "",
 ) -> AnalyticsAgentState:
     return AnalyticsAgentState(
+        workspace_id=workspace_id,
         user_id=user_id,
         question=question,
         connected_platforms=[],

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 class PostMetrics(BaseModel):
     """Engagement metrics for a single published post."""
 
+    workspace_id:     str = ""
     platform:         str
     post_id:          str
     platform_post_id: str
@@ -43,6 +44,7 @@ class PostMetrics(BaseModel):
 class AccountMetrics(BaseModel):
     """Overall account health metrics for a platform."""
 
+    workspace_id:      str = ""
     platform:          str
     platform_user_id:  str
     username:          str = ""

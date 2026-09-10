@@ -1,6 +1,9 @@
 """
 Content management endpoints — sessions, pieces, versions.
-Sprint 4 — storage and content management.
+
+Workspace-scoped. Reads require workspace membership; edits/deletes/restores
+require ``edit_content``; approve / reject / schedule / approve-all require
+``approve_content`` (owner or admin only).
 """
 
 import logging
@@ -9,11 +12,11 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.pipelines.text.storage import (
     get_session,
-    get_user_sessions,
+    get_workspace_sessions,
     get_piece,
     update_piece_content,
     update_piece_status,
@@ -54,11 +57,11 @@ async def list_sessions(
     brand_id: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    """List all content sessions for the authenticated user."""
-    return await get_user_sessions(
-        user_id=current_user["id"],
+    """List all content sessions in the active workspace."""
+    return await get_workspace_sessions(
+        workspace_id=ctx.workspace_id,
         brand_id=brand_id,
         page=page,
         limit=limit,
@@ -70,10 +73,10 @@ async def list_sessions(
 async def get_session_detail(
     request: Request,
     session_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """Fetch one session with all its pieces."""
-    session = await get_session(session_id, current_user["id"])
+    session = await get_session(session_id, ctx.workspace_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found.")
     return session
@@ -88,10 +91,10 @@ async def get_session_detail(
 async def get_piece_detail(
     request: Request,
     piece_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """Fetch one piece by ID."""
-    piece = await get_piece(piece_id, current_user["id"])
+    piece = await get_piece(piece_id, ctx.workspace_id)
     if not piece:
         raise HTTPException(status_code=404, detail="Piece not found.")
     return piece
@@ -103,7 +106,7 @@ async def edit_piece(
     request: Request,
     piece_id: str,
     body: EditPieceRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> dict:
     """Edit piece content inline. Creates a new version automatically."""
     if not body.content or not body.content.strip():
@@ -111,7 +114,7 @@ async def edit_piece(
 
     updated = await update_piece_content(
         piece_id=piece_id,
-        user_id=current_user["id"],
+        workspace_id=ctx.workspace_id,
         new_content=body.content.strip(),
         action="manual_edit",
         instruction="User edited content manually",
@@ -126,12 +129,12 @@ async def edit_piece(
 async def approve_piece(
     request: Request,
     piece_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> dict:
     """Mark a piece as approved."""
     updated = await update_piece_status(
         piece_id=piece_id,
-        user_id=current_user["id"],
+        workspace_id=ctx.workspace_id,
         approval_status="approved",
     )
     if not updated:
@@ -144,12 +147,12 @@ async def approve_piece(
 async def reject_piece(
     request: Request,
     piece_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> dict:
     """Mark a piece as rejected."""
     updated = await update_piece_status(
         piece_id=piece_id,
-        user_id=current_user["id"],
+        workspace_id=ctx.workspace_id,
         approval_status="rejected",
     )
     if not updated:
@@ -163,12 +166,12 @@ async def schedule_piece(
     request: Request,
     piece_id: str,
     body: SchedulePieceRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> dict:
     """Set a scheduled publish time for a piece."""
     updated = await update_piece_status(
         piece_id=piece_id,
-        user_id=current_user["id"],
+        workspace_id=ctx.workspace_id,
         publish_status="scheduled",
         publish_scheduled_at=body.scheduled_at,
     )
@@ -182,10 +185,10 @@ async def schedule_piece(
 async def approve_all(
     request: Request,
     session_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> dict:
     """Approve all pieces in a session at once."""
-    count = await approve_all_pieces(session_id, current_user["id"])
+    count = await approve_all_pieces(session_id, ctx.workspace_id)
     if count == 0:
         raise HTTPException(status_code=404, detail="Session not found or no pieces.")
     return {"session_id": session_id, "approved_count": count}
@@ -196,10 +199,10 @@ async def approve_all(
 async def remove_piece(
     request: Request,
     piece_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> dict:
     """Soft delete a piece."""
-    deleted = await delete_piece(piece_id, current_user["id"])
+    deleted = await delete_piece(piece_id, ctx.workspace_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Piece not found.")
     return {"piece_id": piece_id, "deleted": True}
@@ -214,12 +217,12 @@ async def remove_piece(
 async def list_versions(
     request: Request,
     piece_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """List all versions of a piece ordered by version number."""
-    versions = await get_versions(piece_id, current_user["id"])
+    versions = await get_versions(piece_id, ctx.workspace_id)
     if not versions:
-        piece = await get_piece(piece_id, current_user["id"])
+        piece = await get_piece(piece_id, ctx.workspace_id)
         if not piece:
             raise HTTPException(status_code=404, detail="Piece not found.")
     return {
@@ -235,12 +238,12 @@ async def restore_piece_version(
     request: Request,
     piece_id: str,
     version_number: int,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> dict:
     """Restore a piece to a specific version. Creates a new version entry."""
     restored = await restore_version(
         piece_id=piece_id,
-        user_id=current_user["id"],
+        workspace_id=ctx.workspace_id,
         version_number=version_number,
     )
     if not restored:

@@ -35,11 +35,11 @@ async def check_platforms_node(state: AnalyticsAgentState) -> dict:
     Writes: connected_platforms
     """
     try:
-        accounts = await get_all_tokens(state["user_id"])
+        accounts = await get_all_tokens(state["workspace_id"])
         platforms = [a["platform"] for a in accounts if a.get("is_active")]
         logger.info(
-            "Analytics agent — user %s connected platforms: %s",
-            state["user_id"], platforms,
+            "Analytics agent — workspace %s connected platforms: %s",
+            state["workspace_id"], platforms,
         )
         return {"connected_platforms": platforms}
 
@@ -69,7 +69,7 @@ async def fetch_metrics_node(state: AnalyticsAgentState) -> dict:
 
         # Account metrics — one per platform
         account_metrics = await fetch_account_metrics_all(
-            user_id=state["user_id"],
+            workspace_id=state["workspace_id"],
             platforms=state["connected_platforms"],
             since=since,
             until=until,
@@ -79,7 +79,7 @@ async def fetch_metrics_node(state: AnalyticsAgentState) -> dict:
         db = get_db()
         published_posts = await db["content_pieces"].find(
             {
-                "user_id":        state["user_id"],
+                "workspace_id":   state["workspace_id"],
                 "publish_status": "published",
             },
             {"platform_results": 1, "_id": 1},
@@ -97,7 +97,7 @@ async def fetch_metrics_node(state: AnalyticsAgentState) -> dict:
                     })
 
         post_metrics = await fetch_post_metrics_all(
-            user_id=state["user_id"],
+            workspace_id=state["workspace_id"],
             posts=posts_to_fetch,
         ) if posts_to_fetch else []
 

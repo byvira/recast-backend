@@ -33,6 +33,7 @@ from app.core.otp import (
     normalize_identifier,
     verify_otp,
 )
+from app.core.workspace import create_personal_workspace
 from app.db.mongo import users
 from app.db.redis import get_redis
 from app.models.user import (
@@ -107,6 +108,7 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
         credits_limit=user.get("credits_limit", 100),
         onboarding_done=user.get("onboarding_done", False),
         brand_profiles=user.get("brand_profiles", []),
+        default_workspace_id=user.get("default_workspace_id"),
         created_at=user["created_at"],
     )
 
@@ -295,6 +297,14 @@ async def signup(
             status_code=409,
             detail="Username or identifier already taken. Please choose another.",
         )
+
+    # Every user gets a personal workspace — the default scope for all per-account
+    # resources until they create or join another. Non-deletable, single seat.
+    personal_ws_id = await create_personal_workspace(user_id, name=f"{body.name}'s Workspace")
+    await users.update_one(
+        {"id": user_id}, {"$set": {"default_workspace_id": personal_ws_id}}
+    )
+    user_doc["default_workspace_id"] = personal_ws_id
 
     await clear_otp_state(identifier)
 

@@ -125,6 +125,7 @@ class NormalisedInput(BaseModel):
     source_type: InputSourceType
     raw_content: str
     detected_intent: ContentIntent
+    workspace_id: str = ""
     user_id: str
     brand_id: str
     target_platforms: list[Platform]
@@ -178,6 +179,7 @@ class QualityResult(BaseModel):
 class GeneratedPiece(BaseModel):
     """A single generated content piece for one platform."""
     platform: Platform
+    workspace_id: str = ""
     content: str
     word_count: int
     char_count: int
@@ -199,6 +201,7 @@ class GeneratedPiece(BaseModel):
 class TextPipelineResult(BaseModel):
     """Full result returned to the frontend."""
     session_id: str
+    workspace_id: str = ""
     user_id: str
     brand_id: str
     pieces: list[GeneratedPiece]
@@ -209,6 +212,10 @@ class TextPipelineResult(BaseModel):
     created_at: datetime
     pdf_export_url: Optional[str] = None
     batch_job_id: Optional[str] = None
+    # Layer-1 personal assistant: a cached, LLM-free voice-alignment read for the
+    # caller. Populated behind a 150 ms timeout — None if the read is slow or the
+    # member has no persona yet. Never blocks generation. See app/agents/personal.
+    assistant_nudge: Optional[dict] = None
 
 class BatchGenerateRequest(BaseModel):
     topic_cluster: str
@@ -238,6 +245,7 @@ class ContentSession(BaseModel):
     Contains metadata about the request. Pieces are stored separately.
     """
     session_id: str
+    workspace_id: str = ""
     user_id: str
     brand_id: str
     source_type: str
@@ -261,6 +269,7 @@ class ContentPiece(BaseModel):
     """
     piece_id: str
     session_id: str
+    workspace_id: str = ""
     user_id: str
     brand_id: str
     platform: str
@@ -293,6 +302,7 @@ class ContentPieceVersion(BaseModel):
     version_id: str
     piece_id: str
     session_id: str
+    workspace_id: str = ""
     user_id: str
     version_number: int
     content: str

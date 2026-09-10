@@ -62,6 +62,7 @@ async def normalise_input(
     platforms: list[Platform],
     user_id: str,
     brand_id: str,
+    workspace_id: str = "",
     language: str = "en",
     intent: ContentIntent = ContentIntent.AUTO,
 ) -> NormalisedInput:
@@ -88,13 +89,16 @@ async def normalise_input(
         logger.warning("Input truncated to 8000 chars — session %s", session_id)
 
     detected_intent = (
-        detect_intent(platforms) if intent == ContentIntent.AUTO else intent
+        detect_intent(platforms)
+        if intent is None or intent == ContentIntent.AUTO
+        else intent
     )
 
     return NormalisedInput(
         source_type=source_type,
         raw_content=raw_content,
         detected_intent=detected_intent,
+        workspace_id=workspace_id,
         user_id=user_id,
         brand_id=brand_id,
         target_platforms=platforms,

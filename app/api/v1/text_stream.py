@@ -21,8 +21,8 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles
 from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
 from app.agents.text.event_emitter import EventEmitter
@@ -32,11 +32,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Active sessions — maps session_id → EventEmitter
-# Used by resume endpoint to unblock paused pipelines
+# Active sessions — maps session_id → (EventEmitter, workspace_id)
+# Used by resume endpoint to unblock paused pipelines. In-process only.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_active_sessions: dict[str, EventEmitter] = {}
+_active_sessions: dict[str, tuple[EventEmitter, str]] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ async def generate_stream(
     schedule_mode: Optional[str]  = Query(None,      description="now | scheduled | draft"),
     scheduled_at:  Optional[str]  = Query(None,      description="ISO datetime for scheduled posts"),
     language:      str            = Query("en",      description="Content language"),
-    current_user:  dict[str, Any] = Depends(get_current_user),
+    ctx:           WorkspaceContext = Depends(require("create_content")),
 ) -> StreamingResponse:
     """
     Stream text pipeline execution via Server-Sent Events.
@@ -79,10 +79,10 @@ async def generate_stream(
         pipeline_error    — something failed
         ping              — keepalive every 45s
     """
-    # Validate brand ownership
+    # Validate brand is in the caller's workspace and complete
     brand = await brand_profiles.find_one({
-        "id":      brand_id,
-        "user_id": current_user["id"],
+        "id":           brand_id,
+        "workspace_id": ctx.workspace_id,
     })
     if not brand:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
@@ -109,8 +109,8 @@ async def generate_stream(
     emitter    = EventEmitter()
     session_id = str(uuid4())
 
-    # Register for resume endpoint
-    _active_sessions[session_id] = emitter
+    # Register for resume endpoint (scoped to this workspace)
+    _active_sessions[session_id] = (emitter, ctx.workspace_id)
 
     async def event_stream():
         # Emit session started immediately so frontend can show queued cards
@@ -126,7 +126,8 @@ async def generate_stream(
                 body=body,
                 emitter=emitter,
                 session_id=session_id,
-                user_id=current_user["id"],
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
             )
         )
 
@@ -191,18 +192,19 @@ async def resume_pipeline(
     request:    Request,
     session_id: str,
     body:       dict[str, Any],
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """
     Resume a pipeline that emitted agent_paused.
     body: { "choice": "angle_1" }
     """
-    emitter = _active_sessions.get(session_id)
-    if not emitter:
+    entry = _active_sessions.get(session_id)
+    if not entry or entry[1] != ctx.workspace_id:
         raise HTTPException(
             status_code=404,
             detail="Session not found or already complete.",
         )
+    emitter = entry[0]
 
     choice = body.get("choice")
     if not choice:
@@ -223,10 +225,11 @@ async def resume_pipeline(
 async def get_session_status(
     request:    Request,
     session_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """Check if a session is still active. Frontend calls on page load."""
-    is_active = session_id in _active_sessions
+    entry = _active_sessions.get(session_id)
+    is_active = bool(entry and entry[1] == ctx.workspace_id)
     return {
         "session_id": session_id,
         "active":     is_active,
@@ -239,10 +242,11 @@ async def get_session_status(
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _run_pipeline_with_emitter(
-    body:       GenerateTextRequest,
-    emitter:    EventEmitter,
-    session_id: str,
-    user_id:    str,
+    body:         GenerateTextRequest,
+    emitter:      EventEmitter,
+    session_id:   str,
+    workspace_id: str,
+    user_id:      str,
 ) -> None:
     """
     Wraps run_text_pipeline with error handling.
@@ -254,6 +258,7 @@ async def _run_pipeline_with_emitter(
             content=body.content,
             platforms=body.platforms,
             brand_id=body.brand_id,
+            workspace_id=workspace_id,
             user_id=user_id,
             extras=body.extras,
             goal=body.goal,

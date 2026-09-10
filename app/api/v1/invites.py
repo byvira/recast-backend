@@ -16,6 +16,15 @@ from app.models.workspace import InviteMemberBody, InviteStatus
 router = APIRouter()
 
 
+def _is_expired(expires_at) -> bool:
+    """Compare an invite expiry (possibly tz-naive when read back from Mongo) against now (UTC)."""
+    if expires_at is None:
+        return True
+    if getattr(expires_at, "tzinfo", None) is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    return expires_at < datetime.now(timezone.utc)
+
+
 @router.post("/{workspace_id}", status_code=201)
 @limiter.limit("20/minute")
 async def create_invite(
@@ -84,7 +93,7 @@ async def preview_invite(request: Request, token: str) -> dict[str, Any]:
     invite = await invites.find_one({"token": token})
     if not invite or invite["status"] != InviteStatus.PENDING.value:
         raise HTTPException(status_code=404, detail="Invite not found or no longer valid.")
-    if invite["expires_at"] < datetime.now(timezone.utc):
+    if _is_expired(invite["expires_at"]):
         raise HTTPException(status_code=410, detail="Invite has expired.")
 
     ws = await workspaces.find_one({"id": invite["workspace_id"]})
@@ -106,7 +115,7 @@ async def accept_invite(
     invite = await invites.find_one({"token": token})
     if not invite or invite["status"] != InviteStatus.PENDING.value:
         raise HTTPException(status_code=404, detail="Invite not found or no longer valid.")
-    if invite["expires_at"] < datetime.now(timezone.utc):
+    if _is_expired(invite["expires_at"]):
         raise HTTPException(status_code=410, detail="Invite has expired.")
 
     existing = await workspace_members.find_one(
@@ -126,6 +135,12 @@ async def accept_invite(
     })
     await invites.update_one(
         {"id": invite["id"]}, {"$set": {"status": InviteStatus.ACCEPTED.value}}
+    )
+
+    from app.shared.governance_events import emit_member_added
+    emit_member_added(
+        invite["workspace_id"], actor_user_id=current_user["id"], actor_role=invite["role"],
+        subject_user_id=current_user["id"], role=invite["role"],
     )
 
     return {"workspace_id": invite["workspace_id"], "role": invite["role"]}

@@ -19,8 +19,9 @@ class PublishRequest:
     brand_id: str
     platform: str
     content: str
+    workspace_id: str = ""
     media_urls: list[str] = None
-    platform_user_id: str = ""   
+    platform_user_id: str = ""
     scheduled_at: Optional[datetime] = None
 
 

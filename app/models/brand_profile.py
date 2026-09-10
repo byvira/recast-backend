@@ -170,7 +170,8 @@ class BrandProfile(BaseModel):
     """Full brand profile document as stored in MongoDB."""
 
     id: str
-    user_id: str
+    workspace_id: str = ""       # owning workspace — primary scoping key
+    user_id: str                 # creator (audit / created_by), no longer the scoping key
     brand_type: BrandType
     identity: dict = {}
     audience: AudienceProfile = AudienceProfile()

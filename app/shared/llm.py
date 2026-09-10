@@ -37,6 +37,7 @@ from google.genai import types
 from groq import APIConnectionError, AsyncGroq, RateLimitError
 
 from app.core.config import settings
+from app.core.tracing import add_run_metadata, traceable
 from app.utils.jsonparser import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -47,17 +48,28 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────
 
 class GroqModel(str, Enum):
-    FAST      = "llama-3.1-8b-instant"          # simple / single-field JSON
-    BALANCED  = "llama-3.3-70b-versatile"       # generation, hooks, SEO, repurpose
-    POWERFUL  = "llama-3.1-70b-versatile"       # complex multi-step reasoning
-    REASONING = "deepseek-r1-distill-llama-70b" # deep reasoning
-    WHISPER   = "whisper-large-v3"              
+    # Migrated 2026-09-10: the prior llama-3.x / deepseek IDs were all
+    # decommissioned by Groq (404 / 400). Current lineup:
+    FAST      = "openai/gpt-oss-20b"            # simple / single-field JSON, cheap
+    BALANCED  = "openai/gpt-oss-120b"           # generation, hooks, SEO, repurpose
+    POWERFUL  = "openai/gpt-oss-120b"           # complex multi-step reasoning
+    REASONING = "openai/gpt-oss-120b"           # deep reasoning — pass reasoning_effort="high" at the call site if a distinct tier is needed
+    WHISPER   = "whisper-large-v3"              # transcription only (audio pipeline)
 
 
 class GeminiModel(str, Enum):
     FLASH      = "gemini-2.5-flash"
     FLASH_LITE = "gemini-2.5-flash-lite"
     PRO        = "gemini-2.5-pro"
+
+
+# Embedding model for the personal-assistant voice baseline.
+# NOTE: the plan named "text-embedding-004"; that id 404s on the current
+# Gemini API key, so we use gemini-embedding-001 truncated to 768 dims.
+# At <3072 dims Gemini does NOT return a unit vector, so embed_text()
+# L2-normalises before returning — required for cosine similarity to work.
+EMBED_MODEL = "gemini-embedding-001"
+EMBED_DIM = 768  # provisional — 768 keeps persona docs small; revisit if drift resolution is poor
 
 
 # ─────────────────────────────────────────────────────────────
@@ -95,11 +107,20 @@ _gemini_client: genai.Client | None = None
 def get_groq_client() -> AsyncGroq:
     global _groq_client
     if _groq_client is None:
-        _groq_client = AsyncGroq(
+        client = AsyncGroq(
             api_key=settings.GROQ_API_KEY,
             timeout=30.0,
             max_retries=2,
         )
+        # Patch for LangSmith tracing (no-op when tracing is disabled). Every
+        # chat.completions.create through this singleton — llm.py helpers and the
+        # supervisor's raw ReAct loop alike — then becomes a traced LLM run.
+        try:
+            from app.core.tracing import wrap_groq
+            client = wrap_groq(client)
+        except Exception:  # noqa: BLE001 — tracing must never break the client
+            pass
+        _groq_client = client
     return _groq_client
 
 
@@ -447,6 +468,18 @@ async def _chat_complete(
 # 4. Vision / image analysis — Gemini only
 # ─────────────────────────────────────────────────────────────
 
+def _record_gemini_usage(response: Any) -> None:
+    """Attach Gemini token counts to the current LangSmith run, if any."""
+    um = getattr(response, "usage_metadata", None)
+    if um is None:
+        return
+    add_run_metadata(
+        prompt_tokens=getattr(um, "prompt_token_count", None),
+        completion_tokens=getattr(um, "candidates_token_count", None),
+        total_tokens=getattr(um, "total_token_count", None),
+    )
+
+@traceable(run_type="llm", name="gemini.vision")
 async def call_vision(
     prompt: str,
     image_bytes: bytes,
@@ -460,6 +493,7 @@ async def call_vision(
     """
     client = get_gemini_client()
     loop   = asyncio.get_running_loop()
+    add_run_metadata(gemini_model=model.value, mime_type=mime_type, image_bytes=len(image_bytes or b""))
     try:
         response = await loop.run_in_executor(
             None,
@@ -471,11 +505,77 @@ async def call_vision(
                 ],
             ),
         )
+        _record_gemini_usage(response)
         return response.text or ""
 
     except Exception as exc:
         logger.error("Gemini vision call failed: %s", exc)
         return ""
+
+
+# ─────────────────────────────────────────────────────────────
+# 4b. Text embeddings — Gemini (personal-assistant voice baseline)
+# ─────────────────────────────────────────────────────────────
+
+@traceable(run_type="embedding", name="gemini.embed_text")
+async def embed_text(
+    text: str,
+    *,
+    task_type: str = "SEMANTIC_SIMILARITY",
+    dim: int = EMBED_DIM,
+) -> list[float]:
+    """Return an L2-normalised embedding for *text* via Gemini.
+
+    Groq has no embeddings endpoint, so this always uses Gemini. Used by the
+    Layer-1 personal assistant to build and compare a member's voice baseline.
+    Returns ``[]`` on failure — callers must treat an empty vector as
+    "no embedding available" and skip drift scoring, never crash.
+    """
+    from google.genai import types  # local import — keeps module load cheap
+
+    snippet = (text or "").strip()[:8000]
+    if not snippet:
+        return []
+
+    client = get_gemini_client()
+    loop = asyncio.get_running_loop()
+    add_run_metadata(embed_model=EMBED_MODEL, embed_dim=dim, task_type=task_type, chars=len(snippet))
+    try:
+        resp = await loop.run_in_executor(
+            None,
+            lambda: client.models.embed_content(
+                model=EMBED_MODEL,
+                contents=snippet,
+                config=types.EmbedContentConfig(
+                    output_dimensionality=dim,
+                    task_type=task_type,
+                ),
+            ),
+        )
+        values = list(resp.embeddings[0].values)
+        _record_gemini_usage(resp)
+    except Exception as exc:
+        logger.error("embed_text failed: %s", exc)
+        return []
+
+    # L2-normalise — Gemini only returns unit vectors at the full 3072 dims.
+    norm = sum(v * v for v in values) ** 0.5
+    if norm == 0.0:
+        return []
+    return [v / norm for v in values]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity of two vectors. Assumes (but does not require) unit
+    length. Returns 0.0 if either vector is empty or degenerate."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -525,6 +625,7 @@ async def transcribe_audio(
 # 6. Gemini plain-text fallback (severe Groq rate limits only)
 # ─────────────────────────────────────────────────────────────
 
+@traceable(run_type="llm", name="gemini.fallback")
 async def call_llm_fallback(
     prompt: str,
     system: str = "",
@@ -537,6 +638,7 @@ async def call_llm_fallback(
     client      = get_gemini_client()
     loop        = asyncio.get_running_loop()
     full_prompt = f"{system}\n\n{prompt}" if system else prompt
+    add_run_metadata(gemini_model=model.value)
 
     try:
         response = await loop.run_in_executor(
@@ -546,6 +648,7 @@ async def call_llm_fallback(
                 contents=full_prompt,
             ),
         )
+        _record_gemini_usage(response)
         return response.text or ""
 
     except Exception as exc:
