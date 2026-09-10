@@ -11,8 +11,8 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import onboarding_drafts
 from app.models.onboarding_draft import DraftResponse, SaveDraftBody
 
@@ -24,6 +24,7 @@ router = APIRouter()
 def _doc_to_draft_response(doc: dict) -> DraftResponse:
     """Convert a raw MongoDB onboarding_draft document to DraftResponse."""
     return DraftResponse(
+        workspace_id=     doc.get("workspace_id"),
         brand_id=         doc.get("brand_id"),
         brand_type=       doc.get("brand_type"),
         current_step=     doc.get("current_step", 1),
@@ -52,23 +53,24 @@ def _doc_to_draft_response(doc: dict) -> DraftResponse:
 async def save_draft(
     request: Request,
     body: SaveDraftBody,
-    current_user: dict = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
 ) -> DraftResponse:
     """
-    Upsert the onboarding draft for the current user.
+    Upsert the onboarding draft for the caller within the active workspace.
 
     Called debounced on every state change during onboarding.
-    One document per user — always overwritten with latest state.
+    One document per (workspace, user) — always overwritten with latest state.
     Full state sent every time (last-write-wins, no partial merges).
     brand_id will be null on the first save and populated from step 2 onward.
     """
     now = datetime.now(timezone.utc)
 
     doc = await onboarding_drafts.find_one_and_update(
-        {"user_id": current_user["id"]},
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id},
         {
             "$set": {
-                "user_id":          current_user["id"],
+                "workspace_id":     ctx.workspace_id,
+                "user_id":          ctx.user_id,
                 "brand_id":         body.brand_id,
                 "brand_type":       body.brand_type,
                 "current_step":     body.current_step,
@@ -105,7 +107,7 @@ async def save_draft(
 @limiter.limit("30/minute")
 async def get_draft(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> DraftResponse:
     """
     Fetch the current user's active onboarding draft.
@@ -119,8 +121,9 @@ async def get_draft(
     """
     doc = await onboarding_drafts.find_one(
         {
-            "user_id":     current_user["id"],
-            "is_complete": False,
+            "workspace_id": ctx.workspace_id,
+            "user_id":      ctx.user_id,
+            "is_complete":  False,
         }
     )
 
@@ -135,15 +138,13 @@ async def get_draft(
 @limiter.limit("20/minute")
 async def delete_draft(
     request: Request,
-    current_user: dict = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
 ) -> None:
     """
-    Delete the current user's onboarding draft.
-
-    Also called automatically inside complete_brand_profile() in brand.py
-    so the draft is gone the moment onboarding finishes — even if the
-    frontend crashes before it can call this directly.
+    Delete the caller's onboarding draft in the active workspace.
 
     Idempotent — no error raised if no draft exists.
     """
-    await onboarding_drafts.delete_one({"user_id": current_user["id"]})
+    await onboarding_drafts.delete_one(
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
+    )

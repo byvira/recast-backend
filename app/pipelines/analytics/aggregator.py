@@ -31,14 +31,14 @@ _FETCHERS = {
 
 
 async def fetch_account_metrics_all(
-    user_id: str,
+    workspace_id: str,
     platforms: Optional[list[str]] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
 ) -> list[AccountMetrics]:
     """
     Fetch account-level metrics for all connected platforms (or a subset).
-    Always persists results to MongoDB account_metrics collection.
+    Always persists results to MongoDB account_metrics collection, scoped by workspace.
     """
     if platforms is None:
         platforms = list(_FETCHERS.keys())
@@ -51,9 +51,9 @@ async def fetch_account_metrics_all(
         if not fetcher:
             continue
 
-        token = await get_token(user_id, platform)
+        token = await get_token(workspace_id, platform)
         if not token:
-            logger.warning("No token for user %s platform %s — skipping", user_id, platform)
+            logger.warning("No token for workspace %s platform %s — skipping", workspace_id, platform)
             continue
 
         metrics = await fetcher.fetch_account_metrics(
@@ -62,30 +62,31 @@ async def fetch_account_metrics_all(
             since=since,
             until=until,
         )
+        metrics.workspace_id = workspace_id
         results.append(metrics)
 
         # ── Persist to DB ─────────────────────────────────────────────
         await db["account_metrics"].update_one(
-            {"user_id": user_id, "platform": platform},
+            {"workspace_id": workspace_id, "platform": platform},
             {"$set": {
                 **metrics.model_dump(),
-                "user_id":    user_id,
+                "workspace_id": workspace_id,
                 "updated_at": datetime.now(timezone.utc),
             }},
             upsert=True,
         )
-        logger.debug("account_metrics saved — user=%s platform=%s", user_id, platform)
+        logger.debug("account_metrics saved — workspace=%s platform=%s", workspace_id, platform)
 
     return results
 
 
 async def fetch_post_metrics_all(
-    user_id: str,
+    workspace_id: str,
     posts: list[dict],
 ) -> list[PostMetrics]:
     """
     Fetch post metrics for a list of published posts across all platforms.
-    Always persists results to MongoDB post_metrics collection.
+    Always persists results to MongoDB post_metrics collection, scoped by workspace.
 
     posts: list of dicts with keys:
         - platform
@@ -104,9 +105,9 @@ async def fetch_post_metrics_all(
             logger.warning("No analytics fetcher for platform: %s", platform)
             continue
 
-        token = await get_token(user_id, platform)
+        token = await get_token(workspace_id, platform)
         if not token:
-            logger.warning("No token for user %s platform %s — skipping", user_id, platform)
+            logger.warning("No token for workspace %s platform %s — skipping", workspace_id, platform)
             continue
 
         metrics = await fetcher.fetch_post_metrics(
@@ -115,25 +116,26 @@ async def fetch_post_metrics_all(
             access_token=token["access_token"],
             piece_id=post.get("piece_id", ""),
         )
+        metrics.workspace_id = workspace_id
         results.append(metrics)
 
         # ── Persist to DB ─────────────────────────────────────────────
         await db["post_metrics"].update_one(
             {
-                "user_id":          user_id,
+                "workspace_id":     workspace_id,
                 "platform":         metrics.platform,
                 "platform_post_id": metrics.platform_post_id,
             },
             {"$set": {
                 **metrics.model_dump(),
-                "user_id":    user_id,
+                "workspace_id": workspace_id,
                 "updated_at": datetime.now(timezone.utc),
             }},
             upsert=True,
         )
         logger.debug(
-            "post_metrics saved — user=%s platform=%s post=%s",
-            user_id, platform, metrics.platform_post_id,
+            "post_metrics saved — workspace=%s platform=%s post=%s",
+            workspace_id, platform, metrics.platform_post_id,
         )
 
     return results

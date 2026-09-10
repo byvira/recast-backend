@@ -45,16 +45,31 @@ async def process_scheduled_posts() -> None:
 
 async def _publish_scheduled_piece(piece: dict) -> None:
     """Publish one scheduled piece."""
-    piece_id = piece["piece_id"]
-    platform = piece.get("publish_target", "linkedin")
-    user_id  = piece["user_id"]
+    piece_id     = piece["piece_id"]
+    platform     = piece.get("publish_target", "linkedin")
+    user_id      = piece["user_id"]
+    workspace_id = piece.get("workspace_id", "")
 
-    # Get token
-    token_data = await get_token(user_id, platform)
+    if not workspace_id:
+        logger.warning(
+            "Piece %s has no workspace_id — skipping (pre-cutover data)", piece_id
+        )
+        await content_pieces.update_one(
+            {"piece_id": piece_id},
+            {"$set": {
+                "publish_status": "failed",
+                "last_error": "Missing workspace_id",
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        return
+
+    # Get token — scoped to the piece's workspace
+    token_data = await get_token(workspace_id, platform)
     if not token_data:
         logger.warning(
-            "No token for user %s platform %s — piece %s skipped",
-            user_id, platform, piece_id,
+            "No token for workspace %s platform %s — piece %s skipped",
+            workspace_id, platform, piece_id,
         )
         await content_pieces.update_one(
             {"piece_id": piece_id},
@@ -76,6 +91,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
     # Build request
     pub_request = PublishRequest(
         piece_id=piece_id,
+        workspace_id=workspace_id,
         user_id=user_id,
         brand_id=piece["brand_id"],
         platform=platform,
@@ -104,6 +120,16 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 "updated_at":        datetime.now(timezone.utc),
             }},
         )
+        try:
+            from app.shared.governance_events import emit_content_published
+            emit_content_published(
+                workspace_id, pipeline_type=piece.get("pipeline_type", "text"),
+                actor_user_id=user_id, actor_role="",
+                content_id=piece_id, target=platform,
+                external_url=result.platform_post_url or "",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("emit content.published failed for %s: %s", piece_id, exc)
         logger.info("Scheduled piece %s published to %s", piece_id, platform)
     else:
         await content_pieces.update_one(

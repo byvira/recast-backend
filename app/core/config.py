@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
 
+    # ── LangSmith tracing (agent observability) ──────────────────────────
+    # Set LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY=ls__... in .env to make
+    # every personal/supervisor graph run inspectable in LangSmith. When unset,
+    # app.core.tracing.ainvoke_traced is a transparent pass-through.
+    LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_API_KEY: str = ""
+    LANGCHAIN_PROJECT: str = "recast-agents"
+    LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
+
     # External services
     STRIPE_SECRET_KEY: str = ""
 

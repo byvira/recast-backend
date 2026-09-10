@@ -295,7 +295,10 @@ async def build_context_node(state: TextAgentState) -> dict:
     """
     from app.db.mongo import brand_profiles
 
-    brand_profile = await brand_profiles.find_one({"id": state["brand_id"]})
+    _brand_query = {"id": state["brand_id"]}
+    if state.get("workspace_id"):
+        _brand_query["workspace_id"] = state["workspace_id"]
+    brand_profile = await brand_profiles.find_one(_brand_query)
     if not brand_profile:
         logger.error("Brand profile not found: %s", state["brand_id"])
         raise ValueError(f"Brand profile not found: {state['brand_id']}")

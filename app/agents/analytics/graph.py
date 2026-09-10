@@ -7,8 +7,9 @@ Flow:
 """
 
 from langgraph.graph import StateGraph, END
-from app.agents.analytics.state import AnalyticsAgentState
+from app.agents.analytics.state import AnalyticsAgentState, build_initial_state
 from app.agents.analytics import nodes
+from app.core.tracing import ainvoke_traced
 
 
 def build_analytics_graph():
@@ -37,3 +38,22 @@ def build_analytics_graph():
 
 # Compiled once at module load — reused for every request
 analytics_graph = build_analytics_graph()
+
+
+async def run_analytics(*, workspace_id: str, question: str, user_id: str = "") -> dict:
+    """Run the analytics agent for one workspace, traced to LangSmith.
+
+    Tags: ``agent:analytics``, ``ws:<workspace_id>``; ``user_id`` + ``question``
+    in metadata. Returns the final graph state.
+    """
+    state = build_initial_state(workspace_id=workspace_id, question=question, user_id=user_id)
+    result, _url = await ainvoke_traced(
+        analytics_graph,
+        state,
+        run_name="analytics_pass",
+        agent="analytics",
+        workspace_id=workspace_id,
+        user_id=user_id or None,
+        metadata={"question": question},
+    )
+    return result

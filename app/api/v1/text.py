@@ -1,4 +1,10 @@
-"""Text pipeline API routes — generate, repurpose, batch, score, refine."""
+"""Text pipeline API routes — generate, repurpose, batch, score, refine.
+
+Workspace-scoped: brand + content are resolved within the caller's active
+workspace (``X-Workspace-Id`` header or default). Generation / refinement
+require the ``create_content`` permission; scoring and chip listing require
+membership only.
+"""
 
 import logging
 from typing import Any
@@ -6,8 +12,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles
 from app.models.text import (
     BatchGenerateRequest,
@@ -44,9 +50,9 @@ logger = logging.getLogger(__name__)
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _get_verified_brand(brand_id: str, user_id: str) -> dict:
-    """Fetch brand profile and verify ownership and completion."""
-    brand = await brand_profiles.find_one({"id": brand_id, "user_id": user_id})
+async def _get_verified_brand(brand_id: str, workspace_id: str) -> dict:
+    """Fetch a brand profile in the workspace and verify it is complete."""
+    brand = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
     if not brand:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
     if not brand.get("is_complete"):
@@ -54,6 +60,14 @@ async def _get_verified_brand(brand_id: str, user_id: str) -> dict:
             status_code=400,
             detail="Brand profile is not complete. Finish onboarding first.",
         )
+    return brand
+
+
+async def _get_owned_brand(brand_id: str, workspace_id: str) -> dict:
+    """Fetch a brand profile in the workspace (no completeness requirement)."""
+    brand = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
     return brand
 
 
@@ -93,13 +107,13 @@ async def _save_result(
 async def generate_text_content(
     request: Request,
     body: GenerateTextRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> TextPipelineResult:
     """
     Generate content for one or more platforms from any input.
     Supports all four frontend input modes: write, prompt, url, repurpose.
     """
-    await _get_verified_brand(body.brand_id, current_user["id"])
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
 
     if body.batch_mode:
         try:
@@ -107,7 +121,8 @@ async def generate_text_content(
                 topic_cluster=body.content,
                 platforms=body.platforms,
                 brand_id=body.brand_id,
-                user_id=current_user["id"],
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
                 extras=body.extras,
                 days=body.batch_days,
                 detected_intent=body.detected_intent,
@@ -122,7 +137,8 @@ async def generate_text_content(
                 )
             return results[0] if results else TextPipelineResult(
                 session_id="empty",
-                user_id=current_user["id"],
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
                 brand_id=body.brand_id,
                 pieces=[],
                 source_type=body.source_type,
@@ -139,7 +155,8 @@ async def generate_text_content(
             content=body.content,
             platforms=body.platforms,
             brand_id=body.brand_id,
-            user_id=current_user["id"],
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
             extras=body.extras,
             goal=body.goal,
             tone=body.tone,
@@ -168,13 +185,13 @@ async def generate_text_content(
 async def repurpose_content(
     request: Request,
     body: RepurposeRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> TextPipelineResult:
     """
     Repurpose existing content from one platform format to others.
     Brand voice is always re-applied — never copy-paste.
     """
-    await _get_verified_brand(body.brand_id, current_user["id"])
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
 
     try:
         result = await run_text_pipeline(
@@ -182,7 +199,8 @@ async def repurpose_content(
             content=body.source_content,
             platforms=body.target_platforms,
             brand_id=body.brand_id,
-            user_id=current_user["id"],
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
             extras=body.extras,
             goal=body.goal,
             tone=body.tone,
@@ -214,20 +232,21 @@ async def repurpose_content(
 async def batch_generate(
     request: Request,
     body: BatchGenerateRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> list[TextPipelineResult]:
     """
     Generate a full week of content from a single topic cluster.
     Rate limited to 5/minute — expensive operation.
     """
-    await _get_verified_brand(body.brand_id, current_user["id"])
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
 
     try:
         results = await run_batch_pipeline(
             topic_cluster=body.topic_cluster,
             platforms=body.platforms,
             brand_id=body.brand_id,
-            user_id=current_user["id"],
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
             extras=body.extras,
             days=body.days,
         )
@@ -255,17 +274,13 @@ async def batch_generate(
 async def score_hook_endpoint(
     request: Request,
     body: ScoreHookRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> ScoreHookResponse:
     """
     Score the hook quality of existing content.
     Returns current score, weakness diagnosis, and 3 scored alternatives.
     """
-    brand_profile = await brand_profiles.find_one({"id": body.brand_id})
-    if not brand_profile:
-        raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if brand_profile["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
+    brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
 
     brand_context = build_brand_context(brand_profile)
     enforcement = _extract_enforcement_data(brand_profile)
@@ -294,7 +309,7 @@ async def score_hook_endpoint(
 async def score_readability_endpoint(
     request: Request,
     body: ScoreReadabilityRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> ScoreReadabilityResponse:
     """
     Score the readability of content for a specific platform.
@@ -313,7 +328,7 @@ async def score_readability_endpoint(
 async def refine_content(
     request: Request,
     body: ApplyChipRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> ApplyChipResponse:
     """
     Apply a quick action chip to existing content.
@@ -327,11 +342,7 @@ async def refine_content(
             detail=f"Unknown chip '{body.chip}'. Available: {', '.join(CHIP_PROMPTS.keys())}",
         )
 
-    brand_profile = await brand_profiles.find_one({"id": body.brand_id})
-    if not brand_profile:
-        raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if brand_profile["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
+    brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
 
     brand_context = build_brand_context(brand_profile)
     enforcement = _extract_enforcement_data(brand_profile)
@@ -349,7 +360,7 @@ async def refine_content(
         try:
             await update_piece_content(
                 piece_id=body.piece_id,
-                user_id=current_user["id"],
+                workspace_id=ctx.workspace_id,
                 new_content=result["refined"],
                 action=body.chip,
                 instruction=CHIP_PROMPTS.get(body.chip, body.chip),
@@ -372,7 +383,7 @@ async def refine_content(
 async def refine_chat(
     request: Request,
     body: RefineChatRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> RefineChatResponse:
     """
     Multi-turn conversational content refinement.
@@ -383,17 +394,8 @@ async def refine_chat(
 
     If piece_id is provided and content changed, saves a new version
     to version history automatically.
-
-    Example conversation flow:
-      Turn 1: "Here is my LinkedIn post: [content]. Make it punchier."
-      Turn 2: "Now shorten it by half."
-      Turn 3: "Add the Sarah story back."
     """
-    brand_profile = await brand_profiles.find_one({"id": body.brand_id})
-    if not brand_profile:
-        raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if brand_profile["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
+    brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
 
     brand_context = build_brand_context(brand_profile)
     enforcement = _extract_enforcement_data(brand_profile)
@@ -432,7 +434,7 @@ async def refine_chat(
         try:
             await update_piece_content(
                 piece_id=body.piece_id,
-                user_id=current_user["id"],
+                workspace_id=ctx.workspace_id,
                 new_content=refined,
                 action=f"chat_turn_{turn}",
                 instruction=messages[-1]["content"][:200],
@@ -463,7 +465,7 @@ async def refine_chat(
 async def get_chips(
     request: Request,
     platform: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> GetChipsResponse:
     """
     Get available chip names for a platform.
@@ -481,33 +483,31 @@ async def get_chips(
 async def regenerate_content(
     request: Request,
     body: RegenerateRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> RegenerateResponse:
     """
     Regenerate content for a single platform from scratch.
- 
+
     Resolution order for source content:
       1. body.content if provided directly (fastest path)
       2. raw_input on the parent session fetched via piece_id
       3. piece content itself as final fallback
- 
+
     Runs the full LangGraph pipeline for just the one platform.
     Brand voice, tone, and goal are re-applied identically to the original run.
     """
-    await _get_verified_brand(body.brand_id, current_user["id"])
- 
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+
     # 1. Resolve source content
     source_content: str = body.content or ""
- 
+
     if body.piece_id and not source_content:
         try:
             from app.pipelines.text.storage import get_piece, get_session
-            piece_doc = await get_piece(body.piece_id, current_user["id"])
+            piece_doc = await get_piece(body.piece_id, ctx.workspace_id)
             if piece_doc:
                 # Prefer the original raw_input stored on the session document.
-                # raw_input is the user's original text before any generation.
-                # Fall back to the piece's own content if not found.
-                session_doc = await get_session(piece_doc["session_id"], current_user["id"])
+                session_doc = await get_session(piece_doc["session_id"], ctx.workspace_id)
                 source_content = (
                     (session_doc or {}).get("raw_input")
                     or piece_doc.get("content")
@@ -518,13 +518,13 @@ async def regenerate_content(
                 "Could not fetch piece %s for regenerate, using empty content: %s",
                 body.piece_id, e,
             )
- 
+
     if not source_content:
         raise HTTPException(
             status_code=400,
             detail="No source content available. Provide content or a valid piece_id.",
         )
- 
+
     # 2. Resolve platform enum
     try:
         from app.models.text import Platform
@@ -534,19 +534,19 @@ async def regenerate_content(
             status_code=400,
             detail=f"Unknown platform '{body.platform}'.",
         )
- 
+
     from app.models.text import ToneOverride, ContentGoal, InputSourceType
- 
+
     try:
         tone_enum = ToneOverride(body.tone) if body.tone else ToneOverride.BRAND
     except ValueError:
         tone_enum = ToneOverride.BRAND
- 
+
     try:
         goal_enum = ContentGoal(body.goal) if body.goal else None
     except ValueError:
         goal_enum = None
- 
+
     # 4. Minimal extras object (regenerate always uses brand defaults)
     class _MinimalExtras:
         hook_variations  = True
@@ -557,7 +557,7 @@ async def regenerate_content(
         plagiarism_check = False
         avoid_blacklist  = True
         pdf_export       = False
- 
+
     # 5. Run pipeline for the single platform
     try:
         result = await run_text_pipeline(
@@ -565,7 +565,8 @@ async def regenerate_content(
             content=source_content,
             platforms=[platform_enum],
             brand_id=body.brand_id,
-            user_id=current_user["id"],
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
             extras=_MinimalExtras(),
             goal=goal_enum,
             tone=tone_enum,
@@ -576,20 +577,20 @@ async def regenerate_content(
             "Regenerate pipeline failed for %s: %s", body.platform, e, exc_info=True
         )
         raise HTTPException(status_code=500, detail=f"Regeneration failed: {str(e)}")
- 
+
     if not result.pieces:
         raise HTTPException(status_code=500, detail="Regeneration produced no output.")
- 
+
     piece = result.pieces[0]
- 
+
     # 6. Persist regenerated piece (non-blocking failure)
     await _save_result(result, goal=goal_enum, tone=tone_enum, label="regenerate")
- 
+
     # 7. Build response
     hooks = piece.hooks or []
     hook_score = 0
     hook_alternatives: list[str] = []
- 
+
     if hooks:
         first = hooks[0]
         hook_score = first.get("score", 0) if isinstance(first, dict) else 0
@@ -597,14 +598,15 @@ async def regenerate_content(
             h.get("hook", "") for h in hooks
             if isinstance(h, dict) and h.get("hook")
         ]
- 
+
+    seo = piece.seo or {}
     return RegenerateResponse(
         platform=body.platform,
         content=piece.content,
         hook_score=hook_score,
-        readability_score=piece.readability_score or 0,
+        readability_score=int(piece.readability_score or 0),
         readability_level=getattr(piece, "readability_level", "Standard") or "Standard",
         piece_id=str(getattr(piece, "piece_id", "") or ""),
-        hashtags=list(piece.hashtags or []),
+        hashtags=list(seo.get("hashtags", []) or []),
         hook_alternatives=hook_alternatives,
     )

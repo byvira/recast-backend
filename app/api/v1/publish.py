@@ -1,16 +1,20 @@
 """
 Publish endpoints — publish now, schedule, cancel, status.
+
+Workspace-scoped: content pieces and platform tokens are resolved within the
+caller's active workspace. Publishing requires the ``publish_content``
+permission; reading status requires membership.
 """
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import content_pieces
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
@@ -44,23 +48,19 @@ class ScheduleRequest(BaseModel):
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _get_verified_piece(
-    piece_id: str,
-    user_id: str,
-) -> dict:
-    """Fetch piece and verify ownership."""
+async def _get_verified_piece(piece_id: str, workspace_id: str) -> dict:
+    """Fetch a piece within the workspace."""
     piece = await content_pieces.find_one(
-        {"piece_id": piece_id, "deleted": {"$ne": True}}
+        {"piece_id": piece_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}
     )
     if not piece:
         raise HTTPException(status_code=404, detail="Piece not found.")
-    if piece["user_id"] != user_id:
-        raise HTTPException(status_code=403, detail="Access denied.")
     return piece
 
 
 async def _update_piece_status(
     piece_id: str,
+    workspace_id: str,
     status: str,
     platform_post_id: Optional[str] = None,
     platform_post_url: Optional[str] = None,
@@ -78,17 +78,15 @@ async def _update_piece_status(
         updates["platform_post_url"] = platform_post_url
     if error_message:
         updates["last_error"] = error_message
+
+    flt = {"piece_id": piece_id, "workspace_id": workspace_id}
     if increment_attempts:
         await content_pieces.update_one(
-            {"piece_id": piece_id},
-            {"$inc": {"publish_attempts": 1}, "$set": updates},
+            flt, {"$inc": {"publish_attempts": 1}, "$set": updates}
         )
         return
 
-    await content_pieces.update_one(
-        {"piece_id": piece_id},
-        {"$set": updates},
-    )
+    await content_pieces.update_one(flt, {"$set": updates})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,17 +98,18 @@ async def _update_piece_status(
 async def publish_now(
     request: Request,
     body: PublishNowRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("publish_content")),
 ) -> dict:
     """
     Publish a piece immediately to a platform.
     Runs supervisor logic — auto-retry on transient errors,
     auto-fix on fixable errors, alert on fatal errors.
     """
-    piece = await _get_verified_piece(body.piece_id, current_user["id"])
+    ws = ctx.workspace_id
+    piece = await _get_verified_piece(body.piece_id, ws)
 
-    # Check platform token exists
-    token_data = await get_token(current_user["id"], body.platform)
+    # Check platform token exists for this workspace
+    token_data = await get_token(ws, body.platform)
     if not token_data:
         raise HTTPException(
             status_code=400,
@@ -130,16 +129,15 @@ async def publish_now(
     # Build publish request
     pub_request = PublishRequest(
         piece_id=body.piece_id,
-        user_id=current_user["id"],
+        workspace_id=ws,
+        user_id=ctx.user_id,
         brand_id=piece["brand_id"],
         platform=body.platform,
         content=piece["content"],
     )
-    # Inject platform_user_id for LinkedIn UGC author field
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
 
-    # Update status to publishing
-    await _update_piece_status(body.piece_id, "publishing")
+    await _update_piece_status(body.piece_id, ws, "publishing")
 
     content    = piece["content"]
     attempt    = 0
@@ -151,11 +149,18 @@ async def publish_now(
 
         if result.success:
             await _update_piece_status(
-                body.piece_id,
+                body.piece_id, ws,
                 "published",
                 platform_post_id=result.platform_post_id,
                 platform_post_url=result.platform_post_url,
                 increment_attempts=True,
+            )
+            from app.shared.governance_events import emit_content_published
+            emit_content_published(
+                ws, pipeline_type=piece.get("pipeline_type", "text"),
+                actor_user_id=ctx.user_id, actor_role=ctx.role,
+                content_id=body.piece_id, target=body.platform,
+                external_url=result.platform_post_url or "",
             )
             return {
                 "success":          True,
@@ -166,7 +171,6 @@ async def publish_now(
                 "attempts":         attempt + 1,
             }
 
-        # Classify error
         error_type = classify_error(
             result.error_code or 500,
             result.error_message or "",
@@ -175,7 +179,8 @@ async def publish_now(
         await save_incident(
             piece_id=body.piece_id,
             platform=body.platform,
-            user_id=current_user["id"],
+            workspace_id=ws,
+            user_id=ctx.user_id,
             brand_id=piece["brand_id"],
             error_type=error_type.value,
             error_code=result.error_code,
@@ -184,10 +189,9 @@ async def publish_now(
             retry_at=None,
         )
 
-        # Handle AUTH — token needs refresh or reconnect
         if error_type == ErrorType.AUTH:
             await _update_piece_status(
-                body.piece_id, "failed",
+                body.piece_id, ws, "failed",
                 error_message=result.error_message,
                 increment_attempts=True,
             )
@@ -197,7 +201,6 @@ async def publish_now(
                        f"Reconnect at /api/v1/oauth/{body.platform}/connect",
             )
 
-        # Handle FIXABLE — auto-fix content and retry once
         if error_type == ErrorType.FIXABLE:
             fixed, new_content = fix_content(
                 body.platform, content, result.error_message or ""
@@ -208,7 +211,7 @@ async def publish_now(
                 continue
             else:
                 await _update_piece_status(
-                    body.piece_id, "flagged",
+                    body.piece_id, ws, "flagged",
                     error_message=result.error_message,
                     increment_attempts=True,
                 )
@@ -220,18 +223,18 @@ async def publish_now(
                     "reason":   result.error_message,
                 }
 
-        # Handle FATAL — alert and stop
         if error_type == ErrorType.FATAL:
             await alert_fatal(
                 piece_id=body.piece_id,
                 platform=body.platform,
-                user_id=current_user["id"],
+                workspace_id=ws,
+                user_id=ctx.user_id,
                 brand_id=piece["brand_id"],
                 error_code=result.error_code,
                 error_message=result.error_message or "",
             )
             await _update_piece_status(
-                body.piece_id, "flagged",
+                body.piece_id, ws, "flagged",
                 error_message=result.error_message,
                 increment_attempts=True,
             )
@@ -243,7 +246,6 @@ async def publish_now(
                 "reason":   result.error_message,
             }
 
-        # Handle TRANSIENT — backoff and retry
         if should_retry(error_type, attempt):
             import asyncio
             delay = get_retry_delay(error_type, attempt)
@@ -252,15 +254,14 @@ async def publish_now(
                     "Transient error on %s attempt %d — retrying in %ds",
                     body.platform, attempt + 1, delay,
                 )
-                await asyncio.sleep(min(delay, 10))  # cap at 10s for API response
+                await asyncio.sleep(min(delay, 10))
             attempt += 1
             continue
 
         break
 
-    # All attempts exhausted
     await _update_piece_status(
-        body.piece_id, "failed",
+        body.piece_id, ws, "failed",
         error_message="All retry attempts exhausted",
         increment_attempts=True,
     )
@@ -283,23 +284,21 @@ async def publish_now(
 async def schedule_post(
     request: Request,
     body: ScheduleRequest,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("publish_content")),
 ) -> dict:
     """
     Schedule a piece for publishing at a future time.
     The scheduled_posts worker fires the publish at the right time.
     """
-    piece = await _get_verified_piece(body.piece_id, current_user["id"])
+    piece = await _get_verified_piece(body.piece_id, ctx.workspace_id)
 
-    # Validate token exists
-    token_data = await get_token(current_user["id"], body.platform)
+    token_data = await get_token(ctx.workspace_id, body.platform)
     if not token_data:
         raise HTTPException(
             status_code=400,
             detail=f"{body.platform} is not connected.",
         )
 
-    # Validate content before scheduling
     is_valid, issues = validate_for_platform(body.platform, piece["content"])
     if not is_valid:
         raise HTTPException(
@@ -309,7 +308,7 @@ async def schedule_post(
 
     now = datetime.now(timezone.utc)
     await content_pieces.update_one(
-        {"piece_id": body.piece_id},
+        {"piece_id": body.piece_id, "workspace_id": ctx.workspace_id},
         {"$set": {
             "publish_status":       "queued",
             "publish_scheduled_at": body.scheduled_at,
@@ -335,10 +334,10 @@ async def schedule_post(
 async def cancel_scheduled(
     request: Request,
     piece_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("publish_content")),
 ) -> dict:
     """Cancel a scheduled post. Only works if status is queued."""
-    piece = await _get_verified_piece(piece_id, current_user["id"])
+    piece = await _get_verified_piece(piece_id, ctx.workspace_id)
 
     if piece.get("publish_status") != "queued":
         raise HTTPException(
@@ -347,7 +346,7 @@ async def cancel_scheduled(
         )
 
     await content_pieces.update_one(
-        {"piece_id": piece_id},
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
         {"$set": {
             "publish_status":       "pending",
             "publish_scheduled_at": None,
@@ -367,10 +366,10 @@ async def cancel_scheduled(
 async def get_publish_status(
     request: Request,
     piece_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """Get the current publish status of a piece."""
-    piece = await _get_verified_piece(piece_id, current_user["id"])
+    piece = await _get_verified_piece(piece_id, ctx.workspace_id)
 
     return {
         "piece_id":             piece_id,

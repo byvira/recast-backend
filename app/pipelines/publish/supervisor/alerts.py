@@ -23,6 +23,7 @@ async def save_incident(
     retry_count: int,
     retry_at,
     trace: str = "",
+    workspace_id: str = "",
 ) -> None:
     """Save a publish incident to MongoDB for audit trail."""
     try:
@@ -33,6 +34,7 @@ async def save_incident(
         await incidents.insert_one({
             "piece_id":      piece_id,
             "platform":      platform,
+            "workspace_id":  workspace_id,
             "user_id":       user_id,
             "brand_id":      brand_id,
             "error_type":    error_type,
@@ -91,6 +93,7 @@ async def alert_fatal(
     error_code: Optional[int],
     error_message: str,
     trace: str = "",
+    workspace_id: str = "",
 ) -> None:
     """
     Full alert pipeline for FATAL errors.
@@ -108,6 +111,7 @@ async def alert_fatal(
         retry_count=0,
         retry_at=None,
         trace=trace,
+        workspace_id=workspace_id,
     )
     await send_slack_alert(
         piece_id=piece_id,

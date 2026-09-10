@@ -1,24 +1,27 @@
 """
 OAuth token storage — encrypt, store, retrieve, refresh.
 
-All tokens encrypted with Fernet symmetric encryption before MongoDB storage.
-Never store plaintext tokens. Never log token values.
+Tokens are scoped per **workspace** (collection ``workspace_connections``,
+keyed by ``(workspace_id, platform)``) — they are a shared workspace asset,
+not a per-user one. All tokens are encrypted with Fernet before MongoDB
+storage. Never store plaintext tokens. Never log token values.
 
 Token lifecycle:
-  User connects platform  → exchange_token() → encrypt → save to MongoDB
-  Each publish call       → decrypt → use → never cache in memory
-  Token expiring          → refresh worker → re-encrypt → update MongoDB
-  User disconnects        → revoke on platform → delete from MongoDB
+  Member connects platform → exchange_token() → encrypt → upsert connection
+  Each publish call        → decrypt → use → never cache in memory
+  Token expiring           → refresh worker → re-encrypt → update connection
+  Member disconnects       → revoke on platform → delete connection
 """
 
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
+from uuid import uuid4
 
 from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import settings
-from app.db.mongo import users
+from app.db.mongo import workspace_connections
 
 logger = logging.getLogger(__name__)
 
@@ -57,61 +60,55 @@ def decrypt_token(encrypted: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def save_token(
-    user_id: str,
+    workspace_id: str,
     platform: str,
     access_token: str,
     refresh_token: Optional[str],
     expires_at: Optional[datetime],
     platform_user_id: str,
     username: str,
+    connected_by: str = "",
 ) -> None:
     """
-    Save or update OAuth tokens for a user + platform.
-    Tokens encrypted before storage.
-    Upserts — safe to call on reconnect.
+    Save or update OAuth tokens for a workspace + platform.
+    Tokens encrypted before storage. Upserts — safe to call on reconnect.
     """
     now = datetime.now(timezone.utc)
 
-    account = {
-        "platform": platform,
-        "access_token": encrypt_token(access_token),
-        "refresh_token": encrypt_token(refresh_token) if refresh_token else None,
-        "expires_at": expires_at,
-        "platform_user_id": platform_user_id,
-        "username": username,
-        "is_active": True,
-        "connected_at": now,
-        "last_refreshed_at": now,
-    }
-
-    # Remove existing entry for this platform, then add new one
-    await users.update_one(
-        {"id": user_id},
-        {"$pull": {"social_accounts": {"platform": platform}}},
+    await workspace_connections.update_one(
+        {"workspace_id": workspace_id, "platform": platform},
+        {
+            "$set": {
+                "workspace_id": workspace_id,
+                "platform": platform,
+                "access_token": encrypt_token(access_token),
+                "refresh_token": encrypt_token(refresh_token) if refresh_token else None,
+                "expires_at": expires_at,
+                "platform_user_id": platform_user_id,
+                "username": username,
+                "is_active": True,
+                "last_refreshed_at": now,
+            },
+            "$setOnInsert": {
+                "id": str(uuid4()),
+                "connected_by": connected_by,
+                "connected_at": now,
+            },
+        },
+        upsert=True,
     )
-    await users.update_one(
-        {"id": user_id},
-        {"$push": {"social_accounts": account}},
-    )
 
-    logger.info("Token saved for user %s platform %s", user_id, platform)
+    logger.info("Token saved for workspace %s platform %s", workspace_id, platform)
 
 
-async def get_token(user_id: str, platform: str) -> Optional[dict]:
+async def get_token(workspace_id: str, platform: str) -> Optional[dict]:
     """
-    Retrieve and decrypt tokens for a user + platform.
-    Returns None if not connected.
-    Returns dict with: access_token, refresh_token, expires_at,
-    platform_user_id, username, is_active.
+    Retrieve and decrypt tokens for a workspace + platform.
+    Returns None if not connected. Returns dict with: access_token,
+    refresh_token, expires_at, platform_user_id, username, is_active.
     """
-    user = await users.find_one({"id": user_id})
-    if not user:
-        return None
-
-    accounts = user.get("social_accounts", [])
-    account = next(
-        (a for a in accounts if a["platform"] == platform),
-        None,
+    account = await workspace_connections.find_one(
+        {"workspace_id": workspace_id, "platform": platform}
     )
     if not account or not account.get("is_active"):
         return None
@@ -131,32 +128,30 @@ async def get_token(user_id: str, platform: str) -> Optional[dict]:
         }
     except InvalidToken:
         logger.error(
-            "Token decryption failed for user %s platform %s — "
+            "Token decryption failed for workspace %s platform %s — "
             "token may be corrupted",
-            user_id, platform,
+            workspace_id, platform,
         )
         return None
 
 
-async def delete_token(user_id: str, platform: str) -> None:
-    """Remove a platform connection for a user."""
-    await users.update_one(
-        {"id": user_id},
-        {"$pull": {"social_accounts": {"platform": platform}}},
+async def delete_token(workspace_id: str, platform: str) -> None:
+    """Remove a platform connection for a workspace."""
+    await workspace_connections.delete_one(
+        {"workspace_id": workspace_id, "platform": platform}
     )
-    logger.info("Token deleted for user %s platform %s", user_id, platform)
+    logger.info("Token deleted for workspace %s platform %s", workspace_id, platform)
 
 
-async def get_all_tokens(user_id: str) -> list[dict]:
+async def get_all_tokens(workspace_id: str) -> list[dict]:
     """
-    List all connected platforms for a user.
+    List all connected platforms for a workspace.
     Returns list without decrypted tokens — safe for API responses.
     """
-    user = await users.find_one({"id": user_id})
-    if not user:
-        return []
+    accounts = await workspace_connections.find(
+        {"workspace_id": workspace_id, "is_active": True}
+    ).to_list(length=100)
 
-    accounts = user.get("social_accounts", [])
     return [
         {
             "platform": a["platform"],
@@ -167,17 +162,16 @@ async def get_all_tokens(user_id: str) -> list[dict]:
             "expires_at": a.get("expires_at"),
         }
         for a in accounts
-        if a.get("is_active")
     ]
 
 
 async def is_token_expiring_soon(
-    user_id: str,
+    workspace_id: str,
     platform: str,
     within_days: int = 7,
 ) -> bool:
     """Check if a token expires within the given number of days."""
-    token = await get_token(user_id, platform)
+    token = await get_token(workspace_id, platform)
     if not token or not token.get("expires_at"):
         return False
 

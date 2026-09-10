@@ -43,6 +43,7 @@ class TextAgentState(TypedDict):
     # ─────────────────────────────────────────────────────────────
 
     session_id: str
+    workspace_id: str
     user_id: str
     brand_id: str
     emitter:Any
@@ -207,8 +208,9 @@ def build_initial_state(
     batch_mode: bool = False,
     batch_day_index: Optional[int] = None,
     batch_angle: Optional[str] = None,
-    emitter: Any = None, 
-    session_id: str = "", 
+    emitter: Any = None,
+    session_id: str = "",
+    workspace_id: str = "",
 ) -> TextAgentState:
     """
     Build a clean initial state for one platform graph run.
@@ -219,6 +221,7 @@ def build_initial_state(
     return TextAgentState(
         # Identity
      session_id=session_id or str(uuid4()),
+        workspace_id=workspace_id,
         user_id=user_id,
         brand_id=brand_id,
         emitter=emitter or EventEmitter(),

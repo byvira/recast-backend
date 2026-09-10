@@ -1,4 +1,9 @@
-"""Brand profile CRUD routes — create, list, read, update steps, complete, delete."""
+"""Brand profile CRUD routes — create, list, read, update steps, complete, delete.
+
+Scoped to the caller's active workspace (``X-Workspace-Id`` header or default).
+Writes require the ``edit_brand_voice`` permission; reads require membership only.
+``user_id`` on each document is the creator (audit), not the scoping key.
+"""
 
 from datetime import datetime, timezone
 from typing import Any
@@ -6,8 +11,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles, users
 from app.models.brand_profile import (
     BrandProfile,
@@ -17,6 +22,8 @@ from app.models.brand_profile import (
 )
 
 router = APIRouter()
+
+MAX_BRAND_PROFILES_PER_WORKSPACE = 10
 
 
 def normalise_brand_keys(data: dict) -> dict:
@@ -59,6 +66,7 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
 
     return BrandProfile(
         id=doc["id"],
+        workspace_id=doc.get("workspace_id", ""),
         user_id=doc["user_id"],
         brand_type=doc["brand_type"],
         identity=doc.get("identity", {}),
@@ -197,18 +205,17 @@ def _build_step_update(
 async def create_brand_profile(
     request: Request,
     body: CreateBrandProfileBody,
-
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
 ) -> dict[str, str]:
     """
-    Create a minimal brand profile for the authenticated user.
-    Enforces a maximum of 10 brand profiles per user.
+    Create a minimal brand profile in the caller's active workspace.
+    Enforces a maximum of 10 brand profiles per workspace.
     """
-    existing_count = len(current_user.get("brand_profiles", []))
-    if existing_count >= 10:
+    existing_count = await brand_profiles.count_documents({"workspace_id": ctx.workspace_id})
+    if existing_count >= MAX_BRAND_PROFILES_PER_WORKSPACE:
         raise HTTPException(
             status_code=400,
-            detail="Maximum of 10 brand profiles per user reached.",
+            detail="Maximum of 10 brand profiles per workspace reached.",
         )
 
     now = datetime.now(timezone.utc)
@@ -216,7 +223,8 @@ async def create_brand_profile(
 
     doc: dict[str, Any] = {
         "id": brand_id,
-        "user_id": current_user["id"],
+        "workspace_id": ctx.workspace_id,
+        "user_id": ctx.user_id,          # creator (audit)
         "brand_type": body.brand_type.value,
         "identity": {},
         "audience": {},
@@ -236,10 +244,6 @@ async def create_brand_profile(
     }
 
     await brand_profiles.insert_one(doc)
-    await users.update_one(
-        {"id": current_user["id"]},
-        {"$push": {"brand_profiles": brand_id}},
-    )
 
     return {"brand_profile_id": brand_id, "brand_type": body.brand_type.value}
 
@@ -250,15 +254,14 @@ async def list_brand_profiles(
     request: Request,
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50),
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict[str, Any]:
-    """List the authenticated user's brand profiles with pagination."""
-    user_id = current_user["id"]
+    """List the active workspace's brand profiles with pagination."""
     skip = (page - 1) * limit
 
-    total = await brand_profiles.count_documents({"user_id": user_id})
+    total = await brand_profiles.count_documents({"workspace_id": ctx.workspace_id})
     docs = (
-        await brand_profiles.find({"user_id": user_id})
+        await brand_profiles.find({"workspace_id": ctx.workspace_id})
         .skip(skip)
         .limit(limit)
         .to_list(length=limit)
@@ -280,14 +283,12 @@ async def list_brand_profiles(
 async def get_brand_profile(
     request: Request,
     brand_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict[str, Any]:
-    """Fetch a single brand profile by ID."""
-    doc = await brand_profiles.find_one({"id": brand_id})
+    """Fetch a single brand profile by ID within the active workspace."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if doc["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
 
     return _doc_to_brand_profile(doc).model_dump()
 
@@ -298,20 +299,18 @@ async def save_brand_step(
     request: Request,
     brand_id: str,
     body: SaveStepBody,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
 ) -> dict[str, Any]:
-    doc = await brand_profiles.find_one({"id": brand_id})
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if doc["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
 
     brand_type = doc["brand_type"]
-    normalised_data = normalise_brand_keys(body.data)  
+    normalised_data = normalise_brand_keys(body.data)
 
     step_update = _build_step_update(
         step=body.step,
-        data=normalised_data,                          
+        data=normalised_data,
         brand_type=brand_type,
         setup_path=doc.get("setup_path"),
     )
@@ -319,7 +318,17 @@ async def save_brand_step(
     if body.step > doc.get("onboarding_step", 1):
         step_update["onboarding_step"] = body.step
 
-    await brand_profiles.update_one({"id": brand_id}, {"$set": step_update})
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": step_update}
+    )
+
+    if "voice_tone" in step_update:
+        from app.shared.governance_events import emit_brand_voice_updated
+        emit_brand_voice_updated(
+            ctx.workspace_id, actor_user_id=ctx.user_id, actor_role=ctx.role,
+            brand_id=brand_id, changed_fields=["voice_tone"],
+            diff_summary=f"voice_tone step {body.step} saved",
+        )
 
     return {
         "brand_id": brand_id,
@@ -327,32 +336,32 @@ async def save_brand_step(
         "next_step": body.step + 1,
     }
 
+
 @router.put("/{brand_id}/complete")
 @limiter.limit("20/minute")
 async def complete_brand_profile(
     request: Request,
     brand_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
 ) -> dict[str, Any]:
     """
     Mark a brand profile as complete.
-    Sets user.onboarding_done = true if this is their first completed profile.
+    Sets user.onboarding_done = true if this is the caller's first completed profile.
     """
-    doc = await brand_profiles.find_one({"id": brand_id})
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if doc["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
 
     now = datetime.now(timezone.utc)
     await brand_profiles.update_one(
-        {"id": brand_id},
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
         {"$set": {"is_complete": True, "updated_at": now}},
     )
 
-    if not current_user.get("onboarding_done", False):
+    # onboarding_done stays a per-user flag — first completed profile anywhere flips it.
+    if not ctx.user.get("onboarding_done", False):
         await users.update_one(
-            {"id": current_user["id"]},
+            {"id": ctx.user_id},
             {"$set": {"onboarding_done": True}},
         )
 
@@ -364,21 +373,13 @@ async def complete_brand_profile(
 async def delete_brand_profile(
     request: Request,
     brand_id: str,
-    current_user: dict[str, Any] = Depends(get_current_user),
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
 ) -> dict[str, str]:
-    """
-    Delete a brand profile and remove its reference from the user document.
-    """
-    doc = await brand_profiles.find_one({"id": brand_id})
+    """Delete a brand profile from the active workspace."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if doc["user_id"] != current_user["id"]:
-        raise HTTPException(status_code=403, detail="Access denied.")
 
-    await brand_profiles.delete_one({"id": brand_id})
-    await users.update_one(
-        {"id": current_user["id"]},
-        {"$pull": {"brand_profiles": brand_id}},
-    )
+    await brand_profiles.delete_one({"id": brand_id, "workspace_id": ctx.workspace_id})
 
     return {"message": "Brand profile deleted."}
