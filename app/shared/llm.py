@@ -266,14 +266,23 @@ async def call_llm(
         try:
             return await _complete(GroqModel.FAST)
         except Exception:
-            raise HTTPException(
-                status_code=503,
-                detail="LLM rate limit. Please try again in 60 seconds.",
-            )
+            logger.warning("Groq FAST fallback also failed — falling back to Gemini")
+            try:
+                return await call_llm_fallback(prompt=prompt, system=system)
+            except Exception as exc:
+                logger.error("Gemini fallback also failed: %s", exc)
+                raise HTTPException(
+                    status_code=503,
+                    detail="LLM rate limit. Please try again in 60 seconds.",
+                )
 
     except APIConnectionError as exc:
-        logger.error("Groq connection error: %s", exc)
-        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        logger.error("Groq connection error: %s — falling back to Gemini", exc)
+        try:
+            return await call_llm_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini fallback also failed: %s", fallback_exc)
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
 
     except Exception as exc:
         logger.error("Unexpected call_llm error: %s", exc)
@@ -377,12 +386,20 @@ async def call_llm_structured(
         )
 
     except RateLimitError:
-        logger.error("Groq structured call rate limit persisted after retries")
-        return {}
+        logger.warning("Groq structured call rate limit persisted after retries — falling back to Gemini")
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as exc:
+            logger.error("Gemini structured fallback also failed: %s", exc)
+            return {}
 
     except APIConnectionError as exc:
-        logger.error("Groq connection error: %s", exc)
-        return {}
+        logger.error("Groq connection error: %s — falling back to Gemini", exc)
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini structured fallback also failed: %s", fallback_exc)
+            return {}
 
     except Exception as exc:
         logger.error("Unexpected call_llm_structured error: %s", exc)
