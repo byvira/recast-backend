@@ -10,10 +10,68 @@ Maps to:
 
 import logging
 import re
+from typing import Optional
 from app.models.text import Platform, QualityResult
 from app.shared.llm import GroqModel, call_llm
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCRIPT DETECTION
+#
+# flesch_reading_ease() below (and scorer.py's hook-weakness pattern matching,
+# and style.py's fingerprint()) are all calibrated for English: ASCII-vowel
+# syllable counting, English stopword/weak-phrase lists, formula constants
+# (206.835, 84.6, 1.015) fit to English syllable statistics. None of that is
+# meaningful for Tamil, Devanagari, or Hangul script — confirmed during the
+# i18n investigation that these previously produced a numerically-plausible
+# but semantically meaningless score (near-ceiling, since the vowel regex
+# matches ~0 characters in non-Latin text). is_latin_script() is the single
+# gate every one of those checks uses before running; when it's False the
+# caller must skip the check and say so explicitly rather than fabricate a
+# number.
+# ─────────────────────────────────────────────────────────────────────────────
+_NON_LATIN_SCRIPT_RANGES: list[tuple[int, int]] = [
+    (0x0B80, 0x0BFF),  # Tamil
+    (0x0900, 0x097F),  # Devanagari (Hindi, Marathi, ...)
+    (0xAC00, 0xD7A3),  # Hangul syllables (Korean)
+    (0x1100, 0x11FF),  # Hangul Jamo
+    (0x0600, 0x06FF),  # Arabic
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0x3040, 0x30FF),  # Hiragana / Katakana
+]
+
+
+def script_profile(text: str) -> dict[str, int]:
+    """Count alphabetic characters by broad script family. Non-alphabetic
+    characters (digits, punctuation, emoji, whitespace) are ignored, so a
+    Tamil sentence with an English brand name or a number in it is still
+    correctly read as majority-Tamil."""
+    latin = 0
+    non_latin = 0
+    for ch in text:
+        cp = ord(ch)
+        if any(lo <= cp <= hi for lo, hi in _NON_LATIN_SCRIPT_RANGES):
+            non_latin += 1
+        elif ch.isalpha():
+            latin += 1
+    return {"latin": latin, "non_latin": non_latin}
+
+
+def is_latin_script(text: str) -> bool:
+    """True when text's alphabetic characters are majority Latin-script.
+
+    Content with no alphabetic characters at all (empty, digits/emoji/
+    punctuation only) is treated as Latin by convention — there's nothing
+    script-specific to get wrong, and the callers below already special-case
+    empty content separately.
+    """
+    profile = script_profile(text)
+    total = profile["latin"] + profile["non_latin"]
+    if total == 0:
+        return True
+    return profile["latin"] >= profile["non_latin"]
 
 READABILITY_THRESHOLDS = {
     Platform.BLOG: 45,
@@ -37,8 +95,18 @@ WEASEL_WORDS = ["very", "really", "quite", "rather", "somewhat", "fairly", "basi
 PASSIVE_PATTERNS = [r"\bwas \w+ed\b", r"\bwere \w+ed\b", r"\bis being\b", r"\bbeen \w+ed\b"]
 
 
-def flesch_reading_ease(text: str) -> float:
-    """Approximate Flesch Reading Ease without external library."""
+def flesch_reading_ease(text: str) -> Optional[float]:
+    """Approximate Flesch Reading Ease without external library.
+
+    Returns ``None`` — not a fabricated number — when the text is majority
+    non-Latin script. The formula's syllable proxy counts ASCII vowels
+    (``[aeiouAEIOU]+``); for Tamil/Devanagari/Hangul that counts ~0
+    syllables regardless of actual content, which previously produced a
+    score near the ceiling (100) that looked plausible but meant nothing.
+    Callers must treat None as "not evaluated", never as "score is 0".
+    """
+    if not is_latin_script(text):
+        return None
     sentences = re.split(r"[.!?]+", text)
     sentences = [s.strip() for s in sentences if s.strip()]
     words = text.split()
@@ -145,7 +213,12 @@ async def run_quality_gate(
 
     readability = flesch_reading_ease(content)
     threshold = READABILITY_THRESHOLDS.get(platform, 45)
-    if readability < threshold:
+    if readability is None:
+        advisory_issues.append(
+            "Advisory: Readability scoring not available for this content's language "
+            "(non-Latin script) — not evaluated, not penalised."
+        )
+    elif readability < threshold:
         advisory_issues.append(f"Advisory: Readability score {readability:.0f} below {threshold} for {platform.value}")
 
     cta_markers_lower = [m.lower() for m in CTA_MARKERS]

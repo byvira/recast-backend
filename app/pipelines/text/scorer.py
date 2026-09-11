@@ -17,7 +17,7 @@ Readability scoring:
 
 import logging
 import re
-from app.pipelines.text.quality import flesch_reading_ease
+from app.pipelines.text.quality import flesch_reading_ease, is_latin_script
 from app.shared.llm import call_llm_structured, GroqModel
 
 logger = logging.getLogger(__name__)
@@ -83,7 +83,25 @@ HOOK_WEAKNESSES = [
 ]
 
 
+_HOOK_WEAKNESS_NOT_EVALUATED = (
+    "Pattern-based weak-hook detection not evaluated — HOOK_WEAKNESSES is an "
+    "English-only phrase list and this hook is not in Latin script. Not "
+    "evaluated is not the same as 'no weakness found'."
+)
+
+
 def _detect_hook_weakness(first_line: str) -> str | None:
+    """Pattern-match the hook's opening against known weak English phrases.
+
+    Returns ``_HOOK_WEAKNESS_NOT_EVALUATED`` — not ``None`` — for non-Latin
+    script, so the caller can distinguish "checked, found nothing" from
+    "never checked". Silently returning None for both would read as a
+    positive result the check never actually produced (confirmed during the
+    i18n investigation: for Tamil/Hindi/Korean hooks this pattern match could
+    never fire either way, so a plain None was indistinguishable from "clean").
+    """
+    if not is_latin_script(first_line):
+        return _HOOK_WEAKNESS_NOT_EVALUATED
     first_lower = first_line.strip().lower()
     for pattern, reason in HOOK_WEAKNESSES:
         if first_lower.startswith(pattern):
@@ -172,7 +190,23 @@ async def score_hook(
             "  NOT: 'Most creators are stuck in a guilt cycle...'\n"
         )
 
+    # score_hook has no explicit language parameter — the caller (ScoreHookRequest)
+    # doesn't carry one — so language is inferred from the content itself rather
+    # than threaded from the API. Confirmed during the i18n investigation that
+    # without this, the LLM defaulted to English alternatives even when scoring
+    # non-English content, since nothing in the prompt said otherwise.
+    language_note = (
+        ""
+        if is_latin_script(content)
+        else (
+            "\nLANGUAGE: The CURRENT CONTENT below is not in English. Write "
+            "current_reason and all 3 alternative hooks in the SAME language "
+            "as the current content — do not translate to English.\n"
+        )
+    )
+
     prompt = f"""
+{language_note}
 {brand_context}
 {banned_enforcement}
 {approved_openers_block}
@@ -261,7 +295,10 @@ Return valid JSON only:
 }}
 """
 
-    result = await call_llm_structured(prompt, model=GroqModel.BALANCED)
+    # max_tokens raised for the same reason as generator.py's
+    # GENERATION_MAX_TOKENS — gpt-oss-120b can exhaust the 2500 default on
+    # hidden reasoning tokens alone for non-English content.
+    result = await call_llm_structured(prompt, model=GroqModel.BALANCED, max_tokens=4000)
     if not result:
         logger.warning("Hook scorer LLM call failed for session %s", session_id)
         return {
@@ -329,8 +366,17 @@ def _count_long_sentences(text: str, threshold: int = 25) -> int:
     return len([s for s in sentences if len(s.split()) > threshold])
 
 
-def _count_complex_words(text: str) -> int:
-    """Count words with 3+ syllables as proxy for complexity."""
+def _count_complex_words(text: str) -> int | None:
+    """Count words with 3+ syllables as proxy for complexity.
+
+    Returns None — not 0 — for non-Latin script. The ``[aeiou]+`` syllable
+    proxy matches ASCII vowels only, so it silently counts 0 syllables for
+    every Tamil/Devanagari/Hangul word regardless of actual complexity; a
+    real 0 would misrepresent that as "no complex words found" instead of
+    "not measurable this way".
+    """
+    if not is_latin_script(text):
+        return None
     words = re.findall(r'\b\w+\b', text.lower())
     complex_count = 0
     for word in words:
@@ -366,7 +412,7 @@ def _identify_readability_issues(
         )
 
     complex_words = _count_complex_words(text)
-    if word_count > 0:
+    if complex_words is not None and word_count > 0:
         complex_ratio = complex_words / word_count
         if complex_ratio > 0.15:
             issues.append(
@@ -419,13 +465,41 @@ def score_readability(content: str, platform: str) -> dict:
             "issues": [],
             "passed": False,
             "platform": platform,
+            "supported": True,
         }
 
     # Strip hashtags before scoring — they inflate syllable count
     content_clean = re.sub(r'#\w+', '', content).strip()
+    threshold = PLATFORM_READABILITY_THRESHOLDS.get(platform, 45)
+
+    if not is_latin_script(content_clean):
+        # word_count/sentence_count are script-neutral (whitespace/punctuation
+        # based) so still meaningful; score/grade/complex_word_count are not —
+        # the Flesch formula and its syllable proxy are English-only. Report
+        # honestly rather than emit a numerically-plausible but meaningless
+        # score, per the i18n investigation's finding on this exact function.
+        words = content_clean.split()
+        sentence_count = _count_sentences(content_clean)
+        return {
+            "score": 0,
+            "threshold": threshold,
+            "grade": "unsupported",
+            "grade_label": "Readability scoring not available for this language (non-Latin script)",
+            "word_count": len(words),
+            "sentence_count": sentence_count,
+            "avg_sentence_len": round(len(words) / sentence_count, 1) if sentence_count > 0 else 0,
+            "complex_word_count": 0,
+            "issues": [
+                "Readability scoring (Flesch Reading Ease) is calibrated for "
+                "English and not available for this content's script. This is "
+                "not a low score — it is not evaluated."
+            ],
+            "passed": True,  # never penalise for something we can't measure
+            "platform": platform,
+            "supported": False,
+        }
 
     score = flesch_reading_ease(content_clean)
-    threshold = PLATFORM_READABILITY_THRESHOLDS.get(platform, 45)
 
     words = content_clean.split()
     word_count = len(words)
@@ -456,5 +530,6 @@ def score_readability(content: str, platform: str) -> dict:
         "complex_word_count": _count_complex_words(content_clean),
         "issues": issues,
         "passed": score >= threshold,
+        "supported": True,
         "platform": platform,
     }

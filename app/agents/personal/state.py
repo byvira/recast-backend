@@ -8,6 +8,7 @@ persona and persists it.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -15,6 +16,9 @@ from typing_extensions import TypedDict
 
 from app.agents.personal.persona_store import new_persona, persona_id
 from app.agents.personal.scope import event_scope
+from app.shared.language import first_present, user_language, workspace_language
+
+logger = logging.getLogger(__name__)
 
 
 class PersonaState(TypedDict, total=False):
@@ -28,6 +32,7 @@ class PersonaState(TypedDict, total=False):
     target: str
     quality_passed: bool
     flagged_for_review: bool
+    language: str   # the member's language — see _resolve_member_language() below
 
     # ── loaded context ───────────────────────────────────────────────
     persona: dict[str, Any]
@@ -50,7 +55,21 @@ class PersonaState(TypedDict, total=False):
     errors: list[str]
 
 
-def build_initial_state(event: dict[str, Any]) -> PersonaState:
+async def _resolve_member_language(user_id: str, workspace_id: Optional[str] = None) -> str:
+    """The member's own language preference — Remy speaks to one member at a
+    time (``actor_user_id`` in the event is the member the signal is ABOUT,
+    per signals.py), so their own ``users.language`` wins over any workspace
+    default; the workspace's default is only a fallback proxy for a member
+    who hasn't set a personal preference. "en" is the final fallback when
+    neither is set. See app.shared.language for the shared lookups; never
+    blocks the graph over a lookup failure."""
+    return first_present(
+        await user_language(user_id),
+        await workspace_language(workspace_id) if workspace_id else None,
+    )
+
+
+async def build_initial_state(event: dict[str, Any]) -> PersonaState:
     """Flatten an event envelope into a fresh graph state.
 
     Raises ``ScopeError`` (via :func:`event_scope`) if the event can't be scoped
@@ -59,6 +78,7 @@ def build_initial_state(event: dict[str, Any]) -> PersonaState:
     workspace_id, user_id = event_scope(event)
     payload = event.get("payload") or {}
     now = datetime.now(timezone.utc)
+    language = await _resolve_member_language(user_id, workspace_id)
 
     return PersonaState(
         event=event,
@@ -70,6 +90,7 @@ def build_initial_state(event: dict[str, Any]) -> PersonaState:
         target=payload.get("target") or "",
         quality_passed=bool(payload.get("quality_passed", True)),
         flagged_for_review=bool(payload.get("flagged_for_review", False)),
+        language=language,
         persona={},
         is_new=False,
         history=[],

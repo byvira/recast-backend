@@ -60,7 +60,7 @@ async def run_personal_graph(event: dict[str, Any]) -> dict:
     never become valid on redelivery).
     """
     try:
-        state = build_initial_state(event)
+        state = await build_initial_state(event)
     except ScopeError as exc:
         logger.warning("personal graph: skipping unscopable event %s: %s", event.get("event_id"), exc)
         return {"skipped": str(exc)}

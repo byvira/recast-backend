@@ -39,6 +39,7 @@ from app.pipelines.text.generator import (
     PLATFORM_RULES,
     build_approved_copy_instruction,
     build_banned_words_instruction,
+    build_language_instruction,
 )
 from app.shared.llm import call_llm_structured
 
@@ -77,6 +78,7 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
     goal_context = build_goal_context(task.metadata.get("goal"))
     tone_override = build_tone_override(task.metadata.get("tone"))
     platform_rules = PLATFORM_RULES.get(task.platform, "")
+    language_instruction = build_language_instruction(task.metadata.get("language", "en"))
 
     # ── Enforcement data from metadata ────────────────────────────────────
     banned_words = task.metadata.get("banned_words", [])
@@ -102,6 +104,8 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
 
     # ── Build prompt — always built regardless of retry state ────────────
     prompt = f"""
+{language_instruction}
+
 REPURPOSING TASK: {instruction}
 {retry_block}
 SOURCE PLATFORM: {source_platform.value}
@@ -125,6 +129,7 @@ ADDITIONAL RULES:
 CRITICAL: Do not copy sentences from the source. Rewrite everything in the brand voice above.
 Output must feel completely native to {task.platform.value}.
 Zero banned words. Use approved vocabulary only.
+{language_instruction}
 
 Return valid JSON:
 {{
@@ -135,7 +140,10 @@ Return valid JSON:
 }}
 """
 
-    result = await call_llm_structured(prompt)
+    # See app/pipelines/text/generator.py's GENERATION_MAX_TOKENS comment —
+    # gpt-oss-120b can burn its entire token budget on hidden reasoning for
+    # non-English requests, leaving no room for visible output at the 2500 default.
+    result = await call_llm_structured(prompt, max_tokens=4000)
 
     if not result or "content" not in result:
         return AgentResult(

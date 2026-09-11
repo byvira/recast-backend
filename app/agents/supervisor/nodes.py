@@ -17,7 +17,7 @@ from uuid import uuid4
 from app.agents.supervisor import notify as notify_mod
 from app.agents.supervisor import thresholds as T
 from app.agents.supervisor.digest import build_digest, digest_is_quiet
-from app.agents.supervisor.personas import ODETTE_SYSTEM
+from app.agents.supervisor.personas import build_odette_system
 from app.agents.supervisor.state import SupervisorState
 from app.agents.supervisor.tools import make_tools
 from app.db.mongo import agent_worker_state, workspace_flags, workspace_insights
@@ -55,7 +55,7 @@ async def reason_node(state: SupervisorState) -> dict:
     specs, dispatch = make_tools(state["workspace_id"])
     client = get_groq_client()
     messages: list[dict] = [
-        {"role": "system", "content": ODETTE_SYSTEM},
+        {"role": "system", "content": build_odette_system(state.get("language", "en"))},
         {"role": "user", "content":
             "DIGEST (this workspace, recent activity):\n"
             + json.dumps(digest, default=str, indent=2)
@@ -130,7 +130,7 @@ async def synthesize_node(state: SupervisorState) -> dict:
 
     client = get_groq_client()
     messages = list(state["scratchpad"]) or [
-        {"role": "system", "content": ODETTE_SYSTEM},
+        {"role": "system", "content": build_odette_system(state.get("language", "en"))},
         {"role": "user", "content": "DIGEST:\n" + json.dumps(digest, default=str)},
     ]
     messages.append({"role": "user", "content": _SYNTH_INSTRUCTIONS})

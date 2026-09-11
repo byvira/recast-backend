@@ -23,10 +23,63 @@ import logging
 import re
 from typing import Dict, List, Tuple
 
-from app.models.text import AgentTask, AgentResult, Platform
+from app.models.text import AgentTask, AgentResult, Platform, LANGUAGE_NAMES
 from app.shared.llm import GroqModel, call_llm, call_llm_structured
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LANGUAGE — LANGUAGE_NAMES itself lives in app.models.text (the single source
+# of truth shared with request validation); this module only builds the
+# prompt-facing instruction text from it.
+# ─────────────────────────────────────────────────────────────────────────────
+def resolve_language_name(code: str) -> str:
+    """Resolve a language code/string to the display name used in prompts.
+
+    `code` is fully opaque — never validated against LANGUAGE_NAMES or any
+    other fixed set, and never silently substituted with English. A code
+    LANGUAGE_NAMES has a curated display name for (e.g. "ta" -> "Tamil")
+    gets that nicer name; anything else is passed straight through to the
+    LLM as-is ("the language identified by the code 'ml'"), which Groq/Gemini
+    can resolve on their own for the vast majority of real ISO 639-1/639-3
+    codes and language names without this codebase needing to know about it.
+    An empty string is the one case actually treated as "no preference
+    stated" (not "reject" or "assume English") — it's not a language code,
+    it's the absence of one.
+    """
+    if not code:
+        return "the caller's own language"
+    normalised = code.strip()
+    known = LANGUAGE_NAMES.get(normalised.lower().split("-")[0])
+    if known:
+        return known
+    return f"the language identified by the code or name '{normalised}'"
+
+
+def build_language_instruction(language_code: str) -> str:
+    """One unambiguous block telling the model what language to write in.
+
+    Deliberately does not special-case English — an explicit "write in
+    English" instruction is harmless and keeps the prompt-construction path
+    identical for every language, avoiding an en-only branch that could drift.
+
+    The extra "examples below are English text used only to teach structure"
+    sentence exists because live testing (2026-09-11, Hindi) showed the model
+    echoing the literal English wording of the few-shot examples in
+    SPECIFICITY_INSTRUCTION/ENGAGEMENT_PATTERNS as its opening line even when
+    correctly instructed to write in Hindi — it was treating them as text to
+    reuse, not as illustrations of structure. This line is the fix.
+    """
+    name = resolve_language_name(language_code)
+    return (
+        f"LANGUAGE: Respond entirely in {name}. Every part of the output — hook, body, "
+        f"closing, hashtags — must be written in {name}, not transliterated, not English. "
+        f"Any English text you see below this point (example sentences, hook-pattern "
+        f"templates) is written in English only to teach you the STRUCTURE and STYLE to "
+        f"follow — never copy, translate-literally, or reuse their actual wording. Write "
+        f"your own original {name} sentences that follow the same pattern."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -514,6 +567,10 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
     retry_feedback = task.metadata.get("retry_feedback", "")
     retry_count = task.metadata.get("retry_count", 0)
 
+    # ── Language ───────────────────────────────────────────────────────────
+    language_code = task.metadata.get("language", "en")
+    language_instruction = build_language_instruction(language_code)
+
     # ── Brand enforcement data ────────────────────────────────────────────
     banned_words = task.metadata.get("banned_words", [])
     preferred_synonyms = task.metadata.get("preferred_synonyms", [])
@@ -559,12 +616,15 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
 
     # ── Build full prompt ─────────────────────────────────────────────────
     prompt = f"""
+{language_instruction}
+
 {task.brand_context}
 {tone_override_text}
 {goal_context}
 {content_brief}
 {SPECIFICITY_INSTRUCTION}
 {ENGAGEMENT_PATTERNS}
+(Reminder: everything above this line that reads as English prose is a structural example only. {language_instruction})
 {approved_copy_instruction}
 {retry_block}
 {platform_rules}
@@ -586,6 +646,7 @@ CRITICAL CHECKLIST BEFORE OUTPUTTING:
 □ Does it include all required phrases in the right placements?
 □ Does it meet the minimum length for this platform?
 □ Does every sentence contain a specific detail — not a generic observation?
+□ {language_instruction}
 
 Do not explain. Output only the final content.
 
@@ -599,7 +660,15 @@ Return valid JSON in exactly this format:
 """
 
     # ── Call LLM — structured output ──────────────────────────────────────
-    result = await call_llm_structured(prompt)
+    # max_tokens raised from the 2500 default: gpt-oss-120b is a reasoning
+    # model that spends hidden reasoning_tokens out of the same budget as the
+    # visible output. Confirmed via live testing (2026-09-11) that non-English
+    # requests — Tamil in particular — can consume the entire 2500-token cap
+    # on reasoning alone (reasoning_tokens=2498/2500, finish_reason=length),
+    # leaving zero tokens for the actual content. 4000 leaves headroom for
+    # both. See app/pipelines/text/generator.py history / Stage 1 test notes.
+    GENERATION_MAX_TOKENS = 4000
+    result = await call_llm_structured(prompt, max_tokens=GENERATION_MAX_TOKENS)
 
     if not result or "content" not in result:
         logger.warning(
@@ -610,7 +679,7 @@ Return valid JSON in exactly this format:
             'Return valid JSON in exactly this format:\n{\n  "content": "the full generated content here",\n  "word_count": 0,\n  "char_count": 0,\n  "platform": "' + task.platform.value + '"\n}',
             "Output only the final content. No JSON. No explanation."
         )
-        plain = await call_llm(fallback_prompt, model=GroqModel.BALANCED)
+        plain = await call_llm(fallback_prompt, model=GroqModel.BALANCED, max_tokens=GENERATION_MAX_TOKENS)
         content = plain.strip()
         result = {
             "content": content,

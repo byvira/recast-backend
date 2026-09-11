@@ -19,6 +19,7 @@ class AnalyticsAgentState(TypedDict):
     workspace_id: str
     user_id:  str   # caller (audit)
     question: str   # natural language question e.g. "how am I performing this week?"
+    language: str   # the calling user's language — resolved in graph.py::run_analytics
 
     # ── Platform data — filled by check_platforms_node ───────────────────
     connected_platforms: list[str]
@@ -40,11 +41,13 @@ def build_initial_state(
     workspace_id: str,
     question: str = "Give me a full performance overview.",
     user_id: str = "",
+    language: str = "en",
 ) -> AnalyticsAgentState:
     return AnalyticsAgentState(
         workspace_id=workspace_id,
         user_id=user_id,
         question=question,
+        language=language,
         connected_platforms=[],
         account_metrics=[],
         post_metrics=[],

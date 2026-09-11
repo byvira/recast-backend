@@ -99,49 +99,65 @@ async def emit_signal(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Remy-voice copy. Templated (no LLM) for the cheap paths; the drift-judge path
-# folds the model's one-line "why" into `extra`.
+# Remy-voice copy — English source templates, translated into `language` on
+# demand and cached in Mongo via app.shared.localized_strings. Replaces the
+# earlier static en/ta/hi/ko dict-of-functions approach entirely: `language`
+# is now a fully opaque string, not validated or matched against any fixed
+# set anywhere in this module. The first call for a given (signal_type,
+# language) pair costs one Groq call; every call after that — any language,
+# "en" included — is a Mongo lookup with zero LLM cost.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def remy_message(signal_type: str, *, ctx: dict) -> str:
-    sim = ctx.get("similarity")
+_REMY_ENGLISH_TEMPLATES: dict[str, str] = {
+    "voice_drift": (
+        "hey - this one reads a little off from how you usually sound{why_suffix}. "
+        "want me to pull it back toward your normal voice, or is the shift on purpose here?"
+    ),
+    "voice_drift_trend": (
+        "small heads-up: your last few pieces have been drifting away from your "
+        "established voice bit by bit - nothing dramatic in any single one, but the "
+        "trend's there. worth a look before it settles in."
+    ),
+    "volume_spike": (
+        "you've published a lot more than usual today ({today} vs your "
+        "~{mean}/day average). all good if it's intentional - just flagging "
+        "in case something's firing on repeat."
+    ),
+    "volume_drop": (
+        "noticed you've gone quiet the last few days after a steady stretch. no pressure "
+        "— just here when you want to pick it back up."
+    ),
+    "topic_shift": (
+        "your recent pieces have moved onto pretty different topics than what you'd been "
+        "covering. if you're deliberately pivoting, ignore this - otherwise you might be "
+        "drifting off your usual lane."
+    ),
+    "quality_regression": (
+        "a higher share of your recent drafts got flagged for review than normal. might be "
+        "worth slowing down a touch on the next few."
+    ),
+    "__fallback__": "flagging something worth a look on your recent content.",
+}
+
+
+async def remy_message(signal_type: str, *, ctx: dict, language: str = "en") -> str:
+    """Remy-voice copy for a signal, translated into `language` on demand
+    and cached — see app.shared.localized_strings.get_localized_string().
+
+    `language` is never validated against a fixed set here — any string is
+    accepted and passed straight through as a cache key + translation target.
+    """
+    from app.shared.localized_strings import get_localized_string
+
+    template = _REMY_ENGLISH_TEMPLATES.get(signal_type, _REMY_ENGLISH_TEMPLATES["__fallback__"])
+    key = f"remy.{signal_type if signal_type in _REMY_ENGLISH_TEMPLATES else '__fallback__'}"
+
+    format_ctx = dict(ctx)
     if signal_type == "voice_drift":
         why = ctx.get("why")
-        base = (
-            "hey - this one reads a little off from how you usually sound"
-            + (f" ({why})" if why else "")
-            + ". want me to pull it back toward your normal voice, or is the shift on purpose here?"
-        )
-        return base
-    if signal_type == "voice_drift_trend":
-        return (
-            "small heads-up: your last few pieces have been drifting away from your "
-            "established voice bit by bit - nothing dramatic in any single one, but the "
-            "trend's there. worth a look before it settles in."
-        )
-    if signal_type == "volume_spike":
-        return (
-            f"you've published a lot more than usual today ({ctx.get('today')} vs your "
-            f"~{ctx.get('mean')}/day average). all good if it's intentional - just flagging "
-            "in case something's firing on repeat."
-        )
-    if signal_type == "volume_drop":
-        return (
-            "noticed you've gone quiet the last few days after a steady stretch. no pressure "
-            "— just here when you want to pick it back up."
-        )
-    if signal_type == "topic_shift":
-        return (
-            "your recent pieces have moved onto pretty different topics than what you'd been "
-            "covering. if you're deliberately pivoting, ignore this - otherwise you might be "
-            "drifting off your usual lane."
-        )
-    if signal_type == "quality_regression":
-        return (
-            "a higher share of your recent drafts got flagged for review than normal. might be "
-            "worth slowing down a touch on the next few."
-        )
-    return "flagging something worth a look on your recent content."
+        format_ctx["why_suffix"] = f" ({why})" if why else ""
+
+    return await get_localized_string(key, language, template, format_ctx)
 
 
 def supervisor_note(signal_type: str, *, ctx: dict) -> str:

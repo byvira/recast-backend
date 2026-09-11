@@ -85,3 +85,8 @@ trafilatura>=1.12.0
 # Logging
 # ─────────────────────────────────────────
 colorlog>=6.8.0
+
+# ─────────────────────────────────────────
+# Language detection (app.shared.language.detect_language)
+# ─────────────────────────────────────────
+py3langid>=0.4.0

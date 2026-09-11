@@ -10,6 +10,7 @@ from langgraph.graph import StateGraph, END
 from app.agents.analytics.state import AnalyticsAgentState, build_initial_state
 from app.agents.analytics import nodes
 from app.core.tracing import ainvoke_traced
+from app.db.mongo import users
 
 
 def build_analytics_graph():
@@ -45,8 +46,20 @@ async def run_analytics(*, workspace_id: str, question: str, user_id: str = "") 
 
     Tags: ``agent:analytics``, ``ws:<workspace_id>``; ``user_id`` + ``question``
     in metadata. Returns the final graph state.
+
+    ``language`` isn't threaded from the API layer (api/v1/analytics.py is
+    out of this session's scope) — resolved here instead from the calling
+    user's own ``users.language``, self-contained, same pattern used for
+    score_hook/align_draft elsewhere in this i18n work.
     """
-    state = build_initial_state(workspace_id=workspace_id, question=question, user_id=user_id)
+    language = "en"
+    if user_id:
+        try:
+            doc = await users.find_one({"id": user_id}, {"language": 1})
+            language = (doc or {}).get("language") or "en"
+        except Exception:  # noqa: BLE001
+            pass
+    state = build_initial_state(workspace_id=workspace_id, question=question, user_id=user_id, language=language)
     result, _url = await ainvoke_traced(
         analytics_graph,
         state,

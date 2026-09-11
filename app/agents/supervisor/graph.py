@@ -48,6 +48,7 @@ async def run_supervisor(
     active_members: int,
     open_flags: list[dict],
     trigger: str = "scheduled",
+    language: str = "en",
 ) -> dict:
     """Run one reasoning pass for a workspace. Returns the final state."""
     state = build_initial_state(
@@ -58,6 +59,7 @@ async def run_supervisor(
         active_members=active_members,
         open_flags=open_flags,
         trigger=trigger,
+        language=language,
     )
     try:
         result, run_url = await ainvoke_traced(

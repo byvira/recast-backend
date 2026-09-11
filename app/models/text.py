@@ -6,6 +6,44 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 from enum import Enum as PyEnum
 
+# ─────────────────────────────────────────────────────────────────────────────
+# LANGUAGE — ISO 639-1 → display-name table for languages this codebase has a
+# curated display name for. This is NOT an allowlist: `language` fields below
+# take a raw, opaque string with zero validation against this or any other
+# fixed set (see app/pipelines/text/generator.py's resolve_language_name(),
+# which passes an unrecognised code straight to the LLM rather than rejecting
+# or silently substituting English). LANGUAGE_NAMES exists only to give a
+# handful of well-known codes a nicer instruction-prompt name than the bare
+# code would read as.
+# ─────────────────────────────────────────────────────────────────────────────
+LANGUAGE_NAMES: dict[str, str] = {
+    "en": "English",
+    "ta": "Tamil",
+    "hi": "Hindi",
+    "ko": "Korean",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "pt": "Portuguese",
+    "ar": "Arabic",
+    "ja": "Japanese",
+    "zh": "Chinese",
+    "id": "Indonesian",
+    "vi": "Vietnamese",
+    "th": "Thai",
+    "bn": "Bengali",
+    "te": "Telugu",
+    "mr": "Marathi",
+    "ur": "Urdu",
+    "tr": "Turkish",
+    "ru": "Russian",
+    "it": "Italian",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "sw": "Swahili",
+}
+
+
 class Platform(str, Enum):
     LINKEDIN = "LinkedIn"
     TWITTER = "Twitter/X"
@@ -102,7 +140,12 @@ class GenerateTextRequest(BaseModel):
     scheduled_at: Optional[datetime] = None
 
     # Misc
-    language: str = "en"
+    # None = caller expressed no preference for this request — the precedence
+    # chain in app.shared.language falls through to the workspace's default,
+    # then the caller's own account default, then "en". A non-None value here
+    # is a per-request override and wins outright; it is never validated
+    # against a fixed set.
+    language: Optional[str] = None
     batch_mode: bool = False
     batch_days: int = Field(7, ge=1, le=30)
 
@@ -118,6 +161,7 @@ class RepurposeRequest(BaseModel):
     goal: Optional[ContentGoal] = None
     tone: ToneOverride = ToneOverride.BRAND
     extras: ExtrasConfig = ExtrasConfig()
+    language: Optional[str] = None  # see GenerateTextRequest.language
 
 
 class NormalisedInput(BaseModel):
@@ -224,6 +268,7 @@ class BatchGenerateRequest(BaseModel):
     extras: ExtrasConfig = ExtrasConfig()
     days: int = Field(7, ge=1, le=30)
     detected_intent: ContentIntent = ContentIntent.AUTO
+    language: Optional[str] = None  # see GenerateTextRequest.language
 
 
 class ApprovalStatus(str, PyEnum):
