@@ -1,7 +1,7 @@
 """Workspace creation and read routes."""
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -18,7 +18,12 @@ router = APIRouter()
 
 
 class UpdateWorkspaceBody(BaseModel):
-    name: str = Field(..., min_length=1, max_length=100)
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    # Workspace-wide default language — see app.shared.language for the
+    # precedence chain that consumes this. Opaque string, no validation
+    # against any fixed set; omit the field (not empty string) to leave the
+    # current value untouched.
+    language: Optional[str] = None
 
 
 class SetRoleBody(BaseModel):
@@ -152,13 +157,20 @@ async def update_workspace(
     body: UpdateWorkspaceBody,
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Update workspace settings — requires manage_workspace_settings."""
+    """Update workspace settings — requires manage_workspace_settings.
+
+    Only fields actually present in the request body are touched (PATCH
+    semantics) — a caller setting `language` alone must not blank out `name`,
+    and vice versa.
+    """
     await require_permission(workspace_id, current_user["id"], "manage_workspace_settings")
-    await workspaces.update_one(
-        {"id": workspace_id},
-        {"$set": {"name": body.name, "updated_at": datetime.now(timezone.utc)}},
-    )
-    return {"workspace_id": workspace_id, "name": body.name}
+    updates = body.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update.")
+    updates["updated_at"] = datetime.now(timezone.utc)
+    await workspaces.update_one({"id": workspace_id}, {"$set": updates})
+    updates.pop("updated_at")
+    return {"workspace_id": workspace_id, **updates}
 
 
 @router.delete("/{workspace_id}")

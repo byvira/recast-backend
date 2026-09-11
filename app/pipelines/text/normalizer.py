@@ -164,7 +164,7 @@ Return valid JSON only:
     return content
 
 
-async def extract_content_brief(content: str) -> str:
+async def extract_content_brief(content: str, language: str = "en") -> str:
     """
     Pre-analysis step — runs after clean_raw_content, before generation.
     Extracts the sharpest angle, most concrete detail, and what to avoid
@@ -174,11 +174,24 @@ async def extract_content_brief(content: str) -> str:
     Purpose: forces the generator to lead with the most specific,
     interesting angle rather than defaulting to a generic take.
 
+    ``language`` matters more than it looks: the returned brief is spliced
+    directly into the main generation prompt as "Lead with this angle:
+    {sharpest_angle}". Confirmed via live testing (2026-09-11, Hindi) that
+    when this function answered in English regardless of the requested
+    generation language, the generator would then literally open the piece
+    with that English sentence before switching to the target language for
+    the rest — i.e. an English brief silently overrides a correct language
+    instruction elsewhere in the pipeline. The brief's own language must
+    therefore match the generation language, not just the final prompt text.
+
     If LLM call fails, returns empty string — generation continues without brief.
     An empty brief is safe — generation still works, just without pre-analysis sharpening.
     """
     if not content or len(content.strip()) < 50:
         return ""
+
+    from app.pipelines.text.generator import resolve_language_name
+    language_name = resolve_language_name(language)
 
     prompt = f"""
 Analyse this content and identify the single most specific, interesting,
@@ -189,11 +202,14 @@ Rules:
 - Find the concrete detail: a specific number, a named outcome, a real moment,
   a counterintuitive point, or a surprising insight
 - Identify what the lazy generic take would be so the writer can avoid it
+- Write every field's value in {language_name}. This brief is quoted directly
+  into a generation prompt as "Lead with this angle: <sharpest_angle>" — if
+  you answer in English here, the final content will start in English too.
 
 CONTENT:
 {content[:2000]}
 
-Return valid JSON only:
+Return valid JSON only, with every string value written in {language_name}:
 {{
   "sharpest_angle": "the single most specific and interesting angle to lead with",
   "concrete_detail": "the most specific fact, number, moment, or example in the content",
@@ -201,7 +217,11 @@ Return valid JSON only:
 }}
 """
     try:
-        result = await call_llm_structured(prompt,model=GroqModel.FAST)
+        # max_tokens raised for the same reason as generator.py's
+        # GENERATION_MAX_TOKENS — gpt-oss models spend hidden reasoning
+        # tokens out of the same budget as the visible JSON output, and
+        # non-English requests were observed to exhaust the 2500 default.
+        result = await call_llm_structured(prompt, model=GroqModel.FAST, max_tokens=3000)
         if not result:
             return ""
 

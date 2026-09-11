@@ -190,3 +190,9 @@ async def create_indexes() -> None:
     # agent_worker_state — per-workspace checkpoint + debounce bookkeeping.
     await agent_worker_state.create_index("updated_at")
 
+    # localized_strings — runtime-translation cache (app.shared.localized_strings).
+    # One doc per (key, language); language is an opaque string, not validated
+    # against any fixed set.
+    localized_strings = get_client().get_default_database()["localized_strings"]
+    await localized_strings.create_index([("key", 1), ("language", 1)], unique=True)
+

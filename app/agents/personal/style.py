@@ -10,14 +10,40 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-_WORD_RE = re.compile(r"[A-Za-z']+")
+from app.pipelines.text.quality import is_latin_script
+
+# Word-tokeniser — was Latin-only (r"[A-Za-z']+"), which returned an empty
+# list for any Tamil/Devanagari/Hangul piece. That fed fingerprint()'s
+# `n_words = len(words) or 1` fallback below, which then computed every style
+# metric (avg_sentence_len, emoji_rate, question_rate, reading_grade) against
+# a phantom denominator of 1 for every non-Latin-script member — garbage
+# numbers that looked like real ones, not an honest "can't measure this".
+# Confirmed during the i18n investigation and fixed here by widening the
+# tokeniser to the same script ranges used throughout the text pipeline
+# (see app/pipelines/text/quality.py's is_latin_script/script_profile).
+_WORD_RE = re.compile(
+    r"[A-Za-z'஀-௿ऀ-ॿ가-힣ᄀ-ᇿ]+"
+)
 _SENT_SPLIT_RE = re.compile(r"[.!?]+(?:\s+|$)")
 _EMOJI_RE = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]"
 )
 
-# Small, generic stopword set — enough to keep keyword sets meaningful without
-# pulling in nltk. Provisional; expand if topic-shift proves noisy.
+# Minimum real (pre-fallback) word count before a fingerprint is trusted.
+# Below this, style metrics are too noisy to mean anything — a single short
+# sentence doesn't establish "your usual sentence length". Chosen to match
+# the same "a few words" laid-back-input case called out in the i18n test
+# plan, not tuned against real data yet.
+MIN_WORDS_FOR_CONFIDENCE = 5
+
+# Small, generic English stopword set — enough to keep keyword sets meaningful
+# without pulling in nltk. Only filters English function words; non-English
+# text simply isn't filtered by this list (a smaller gap than the previous
+# "returns nothing at all" bug, since the underlying _WORD_RE fix above means
+# keywords() now actually extracts non-Latin words instead of an empty list —
+# per-language stopword lists are a follow-up, not attempted here since a
+# guessed list would be worse than none. Provisional; expand if topic-shift
+# proves noisy.
 _STOPWORDS = frozenset("""
 a an and are as at be been but by can could did do does for from had has have
 he her him his how i if in into is it its me my no not of on or our so than that
@@ -32,11 +58,22 @@ def _sentences(text: str) -> list[str]:
 
 
 def fingerprint(text: str) -> dict:
-    """Return the per-piece style vector merged into the persona EWMA later."""
+    """Return the per-piece style vector merged into the persona EWMA later.
+
+    ``low_confidence`` is True when there wasn't enough real text to tokenise
+    (raw word count below MIN_WORDS_FOR_CONFIDENCE, including the case where
+    it's genuinely 0). The numeric fields are still populated in that case —
+    callers that don't check the flag see the same shape as before — but they
+    are computed against the ``or 1`` denominator fallback and should be
+    treated as noise, not signal. This replaces the previous behaviour where
+    that fallback fired silently and looked identical to a real measurement.
+    """
     text = text or ""
     words = _WORD_RE.findall(text)
     sents = _sentences(text)
-    n_words = len(words) or 1
+    raw_n_words = len(words)
+    low_confidence = raw_n_words < MIN_WORDS_FOR_CONFIDENCE
+    n_words = raw_n_words or 1
     n_sents = len(sents) or 1
     lines = [ln for ln in text.splitlines() if ln.strip()]
     list_lines = sum(1 for ln in lines if ln.lstrip()[:2] in ("- ", "* ", "1.", "2.", "3."))
@@ -48,11 +85,24 @@ def fingerprint(text: str) -> dict:
         "question_rate": round(text.count("?") / n_sents, 5),
         "list_rate": round(list_lines / (len(lines) or 1), 5),
         "reading_grade": _reading_grade(n_words, n_sents, words),
+        "low_confidence": low_confidence,
+        "word_count": raw_n_words,
     }
 
 
-def _reading_grade(n_words: int, n_sents: int, words: list[str]) -> float:
-    """Flesch–Kincaid grade, approximated (syllables ~= vowel-group count)."""
+def _reading_grade(n_words: int, n_sents: int, words: list[str]) -> float | None:
+    """Flesch-Kincaid grade, approximated (syllables ~= vowel-group count).
+
+    Returns None for non-Latin-script text — same reasoning as
+    app.pipelines.text.quality.flesch_reading_ease: the ``[aeiouy]+``
+    syllable proxy and the 0.39/11.8/15.59 formula constants are calibrated
+    for English and produce a plausible-looking but meaningless number
+    otherwise. style_divergence() below already treats a missing
+    reading_grade as 0 via ``or 0``, so this is a safe type change for the
+    one place in this codebase that currently reads the field.
+    """
+    if not words or not is_latin_script(" ".join(words)):
+        return None
     syllables = sum(max(1, len(re.findall(r"[aeiouy]+", w.lower()))) for w in words) or 1
     grade = 0.39 * (n_words / n_sents) + 11.8 * (syllables / n_words) - 15.59
     return round(max(0.0, grade), 2)

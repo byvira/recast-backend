@@ -47,3 +47,9 @@ class ScoreReadabilityResponse(BaseModel):
     issues: list[str]
     passed: bool
     platform: str
+    # False when the content's script (e.g. Tamil, Devanagari, Hangul) isn't
+    # supported by the English-calibrated Flesch formula — see
+    # app/pipelines/text/scorer.py::score_readability. When False, `score`/
+    # `grade`/`complex_word_count` are not meaningful; read `issues` instead.
+    # Defaults True so existing English-only callers see no shape change.
+    supported: bool = True

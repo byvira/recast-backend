@@ -21,6 +21,7 @@ class SupervisorState(TypedDict, total=False):
     active_members: int
     open_flags: list[dict]
     trigger: str                 # why this pass fired (provenance)
+    language: str                 # workspace's resolved language — see ticks.py::_resolve_workspace_language
 
     # ── working ─────────────────────────────────────────────────────
     digest: dict
@@ -44,6 +45,7 @@ def build_initial_state(
     active_members: int,
     open_flags: list[dict],
     trigger: str = "scheduled",
+    language: str = "en",
 ) -> SupervisorState:
     return SupervisorState(
         workspace_id=workspace_id,
@@ -53,6 +55,7 @@ def build_initial_state(
         active_members=int(active_members or 0),
         open_flags=open_flags or [],
         trigger=trigger,
+        language=language,
         digest={},
         scratchpad=[],
         tool_calls_made=0,

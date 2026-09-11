@@ -38,6 +38,12 @@ class Workspace(BaseModel):
     tier_config: TierConfig      # snapshot at creation — never re-read from tiers.py after
     owner_id: str
     is_personal: bool = False    # auto-created at signup; non-deletable, single-seat
+    # Workspace-wide default language for generated content and Odette's
+    # briefings — an opaque string, never validated against a fixed set.
+    # None means "not configured"; callers fall through to the next
+    # precedence level (see app.shared.language) rather than treating this
+    # as "English". Settable via PATCH /api/v1/workspace/{id}.
+    language: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

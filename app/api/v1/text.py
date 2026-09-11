@@ -33,6 +33,7 @@ from app.models.scorer import (
     ScoreReadabilityResponse,
 )
 from app.models.chips import ApplyChipRequest, ApplyChipResponse, GetChipsResponse
+from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.pipelines.text.orchestrator import run_batch_pipeline, run_text_pipeline
 from app.pipelines.text.scorer import score_hook, score_readability
 from app.pipelines.text.brand_context import build_brand_context
@@ -69,6 +70,37 @@ async def _get_owned_brand(brand_id: str, workspace_id: str) -> dict:
     if not brand:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
     return brand
+
+
+async def _resolve_request_language(
+    request_language: str | None,
+    ctx: WorkspaceContext,
+    content_for_detection: str | None = None,
+) -> str:
+    """The precedence chain for this request's content language.
+
+    request override > workspace default > caller's own account default >
+    detected from the request's own source content > "en". See
+    app.shared.language for why generation uses this order (the workspace's
+    audience, not the clicking staff member, is what matters) — different
+    from Remy's or Odette's own chains, and for why detection only fires
+    once every explicit-preference tier above it has come back empty (a
+    Stage-5 addition: py3langid, gated at MIN_DETECTION_CONFIDENCE so a
+    low-signal or mixed-script guess falls through to "en" rather than
+    asserting a wrong language).
+    """
+    explicit = first_present_or_none(
+        request_language,
+        await workspace_language(ctx.workspace_id),
+        await user_language(ctx.user_id),
+    )
+    if explicit:
+        return explicit
+    if content_for_detection:
+        detected = detect_language(content_for_detection)
+        if detected:
+            return detected
+    return "en"
 
 
 async def _save_result(
@@ -114,6 +146,7 @@ async def generate_text_content(
     Supports all four frontend input modes: write, prompt, url, repurpose.
     """
     await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.content)
 
     if body.batch_mode:
         try:
@@ -126,6 +159,7 @@ async def generate_text_content(
                 extras=body.extras,
                 days=body.batch_days,
                 detected_intent=body.detected_intent,
+                language=language,
             )
             # Save all batch day results
             for i, day_result in enumerate(results):
@@ -161,7 +195,7 @@ async def generate_text_content(
             goal=body.goal,
             tone=body.tone,
             intent=body.intent,
-            language=body.language,
+            language=language,
             schedule_mode=body.schedule_mode.value,
             scheduled_at=body.scheduled_at,
         )
@@ -192,6 +226,7 @@ async def repurpose_content(
     Brand voice is always re-applied — never copy-paste.
     """
     await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.source_content)
 
     try:
         result = await run_text_pipeline(
@@ -207,6 +242,7 @@ async def repurpose_content(
             source_platform=body.source_platform,
             is_repurpose=True,
             intent=ContentIntent.AUTO,
+            language=language,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Repurpose error: {str(e)}")
@@ -239,6 +275,7 @@ async def batch_generate(
     Rate limited to 5/minute — expensive operation.
     """
     await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.topic_cluster)
 
     try:
         results = await run_batch_pipeline(
@@ -249,6 +286,7 @@ async def batch_generate(
             user_id=ctx.user_id,
             extras=body.extras,
             days=body.days,
+            language=language,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Batch error: {str(e)}")

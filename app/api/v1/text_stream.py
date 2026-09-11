@@ -25,6 +25,7 @@ from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles
 from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
+from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.agents.text.event_emitter import EventEmitter
 from app.pipelines.text.orchestrator import run_text_pipeline
 
@@ -58,7 +59,10 @@ async def generate_stream(
     goal:          Optional[str]  = Query(None,      description="awareness | engagement | conversion | retention | education"),
     schedule_mode: Optional[str]  = Query(None,      description="now | scheduled | draft"),
     scheduled_at:  Optional[str]  = Query(None,      description="ISO datetime for scheduled posts"),
-    language:      str            = Query("en",      description="Content language"),
+    # None = no per-request preference stated; falls through to the same
+    # workspace > caller-account > "en" precedence chain as /api/v1/text/generate
+    # (see app.shared.language and api/v1/text.py::_resolve_request_language).
+    language:      Optional[str]  = Query(None,       description="Content language — omit to use the workspace/account default"),
     ctx:           WorkspaceContext = Depends(require("create_content")),
 ) -> StreamingResponse:
     """
@@ -89,6 +93,17 @@ async def generate_stream(
     if not brand.get("is_complete"):
         raise HTTPException(status_code=400, detail="Brand profile is not complete.")
 
+    # Precedence chain: explicit query param > workspace default > caller's
+    # own account default > detected from `content` > "en" — identical order
+    # to the JSON /generate endpoint (see
+    # api/v1/text.py::_resolve_request_language).
+    explicit_language = first_present_or_none(
+        language,
+        await workspace_language(ctx.workspace_id),
+        await user_language(ctx.user_id),
+    )
+    effective_language = explicit_language or detect_language(content) or "en"
+
     # Build GenerateTextRequest from query params
     try:
         body = GenerateTextRequest(
@@ -101,7 +116,7 @@ async def generate_stream(
             goal=goal,
             schedule_mode=ScheduleMode(schedule_mode) if schedule_mode else ScheduleMode.NOW,
             scheduled_at=scheduled_at,
-            language=language,
+            language=effective_language,
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"Invalid parameter: {e}")

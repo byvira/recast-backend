@@ -654,6 +654,7 @@ async def run_batch_pipeline(
     detected_intent=None,
     is_repurpose: bool = False,
     source_platform: Optional[Platform] = None,
+    language: str = "en",
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
@@ -693,6 +694,7 @@ Return valid JSON only:
             batch_day_index=i,
             is_repurpose=is_repurpose,
             source_platform=source_platform,
+            language=language,
         )
         result.batch_mode = True
         results.append(result)

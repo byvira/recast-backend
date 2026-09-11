@@ -22,6 +22,7 @@ from app.agents.personal import style as style_mod
 from app.agents.personal import thresholds as T
 from app.agents.personal.history import iter_member_content, known_pipeline
 from app.agents.personal.state import PersonaState
+from app.pipelines.text.generator import resolve_language_name
 from app.shared.llm import GroqModel, call_llm_structured, cosine_similarity, embed_text
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ def _clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-def compute_signals_node(state: PersonaState) -> dict:
+async def compute_signals_node(state: PersonaState) -> dict:
     """Score voice drift two ways (adaptive embedding + style divergence) and
     route on the stronger of the two."""
     persona = state["persona"]
@@ -135,7 +136,7 @@ def compute_signals_node(state: PersonaState) -> dict:
                            "baseline": round(baseline_avg, 4), "threshold": T.TREND_DROP},
                 "window": {"kind": "trend", "n": T.TREND_RECENT_N},
                 "evidence_refs": _evidence(state),
-                "member_message": signals.remy_message("voice_drift_trend", ctx=ctx),
+                "member_message": await signals.remy_message("voice_drift_trend", ctx=ctx, language=state.get("language", "en")),
                 "supervisor_note": signals.supervisor_note("voice_drift_trend", ctx=ctx),
                 "is_drift": True,
             })
@@ -158,20 +159,23 @@ def compute_signals_node(state: PersonaState) -> dict:
 # 4. aux_signals — volume / topic / quality
 # ─────────────────────────────────────────────────────────────────────────────
 
-def aux_signals_node(state: PersonaState) -> dict:
+async def aux_signals_node(state: PersonaState) -> dict:
     persona = state["persona"]
     history = state["history"]
     now = state["now"]
     pending = list(state["pending_signals"])
 
-    pending += _volume_signals(persona, now, state)
-    pending += _topic_signals(persona, history, state)
-    pending += _quality_signals(persona, history, state)
+    # _sig() now awaits remy_message()'s translation-cache lookup, so these
+    # three helpers (and this node) are async — were sync before signals.py's
+    # get_localized_string() rewrite.
+    pending += await _volume_signals(persona, now, state)
+    pending += await _topic_signals(persona, history, state)
+    pending += await _quality_signals(persona, history, state)
 
     return {"pending_signals": pending}
 
 
-def _volume_signals(persona: dict, now, state: PersonaState) -> list[dict]:
+async def _volume_signals(persona: dict, now, state: PersonaState) -> list[dict]:
     """Per-piece volume check. Only ``volume_spike`` lives here.
 
     ``volume_drop`` is deliberately NOT emitted from this graph: it means "a
@@ -200,7 +204,7 @@ def _volume_signals(persona: dict, now, state: PersonaState) -> list[dict]:
         and today_count > mean_v + T.VOLUME_SPIKE_SIGMA * stddev_v
     ):
         ctx = {"today": today_count, "mean": round(mean_v, 1), "sigma": T.VOLUME_SPIKE_SIGMA}
-        out.append(_sig(
+        out.append(await _sig(
             state, "volume_spike", "medium",
             metric={"name": "pieces_today", "value": float(today_count),
                     "baseline": round(mean_v, 3), "threshold": round(mean_v + T.VOLUME_SPIKE_SIGMA * stddev_v, 3)},
@@ -209,7 +213,7 @@ def _volume_signals(persona: dict, now, state: PersonaState) -> list[dict]:
     return out
 
 
-def _topic_signals(persona: dict, history: list[dict], state: PersonaState) -> list[dict]:
+async def _topic_signals(persona: dict, history: list[dict], state: PersonaState) -> list[dict]:
     if len(history) < max(T.TOPIC_RECENT_N * 2, 10):
         return []
     recent_texts = [state["content_text"]] + [h["text"] for h in history[: T.TOPIC_RECENT_N - 1]]
@@ -219,7 +223,7 @@ def _topic_signals(persona: dict, history: list[dict], state: PersonaState) -> l
     j = style_mod.jaccard(recent_kw, base_kw)
     if j < T.TOPIC_JACCARD_FLOOR:
         ctx = {"jaccard": j, "floor": T.TOPIC_JACCARD_FLOOR}
-        return [_sig(
+        return [await _sig(
             state, "topic_shift", "low",
             metric={"name": "keyword_jaccard", "value": round(j, 4), "baseline": 1.0,
                     "threshold": T.TOPIC_JACCARD_FLOOR},
@@ -228,7 +232,7 @@ def _topic_signals(persona: dict, history: list[dict], state: PersonaState) -> l
     return []
 
 
-def _quality_signals(persona: dict, history: list[dict], state: PersonaState) -> list[dict]:
+async def _quality_signals(persona: dict, history: list[dict], state: PersonaState) -> list[dict]:
     trailing = history[: T.QUALITY_TRAILING_N - 1]
     if len(trailing) < max(T.QUALITY_TRAILING_N // 2, 4):
         return []
@@ -238,7 +242,7 @@ def _quality_signals(persona: dict, history: list[dict], state: PersonaState) ->
     baseline_rate = float(persona.get("quality_stats", {}).get("baseline_flag_rate", 0.0) or 0.0)
     if recent_rate >= T.QUALITY_FLAG_RATE_TRIGGER and baseline_rate < T.QUALITY_BASELINE_FLAG_RATE_MAX:
         ctx = {"recent_rate": recent_rate, "baseline_rate": baseline_rate}
-        return [_sig(
+        return [await _sig(
             state, "quality_regression", "medium",
             metric={"name": "trailing_flag_rate", "value": round(recent_rate, 4),
                     "baseline": round(baseline_rate, 4), "threshold": T.QUALITY_FLAG_RATE_TRIGGER},
@@ -267,10 +271,10 @@ def _drift_metric(state: PersonaState) -> dict:
     }
 
 
-def emit_soft_node(state: PersonaState) -> dict:
+async def emit_soft_node(state: PersonaState) -> dict:
     ctx = {"similarity": state["similarity"], "baseline": _baseline_sim_ref(state),
            "why": _register_hint(state)}
-    sig = _sig(
+    sig = await _sig(
         state, "voice_drift", "low",
         metric=_drift_metric(state),
         window={"kind": "rolling", "n": T.BASELINE_MAX_SAMPLES}, ctx=ctx,
@@ -301,17 +305,28 @@ async def judge_drift_node(state: PersonaState) -> dict:
     why = ""
 
     if exemplars:
+        language = state.get("language", "en")
+        # No English-skip branch, and no "does not read English" claim (which
+        # was outright false for an English-speaking member) — found via audit.
+        # Every language, "en" included, goes through the identical instruction.
+        language_line = (
+            f'Write the "why" value in {resolve_language_name(language)} — '
+            f"that is the language the member reading it reads.\n"
+        )
         prompt = (
             "A voice-consistency check flagged the NEW PIECE as off the author's usual "
             "voice. Using their recent pieces as the baseline, describe the difference.\n\n"
             "BASELINE PIECES:\n"
             + "\n---\n".join(t[:1200] for t in exemplars)
             + "\n\nNEW PIECE:\n" + state["content_text"][:1800]
-            + '\n\nReturn JSON only: {"severity": "low"|"medium"|"high", '
+            + "\n\n" + language_line
+            + 'Return JSON only: {"severity": "low"|"medium"|"high", '
               '"why": "<=15 words, concrete, e.g. \'far more formal, much longer sentences\'"}'
         )
         try:
-            res = await call_llm_structured(prompt=prompt, model=GroqModel.BALANCED)
+            # max_tokens raised — same reasoning-token-exhaustion risk as
+            # generator.py's GENERATION_MAX_TOKENS for non-English requests.
+            res = await call_llm_structured(prompt=prompt, model=GroqModel.BALANCED, max_tokens=1500)
             if isinstance(res, dict) and res:
                 why = str(res.get("why", ""))[:160]
                 sev = str(res.get("severity", "")).lower()
@@ -336,7 +351,7 @@ async def judge_drift_node(state: PersonaState) -> dict:
     else:
         why = why or style_hint or "reads differently from your usual voice"
     ctx = {"similarity": sim, "baseline": _baseline_sim_ref(state), "why": why}
-    sig = _sig(
+    sig = await _sig(
         state, "voice_drift", severity,
         metric=_drift_metric(state),
         window={"kind": "rolling", "n": T.BASELINE_MAX_SAMPLES}, ctx=ctx,
@@ -344,20 +359,47 @@ async def judge_drift_node(state: PersonaState) -> dict:
     return {"judge_why": why, "pending_signals": state["pending_signals"] + [sig]}
 
 
+_REGISTER_HINT_PHRASES = {
+    "en": {"more_formal": "more formal", "more_casual": "more casual",
+           "longer": "much longer sentences", "shorter": "much shorter sentences"},
+    "ta": {"more_formal": "இன்னும் முறையானது", "more_casual": "இன்னும் இயல்பானது",
+           "longer": "மிக நீண்ட வாக்கியங்கள்", "shorter": "மிகக் குறுகிய வாக்கியங்கள்"},
+    "hi": {"more_formal": "अधिक औपचारिक", "more_casual": "अधिक सहज",
+           "longer": "बहुत लंबे वाक्य", "shorter": "बहुत छोटे वाक्य"},
+    "ko": {"more_formal": "더 격식 있는", "more_casual": "더 캐주얼한",
+           "longer": "훨씬 긴 문장", "shorter": "훨씬 짧은 문장"},
+}
+
+
 def _register_hint(state: PersonaState) -> str:
     """A short, deterministic 'why' when the LLM gives nothing usable — derived
-    from the style fingerprint so the member still gets something concrete."""
+    from the style fingerprint so the member still gets something concrete.
+
+    fp["reading_grade"] can be None for non-Latin-script content since the
+    Stage-2 i18n fix to style.fingerprint() (the Flesch-Kincaid-style grade
+    formula is English-only) — guarded here with `or 0` so this degrades to
+    "no reading-grade signal" instead of crashing on `None - float`.
+    Phrases are language-keyed so this doesn't leak English fragments into an
+    otherwise-translated remy_message(); an unrecognised language falls back
+    to English phrasing (logged), same fail-loud pattern as remy_message().
+    """
+    language = state.get("language", "en")
+    phrases = _REGISTER_HINT_PHRASES.get(language)
+    if phrases is None:
+        logger.warning("_register_hint: no phrases for language=%r — defaulting to English", language)
+        phrases = _REGISTER_HINT_PHRASES["en"]
+
     fp = style_mod.fingerprint(state["content_text"])
     base = state["persona"].get("style_fingerprint", {})
     bits = []
-    bg, pg = float(base.get("reading_grade", 0) or 0), fp["reading_grade"]
-    if bg and abs(pg - bg) >= 4:
-        bits.append("more formal" if pg > bg else "more casual")
+    bg, pg = float(base.get("reading_grade", 0) or 0), (fp["reading_grade"] or 0)
+    if bg and pg and abs(pg - bg) >= 4:
+        bits.append(phrases["more_formal"] if pg > bg else phrases["more_casual"])
     bl, pl = float(base.get("avg_sentence_len", 0) or 0), fp["avg_sentence_len"]
     if bl and pl >= bl * 1.6:
-        bits.append("much longer sentences")
+        bits.append(phrases["longer"])
     elif bl and pl <= bl * 0.6:
-        bits.append("much shorter sentences")
+        bits.append(phrases["shorter"])
     return ", ".join(bits)
 
 
@@ -441,14 +483,14 @@ def _baseline_sim_ref(state: PersonaState) -> float:
     return round(_mean(sims), 4) if sims else T.SIM_IN_VOICE
 
 
-def _sig(state: PersonaState, signal_type: str, severity: str, *, metric: dict, window: dict, ctx: dict) -> dict:
+async def _sig(state: PersonaState, signal_type: str, severity: str, *, metric: dict, window: dict, ctx: dict) -> dict:
     return {
         "signal_type": signal_type,
         "severity": severity,
         "metric": metric,
         "window": window,
         "evidence_refs": _evidence(state),
-        "member_message": signals.remy_message(signal_type, ctx=ctx),
+        "member_message": await signals.remy_message(signal_type, ctx=ctx, language=state.get("language", "en")),
         "supervisor_note": signals.supervisor_note(signal_type, ctx=ctx),
         "is_drift": signal_type in ("voice_drift", "voice_drift_trend"),
     }

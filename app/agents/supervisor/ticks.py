@@ -21,6 +21,7 @@ from app.agents.supervisor import notify as notify_mod
 from app.agents.supervisor import thresholds as T
 from app.agents.supervisor.graph import run_supervisor
 from app.agents.supervisor.rules import evaluate_rules
+from app.shared.language import first_present, user_language, workspace_language
 from app.db.mongo import (
     agent_worker_state,
     member_personas,
@@ -87,8 +88,16 @@ async def _drain_group(r, group: str) -> dict[str, int]:
 
 async def run_rules_for_workspace(workspace_id: str) -> list[str]:
     """Evaluate every rule for a workspace, persist genuinely-new flags, deliver
-    an admin notification for each. Returns the new flag ids."""
-    candidates = await evaluate_rules(workspace_id)
+    an admin notification for each. Returns the new flag ids.
+
+    Found via audit: this was the one real production call site of
+    evaluate_rules()/odette_flag_summary() that never passed a language at
+    all, silently defaulting every rule-based flag to English regardless of
+    the workspace. Fixed by resolving it the same way _gather_inputs() does.
+    """
+    ws_doc = await workspaces.find_one({"id": workspace_id}) or {}
+    language = await _resolve_workspace_language(ws_doc)
+    candidates = await evaluate_rules(workspace_id, language=language)
     if not candidates:
         return []
 
@@ -178,6 +187,24 @@ def _batch_trigger(st: dict, *, new_rule_flag: bool, high_sev_signal: bool, now:
     return ""
 
 
+async def _resolve_workspace_language(workspace: dict) -> str:
+    """The workspace's language for Odette's briefing.
+
+    Precedence: (1) workspace.language, now that Stage 4 added it to the
+    Workspace model — read directly off the already-fetched doc, no extra
+    query; (2) the workspace owner's own users.language, as the best
+    available proxy until an admin explicitly sets one (they set the
+    workspace up; their preference is a reasonable stand-in for "this
+    workspace's language"); (3) "en". Delegates the actual precedence
+    resolution to app.shared.language, same primitives every other
+    language-aware call site uses.
+    """
+    return first_present(
+        workspace.get("language"),
+        await user_language(workspace.get("owner_id")),
+    )
+
+
 async def _gather_inputs(workspace_id: str) -> dict:
     since = _now() - timedelta(hours=T.RULE_LOOKBACK_HOURS)
     events = await workspace_events.find({
@@ -195,8 +222,10 @@ async def _gather_inputs(workspace_id: str) -> dict:
     open_flags = await workspace_flags.find(
         {"workspace_id": workspace_id, "status": "open"}
     ).to_list(length=100)
+    language = await _resolve_workspace_language(workspace)
     return {"events": events, "signals": signals, "workspace": workspace,
-            "active_members": active_members, "open_flags": open_flags}
+            "active_members": active_members, "open_flags": open_flags,
+            "language": language}
 
 
 async def _run_reasoning_pass(workspace_id: str, trigger: str) -> dict:
@@ -298,6 +327,15 @@ async def personal_volume_sweep(ctx: dict) -> dict:
         if dup:
             continue
         ctx_ = {"zero_days": P_T.VOLUME_DROP_ZERO_DAYS, "baseline_per_day": round(mean_v, 1)}
+        # This sweep calls remy_message() directly (it never runs the personal
+        # graph / PersonaState), so it needs its own member-language lookup —
+        # same precedence as app.agents.personal.state._resolve_member_language:
+        # the member's own preference beats the workspace default (Remy speaks
+        # to one person about their own work), falling through to "en".
+        member_language = first_present(
+            await user_language(p["user_id"]),
+            await workspace_language(p["workspace_id"]),
+        )
         await emit_signal(
             workspace_id=p["workspace_id"], user_id=p["user_id"], pipeline_type=None,
             signal_type="volume_drop", severity="medium",
@@ -305,7 +343,7 @@ async def personal_volume_sweep(ctx: dict) -> dict:
                     "baseline": round(mean_v, 3), "threshold": float(P_T.VOLUME_DROP_ZERO_DAYS)},
             window={"kind": "rolling", "n": P_T.VOLUME_WINDOW_DAYS},
             evidence_refs=[],
-            member_message=remy_message("volume_drop", ctx=ctx_),
+            member_message=await remy_message("volume_drop", ctx=ctx_, language=member_language),
             supervisor_note=supervisor_note("volume_drop", ctx=ctx_),
         )
         raised += 1

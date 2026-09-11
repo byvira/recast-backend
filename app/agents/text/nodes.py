@@ -270,7 +270,7 @@ async def normalise_node(state: TextAgentState) -> dict:
         )
         await emitter.emit_log(msg.source_type_detected(source_type))
 
-    brief = await extract_content_brief(cleaned)
+    brief = await extract_content_brief(cleaned, language=state["language"])
 
     return {
         "normalised_content": cleaned,
@@ -390,6 +390,10 @@ async def generate_node(state: TextAgentState) -> dict:
         "content_brief": state["content_brief"],
         "retry_feedback": state["retry_feedback"],
         "retry_count": state["retry_count"],
+        # Explicit — do not rely on state["extras"] happening to carry this.
+        # generate_for_platform() reads task.metadata["language"] to build the
+        # prompt's language instruction (app/pipelines/text/generator.py).
+        "language": state["language"],
     }
 
     task = AgentTask(
