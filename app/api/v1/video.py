@@ -2,10 +2,11 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from app.core.auth import get_current_user
+from app.core.middleware import limiter
 
 router = APIRouter()
 
@@ -20,13 +21,16 @@ class VideoRequest(BaseModel):
 
 
 @router.get("")
-async def video_status() -> dict[str, str]:
+@limiter.limit("60/minute")
+async def video_status(request: Request) -> dict[str, str]:
     """Return the health status of the video pipeline."""
     return {"status": "ok", "pipeline": "video"}
 
 
 @router.post("")
+@limiter.limit("10/minute")
 async def run_video_pipeline(
+    request: Request,
     body: VideoRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, str]:

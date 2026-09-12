@@ -7,6 +7,7 @@ for all published posts and connected accounts, per workspace.
 import logging
 from datetime import datetime, timezone, timedelta
 
+from app.core.scheduler_lock import distributed_job_lock
 from app.pipelines.analytics.aggregator import (
     fetch_post_metrics_all,
     fetch_account_metrics_all,
@@ -16,6 +17,7 @@ from app.db.mongo import get_db
 logger = logging.getLogger(__name__)
 
 
+@distributed_job_lock("refresh_analytics", ttl_seconds=1800)
 async def refresh_analytics():
     """
     Scheduled job — fetch latest metrics for every workspace with a connection.

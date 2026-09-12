@@ -7,6 +7,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import content_pieces
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
@@ -15,6 +16,7 @@ from app.pipelines.publish.token_store import get_token
 logger = logging.getLogger(__name__)
 
 
+@distributed_job_lock("process_scheduled_posts", ttl_seconds=55)
 async def process_scheduled_posts() -> None:
     """
     Find all posts scheduled for now or earlier and publish them.

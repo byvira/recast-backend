@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import structlog
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -370,4 +371,5 @@ async def get_current_user(request: Request) -> dict:
             detail="User not found.",
         )
 
+    structlog.contextvars.bind_contextvars(user_id=user_id)
     return user

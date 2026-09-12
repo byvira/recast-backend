@@ -1,11 +1,14 @@
 """FastAPI application factory — CORS, middleware, routers, lifecycle events."""
 
+import secrets as _secrets
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from scalar_fastapi import get_scalar_api_reference
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -21,9 +24,10 @@ from app.api.v1 import content, oauth, publish
 from app.core.config import settings
 from app.api.v1 import workspace, invites
 from app.core.logger import logger, setup_logging
-from app.core.middleware import RequestLoggingMiddleware, limiter
+from app.core.middleware import MaxBodySizeMiddleware, RequestLoggingMiddleware, limiter
 from app.db.mongo import create_indexes, get_client as get_mongo_client
 from app.db.migrations import run_startup_migrations
+from app.db.redis import get_redis
 from app.api.v1 import text_stream
 from app.api.v1 import assistant as assistant_router
 from app.api.v1 import supervisor as supervisor_router
@@ -34,6 +38,68 @@ from app.pipelines.analytics.scheduler import refresh_analytics
 from app.api.v1 import analytics as analytics_router
 
 setup_logging()
+
+
+def _release_sha() -> str:
+    """Best-effort release identifier for Sentry — Render sets this env var
+    on every deploy; fall back to the local git SHA outside Render."""
+    import os
+    import subprocess
+
+    render_sha = os.environ.get("RENDER_GIT_COMMIT")
+    if render_sha:
+        return render_sha[:12]
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+_SENTRY_SCRUB_HEADERS = {"authorization", "cookie", "set-cookie"}
+_SENTRY_SCRUB_KEYS = {"access_token", "refresh_token", "password", "otp"}
+
+
+def _sentry_before_send(event: dict, hint: dict) -> dict | None:
+    """Scrub auth headers/tokens before an event leaves the process."""
+    request = event.get("request")
+    if request and isinstance(request.get("headers"), dict):
+        for key in list(request["headers"].keys()):
+            if key.lower() in _SENTRY_SCRUB_HEADERS:
+                request["headers"][key] = "[Filtered]"
+
+    def _scrub(obj):
+        if isinstance(obj, dict):
+            return {
+                k: ("[Filtered]" if k.lower() in _SENTRY_SCRUB_KEYS else _scrub(v))
+                for k, v in obj.items()
+            }
+        if isinstance(obj, list):
+            return [_scrub(v) for v in obj]
+        return obj
+
+    for field in ("extra", "contexts"):
+        if field in event:
+            event[field] = _scrub(event[field])
+
+    return event
+
+
+if settings.SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.ENVIRONMENT,
+        release=_release_sha(),
+        traces_sample_rate=0.1,
+        integrations=[StarletteIntegration(), FastApiIntegration()],
+        before_send=_sentry_before_send,
+    )
+    logger.info("Sentry initialised (environment=%s, release=%s)", settings.ENVIRONMENT, _release_sha())
 
 scheduler = AsyncIOScheduler()
 
@@ -91,6 +157,13 @@ OPENAPI_TAGS = [
     {"name": "Health", "description": "Service health checks."},
 ]
 
+# Public docs (/docs, /redoc, /scalar, /openapi.json) are a full recon map of
+# every route, param and auth flow. Open in development; behind HTTP Basic
+# auth in production. If DOCS_USERNAME/DOCS_PASSWORD are unset, docs are
+# simply unreachable in production rather than falling open.
+_DOCS_PUBLIC = settings.ENVIRONMENT != "production"
+_OPENAPI_PATH = "/openapi.json"
+
 app = FastAPI(
     title=settings.APP_NAME,
     description=(
@@ -107,10 +180,47 @@ app = FastAPI(
         if settings.ENVIRONMENT == "production" and settings.PRODUCTION_DOMAIN
         else None
     ),
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if _DOCS_PUBLIC else None,
+    redoc_url="/redoc" if _DOCS_PUBLIC else None,
+    openapi_url=_OPENAPI_PATH if _DOCS_PUBLIC else None,
     lifespan=lifespan,
 )
+
+_docs_security = HTTPBasic()
+
+
+def _verify_docs_auth(credentials: HTTPBasicCredentials = Depends(_docs_security)) -> None:
+    """Gate /docs, /redoc, /scalar and /openapi.json in production.
+
+    Denies unconditionally if DOCS_USERNAME/DOCS_PASSWORD aren't both set —
+    docs must be explicitly enabled, never open by a missing-config accident.
+    """
+    valid_username = bool(settings.DOCS_USERNAME) and _secrets.compare_digest(
+        credentials.username, settings.DOCS_USERNAME
+    )
+    valid_password = bool(settings.DOCS_PASSWORD) and _secrets.compare_digest(
+        credentials.password, settings.DOCS_PASSWORD
+    )
+    if not (valid_username and valid_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
+if not _DOCS_PUBLIC:
+    @app.get(_OPENAPI_PATH, include_in_schema=False)
+    async def protected_openapi(_: None = Depends(_verify_docs_auth)) -> JSONResponse:
+        return JSONResponse(app.openapi())
+
+    @app.get("/docs", include_in_schema=False)
+    async def protected_docs(_: None = Depends(_verify_docs_auth)) -> HTMLResponse:
+        return get_swagger_ui_html(openapi_url=_OPENAPI_PATH, title=f"{app.title} - Docs")
+
+    @app.get("/redoc", include_in_schema=False)
+    async def protected_redoc(_: None = Depends(_verify_docs_auth)) -> HTMLResponse:
+        return get_redoc_html(openapi_url=_OPENAPI_PATH, title=f"{app.title} - ReDoc")
 
 # --- Middleware ---
 app.state.limiter = limiter
@@ -119,8 +229,9 @@ app.add_middleware(RequestLoggingMiddleware)
 
 if settings.ENVIRONMENT == "production":
     origins = [settings.PRODUCTION_DOMAIN] if settings.PRODUCTION_DOMAIN else []
+    origins += [o for o in settings.ALLOWED_ORIGINS if o not in origins]
 else:
-    origins = ["http://localhost:3000", "http://localhost:5173"]
+    origins = list(settings.ALLOWED_ORIGINS)
 
 app.add_middleware(
     CORSMiddleware,
@@ -129,6 +240,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Outermost middleware — runs before CORS/rate-limiting/logging, so an
+# oversized body is rejected before any of that work happens.
+app.add_middleware(MaxBodySizeMiddleware)
 
 
 # --- Exception Handlers ---
@@ -166,13 +281,40 @@ app.include_router(
 # --- Health ---
 @app.get("/health", tags=["Health"])
 async def health_check() -> dict[str, str]:
+    """Shallow liveness check — no DB/Redis touch. Point Render's own health
+    check here so a slow dependency never kills the instance."""
     return {"status": "ok"}
 
 
+@app.get("/health/ready", tags=["Health"])
+async def health_ready() -> JSONResponse:
+    """Deep readiness check — pings Mongo and Redis. Point an external uptime
+    monitor here, not Render's health check."""
+    problems: list[str] = []
+
+    try:
+        await get_mongo_client().get_default_database().command("ping")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"mongo: {exc}")
+
+    try:
+        redis = await get_redis()
+        await redis.ping()
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"redis: {exc}")
+
+    if problems:
+        return JSONResponse(status_code=503, content={"status": "not ready", "problems": problems})
+    return JSONResponse(status_code=200, content={"status": "ready"})
+
+
 # --- Docs (Scalar) ---
-@app.get("/scalar", include_in_schema=False)
+_scalar_dependencies = [] if _DOCS_PUBLIC else [Depends(_verify_docs_auth)]
+
+
+@app.get("/scalar", include_in_schema=False, dependencies=_scalar_dependencies)
 async def scalar_docs() -> HTMLResponse:
     return get_scalar_api_reference(
-        openapi_url=app.openapi_url,
+        openapi_url=_OPENAPI_PATH,
         title=app.title,
     )

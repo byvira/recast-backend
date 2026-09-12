@@ -123,13 +123,49 @@ _SYNTH_INSTRUCTIONS = (
 )
 
 
+def _flatten_scratchpad_for_synthesis(scratchpad: list[dict]) -> list[dict]:
+    """Rewrite a raw ReAct scratchpad into a synthesis-safe message list with
+    no tool-call-shaped messages in it at all — a plain-text note of what was
+    investigated instead.
+
+    Why: Groq's gpt-oss-120b (reasoning_effort="high") was observed, live, to
+    keep emitting a tool call on the synthesis turn even with tool_choice
+    explicitly set to "none" — a real model-compliance quirk, not something
+    request parameters alone reliably prevent, once the conversation history
+    contains prior assistant tool_calls messages. Removing that structure
+    from history (rather than trying to constrain the model around it)
+    removes the in-context pattern the model was latching onto — confirmed
+    by reproducing the exact failure with a handcrafted scratchpad, then
+    verifying this rewrite stops it.
+    """
+    flattened: list[dict] = []
+    pending_tool_names: dict[str, str] = {}
+    for msg in scratchpad:
+        role = msg.get("role")
+        if role == "assistant" and msg.get("tool_calls"):
+            calls_desc = []
+            for tc in msg["tool_calls"]:
+                name = tc["function"]["name"]
+                pending_tool_names[tc["id"]] = name
+                calls_desc.append(f"{name}({tc['function']['arguments']})")
+            note = f"[investigated: {', '.join(calls_desc)}]"
+            text = (msg.get("content") or "").strip()
+            flattened.append({"role": "assistant", "content": (text + " " + note).strip()})
+        elif role == "tool":
+            name = pending_tool_names.get(msg.get("tool_call_id"), "tool")
+            flattened.append({"role": "user", "content": f"[{name} result: {msg.get('content', '')}]"})
+        else:
+            flattened.append(msg)
+    return flattened
+
+
 async def synthesize_node(state: SupervisorState) -> dict:
     digest = state["digest"]
     if digest_is_quiet(digest):
         return {"findings": {"insights": [], "flags": [], "notify": False}}
 
     client = get_groq_client()
-    messages = list(state["scratchpad"]) or [
+    messages = _flatten_scratchpad_for_synthesis(list(state["scratchpad"])) or [
         {"role": "system", "content": build_odette_system(state.get("language", "en"))},
         {"role": "user", "content": "DIGEST:\n" + json.dumps(digest, default=str)},
     ]
