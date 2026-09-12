@@ -34,7 +34,7 @@ import aiofiles
 from fastapi import HTTPException
 from google import genai
 from google.genai import types
-from groq import APIConnectionError, AsyncGroq, RateLimitError
+from groq import APIConnectionError, APIStatusError, AsyncGroq, RateLimitError
 
 from app.core.config import settings
 from app.core.tracing import add_run_metadata, traceable
@@ -141,8 +141,24 @@ _JSON_SYSTEM_SUFFIX = (
     "Start with { or ["
 )
 
-# Approximate chars-per-token for prompt budget estimation (conservative)
-_CHARS_PER_TOKEN = 3.5
+# Approximate chars-per-token for prompt budget estimation. Deliberately
+# conservative (overestimates token count) because Groq's real accounting
+# is what actually fails a request — an estimate that runs a little high is
+# just a slightly smaller max_tokens ask; an estimate that runs low is a real
+# 413 "request too large" error with no graceful degradation. Tightened from
+# 3.5 after that exact failure mode showed up live: a request the old
+# estimate cleared still landed over the account's true per-minute ceiling.
+_CHARS_PER_TOKEN = 3.0
+
+# Extra headroom below GROQ_TPM_LIMIT, on top of the (already-conservative)
+# token estimate above. Two independent reasons this exists, not one:
+#   1. The char-based estimate is still an approximation, not a real
+#      tokenizer count — this absorbs normal estimation error.
+#   2. Concurrent requests: Groq's per-minute budget is shared across every
+#      call this process (or others on the same account) makes in the same
+#      60s window, so a second request can eat into the budget between when
+#      we estimate and when Groq actually receives ours.
+_TPM_SAFETY_MARGIN = 500
 
 
 def _estimate_tokens(text: str) -> int:
@@ -151,12 +167,18 @@ def _estimate_tokens(text: str) -> int:
 
 def _safe_max_tokens(prompt: str, system: str, ceiling: int) -> int:
     """
-    Reduce max_tokens if the prompt itself is large so we don't
-    exceed the model context window. Reserves the ceiling for output.
-    Most Groq models are 8k-128k; we guard against the smallest (8k).
+    Cap max_tokens so prompt + requested output stays under this account's
+    real tokens-per-minute limit (settings.GROQ_TPM_LIMIT) — Groq counts
+    both toward the same per-minute budget, not just the model's context
+    window, so a big prompt with a big max_tokens ask can 413 even on a
+    model whose context window is much larger than either number alone.
+
+    GROQ_TPM_LIMIT is a setting, not a hardcoded constant, so upgrading the
+    Groq account tier later is a config change, not a code change.
     """
     used = _estimate_tokens(prompt) + _estimate_tokens(system)
-    return max(512, min(ceiling, 8_000 - used))
+    available = settings.GROQ_TPM_LIMIT - used - _TPM_SAFETY_MARGIN
+    return max(512, min(ceiling, available))
 
 
 def _build_messages(
@@ -176,6 +198,16 @@ def _build_messages(
         messages.append({"role": "system", "content": "\n\n".join(parts)})
     messages.append({"role": "user", "content": prompt})
     return messages
+
+
+def _flatten_chat(messages: list[dict[str, str]]) -> str:
+    """Turn a multi-turn message history into one prompt string for the
+    Gemini fallback, which takes a single prompt, not a message list.
+    Degraded (loses native multi-turn structure) but only used when Groq's
+    chat path has already failed outright — a readable transcript beats no
+    response at all.
+    """
+    return "\n\n".join(f"{m.get('role', 'user').upper()}: {m.get('content', '')}" for m in messages)
 
 
 def _log_if_truncated(response: Any, context: str) -> None:
@@ -266,14 +298,40 @@ async def call_llm(
         try:
             return await _complete(GroqModel.FAST)
         except Exception:
-            raise HTTPException(
-                status_code=503,
-                detail="LLM rate limit. Please try again in 60 seconds.",
-            )
+            logger.warning("Groq FAST fallback also failed — falling back to Gemini")
+            try:
+                return await call_llm_fallback(prompt=prompt, system=system)
+            except Exception as exc:
+                logger.error("Gemini fallback also failed: %s", exc)
+                raise HTTPException(
+                    status_code=503,
+                    detail="LLM rate limit. Please try again in 60 seconds.",
+                )
 
     except APIConnectionError as exc:
-        logger.error("Groq connection error: %s", exc)
-        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        logger.error("Groq connection error: %s — falling back to Gemini", exc)
+        try:
+            return await call_llm_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini fallback also failed: %s", fallback_exc)
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+
+    except APIStatusError as exc:
+        # Distinct from RateLimitError (429, retrying/waiting can fix it):
+        # a 413 "request too large" means THIS request's prompt + max_tokens
+        # already exceeds the account's per-minute ceiling, so retrying the
+        # same request on Groq would just 413 again. Route straight to
+        # Gemini, which has its own, independent (and much larger) budget.
+        logger.warning(
+            "Groq returned %s (%s) — not a rate limit that retrying fixes, "
+            "falling back to Gemini",
+            exc.status_code, exc.__class__.__name__,
+        )
+        try:
+            return await call_llm_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini fallback also failed: %s", fallback_exc)
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
 
     except Exception as exc:
         logger.error("Unexpected call_llm error: %s", exc)
@@ -377,12 +435,36 @@ async def call_llm_structured(
         )
 
     except RateLimitError:
-        logger.error("Groq structured call rate limit persisted after retries")
-        return {}
+        logger.warning("Groq structured call rate limit persisted after retries — falling back to Gemini")
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as exc:
+            logger.error("Gemini structured fallback also failed: %s", exc)
+            return {}
 
     except APIConnectionError as exc:
-        logger.error("Groq connection error: %s", exc)
-        return {}
+        logger.error("Groq connection error: %s — falling back to Gemini", exc)
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini structured fallback also failed: %s", fallback_exc)
+            return {}
+
+    except APIStatusError as exc:
+        # See call_llm()'s identical branch: a 413 means this request's
+        # prompt + max_tokens already exceeds the account's per-minute
+        # ceiling — retrying on Groq would just 413 again, so go straight
+        # to Gemini's independent budget instead.
+        logger.warning(
+            "Groq returned %s (%s) — not a rate limit that retrying fixes, "
+            "falling back to Gemini",
+            exc.status_code, exc.__class__.__name__,
+        )
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini structured fallback also failed: %s", fallback_exc)
+            return {}
 
     except Exception as exc:
         logger.error("Unexpected call_llm_structured error: %s", exc)
@@ -435,13 +517,35 @@ async def call_llm_chat(
         try:
             return await _chat_complete(client, GroqModel.FAST, full_messages, capped)
         except Exception:
-            raise HTTPException(
-                status_code=503,
-                detail="LLM rate limit. Please try again in 60 seconds.",
-            )
+            logger.warning("Groq FAST fallback also failed on chat — falling back to Gemini")
+            try:
+                return await call_llm_fallback(prompt=_flatten_chat(messages), system=system)
+            except Exception as exc:
+                logger.error("Gemini fallback also failed on chat: %s", exc)
+                raise HTTPException(
+                    status_code=503,
+                    detail="LLM rate limit. Please try again in 60 seconds.",
+                )
     except APIConnectionError as exc:
-        logger.error("Groq connection error in chat: %s", exc)
-        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        logger.error("Groq connection error in chat: %s — falling back to Gemini", exc)
+        try:
+            return await call_llm_fallback(prompt=_flatten_chat(messages), system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini fallback also failed on chat: %s", fallback_exc)
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    except APIStatusError as exc:
+        # Same reasoning as call_llm()'s branch: a 413 means this request's
+        # prompt + max_tokens already exceeds the account's per-minute
+        # ceiling — retrying on Groq would just 413 again.
+        logger.warning(
+            "Groq returned %s (%s) on chat — falling back to Gemini",
+            exc.status_code, exc.__class__.__name__,
+        )
+        try:
+            return await call_llm_fallback(prompt=_flatten_chat(messages), system=system)
+        except Exception as fallback_exc:
+            logger.error("Gemini fallback also failed on chat: %s", fallback_exc)
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
     except Exception as exc:
         logger.error("Unexpected call_llm_chat error: %s", exc)
         raise HTTPException(status_code=500, detail="Unexpected error during chat.")
