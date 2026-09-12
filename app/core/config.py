@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    # Groq's tokens-per-minute ceiling for this account/tier — prompt tokens
+    # PLUS the max_tokens requested both count against this, so it must stay
+    # correct for whatever plan is active, not just the free tier's current
+    # 8000. Bump this one value after upgrading Groq's plan — no code change
+    # needed. See app.shared.llm._safe_max_tokens, which uses it to size
+    # every request so prompt + requested output never exceeds it.
+    GROQ_TPM_LIMIT: int = 8000
 
     # ── LangSmith tracing (agent observability) ──────────────────────────
     # Set LANGCHAIN_TRACING_V2=true and LANGCHAIN_API_KEY=ls__... in .env to make
