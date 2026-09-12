@@ -93,6 +93,54 @@ async def send_otp_sms(phone: str, otp: str) -> bool:
         return False
 
 
+_ALERT_EMAIL_HTML_TEMPLATE = """
+<div style="font-family:sans-serif;max-width:560px;margin:auto">
+  <h2>{subject}</h2>
+  <pre style="white-space:pre-wrap;font-family:inherit;font-size:14px">{body}</pre>
+</div>
+"""
+
+
+async def send_alert_email(subject: str, body: str) -> bool:
+    """Send an ops alert to ALERT_EMAIL via Resend — same integration as OTP email.
+
+    Skips silently if ALERT_EMAIL isn't configured (matches the Slack alert's
+    no-op-until-configured contract). In development the alert is logged
+    instead of sent, matching send_otp_email's dev short-circuit.
+
+    Args:
+        subject: Short alert subject line.
+        body: Plain-text alert body (rendered inside a <pre> block).
+
+    Returns:
+        True if sent (or logged in dev), False if skipped or delivery failed.
+    """
+    if not settings.ALERT_EMAIL:
+        logger.debug("ALERT_EMAIL not configured — skipping alert email: %s", subject)
+        return False
+
+    if settings.ENVIRONMENT != "production":
+        logger.info("[DEV MODE] Alert email to %s — %s\n%s", settings.ALERT_EMAIL, subject, body)
+        return True
+
+    try:
+        import resend  # type: ignore[import-untyped]
+
+        resend.api_key = settings.RESEND_API_KEY
+        resend.Emails.send(
+            {
+                "from": settings.EMAIL_FROM,
+                "to": settings.ALERT_EMAIL,
+                "subject": f"[Recast Alert] {subject}",
+                "html": _ALERT_EMAIL_HTML_TEMPLATE.format(subject=subject, body=body),
+            }
+        )
+        return True
+    except Exception as exc:
+        logger.error("Failed to send alert email (%s): %s", subject, exc)
+        return False
+
+
 async def send_otp(identifier: str, otp: str, channel: str) -> bool:
     """Route OTP delivery to the correct channel.
 

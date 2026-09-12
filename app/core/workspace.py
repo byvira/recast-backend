@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
+import structlog
 from fastapi import Depends, Header, HTTPException
 
 from app.core.auth import get_current_user
@@ -81,6 +82,7 @@ async def get_current_workspace(
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found.")
 
+    structlog.contextvars.bind_contextvars(workspace_id=workspace_id)
     return WorkspaceContext(workspace=workspace, member=member, user=current_user)
 
 

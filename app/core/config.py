@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "Recast-Backend"
-    DEBUG: bool = False
 
     # Environment — controls CORS origins and notification delivery
     # Set to "production" to restrict CORS and enable real email/SMS delivery
@@ -25,13 +24,10 @@ class Settings(BaseSettings):
     SLACK_WEBHOOK_URL: str = ""
     ALERT_EMAIL: str = ""
 
-    
-
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/oauth/google/callback"
-
 
     # Security
     SECRET_KEY: str
@@ -80,9 +76,6 @@ class Settings(BaseSettings):
     LANGCHAIN_PROJECT: str = "recast-agents"
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
 
-    # External services
-    STRIPE_SECRET_KEY: str = ""
-
     # Data stores
     MONGODB_URL: str
     REDIS_URL: str
@@ -91,18 +84,33 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
-    HUGGINGFACE_API_KEY: str = ""
-
     # Free tier credits limit
     FREE_CREDITS_LIMIT: int = 100
 
-    # CORS — ALLOWED_ORIGINS loaded from JSON array string in .env (legacy / dev override)
-    # In production, PRODUCTION_DOMAIN is used exclusively.
+    # CORS — JSON array string in .env, e.g. ALLOWED_ORIGINS=["https://a.com","https://b.com"]
+    # In development this is the full origin list. In production it's merged
+    # with PRODUCTION_DOMAIN, so use it for any *additional* prod origins
+    # (staging frontend, a second domain) beyond the primary one.
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     # Production domain — required when ENVIRONMENT=production
     # Example: "https://app.yourdomain.com"
     PRODUCTION_DOMAIN: str = ""
+
+    # ── API docs gating ────────────────────────────────────────────────────
+    # /docs, /redoc, /scalar and /openapi.json are open in development. In
+    # production they require HTTP Basic auth using these credentials — if
+    # either is unset, the docs routes are unreachable (never open by default).
+    DOCS_USERNAME: str = ""
+    DOCS_PASSWORD: str = ""
+
+    # ── Logging & error tracking ────────────────────────────────────────────
+    # LOG_FORMAT: "console" (colorlog, human-readable) | "json" (structlog,
+    # one JSON object per line — what a log aggregator needs). Defaults to
+    # json in production, console in development; set explicitly to override.
+    LOG_FORMAT: str = ""
+    # Sentry DSN for error tracking. Blank = Sentry is never initialised.
+    SENTRY_DSN: str = ""
 
     # ── Token Encryption ──────────────────────────────────────────────────
     # Used to encrypt/decrypt OAuth access tokens and refresh tokens in MongoDB.
@@ -118,12 +126,6 @@ class Settings(BaseSettings):
     META_APP_ID: str = ""
     META_APP_SECRET: str = ""
     META_REDIRECT_URI: str = "https://YOUR-NGROK-URL.ngrok-free.app/api/v1/oauth/meta/callback"
-
-    
-    INSTAGRAM_APP_ID: str = ""
-    INSTAGRAM_APP_SECRET: str = ""
-
-    
 
     # ── LinkedIn ──────────────────────────────────────────────────────────
     # Register at: developer.linkedin.com/apps
@@ -152,17 +154,9 @@ class Settings(BaseSettings):
     BLUESKY_APP_NAME: str = "recast"
     META_CONFIG_ID: str = ""
 
-
     THREADS_APP_ID: str = ""
     THREADS_APP_SECRET: str = ""
     THREADS_REDIRECT_URI: str = ""
-
-    GOOGLE_CLIENT_ID: str = ""
-    GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = ""
-    JWT_ALGORITHM:str=""
-
-    
 
     # ── Bluesky ───────────────────────────────────────────────────────────
     # No developer registration needed — uses AT Protocol auth.
@@ -178,6 +172,5 @@ class Settings(BaseSettings):
     # How many minutes ahead to refresh tokens before they expire
     TOKEN_REFRESH_THRESHOLD_MINUTES: int = 10080  # 7 days
 
-  
 
 settings = Settings()

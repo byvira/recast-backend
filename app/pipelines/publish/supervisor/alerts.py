@@ -50,6 +50,23 @@ async def save_incident(
         logger.error("Failed to save incident to MongoDB: %s", e)
 
 
+async def _post_slack(text: str) -> None:
+    """Post *text* to the Slack incoming webhook. Skips silently if unconfigured."""
+    try:
+        from app.core.config import settings
+        webhook_url = getattr(settings, "SLACK_WEBHOOK_URL", "")
+        if not webhook_url:
+            logger.debug("SLACK_WEBHOOK_URL not configured — skipping Slack alert")
+            return
+
+        import httpx
+        async with httpx.AsyncClient() as client:
+            await client.post(webhook_url, json={"text": text}, timeout=5.0)
+
+    except Exception as e:
+        logger.error("Failed to send Slack alert: %s", e)
+
+
 async def send_slack_alert(
     piece_id: str,
     platform: str,
@@ -57,32 +74,14 @@ async def send_slack_alert(
     error_message: str,
     user_id: str,
 ) -> None:
-    """Send alert to Slack. Skips silently if webhook URL not configured."""
-    try:
-        from app.core.config import settings
-        webhook_url = getattr(settings, "SLACK_WEBHOOK_URL", "")
-        if not webhook_url:
-            logger.debug(
-                "SLACK_WEBHOOK_URL not configured — skipping Slack alert "
-                "for piece %s platform %s", piece_id, platform
-            )
-            return
-
-        import httpx
-        payload = {
-            "text": (
-                f"🚨 *Publish {error_type} failure*\n"
-                f"Platform: {platform}\n"
-                f"Piece: {piece_id}\n"
-                f"User: {user_id}\n"
-                f"Error: {error_message}"
-            )
-        }
-        async with httpx.AsyncClient() as client:
-            await client.post(webhook_url, json=payload, timeout=5.0)
-
-    except Exception as e:
-        logger.error("Failed to send Slack alert: %s", e)
+    """Send a publish-failure alert to Slack. Skips silently if unconfigured."""
+    await _post_slack(
+        f"🚨 *Publish {error_type} failure*\n"
+        f"Platform: {platform}\n"
+        f"Piece: {piece_id}\n"
+        f"User: {user_id}\n"
+        f"Error: {error_message}"
+    )
 
 
 async def alert_fatal(
@@ -119,4 +118,38 @@ async def alert_fatal(
         error_type="FATAL",
         error_message=error_message,
         user_id=user_id,
+    )
+    from app.core.notifications import send_alert_email
+    await send_alert_email(
+        subject=f"Publish FATAL failure — {platform}",
+        body=(
+            f"Piece: {piece_id}\n"
+            f"Platform: {platform}\n"
+            f"User: {user_id}\n"
+            f"Workspace: {workspace_id}\n"
+            f"Error: {error_message}"
+        ),
+    )
+
+
+async def alert_token_refresh_failure(
+    workspace_id: str,
+    platform: str,
+    error_message: str,
+) -> None:
+    """Alert on a failed OAuth token refresh — Slack + email. Never raises."""
+    await _post_slack(
+        f"⚠️ *Token refresh failed*\n"
+        f"Workspace: {workspace_id}\n"
+        f"Platform: {platform}\n"
+        f"Error: {error_message}"
+    )
+    from app.core.notifications import send_alert_email
+    await send_alert_email(
+        subject=f"Token refresh failed — {platform}",
+        body=(
+            f"Workspace: {workspace_id}\n"
+            f"Platform: {platform}\n"
+            f"Error: {error_message}"
+        ),
     )

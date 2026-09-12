@@ -499,7 +499,7 @@ async def logout(
             payload = jwt.decode(
                 refresh_token,
                 settings.SECRET_KEY,
-                algorithms=[settings.JWT_ALGORITHM],
+                algorithms=[settings.ALGORITHM],
             )
             # Only blacklist if token has remaining validity
             ttl = payload.get("exp", 0) - int(datetime.now(timezone.utc).timestamp())

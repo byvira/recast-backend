@@ -6,7 +6,9 @@ Runs every 24 hours — refreshes workspace connections expiring within 7 days.
 import logging
 from datetime import datetime, timezone, timedelta
 
+from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import workspace_connections
+from app.pipelines.publish.supervisor.alerts import alert_token_refresh_failure
 from app.pipelines.publish.token_store import (
     save_token,
     decrypt_token,
@@ -16,6 +18,7 @@ from app.pipelines.publish.registry import get_publisher
 logger = logging.getLogger(__name__)
 
 
+@distributed_job_lock("refresh_expiring_tokens", ttl_seconds=3600)
 async def refresh_expiring_tokens() -> None:
     """
     Find all workspace connections expiring within 7 days and refresh them.
@@ -83,6 +86,11 @@ async def refresh_expiring_tokens() -> None:
             logger.error(
                 "Token refresh failed for workspace %s platform %s: %s",
                 workspace_id, platform, e,
+            )
+            await alert_token_refresh_failure(
+                workspace_id=workspace_id,
+                platform=platform,
+                error_message=str(e),
             )
 
     logger.info(
