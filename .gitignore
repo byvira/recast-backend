@@ -43,4 +43,9 @@ htmlcov/
 logs/
 
 # ── Local smoke / integration scripts (hit real MongoDB/Redis/Groq/Gemini/LangSmith) ──
-scripts/
+# scripts/rotate_fernet_key.py is an exception — a real ops tool, tracked below.
+scripts/*
+!scripts/rotate_fernet_key.py
+
+# ── Local launch tracking (personal checklist, not for the repo) ─────────────
+LAUNCH_CHECKLIST.md
