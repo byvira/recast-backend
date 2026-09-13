@@ -1,3 +1,6 @@
+from app.prompts.registry import load_prompt
+
+
 def build_brand_context(brand: dict, pipeline: str) -> str:
     """
     Build a system prompt string from the brand profile dict.
@@ -9,23 +12,9 @@ def build_brand_context(brand: dict, pipeline: str) -> str:
 
     Returns:
         Formatted system prompt string with brand voice instructions
+
+    Renders app/prompts/fragments/brand_context.jinja (document_shape="media_util").
     """
-    name = brand.get("name", "")
-    tone = brand.get("voice", {}).get("tone", "professional")
-    style = brand.get("voice", {}).get("style", "")
-    
-    blacklist = brand.get("blacklist", [])
-    audience = brand.get("audience", "general audience")
-
-    blacklist_str = (
-        f"NEVER use these words: {', '.join(blacklist)}."
-        if blacklist else ""
+    return load_prompt(
+        "fragments/brand_context", document_shape="media_util", brand=brand, pipeline=pipeline
     )
-
-    return f"""You are a content expert for {name}.
-Brand tone: {tone}
-Writing style: {style}
-Target audience: {audience}
-Pipeline: {pipeline}
-{blacklist_str}
-Always match the brand voice exactly."""

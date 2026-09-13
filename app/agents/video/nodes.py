@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from app.agents.base import BaseAgentState
+from app.prompts.registry import load_prompt
 from app.utils.brand import build_brand_context
 from app.utils.llm import call_llm, call_llm_structured, transcribe_audio, GroqModel
 
@@ -16,10 +17,7 @@ async def plan_node(state: BaseAgentState) -> dict:
     title = raw.get("title", "") if isinstance(raw, dict) else str(raw)
     output_type = raw.get("output_type", "repurpose") if isinstance(raw, dict) else "repurpose"
 
-    prompt = (
-        f"Create a video content plan for '{title}' (goal: {output_type}).\n"
-        "Return JSON with key 'steps' as an array of short action strings."
-    )
+    prompt = load_prompt("media/shared/plan", domain="video", title=title, output_type=output_type)
     result = await call_llm_structured(prompt=prompt, system=brand_ctx)
     plan = result.get("steps", ["transcribe", "analyse", "generate", "evaluate", "deliver"])
 
@@ -70,12 +68,7 @@ async def analyse_node(state: BaseAgentState) -> dict:
     raw = state["raw_input"]
     output_type = raw.get("output_type", "repurpose") if isinstance(raw, dict) else "repurpose"
 
-    prompt = (
-        f"Analyse this video transcript for {output_type}:\n\n{text[:4000]}\n\n"
-        "Return JSON with keys: 'key_moments' (list of {time, text, value}), "
-        "'topics' (list), 'clip_suggestions' (list of {start, end, reason}), "
-        "'content_type' (str), 'repurpose_angles' (list)."
-    )
+    prompt = load_prompt("media/shared/analyse", domain="video", output_type=output_type, text=text[:4000])
     analysis = await call_llm_structured(prompt=prompt, system=brand_ctx)
 
     return {
@@ -97,18 +90,11 @@ async def generate_node(state: BaseAgentState) -> dict:
     platform = raw.get("platform", "general") if isinstance(raw, dict) else "general"
     retry = state["retry_count"]
 
-    quality_note = (
-        "\nIMPORTANT: Previous attempt scored below quality threshold. "
-        "Improve hooks, structure, and platform optimization."
-    ) if retry > 0 else ""
-
-    prompt = (
-        f"Generate {output_type} content for {platform} from this video:\n"
-        f"Key moments: {analysis.get('key_moments', [])}\n"
-        f"Topics: {analysis.get('topics', [])}\n"
-        f"Repurpose angles: {analysis.get('repurpose_angles', [])}\n"
-        f"Transcript excerpt: {transcript.get('text', '')[:2000]}"
-        f"{quality_note}"
+    prompt = load_prompt(
+        "media/shared/generate", domain="video", output_type=output_type, platform=platform,
+        key_moments=analysis.get("key_moments", []), topics=analysis.get("topics", []),
+        repurpose_angles=analysis.get("repurpose_angles", []),
+        transcript_excerpt=transcript.get("text", "")[:2000], retry=retry,
     )
     content = await call_llm(prompt=prompt, system=brand_ctx, model=GroqModel.BALANCED)
 
@@ -136,10 +122,8 @@ async def evaluate_node(state: BaseAgentState) -> dict:
     platform = raw.get("platform", "general") if isinstance(raw, dict) else "general"
     brand_name = state["brand"].get("name", "")
 
-    prompt = (
-        f"Evaluate this video content for brand '{brand_name}' on {platform}:\n\n{content}\n\n"
-        "Return JSON with keys: 'platform_fit' (0-1), 'brand_alignment' (0-1), "
-        "'engagement_potential' (0-1), 'overall' (0-1)."
+    prompt = load_prompt(
+        "media/shared/evaluate", domain="video", brand_name=brand_name, platform=platform, content=content
     )
     scores_raw = await call_llm_structured(prompt=prompt, system=brand_ctx)
 

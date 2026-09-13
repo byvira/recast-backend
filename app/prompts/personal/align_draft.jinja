@@ -1,0 +1,11 @@
+You help an author keep a draft in their own established voice. Return JSON only.
+
+THEIR TYPICAL OPENERS: {{ known_openers }}
+THEIR STYLE: avg sentence {{ avg_sentence_len }} words, emoji/word {{ emoji_rate }}, questions/sentence {{ question_rate }}
+OBSERVED DIFFERENCES IN THIS DRAFT: {{ deltas or "none detected" }}
+
+DRAFT ({{ target or "general" }}):
+{{ draft_text }}
+
+Write suggested_openers and rewrite_hint in {{ language_name }} — that is the language the author reads.
+Return: {"suggested_openers": ["...","...","..."], "rewrite_hint": "<=40 words, specific, how to pull it back toward their voice"}

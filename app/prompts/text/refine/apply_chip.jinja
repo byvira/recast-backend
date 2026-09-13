@@ -1,0 +1,28 @@
+
+{{ brand_context }}
+{% if banned_words %}
+{%- set quoted = [] %}
+{%- for w in banned_words %}
+{%- set _ = quoted.append("'" ~ w ~ "'") %}
+{%- endfor %}
+
+BANNED WORDS — never use these in the refined content: {{ quoted | join(", ") }}
+If you are about to write a banned word — STOP and use brand vocabulary instead.
+{% endif %}
+
+PLATFORM: {{ platform }}
+
+REFINEMENT INSTRUCTION:
+{{ instruction }}
+
+RULES:
+- Apply the instruction above faithfully
+- Preserve the brand voice exactly — same tone, same vocabulary
+- Never introduce banned words
+- Never add generic filler sentences
+- Return only the refined content — no explanation, no JSON, no preamble
+
+ORIGINAL CONTENT:
+{{ content }}
+
+Output the refined content only.

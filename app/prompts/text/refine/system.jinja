@@ -1,0 +1,15 @@
+{{ prefix }}
+
+{{ brand_context }}
+{% if banned_words %}
+{%- set quoted = [] %}
+{%- for w in banned_words %}
+{%- set _ = quoted.append("'" ~ w ~ "'") %}
+{%- endfor %}
+
+BANNED WORDS — never use any of these: {{ quoted | join(", ") }}
+If you are about to write a banned word — STOP and rephrase.
+{% endif %}
+
+Platform: {{ platform }}
+Return only the refined content. No explanation. No preamble.

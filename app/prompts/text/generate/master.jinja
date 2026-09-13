@@ -1,0 +1,42 @@
+
+{{ language_instruction }}
+
+{{ brand_context }}
+{{ tone_override_text }}
+{{ goal_context }}
+{{ content_brief }}
+{{ specificity_instruction }}
+{{ engagement_patterns }}
+(Reminder: everything above this line that reads as English prose is a structural example only. {{ language_instruction }})
+{{ approved_copy_instruction }}
+{{ retry_block }}
+{{ platform_rules }}
+
+ADDITIONAL RULES:
+{{ hashtag_instruction }}
+{{ cta_instruction }}
+{{ banned_instruction }}
+
+SOURCE CONTENT:
+{{ content }}
+
+Generate content for {{ platform }}.
+
+CRITICAL CHECKLIST BEFORE OUTPUTTING:
+□ Does it start with an approved opener or engagement pattern hook?
+□ Does it end with an approved closer (not a generic motivational line)?
+□ Does it contain zero banned words?
+□ Does it include all required phrases in the right placements?
+□ Does it meet the minimum length for this platform?
+□ Does every sentence contain a specific detail — not a generic observation?
+□ {{ language_instruction }}
+
+Do not explain. Output only the final content.
+
+Return valid JSON in exactly this format:
+{
+  "content": "the full generated content here",
+  "word_count": 0,
+  "char_count": 0,
+  "platform": "{{ platform }}"
+}

@@ -10,6 +10,7 @@ is always the most recent context the model reads before generating.
 """
 
 import logging
+from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_chat, GroqModel
 
 logger = logging.getLogger(__name__)
@@ -19,28 +20,6 @@ logger = logging.getLogger(__name__)
 # SYSTEM PROMPT BUILDER
 # ─────────────────────────────────────────────────────────────────────────────
 
-REFINEMENT_SYSTEM_PREFIX = """
-You are refining content for a specific brand.
-Your job is to apply the user's refinement instruction while keeping
-the brand voice, platform format, and content specificity intact.
-
-RULES — apply on every turn:
-  ✓ Keep all specific numbers, real stories, and brand facts
-  ✓ Never introduce vague generalisations
-  ✓ Preserve the platform format — LinkedIn stays LinkedIn
-  ✓ Return only the refined content — no explanation, no preamble, no JSON
-  ✓ Use the brand's exact story: numbers, names, real moments
-  ✗ Never add generic motivational language: "game-changer", "save your sanity",
-    "never worry again", "transform", "revolutionize"
-  ✗ Never introduce banned words
-  ✗ Never lose the hook or the closing unless explicitly asked
-  ✗ Never add empathy preamble: "I've been where you are",
-    "I know how you feel", "You're not alone"
-  ✗ Never use adjectives without evidence:
-    "game-changer" → "Four hours every two weeks beats thirty minutes every day"
-    "powerful system" → "system that ran 11 brands without burnout"
-"""
-
 def build_refinement_system(
     brand_context: str,
     platform: str,
@@ -49,21 +28,14 @@ def build_refinement_system(
     """
     Build the system prompt for refinement chat.
     Rebuilt on every turn — brand context always fresh.
-    """
-    banned_block = ""
-    if banned_words:
-        banned_list = ", ".join(f"'{w}'" for w in banned_words)
-        banned_block = (
-            f"\nBANNED WORDS — never use any of these: {banned_list}\n"
-            f"If you are about to write a banned word — STOP and rephrase.\n"
-        )
 
-    return (
-        f"{REFINEMENT_SYSTEM_PREFIX}\n\n"
-        f"{brand_context}\n"
-        f"{banned_block}\n"
-        f"Platform: {platform}\n"
-        f"Return only the refined content. No explanation. No preamble."
+    Renders app/prompts/text/refine/system.jinja, which embeds
+    app/prompts/text/refine/system_prefix.jinja.
+    """
+    prefix = load_prompt("text/refine/system_prefix")
+    return load_prompt(
+        "text/refine/system", prefix=prefix, brand_context=brand_context,
+        banned_words=banned_words, platform=platform,
     )
 
 

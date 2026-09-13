@@ -1,0 +1,10 @@
+A voice-consistency check flagged the NEW PIECE as off the author's usual voice. Using their recent pieces as the baseline, describe the difference.
+
+BASELINE PIECES:
+{{ exemplars | join("\n---\n") }}
+
+NEW PIECE:
+{{ content_text }}
+
+Write the "why" value in {{ language_name }} — that is the language the member reading it reads.
+Return JSON only: {"severity": "low"|"medium"|"high", "why": "<=15 words, concrete, e.g. 'far more formal, much longer sentences'"}

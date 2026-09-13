@@ -1,0 +1,10 @@
+# English source templates for Remy's personal-assistant signal messages.
+# Translated into a member's language on demand and cached via
+# app.shared.localized_strings.get_localized_string() — see signals.py::remy_message().
+voice_drift: "hey - this one reads a little off from how you usually sound{why_suffix}. want me to pull it back toward your normal voice, or is the shift on purpose here?"
+voice_drift_trend: "small heads-up: your last few pieces have been drifting away from your established voice bit by bit - nothing dramatic in any single one, but the trend's there. worth a look before it settles in."
+volume_spike: "you've published a lot more than usual today ({today} vs your ~{mean}/day average). all good if it's intentional - just flagging in case something's firing on repeat."
+volume_drop: "noticed you've gone quiet the last few days after a steady stretch. no pressure — just here when you want to pick it back up."
+topic_shift: "your recent pieces have moved onto pretty different topics than what you'd been covering. if you're deliberately pivoting, ignore this - otherwise you might be drifting off your usual lane."
+quality_regression: "a higher share of your recent drafts got flagged for review than normal. might be worth slowing down a touch on the next few."
+__fallback__: "flagging something worth a look on your recent content."

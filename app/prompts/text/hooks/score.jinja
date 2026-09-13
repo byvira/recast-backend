@@ -1,0 +1,129 @@
+{%- set language_note = "" %}
+{%- if language_note_active %}
+{%- set ln_lines = ["", "LANGUAGE: The CURRENT CONTENT below is not in English. Write current_reason and all 3 alternative hooks in the SAME language as the current content — do not translate to English.", ""] %}
+{%- set language_note = ln_lines | join("\n") %}
+{%- endif %}
+{%- set banned_enforcement = "" %}
+{%- if banned_words %}
+{%- set banned_quoted = [] %}
+{%- for w in banned_words %}
+{%- set _ = banned_quoted.append("'" ~ w ~ "'") %}
+{%- endfor %}
+{%- set be_lines = ["", "BANNED VOCABULARY — HARD RULE:", "Never use any of these words in any hook alternative: " ~ (banned_quoted | join(", ")), "If you are about to write a banned word — STOP and rephrase.", "Hooks containing banned words will be rejected automatically.", ""] %}
+{%- set banned_enforcement = be_lines | join("\n") %}
+{%- endif %}
+{%- set approved_openers_block = "" %}
+{%- set approved_openers_exact = "" %}
+{%- if approved_openers %}
+{%- set aob_lines = ["", "APPROVED OPENER EXAMPLES — the brand's proven hooks:"] %}
+{%- for o in approved_openers[:3] %}
+{%- set _ = aob_lines.append('  ✓ "' ~ o ~ '"') %}
+{%- endfor %}
+{%- set _ = aob_lines.append("") %}
+{%- set approved_openers_block = aob_lines | join("\n") %}
+{%- set aoe_lines = [
+    "",
+    "APPROVED OPENER EXACT USAGE RULE:",
+    "If an approved opener fits the content angle — use it word for word.",
+    "Do NOT add tails to approved openers. They are complete as written.",
+    "  ✗ '" ~ examples.opener_exact_usage.bad ~ "'",
+    "  ✓ '" ~ examples.opener_exact_usage.good ~ "'",
+    "The approved opener is already the sharpest version. Trust it.",
+    "",
+    "For Uncomfortable truth — use the brand's own story pattern:",
+    "  Short declarative sentences. No 'most creators'. No generalisation.",
+    "  Strong uncomfortable truth example:",
+    "  '" ~ examples.uncomfortable_truth.good ~ "'",
+    "  NOT: '" ~ examples.uncomfortable_truth.bad ~ "'",
+    "",
+] %}
+{%- set approved_openers_exact = aoe_lines | join("\n") %}
+{%- endif %}
+
+{{ language_note }}
+{{ brand_context }}
+{{ banned_enforcement }}
+{{ approved_openers_block }}
+{{ approved_openers_exact }}
+BANNED HOOK OPENINGS — never start any hook with these:
+  ✗ "Are you tired of" / "Are you struggling" / "Are you finding it"
+  ✗ "Have you ever wondered" / "Did you know"
+  ✗ "Many people" / "Many creators" / "Most people" / "Most creators"
+  ✗ "In today's world" / "We all know" / "It's no secret"
+  ✗ "I am excited to share" / "Thrilled to announce"
+  ✗ "Imagine" / "Picture this" / "As someone who"
+
+BRAND FACTS vs AUDIENCE GOALS — critical distinction:
+  ✗ NEVER use audience goal numbers as hook promises
+    "land 2-3 brand deals", "grow to 10k followers" are what the
+    AUDIENCE wants — not proven brand results. Using them is misleading.
+  ✓ USE brand story numbers — proven and credible:
+    Look in the brand context above for: specific numbers, named events,
+    timeframes, real outcomes. Use them exactly as stated.
+
+HOOK QUALITY RULES:
+  ✗ Never name the product in the hook — earn attention before selling
+  ✗ Never use motivational language: "transform", "revolutionize", "change your life"
+  ✗ Never use vague generalisations: "many creators", "most people"
+  ✓ Specific beats vague: "11 brands" beats "many brands"
+  ✓ Tension beats positivity: "I either built a system or burned out" wins
+  ✓ Statement beats question: tell them something, do not ask them something
+  ✓ Short beats long: 2 punchy sentences beat 1 long sentence
+
+You are scoring the hook quality of this {{ platform }} content.
+
+CURRENT CONTENT:
+{{ content }}
+
+CURRENT HOOK (first line):
+"{{ current_hook }}"
+
+TASK:
+1. Score the current hook 1-10 for scroll-stopping power
+2. Give one specific reason for the score
+3. Generate 3 alternative hooks
+
+Hook 1 — Contrarian: Challenge what the audience assumes is the solution.
+Hook 2 — Specific outcome: Use a real number from the brand story. Never fabricate.
+Hook 3 — Uncomfortable truth: Short declarative sentences. The private observation. No preamble.
+
+Scoring criteria:
+  9-10: Specific brand fact, creates tension, reader cannot scroll past
+  7-8:  Specific claim, some tension, minor weakness
+  5-6:  Somewhat specific, missing urgency or tension
+  3-4:  Generic or vague, could apply to any brand
+  1-2:  Banned pattern, fabricated stat, or contains banned words
+
+RECOMMENDED SELECTION RULE:
+  recommended = index of the alternative with the HIGHEST score number
+  scores 8, 9, 7 → recommended must be 1
+  scores 7, 7, 9 → recommended must be 2
+  scores 9, 8, 7 → recommended must be 0
+  Never recommend a lower-scored hook over a higher-scored one.
+
+Return valid JSON only:
+{
+  "current_score": 5,
+  "current_reason": "one specific reason for the score",
+  "alternatives": [
+    {
+      "text": "contrarian hook — approved opener used exactly if it fits, no product name",
+      "style": "Contrarian",
+      "score": 8,
+      "reason": "specific reason this hook works"
+    },
+    {
+      "text": "specific outcome hook — real brand number, not audience goal number",
+      "style": "Specific outcome",
+      "score": 9,
+      "reason": "specific reason this hook works"
+    },
+    {
+      "text": "uncomfortable truth — short declaratives, no most creators, no preamble",
+      "style": "Uncomfortable truth",
+      "score": 7,
+      "reason": "specific reason this hook works"
+    }
+  ],
+  "recommended": 1
+}

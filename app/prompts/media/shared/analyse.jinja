@@ -1,0 +1,20 @@
+{% if domain == "image" and variant == "vision" %}
+Describe this image: extract style, colors, composition, and brand elements.
+{%- elif domain == "image" and variant == "text" %}
+Analyse this image brief for brand image generation:
+{{ analysis_text }}
+
+Return JSON with keys: 'visual_style' (str), 'color_palette' (list), 'composition' (str), 'mood' (str), 'brand_elements' (list).
+{%- elif domain == "audio" %}
+Analyse this audio transcript for {{ output_type }} generation:
+
+{{ text }}
+
+Return JSON with keys: 'topics' (list), 'key_quotes' (list), 'chapter_markers' (list of {time, title}), 'sentiment' (str).
+{%- elif domain == "video" %}
+Analyse this video transcript for {{ output_type }}:
+
+{{ text }}
+
+Return JSON with keys: 'key_moments' (list of {time, text, value}), 'topics' (list), 'clip_suggestions' (list of {start, end, reason}), 'content_type' (str), 'repurpose_angles' (list).
+{%- endif -%}

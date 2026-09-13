@@ -18,6 +18,7 @@ from app.agents.personal import thresholds as T
 from app.core.tracing import traced_agent
 from app.db.mongo import personal_signals
 from app.pipelines.text.generator import resolve_language_name
+from app.prompts.registry import load_localized, load_prompt
 from app.shared.language import first_present, user_language, workspace_language
 from app.shared.llm import GroqModel, call_llm_structured, cosine_similarity, embed_text
 
@@ -27,15 +28,8 @@ logger = logging.getLogger(__name__)
 # via get_localized_string(), same pattern as signals.py's remy_message(),
 # personas.py's odette_flag_summary(), analytics/nodes.py's report labels.
 # `language` is a fully opaque string, never validated against a fixed set.
-_ALIGN_ENGLISH_TEMPLATES = {
-    "learning": (
-        "i'm still learning how you write — give me a few more pieces and i'll be "
-        "able to tell you when a draft drifts from your usual voice."
-    ),
-    "in_voice": "this reads like you — nothing i'd change on the voice front. go with it.",
-    "drifting_lead": "this is drifting a bit from how you usually sound",
-    "drifting_fallback": "tighten it back toward your normal rhythm and opener.",
-}
+# Source-of-truth text lives in app/prompts/localized/remy_align_states.yaml.
+_ALIGN_ENGLISH_TEMPLATES = load_localized("remy_align_states")
 
 
 async def _align_messages(language: str) -> dict[str, str]:
@@ -47,6 +41,35 @@ async def _align_messages(language: str) -> dict[str, str]:
         for k in keys
     ))
     return dict(zip(keys, values))
+
+
+async def _localized_top_delta(component: dict, language: str) -> str:
+    """Translate one style_delta_components() item into `language`.
+
+    Fixes a known gap: the fallback drift message used to splice
+    style_deltas()'s raw English string (e.g. "sentence length: ... vs your
+    usual ... (longer)") straight into an otherwise-localized message. Both
+    the per-metric line and the direction word are now translated and cached
+    via get_localized_string(), same pattern as every other Remy/Odette
+    template — see app/prompts/localized/remy_style_deltas.yaml.
+    """
+    from app.shared.localized_strings import get_localized_string
+
+    templates = load_localized("remy_style_deltas")
+    direction_key = f"direction_{component['direction']}"
+    direction = await get_localized_string(
+        f"remy.style_delta.{direction_key}", language, templates[direction_key]
+    )
+    label_key = component["label_key"]
+    return await get_localized_string(
+        f"remy.style_delta.{label_key}", language, templates[label_key],
+        {
+            "pv": f"{component['pv']:g}",
+            "unit": component["unit"],
+            "bv": f"{component['bv']:g}",
+            "direction": direction,
+        },
+    )
 
 
 async def _resolve_caller_language(user_id: str, workspace_id: Optional[str] = None) -> str:
@@ -112,7 +135,14 @@ async def _align_draft_impl(
     sim = cosine_similarity(draft_vec, baseline_vec) if (draft_vec and baseline_vec) else None
     in_voice = (sim is not None) and (sim >= T.SIM_SOFT_FLOOR)
 
-    deltas = style_mod.style_deltas(style_mod.fingerprint(draft_text), persona.get("style_fingerprint", {}))
+    draft_fingerprint = style_mod.fingerprint(draft_text)
+    baseline_fingerprint = persona.get("style_fingerprint", {})
+    # `deltas` (plain English) feeds the LLM prompt below as internal context
+    # — never shown to the member directly, so English-only is fine there.
+    # `delta_components` is the structured form used to build the member-
+    # facing fallback message further down, so it can be translated properly.
+    deltas = style_mod.style_deltas(draft_fingerprint, baseline_fingerprint)
+    delta_components = style_mod.style_delta_components(draft_fingerprint, baseline_fingerprint)
 
     suggested_openers: list[str] = []
     rewrite_hint = ""
@@ -120,21 +150,16 @@ async def _align_draft_impl(
         known_openers = persona.get("style_fingerprint", {}).get("opener_patterns", [])[-5:]
         # No English-skip branch — see generator.py's build_language_instruction()
         # and Stage-1 precedent for why "en" gets the identical code path.
-        language_line = (
-            f"Write suggested_openers and rewrite_hint in {resolve_language_name(language)} — "
-            f"that is the language the author reads.\n"
-        )
-        prompt = (
-            "You help an author keep a draft in their own established voice. Return JSON only.\n\n"
-            f"THEIR TYPICAL OPENERS: {known_openers}\n"
-            f"THEIR STYLE: avg sentence {persona['style_fingerprint'].get('avg_sentence_len')} words, "
-            f"emoji/word {persona['style_fingerprint'].get('emoji_rate')}, "
-            f"questions/sentence {persona['style_fingerprint'].get('question_rate')}\n"
-            f"OBSERVED DIFFERENCES IN THIS DRAFT: {deltas or 'none detected'}\n\n"
-            f"DRAFT ({target or 'general'}):\n{draft_text[:1800]}\n\n"
-            f"{language_line}"
-            'Return: {"suggested_openers": ["...","...","..."], '
-            '"rewrite_hint": "<=40 words, specific, how to pull it back toward their voice"}'
+        prompt = load_prompt(
+            "personal/align_draft",
+            known_openers=known_openers,
+            avg_sentence_len=persona["style_fingerprint"].get("avg_sentence_len"),
+            emoji_rate=persona["style_fingerprint"].get("emoji_rate"),
+            question_rate=persona["style_fingerprint"].get("question_rate"),
+            deltas=deltas,
+            target=target,
+            draft_text=draft_text[:1800],
+            language_name=resolve_language_name(language),
         )
         # max_tokens raised — same reasoning-token-exhaustion risk as generator.py's
         # GENERATION_MAX_TOKENS for non-English requests.
@@ -149,13 +174,8 @@ async def _align_draft_impl(
         msg = msgs["in_voice"]
     else:
         lead = msgs["drifting_lead"]
-        if deltas:
-            # deltas[0] is style_deltas()'s own English label/direction text
-            # (e.g. "sentence length: ... vs your usual ... (longer)") — not
-            # converted to per-language templates this session (out of the
-            # scope given for Stage 2/3), so this can still mix an English
-            # fragment into an otherwise-translated message. Known gap.
-            lead += f" — {deltas[0]}"
+        if delta_components:
+            lead += f" — {await _localized_top_delta(delta_components[0], language)}"
         msg = lead + ". " + (rewrite_hint or msgs["drifting_fallback"])
 
     return {

@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from app.models.text import ContentIntent, InputSourceType, NormalisedInput, Platform
 from app.pipelines.text.scraper import scrape_url
+from app.prompts.registry import load_prompt
 from app.shared.llm import GroqModel, call_llm, call_llm_structured
 
 logger = logging.getLogger(__name__)
@@ -39,20 +40,7 @@ async def research_topic(topic: str, language: str = "en") -> str:
     Expand a bare keyword or topic into a 200-300 word research brief.
     Used when frontend is in prompt mode.
     """
-    prompt = f"""
-Generate a detailed content brief for the topic: "{topic}"
-Language: {language}
-
-Include:
-- The core idea and angle
-- 3-5 key points or insights
-- Relevant statistics or data if applicable
-- The audience pain points this topic addresses
-- Actionable takeaways
-
-Output a comprehensive 200-300 word brief that a content writer can use immediately as source material.
-Write in plain paragraphs. No headers.
-"""
+    prompt = load_prompt("text/normalize/research_topic", topic=topic, language=language)
     return await call_llm(prompt, model=GroqModel.BALANCED)
 
 
@@ -127,24 +115,7 @@ async def clean_raw_content(content: str) -> str:
     if not content or len(content.strip()) < 50:
         return content
 
-    prompt = f"""
-Clean up the following content for use as source material for content generation.
-
-Rules:
-- Fix obvious typos and spelling errors
-- Remove duplicate lines or repeated paragraphs
-- Remove boilerplate noise: cookie notices, newsletter signup prompts,
-  navigation text, "read more" links, advertisement copy
-- Preserve ALL original ideas, facts, numbers, opinions, and examples exactly
-- Do not rewrite, rephrase, or improve sentences — only clean
-- If the content is already clean, return it unchanged
-
-CONTENT:
-{content[:6000]}
-
-Return valid JSON only:
-{{"cleaned": "the cleaned content here"}}
-"""
+    prompt = load_prompt("text/normalize/clean_raw_content", content=content[:6000])
     try:
         result = await call_llm_structured(prompt,model=GroqModel.FAST)
         if result and result.get("cleaned"):
@@ -193,29 +164,9 @@ async def extract_content_brief(content: str, language: str = "en") -> str:
     from app.pipelines.text.generator import resolve_language_name
     language_name = resolve_language_name(language)
 
-    prompt = f"""
-Analyse this content and identify the single most specific, interesting,
-and non-obvious angle in it.
-
-Rules:
-- Ignore generic observations that could apply to any content on this topic
-- Find the concrete detail: a specific number, a named outcome, a real moment,
-  a counterintuitive point, or a surprising insight
-- Identify what the lazy generic take would be so the writer can avoid it
-- Write every field's value in {language_name}. This brief is quoted directly
-  into a generation prompt as "Lead with this angle: <sharpest_angle>" — if
-  you answer in English here, the final content will start in English too.
-
-CONTENT:
-{content[:2000]}
-
-Return valid JSON only, with every string value written in {language_name}:
-{{
-  "sharpest_angle": "the single most specific and interesting angle to lead with",
-  "concrete_detail": "the most specific fact, number, moment, or example in the content",
-  "avoid": "the obvious generic take that anyone would write about this topic"
-}}
-"""
+    prompt = load_prompt(
+        "text/normalize/extract_content_brief", language_name=language_name, content=content[:2000]
+    )
     try:
         # max_tokens raised for the same reason as generator.py's
         # GENERATION_MAX_TOKENS — gpt-oss models spend hidden reasoning
@@ -232,16 +183,9 @@ Return valid JSON only, with every string value written in {language_name}:
         if not sharpest and not concrete:
             return ""
 
-        lines = ["CONTENT BRIEF — use this to sharpen the writing:"]
-        if sharpest:
-            lines.append(f"Lead with this angle: {sharpest}")
-        if concrete:
-            lines.append(f"Use this specific detail: {concrete}")
-        if avoid:
-            lines.append(f"Do NOT write the generic take: {avoid}")
-        lines.append("")
-
-        return "\n".join(lines)
+        return load_prompt(
+            "text/normalize/content_brief_format", sharpest=sharpest, concrete=concrete, avoid=avoid
+        )
 
     except Exception as e:
         logger.warning("extract_content_brief failed — continuing without brief. Error: %s", e)

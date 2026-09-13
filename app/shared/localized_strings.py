@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.db.mongo import get_db
+from app.prompts.registry import load_prompt
 from app.shared.llm import GroqModel, call_llm
 
 logger = logging.getLogger(__name__)
@@ -67,15 +68,8 @@ async def _translate(key: str, language: str, english_template: str) -> tuple[st
         return english_template, True
 
     wanted = _placeholders(english_template)
-    prompt = (
-        f"Translate the following template into the language identified by the code "
-        f"or name '{language}'. This is a template with placeholder tokens like "
-        f"{{example}} — you MUST preserve every placeholder token EXACTLY as written, "
-        f"character-for-character, including the curly braces and the name inside them. "
-        f"Do not translate, rename, or alter the placeholder names. Translate only the "
-        f"surrounding natural-language text around them.\n\n"
-        f"TEMPLATE:\n{english_template}\n\n"
-        f"Return ONLY the translated template text. No explanation, no quotes, no markdown."
+    prompt = load_prompt(
+        "fragments/translate_template", language=language, english_template=english_template
     )
     try:
         translated = await call_llm(prompt=prompt, model=GroqModel.FAST, max_tokens=1500)

@@ -1,0 +1,7 @@
+Now write the admin briefing for THIS workspace as Odette. Return JSON only:
+{
+  "insights": [{"kind": "recommendation"|"observation", "title": "<=70 chars", "body": "<=90 words, Odette voice, ends on a recommended action", "rationale": "<=40 words, why you concluded this", "priority": "low"|"medium"|"high", "pipeline_scope": ["text"] or "all"}],
+  "flags": [{"severity": "warning"|"critical", "summary": "<=60 words, Odette voice", "detail": {<structured evidence>}}],
+  "notify": true|false
+}
+Only raise a flag for a genuine anomaly the rule engine would miss (unusual pattern, coordinated shift, emerging risk). 0-3 insights, 0-2 flags. If nothing is worth an admin's attention, return empty arrays and notify=false.

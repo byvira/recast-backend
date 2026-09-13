@@ -6,6 +6,7 @@ quantifies, always ends on a recommended action. Never a generic system alert.
 """
 
 from app.pipelines.text.generator import resolve_language_name
+from app.prompts.registry import load_localized, load_prompt
 
 ODETTE_NAME = "Odette"
 
@@ -15,28 +16,10 @@ ODETTE_TONE = (
     "recommended action; never alarmist, never a generic system alert"
 )
 
-# Base English system prompt — kept as a bare constant for backward
-# compatibility with anything still importing it directly, but the reasoning
-# pass should call build_odette_system(language) instead so the LLM's output
-# (insights, flag summaries) comes back in the admin's/workspace's language
-# rather than always English regardless of who's reading it.
-ODETTE_SYSTEM = (
-    "You are Odette, the workspace supervisor for a multi-tenant content platform. "
-    "You brief the workspace's admins/owners about the health of THIS workspace only. "
-    "Voice: crisp senior chief-of-staff, peer to peer. Lead with the signal, quantify it, "
-    "end every point with a specific recommended action. No filler, no alarm, no generic "
-    "system-alert phrasing. You never see or discuss other workspaces. You never expose an "
-    "individual member's private assistant reasoning — you may cite that a member's voice or "
-    "output changed, at a factual level, when it matters to the workspace.\n\n"
-    "You are given a DIGEST of recent workspace activity. Use the provided tools to "
-    "investigate anything that looks anomalous (a spike, a policy breach, several members "
-    "shifting at once) before you conclude. Keep tool use focused — a few targeted calls, "
-    "not a sweep."
-)
-
 
 def build_odette_system(language: str = "en") -> str:
-    """ODETTE_SYSTEM with a language directive appended for the reasoning pass.
+    """Odette's system prompt, with the language directive baked into the
+    same template rather than concatenated on afterward.
 
     Unlike Remy's/Odette's templated flag copy (see odette_flag_summary below),
     Odette's insights/flag-synthesis text here is LLM-generated, not a fixed
@@ -47,17 +30,13 @@ def build_odette_system(language: str = "en") -> str:
     resolve_language_name() as every other language-directive site in the
     codebase (generator.py, repurpose.py, normalizer.py, analytics/nodes.py,
     personal/assist.py, personal/nodes.py).
+
+    Renders app/prompts/supervisor/odette_system.jinja. No
+    `if name == "English": ...` branch — every language, "en" included, gets
+    the identical rendered shape.
     """
     name = resolve_language_name(language)
-    # No `if name == "English": return ODETTE_SYSTEM unchanged` branch — every
-    # language, "en" included, gets the identical appended-directive shape.
-    return (
-        ODETTE_SYSTEM
-        + f"\n\nLANGUAGE: Write every insight, flag summary, and recommendation in {name} — "
-        f"that is the language the admin reading this briefing reads. Field names and JSON "
-        f"keys stay in English (the platform parses them) — only the human-readable text "
-        f"values (summaries, detail strings) go in {name}."
-    )
+    return load_prompt("supervisor/odette_system", name=name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -68,30 +47,11 @@ def build_odette_system(language: str = "en") -> str:
 # validated or matched against any fixed set.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_ODETTE_FLAG_ENGLISH_TEMPLATES: dict[str, str] = {
-    "tier_seat_exceeded": (
-        "You're carrying {active_members} active members on a {tier} plan that seats "
-        "{seats}. Add seats or remove {overage} member(s) to clear it."
-    ),
-    "daily_publish_cap": (
-        "Publishing hit {count} in the last 24h against a {cap}/day cap on the {tier} "
-        "plan. Throttle scheduling or move up a tier."
-    ),
-    "rbac_violation": (
-        "A '{actor_role}' performed '{event_type}', which that role isn't permitted "
-        "to do. Review the member's role and how the action was made."
-    ),
-    "brand_voice_instability": (
-        "The brand voice was edited {count} times in 24h. Rapid churn here "
-        "destabilises every member's output — consolidate the changes and lock it."
-    ),
-    "member_churn": "{summary}. Confirm this was intended and that access was cleaned up.",
-    "assistant_signal_storm": (
-        "{summary}. Worth a look — it usually means a shared cause "
-        "(a brief change, a bad template, an automation loop)."
-    ),
-    "__fallback__": "{flag_type_label}: {detail}",
-}
+# Source-of-truth English text lives in app/prompts/localized/odette_flags.yaml
+# — get_localized_string() takes the template as a plain string argument, so
+# it doesn't care whether that string came from a dict literal or a YAML
+# file; no change needed there.
+_ODETTE_FLAG_ENGLISH_TEMPLATES: dict[str, str] = load_localized("odette_flags")
 
 _MEMBER_CHURN_DEFAULT = "Unusual membership change"
 _SIGNAL_STORM_DEFAULT = "A burst of assistant signals"

@@ -1,0 +1,22 @@
+
+Analyse this content and identify the single most specific, interesting,
+and non-obvious angle in it.
+
+Rules:
+- Ignore generic observations that could apply to any content on this topic
+- Find the concrete detail: a specific number, a named outcome, a real moment,
+  a counterintuitive point, or a surprising insight
+- Identify what the lazy generic take would be so the writer can avoid it
+- Write every field's value in {{ language_name }}. This brief is quoted directly
+  into a generation prompt as "Lead with this angle: <sharpest_angle>" — if
+  you answer in English here, the final content will start in English too.
+
+CONTENT:
+{{ content }}
+
+Return valid JSON only, with every string value written in {{ language_name }}:
+{
+  "sharpest_angle": "the single most specific and interesting angle to lead with",
+  "concrete_detail": "the most specific fact, number, moment, or example in the content",
+  "avoid": "the obvious generic take that anyone would write about this topic"
+}

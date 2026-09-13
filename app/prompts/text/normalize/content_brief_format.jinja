@@ -1,0 +1,12 @@
+{%- set lines = ["CONTENT BRIEF — use this to sharpen the writing:"] %}
+{%- if sharpest %}
+{%- set _ = lines.append("Lead with this angle: " ~ sharpest) %}
+{%- endif %}
+{%- if concrete %}
+{%- set _ = lines.append("Use this specific detail: " ~ concrete) %}
+{%- endif %}
+{%- if avoid %}
+{%- set _ = lines.append("Do NOT write the generic take: " ~ avoid) %}
+{%- endif %}
+{%- set _ = lines.append("") %}
+{{ lines | join("\n") }}

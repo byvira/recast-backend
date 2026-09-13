@@ -18,6 +18,7 @@ Readability scoring:
 import logging
 import re
 from app.pipelines.text.quality import flesch_reading_ease, is_latin_script
+from app.prompts.registry import load_fixture, load_prompt
 from app.shared.llm import call_llm_structured, GroqModel
 
 logger = logging.getLogger(__name__)
@@ -153,147 +154,22 @@ async def score_hook(
     # Detect weakness without LLM — instant pattern match
     detected_weakness = _detect_hook_weakness(current_hook)
 
-    # ── Banned enforcement block ──────────────────────────────────────────
-    banned_enforcement = ""
-    if banned_words:
-        banned_list = ", ".join(f"'{w}'" for w in banned_words)
-        banned_enforcement = (
-            f"\nBANNED VOCABULARY — HARD RULE:\n"
-            f"Never use any of these words in any hook alternative: {banned_list}\n"
-            f"If you are about to write a banned word — STOP and rephrase.\n"
-            f"Hooks containing banned words will be rejected automatically.\n"
-        )
-
-    # ── Approved openers reference block ─────────────────────────────────
-    approved_openers_block = ""
-    if approved_openers:
-        approved_openers_block = (
-            "\nAPPROVED OPENER EXAMPLES — the brand's proven hooks:\n"
-            + "\n".join(f"  ✓ \"{o}\"" for o in approved_openers[:3])
-            + "\n"
-        )
-
-    # ── Approved openers exact usage rule ────────────────────────────────
-    approved_openers_exact = ""
-    if approved_openers:
-        approved_openers_exact = (
-            "\nAPPROVED OPENER EXACT USAGE RULE:\n"
-            "If an approved opener fits the content angle — use it word for word.\n"
-            "Do NOT add tails to approved openers. They are complete as written.\n"
-            "  ✗ 'You don't have a content problem, you have a system problem that's burning you out'\n"
-            "  ✓ 'You don't have a content problem. You have a system problem.'\n"
-            "The approved opener is already the sharpest version. Trust it.\n\n"
-            "For Uncomfortable truth — use the brand's own story pattern:\n"
-            "  Short declarative sentences. No 'most creators'. No generalisation.\n"
-            "  Strong uncomfortable truth example:\n"
-            "  'Three weeks of daily posting. Six weeks of silence. The guilt cycle restarts.'\n"
-            "  NOT: 'Most creators are stuck in a guilt cycle...'\n"
-        )
-
     # score_hook has no explicit language parameter — the caller (ScoreHookRequest)
     # doesn't carry one — so language is inferred from the content itself rather
     # than threaded from the API. Confirmed during the i18n investigation that
     # without this, the LLM defaulted to English alternatives even when scoring
     # non-English content, since nothing in the prompt said otherwise.
-    language_note = (
-        ""
-        if is_latin_script(content)
-        else (
-            "\nLANGUAGE: The CURRENT CONTENT below is not in English. Write "
-            "current_reason and all 3 alternative hooks in the SAME language "
-            "as the current content — do not translate to English.\n"
-        )
+    prompt = load_prompt(
+        "text/hooks/score",
+        language_note_active=not is_latin_script(content),
+        brand_context=brand_context,
+        banned_words=banned_words,
+        approved_openers=approved_openers,
+        platform=platform,
+        content=content[:1500],
+        current_hook=current_hook,
+        examples=load_fixture("scorer_examples"),
     )
-
-    prompt = f"""
-{language_note}
-{brand_context}
-{banned_enforcement}
-{approved_openers_block}
-{approved_openers_exact}
-BANNED HOOK OPENINGS — never start any hook with these:
-  ✗ "Are you tired of" / "Are you struggling" / "Are you finding it"
-  ✗ "Have you ever wondered" / "Did you know"
-  ✗ "Many people" / "Many creators" / "Most people" / "Most creators"
-  ✗ "In today's world" / "We all know" / "It's no secret"
-  ✗ "I am excited to share" / "Thrilled to announce"
-  ✗ "Imagine" / "Picture this" / "As someone who"
-
-BRAND FACTS vs AUDIENCE GOALS — critical distinction:
-  ✗ NEVER use audience goal numbers as hook promises
-    "land 2-3 brand deals", "grow to 10k followers" are what the
-    AUDIENCE wants — not proven brand results. Using them is misleading.
-  ✓ USE brand story numbers — proven and credible:
-    Look in the brand context above for: specific numbers, named events,
-    timeframes, real outcomes. Use them exactly as stated.
-
-HOOK QUALITY RULES:
-  ✗ Never name the product in the hook — earn attention before selling
-  ✗ Never use motivational language: "transform", "revolutionize", "change your life"
-  ✗ Never use vague generalisations: "many creators", "most people"
-  ✓ Specific beats vague: "11 brands" beats "many brands"
-  ✓ Tension beats positivity: "I either built a system or burned out" wins
-  ✓ Statement beats question: tell them something, do not ask them something
-  ✓ Short beats long: 2 punchy sentences beat 1 long sentence
-
-You are scoring the hook quality of this {platform} content.
-
-CURRENT CONTENT:
-{content[:1500]}
-
-CURRENT HOOK (first line):
-"{current_hook}"
-
-TASK:
-1. Score the current hook 1-10 for scroll-stopping power
-2. Give one specific reason for the score
-3. Generate 3 alternative hooks
-
-Hook 1 — Contrarian: Challenge what the audience assumes is the solution.
-Hook 2 — Specific outcome: Use a real number from the brand story. Never fabricate.
-Hook 3 — Uncomfortable truth: Short declarative sentences. The private observation. No preamble.
-
-Scoring criteria:
-  9-10: Specific brand fact, creates tension, reader cannot scroll past
-  7-8:  Specific claim, some tension, minor weakness
-  5-6:  Somewhat specific, missing urgency or tension
-  3-4:  Generic or vague, could apply to any brand
-  1-2:  Banned pattern, fabricated stat, or contains banned words
-
-RECOMMENDED SELECTION RULE:
-  recommended = index of the alternative with the HIGHEST score number
-  scores 8, 9, 7 → recommended must be 1
-  scores 7, 7, 9 → recommended must be 2
-  scores 9, 8, 7 → recommended must be 0
-  Never recommend a lower-scored hook over a higher-scored one.
-
-Return valid JSON only:
-{{
-  "current_score": 5,
-  "current_reason": "one specific reason for the score",
-  "alternatives": [
-    {{
-      "text": "contrarian hook — approved opener used exactly if it fits, no product name",
-      "style": "Contrarian",
-      "score": 8,
-      "reason": "specific reason this hook works"
-    }},
-    {{
-      "text": "specific outcome hook — real brand number, not audience goal number",
-      "style": "Specific outcome",
-      "score": 9,
-      "reason": "specific reason this hook works"
-    }},
-    {{
-      "text": "uncomfortable truth — short declaratives, no most creators, no preamble",
-      "style": "Uncomfortable truth",
-      "score": 7,
-      "reason": "specific reason this hook works"
-    }}
-  ],
-  "recommended": 1
-}}
-"""
 
     # max_tokens raised for the same reason as generator.py's
     # GENERATION_MAX_TOKENS — gpt-oss-120b can exhaust the 2500 default on

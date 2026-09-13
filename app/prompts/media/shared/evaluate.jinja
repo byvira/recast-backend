@@ -1,0 +1,20 @@
+{% if domain == "image" and variant == "vision" %}
+Evaluate this image for brand '{{ brand_name }}'. Rate brand alignment, visual quality, composition, and mood match (0-1 each). Return only JSON.
+{%- elif domain == "image" and variant == "text" %}
+Evaluate this image prompt for brand '{{ brand_name }}':
+{{ enhanced_prompt }}
+
+Return JSON with keys: 'brand_alignment' (0-1), 'visual_quality' (0-1), 'composition' (0-1), 'overall' (0-1).
+{%- elif domain == "audio" %}
+Evaluate this audio content output for brand '{{ brand_name }}':
+
+{{ content }}
+
+Return JSON with keys: 'completeness' (0-1), 'brand_alignment' (0-1), 'accuracy' (0-1), 'overall' (0-1).
+{%- elif domain == "video" %}
+Evaluate this video content for brand '{{ brand_name }}' on {{ platform }}:
+
+{{ content }}
+
+Return JSON with keys: 'platform_fit' (0-1), 'brand_alignment' (0-1), 'engagement_potential' (0-1), 'overall' (0-1).
+{%- endif -%}

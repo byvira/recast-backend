@@ -13,9 +13,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from app.core.config import settings
 from app.core.middleware import limiter
+from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import content_pieces
+from app.db.mongo import content_pieces, users
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
 from app.pipelines.publish.token_store import get_token
@@ -195,6 +197,19 @@ async def publish_now(
                 error_message=result.error_message,
                 increment_attempts=True,
             )
+            owner_id = ctx.workspace.get("owner_id")
+            if owner_id:
+                owner = await users.find_one({"id": owner_id}, {"email": 1})
+                if owner and owner.get("email"):
+                    await send_templated_email(
+                        "platform-reconnect-needed",
+                        owner["email"],
+                        {
+                            "PLATFORM": body.platform,
+                            "WORKSPACE_NAME": ctx.workspace.get("name", "your workspace"),
+                            "RECONNECT_URL": f"{settings.FRONTEND_URL}/dashboard/settings",
+                        },
+                    )
             raise HTTPException(
                 status_code=401,
                 detail=f"{body.platform} token expired or revoked. "

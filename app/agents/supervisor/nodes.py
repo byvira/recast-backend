@@ -21,6 +21,7 @@ from app.agents.supervisor.personas import build_odette_system
 from app.agents.supervisor.state import SupervisorState
 from app.agents.supervisor.tools import make_tools
 from app.db.mongo import agent_worker_state, workspace_flags, workspace_insights
+from app.prompts.registry import load_prompt
 from app.shared.llm import GroqModel, get_groq_client
 from app.utils.jsonparser import parse_llm_json
 
@@ -56,11 +57,10 @@ async def reason_node(state: SupervisorState) -> dict:
     client = get_groq_client()
     messages: list[dict] = [
         {"role": "system", "content": build_odette_system(state.get("language", "en"))},
-        {"role": "user", "content":
-            "DIGEST (this workspace, recent activity):\n"
-            + json.dumps(digest, default=str, indent=2)
-            + "\n\nInvestigate anything anomalous with the tools (a few targeted calls), "
-              "then stop. Do not write the briefing yet."},
+        {"role": "user", "content": load_prompt(
+            "supervisor/reason_kickoff",
+            digest_json=json.dumps(digest, default=str, indent=2),
+        )},
     ]
     calls = 0
     try:
@@ -106,21 +106,9 @@ async def reason_node(state: SupervisorState) -> dict:
 # 3. synthesize — one structured Groq call → findings
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SYNTH_INSTRUCTIONS = (
-    "Now write the admin briefing for THIS workspace as Odette. Return JSON only:\n"
-    '{\n'
-    '  "insights": [{"kind": "recommendation"|"observation", "title": "<=70 chars", '
-    '"body": "<=90 words, Odette voice, ends on a recommended action", '
-    '"rationale": "<=40 words, why you concluded this", '
-    '"priority": "low"|"medium"|"high", "pipeline_scope": ["text"] or "all"}],\n'
-    '  "flags": [{"severity": "warning"|"critical", "summary": "<=60 words, Odette voice", '
-    '"detail": {<structured evidence>}}],\n'
-    '  "notify": true|false\n'
-    '}\n'
-    "Only raise a flag for a genuine anomaly the rule engine would miss (unusual pattern, "
-    "coordinated shift, emerging risk). 0-3 insights, 0-2 flags. If nothing is worth an "
-    "admin's attention, return empty arrays and notify=false."
-)
+# Renders app/prompts/supervisor/synth_instructions.jinja — computed once at
+# import time since it's fully static (no per-call variables).
+_SYNTH_INSTRUCTIONS = load_prompt("supervisor/synth_instructions")
 
 
 def _flatten_scratchpad_for_synthesis(scratchpad: list[dict]) -> list[dict]:
@@ -148,12 +136,14 @@ def _flatten_scratchpad_for_synthesis(scratchpad: list[dict]) -> list[dict]:
                 name = tc["function"]["name"]
                 pending_tool_names[tc["id"]] = name
                 calls_desc.append(f"{name}({tc['function']['arguments']})")
-            note = f"[investigated: {', '.join(calls_desc)}]"
+            note = load_prompt("supervisor/scratchpad_notes", kind="investigated", calls_desc=", ".join(calls_desc))
             text = (msg.get("content") or "").strip()
             flattened.append({"role": "assistant", "content": (text + " " + note).strip()})
         elif role == "tool":
             name = pending_tool_names.get(msg.get("tool_call_id"), "tool")
-            flattened.append({"role": "user", "content": f"[{name} result: {msg.get('content', '')}]"})
+            flattened.append({"role": "user", "content": load_prompt(
+                "supervisor/scratchpad_notes", kind="tool_result", name=name, content=msg.get("content", "")
+            )})
         else:
             flattened.append(msg)
     return flattened

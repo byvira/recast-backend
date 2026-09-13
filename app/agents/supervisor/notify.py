@@ -13,7 +13,8 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from app.core.config import settings
-from app.db.mongo import admin_notifications, users, workspace_members
+from app.core.notifications import OPS_FROM, send_templated_email
+from app.db.mongo import admin_notifications, users, workspace_flags, workspace_members, workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -40,25 +41,22 @@ def _email_enabled() -> bool:
     return bool(settings.RESEND_API_KEY)
 
 
-async def _send_email(to: list[str], subject: str, body: str) -> None:
+async def _send_email(
+    to: list[str], *, workspace_name: str, summary: str, severity: str, langsmith_run_url: str
+) -> None:
     if not to:
         return
-    if settings.ENVIRONMENT != "production":
-        logger.info("[DEV] supervisor email to %s: %s", to, subject)
-        return
-    try:
-        import resend  # type: ignore[import-untyped]
-
-        resend.api_key = settings.RESEND_API_KEY
-        resend.Emails.send({
-            "from": settings.EMAIL_FROM,
-            "to": to,
-            "subject": subject,
-            "html": f'<div style="font-family:sans-serif;max-width:560px;margin:auto">'
-                    f'<p style="white-space:pre-wrap">{body}</p></div>',
-        })
-    except Exception as exc:  # noqa: BLE001
-        logger.error("supervisor email delivery failed: %s", exc)
+    variables = {
+        "WORKSPACE_NAME": workspace_name,
+        "SUMMARY": summary,
+        "SEVERITY": severity,
+    }
+    if langsmith_run_url:
+        variables["LANGSMITH_RUN_URL"] = langsmith_run_url
+    for email in to:
+        await send_templated_email(
+            "supervisor-critical-flag", email, variables, from_override=OPS_FROM,
+        )
 
 
 async def deliver(
@@ -88,10 +86,17 @@ async def deliver(
     want_email = email if email is not None else (severity == "critical")
     emailed = False
     if want_email and _email_enabled():
+        ws = await workspaces.find_one({"id": workspace_id}, {"name": 1})
+        langsmith_run_url = ""
+        if kind == "flag":
+            flag_doc = await workspace_flags.find_one({"_id": source_id}, {"langsmith_run_url": 1})
+            langsmith_run_url = (flag_doc or {}).get("langsmith_run_url") or ""
         await _send_email(
             await _admin_emails(workspace_id),
-            subject=f"[{severity.upper()}] {title}",
-            body=f"{body_persona}\n\n— Odette, your workspace supervisor",
+            workspace_name=(ws or {}).get("name", "your workspace"),
+            summary=body_persona,
+            severity=severity,
+            langsmith_run_url=langsmith_run_url,
         )
         emailed = True
 

@@ -1,0 +1,5 @@
+{%- if kind == "investigated" -%}
+[investigated: {{ calls_desc }}]
+{%- elif kind == "tool_result" -%}
+[{{ name }} result: {{ content }}]
+{%- endif -%}

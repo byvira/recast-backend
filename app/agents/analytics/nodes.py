@@ -21,6 +21,7 @@ from app.pipelines.analytics.aggregator import (
 )
 from app.pipelines.publish.token_store import get_all_tokens
 from app.pipelines.text.generator import resolve_language_name
+from app.prompts.registry import load_fixture, load_localized, load_prompt
 from app.shared.llm import call_llm, call_llm_structured, GroqModel
 from app.shared.localized_strings import get_localized_string
 from app.db.mongo import get_db
@@ -32,11 +33,8 @@ logger = logging.getLogger(__name__)
 # via get_localized_string() — same pattern as signals.py's remy_message()
 # and personas.py's odette_flag_summary(). `language` is a fully opaque
 # string here, never validated or matched against a fixed set.
-_ANALYTICS_FALLBACK_ENGLISH_TEMPLATES = {
-    "no_metrics": "No metrics available to analyze.",
-    "analysis_unavailable": "Analysis unavailable.",
-    "connect_accounts": "Connect social accounts to get recommendations.",
-}
+# Source-of-truth text lives in app/prompts/localized/analytics_fallbacks.yaml.
+_ANALYTICS_FALLBACK_ENGLISH_TEMPLATES = load_localized("analytics_fallbacks")
 
 
 async def _analytics_fallback(language: str, key: str) -> str:
@@ -176,27 +174,13 @@ async def analyze_node(state: AnalyticsAgentState) -> dict:
     # (including "en") goes through the identical code path. Wording is also
     # written to hold for English itself (no "not English" caveat that would
     # self-contradict when the target language IS English).
-    language_line = (
-        f"Write the analysis in {resolve_language_name(language)} — that is the language "
-        f"the person reading this dashboard reads.\n"
+    prompt = load_prompt(
+        "analytics/analyze",
+        question=state["question"],
+        account_summary=account_summary,
+        post_summary=post_summary,
+        language_name=resolve_language_name(language),
     )
-    prompt = f"""You are a social media analytics expert.
-
-User question: {state["question"]}
-
-ACCOUNT METRICS (last 7 days):
-{account_summary}
-
-TOP PERFORMING POSTS:
-{post_summary if post_summary else "No published posts yet."}
-
-{language_line}Analyze this data and provide:
-1. Which platform is performing best and why
-2. Any notable trends or patterns
-3. What content type is getting the most engagement
-4. Any platforms that are underperforming
-
-Be specific, data-driven, and concise. 2-3 sentences per point."""
 
     try:
         # max_tokens set explicitly — same reasoning-token-exhaustion risk as
@@ -232,20 +216,12 @@ async def recommend_node(state: AnalyticsAgentState) -> dict:
 
     language = state.get("language", "en")
     # No English-skip branch — see analyze_node's identical fix above.
-    language_line = f"Write each recommendation string in {resolve_language_name(language)}.\n"
-    prompt = f"""Based on this analytics analysis:
-
-{state["analysis"]}
-
-Generate 3-5 specific, actionable recommendations for this user.
-Each recommendation should be:
-- Concrete (what exactly to do)
-- Platform-specific where relevant
-- Achievable within the next 7 days
-
-{language_line}Respond ONLY as a JSON array of strings.
-Example: ["Post 3x per week on LinkedIn", "Use more video on Instagram"]
-No explanation, no markdown, just the JSON array."""
+    prompt = load_prompt(
+        "analytics/recommend",
+        analysis=state["analysis"],
+        language_name=resolve_language_name(language),
+        example_line=load_fixture("analytics_recommend_example")["example_line"],
+    )
 
     try:
         # max_tokens raised — same reasoning-token-exhaustion risk as
@@ -284,17 +260,8 @@ No explanation, no markdown, just the JSON array."""
 # earlier static en/ta/hi/ko dict entirely; `language` is never validated or
 # matched against a fixed set. All lookups for a report happen concurrently
 # via asyncio.gather since none of them depend on each other.
-_REPORT_LABEL_ENGLISH_TEMPLATES = {
-    "title": "📊 ANALYTICS REPORT", "question": "Question", "platforms": "Platforms",
-    "period": "Period", "period_value": "Last 7 days", "overview": "📈 OVERVIEW",
-    "total_followers": "Total Followers:", "total_impressions": "Total Impressions:",
-    "total_reach": "Total Reach:", "posts_analyzed": "Posts Analyzed:",
-    "best_post": "🏆 BEST PERFORMING POST", "no_posts": "No posts yet.",
-    "engagement": "engagement rate", "likes": "likes", "comments": "comments",
-    "analysis": "🔍 ANALYSIS", "recommendations": "💡 RECOMMENDATIONS",
-    "no_recommendations": "No recommendations available.", "warnings": "⚠️  WARNINGS",
-    "none": "None",
-}
+# Source-of-truth English text lives in app/prompts/localized/analytics_labels.yaml.
+_REPORT_LABEL_ENGLISH_TEMPLATES = load_localized("analytics_labels")
 
 
 async def _report_labels(language: str) -> dict[str, str]:

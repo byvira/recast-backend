@@ -12,7 +12,6 @@ import logging
 import re
 from typing import Optional
 from app.models.text import Platform, QualityResult
-from app.shared.llm import GroqModel, call_llm
 
 logger = logging.getLogger(__name__)
 

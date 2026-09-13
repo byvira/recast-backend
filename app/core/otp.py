@@ -1,12 +1,22 @@
 """OTP generation, verification, and rate-limit enforcement using Redis."""
 
 import random
+from datetime import datetime, timedelta, timezone
 
 import phonenumbers
 from fastapi import HTTPException
 
 from app.core.config import settings
+from app.core.notifications import send_templated_email
 from app.db.redis import get_redis
+
+
+def _mask_email(email: str) -> str:
+    """Mask an email's local part for display, e.g. "john@x.com" -> "j***@x.com"."""
+    local, _, domain = email.partition("@")
+    if not domain:
+        return email
+    return f"{local[:1]}***@{domain}"
 
 
 def normalize_identifier(identifier: str) -> str:
@@ -108,6 +118,19 @@ async def verify_otp(identifier: str, otp: str) -> bool:
                 "1",
                 ex=settings.OTP_LOCK_MINUTES * 60,
             )
+            if "@" in identifier:
+                unlock_at = (
+                    datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_LOCK_MINUTES)
+                ).isoformat()
+                await send_templated_email(
+                    "account-locked",
+                    identifier,
+                    {
+                        "MASKED_IDENTIFIER": _mask_email(identifier),
+                        "LOCK_MINUTES": settings.OTP_LOCK_MINUTES,
+                        "UNLOCK_AT": unlock_at,
+                    },
+                )
             raise HTTPException(
                 status_code=423,
                 detail="Too many failed attempts. Account locked for 15 minutes.",

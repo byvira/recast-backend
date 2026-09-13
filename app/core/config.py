@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     # Example: "https://app.yourdomain.com"
     PRODUCTION_DOMAIN: str = ""
 
+    # Frontend base URL — used to build links embedded in emails (invite
+    # accept, OAuth reconnect, dashboard). Deliberately separate from
+    # PRODUCTION_DOMAIN, which feeds CORS and in this deployment points at
+    # the backend's own Render URL, not the frontend.
+    FRONTEND_URL: str = "https://recastbyvira.vercel.app"
+
     # ── API docs gating ────────────────────────────────────────────────────
     # /docs, /redoc, /scalar and /openapi.json are open in development. In
     # production they require HTTP Basic auth using these credentials — if

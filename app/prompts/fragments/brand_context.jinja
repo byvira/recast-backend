@@ -1,0 +1,334 @@
+{% if document_shape == "text_pipeline" %}
+{#- Mirrors app/pipelines/text/brand_context.py::build_brand_context(brand_profile) exactly. #}
+{%- set identity = brand_profile.get("identity", {}) %}
+{%- set brand_type = brand_profile.get("brand_type", "Person") %}
+{%- set audience = brand_profile.get("audience", {}) %}
+{%- set voice_tone = brand_profile.get("voice_tone", {}) %}
+{%- set manual_data = brand_profile.get("manual_data", {}) %}
+=== BRAND VOICE — FOLLOW EXACTLY ===
+These instructions override all defaults. Apply every rule without exception.
+
+{% if identity %}
+{%- if brand_type == "Person" %}
+{%- if identity.get("name") %}
+Writing on behalf of: {{ identity["name"] }}
+{% endif %}
+{%- if identity.get("profession") %}
+Profession: {{ identity["profession"] }}
+{% endif %}
+{%- if identity.get("bio") %}
+Background: {{ identity["bio"] }}
+{% endif %}
+{%- elif brand_type == "Business" %}
+{%- if identity.get("companyName") %}
+Company: {{ identity["companyName"] }}
+{% endif %}
+{%- if identity.get("description") %}
+What they do: {{ identity["description"] }}
+{% endif %}
+{%- if identity.get("industry") %}
+Industry: {{ identity["industry"] }}
+{% endif %}
+{%- elif brand_type == "Personal Brand" %}
+{%- if identity.get("name") %}
+Personal brand: {{ identity["name"] }}
+{% endif %}
+{%- if identity.get("tagline") %}
+Tagline: {{ identity["tagline"] }}
+{% endif %}
+{%- if identity.get("mission") %}
+Mission: {{ identity["mission"] }}
+{% endif %}
+{%- elif brand_type == "Product" %}
+{%- if identity.get("productName") %}
+Product: {{ identity["productName"] }}
+{% endif %}
+{%- if identity.get("description") %}
+What it does: {{ identity["description"] }}
+{% endif %}
+{%- endif %}
+
+{% endif -%}
+{% if audience %}
+{%- if audience.get("reading_level") %}
+Audience reading level: {{ audience["reading_level"] }}
+{% endif %}
+{%- if audience.get("knowledge_base") %}
+Audience knowledge level: {{ audience["knowledge_base"] }}
+{% endif %}
+{%- if audience.get("primary_pain_point") %}
+Audience pain point: {{ audience["primary_pain_point"] }}
+{% endif %}
+{%- if audience.get("interests") %}
+Audience interests: {{ audience["interests"] }}
+{% endif %}
+{%- if audience.get("goals") %}
+Audience goals: {{ audience["goals"] }}
+{% endif %}
+{%- if audience.get("buyingMotivations") %}
+Buying motivations: {{ audience["buyingMotivations"] }}
+{% endif %}
+{%- if audience.get("valueMetrics") %}
+Success metrics: {{ audience["valueMetrics"] }}
+{% endif %}
+
+{% endif -%}
+{% if voice_tone %}
+{%- if voice_tone.get("tones") %}
+Tone: {{ voice_tone["tones"] | join(", ") }}
+{% endif %}
+{%- if voice_tone.get("humor") %}
+Humor: {{ voice_tone["humor"] }}
+{% endif %}
+{%- if voice_tone.get("emoji") %}
+Emoji: {{ voice_tone["emoji"] }}
+{% endif %}
+{%- if voice_tone.get("style") %}
+Style directives: {{ voice_tone["style"] }}
+{% endif %}
+
+{% endif -%}
+{% if manual_data %}
+{%- set openers = manual_data.get("openers", []) %}
+{%- set closers = manual_data.get("closers", []) %}
+{%- set phrases = manual_data.get("phrases", []) %}
+{%- set banned = manual_data.get("banned_words") or manual_data.get("bannedWords") or [] %}
+{%- set synonyms = manual_data.get("preferred_synonyms") or manual_data.get("preferredSynonyms") or [] %}
+{%- if openers %}
+Opener patterns (use these styles, not word-for-word):
+{% for o in openers[:3] %}
+  - {{ o }}
+{% endfor %}
+
+{% endif -%}
+{%- if closers %}
+Closer patterns (use these styles, not word-for-word):
+{% for c in closers[:3] %}
+  - {{ c }}
+{% endfor %}
+
+{% endif -%}
+{%- if phrases %}
+{%- set hook_phrases = phrases | selectattr("placement", "equalto", "hook") | map(attribute="text") | list %}
+{%- set transition_phrases = phrases | selectattr("placement", "equalto", "transition") | map(attribute="text") | list %}
+{%- set any_phrases = phrases | selectattr("placement", "equalto", "any") | map(attribute="text") | list %}
+{%- if hook_phrases %}
+Hook phrases: {{ hook_phrases[:3] | join(", ") }}
+{% endif %}
+{%- if transition_phrases %}
+Transition phrases: {{ transition_phrases[:3] | join(", ") }}
+{% endif %}
+{%- if any_phrases %}
+Signature phrases: {{ any_phrases[:3] | join(", ") }}
+{% endif %}
+
+{% endif -%}
+{%- if banned %}
+NEVER use these words (banned): {{ banned | join(", ") }}
+
+{% endif -%}
+{%- if synonyms %}
+{%- set valid = [] %}
+{%- for s in synonyms %}
+{%- if s.get("original") and s.get("replacement") %}
+{%- set _ = valid.append((s["original"], s["replacement"])) %}
+{%- endif %}
+{%- endfor %}
+{%- if valid %}
+Preferred word substitutions:
+{% for orig, repl in valid %}
+  - '{{ orig }}' → '{{ repl }}'
+{% endfor %}
+
+{% endif -%}
+{% endif -%}
+{% endif -%}
+=== END BRAND VOICE ===
+{% elif document_shape == "agent_node" %}
+{#- Mirrors app/agents/text/nodes.py::_build_brand_context_string(brand_profile, batch_day_index) exactly. #}
+{%- set identity = brand_profile.get("identity") or {} %}
+{%- set voice_tone = brand_profile.get("voice_tone") or {} %}
+{%- set audience = brand_profile.get("audience") or {} %}
+{%- set positioning = brand_profile.get("positioning_data") or {} %}
+{%- set manual_data = brand_profile.get("manual_data") or {} %}
+{%- set brand_type = brand_profile.get("brand_type", "Brand") %}
+{%- if brand_type == "Product" %}
+{%- set name = identity.get("productName") or identity.get("name", "") %}
+{%- set description = identity.get("description", "") %}
+{%- set category = identity.get("category", "") %}
+{%- set use_cases = identity.get("useCases") or [] %}
+{%- else %}
+{%- set name = identity.get("name", "") %}
+{%- set description = identity.get("mission") or identity.get("description", "") %}
+{%- set category = identity.get("industry", "") %}
+{%- set use_cases = [] %}
+{%- endif %}
+{%- set tones = voice_tone.get("tones") or [] %}
+{%- set humor = voice_tone.get("humor", "") %}
+{%- set emoji = voice_tone.get("emoji", "") %}
+{%- set style = voice_tone.get("style", "") %}
+=== BRAND VOICE — FOLLOW EXACTLY ===
+These instructions override all defaults. Apply every rule without exception.
+
+{% if brand_type == "Product" -%}
+Product: {{ name }}
+{% if description %}
+Description: {{ description }}
+{% endif %}
+{%- if category %}
+Category: {{ category }}
+{% endif %}
+{%- if use_cases %}
+Use cases:
+{% for uc in use_cases %}
+  - {{ uc }}
+{% endfor %}
+{%- endif %}
+{% else -%}
+Personal brand: {{ name }}
+{% if description %}
+Mission: {{ description }}
+{% endif %}
+{%- if category %}
+Industry: {{ category }}
+{% endif %}
+{% endif %}
+
+{% set reading_level = audience.get("reading_level", "") -%}
+{% set knowledge = audience.get("knowledge_base", "") -%}
+{% set pain_point = audience.get("primary_pain_point", "") -%}
+{% set goals = audience.get("goals", "") -%}
+{% if reading_level %}
+Audience reading level: {{ reading_level }}
+{% endif %}
+{%- if knowledge %}
+Audience knowledge level: {{ knowledge }}
+{% endif %}
+{%- if pain_point %}
+Audience pain point: {{ pain_point }}
+{% endif %}
+{%- if goals %}
+Audience goals: {{ goals }}
+{% endif %}
+
+{% if tones %}
+Tone: {{ tones | join(", ") }}
+{% endif %}
+{%- if humor %}
+Humor: {{ humor }}
+{% endif %}
+{%- if emoji %}
+Emoji: {{ emoji }}
+{% endif %}
+{%- if style %}
+Style directives: {{ style }}
+{% endif %}
+
+{% if positioning %}
+{%- set uvp = positioning.get("uvp", "") %}
+{%- set competitor = positioning.get("competitor", "") %}
+{%- set differentiator = positioning.get("differentiator", "") %}
+{%- set use_case = positioning.get("useCase", "") %}
+{%- if uvp %}
+Value proposition: {{ uvp }}
+{% endif %}
+{%- if competitor %}
+vs competitors: {{ competitor }}
+{% endif %}
+{%- if differentiator %}
+Differentiator: {{ differentiator }}
+{% endif %}
+{%- if use_case %}
+Real use case example: {{ use_case }}
+{% endif %}
+
+{% endif -%}
+{%- set openers = manual_data.get("openers") or [] %}
+{%- set closers = manual_data.get("closers") or [] %}
+{%- set phrases = manual_data.get("phrases") or [] %}
+{%- set banned = manual_data.get("banned_words") or manual_data.get("bannedWords") or [] %}
+{%- set synonyms = manual_data.get("preferred_synonyms") or manual_data.get("preferredSynonyms") or [] %}
+{%- if openers %}
+{%- if batch_day_index is not none and openers | length > 1 %}
+{%- set suggested_opener = openers[batch_day_index % (openers | length)] %}
+Opener pattern for today (use this style, not word-for-word):
+  - {{ suggested_opener }}
+{% else %}
+Opener patterns (use these styles, not word-for-word):
+{% for opener in openers[:3] %}
+  - {{ opener }}
+{% endfor %}
+{%- endif %}
+
+{% endif -%}
+{%- if closers %}
+{%- if batch_day_index is not none and closers | length > 1 %}
+{%- set suggested_closer = closers[batch_day_index % (closers | length)] %}
+Closer pattern for today (use this style, not word-for-word):
+  - {{ suggested_closer }}
+{% else %}
+Closer patterns (use these styles, not word-for-word):
+{% for closer in closers[:3] %}
+  - {{ closer }}
+{% endfor %}
+{%- endif %}
+
+{% endif -%}
+{%- if phrases %}
+{%- set hook_phrases = phrases | selectattr("placement", "equalto", "hook") | selectattr("text") | map(attribute="text") | list %}
+{%- set transition_phrases = phrases | selectattr("placement", "equalto", "transition") | selectattr("text") | map(attribute="text") | list %}
+{%- set any_phrases = phrases | selectattr("placement", "equalto", "any") | selectattr("text") | map(attribute="text") | list %}
+{%- set close_phrases = phrases | selectattr("placement", "equalto", "close") | selectattr("text") | map(attribute="text") | list %}
+{%- if hook_phrases %}
+Hook phrases: {{ hook_phrases | join(", ") }}
+{% endif %}
+{%- if transition_phrases %}
+Transition phrases: {{ transition_phrases | join(", ") }}
+{% endif %}
+{%- if any_phrases %}
+Signature phrases: {{ any_phrases | join(", ") }}
+{% endif %}
+{%- if close_phrases %}
+Closing phrases: {{ close_phrases | join(", ") }}
+{% endif %}
+
+{% endif -%}
+{%- if banned %}
+BANNED WORDS — never use these:
+{% for word in banned %}
+  ✗ {{ word }}
+{% endfor %}
+
+{% endif -%}
+{%- if synonyms %}
+{%- set valid_synonyms = [] %}
+{%- for s in synonyms %}
+{%- if s.get("original") and s.get("replacement") %}
+{%- set _ = valid_synonyms.append(s) %}
+{%- endif %}
+{%- endfor %}
+{%- if valid_synonyms %}
+Preferred word substitutions:
+{% for syn in valid_synonyms %}
+  - '{{ syn["original"] }}' → '{{ syn["replacement"] }}'
+{% endfor %}
+
+{% endif -%}
+{% endif -%}
+=== END BRAND VOICE ===
+{%- elif document_shape == "media_util" %}
+{#- Mirrors app/utils/brand.py::build_brand_context(brand, pipeline) exactly. #}
+{%- set name = brand.get("name", "") %}
+{%- set tone = brand.get("voice", {}).get("tone", "professional") %}
+{%- set style = brand.get("voice", {}).get("style", "") %}
+{%- set blacklist = brand.get("blacklist", []) %}
+{%- set audience = brand.get("audience", "general audience") %}
+{%- set blacklist_str = "NEVER use these words: " ~ (blacklist | join(", ")) ~ "." if blacklist else "" %}
+You are a content expert for {{ name }}.
+Brand tone: {{ tone }}
+Writing style: {{ style }}
+Target audience: {{ audience }}
+Pipeline: {{ pipeline }}
+{{ blacklist_str }}
+Always match the brand voice exactly.
+{%- endif -%}

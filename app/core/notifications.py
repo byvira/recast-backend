@@ -1,11 +1,11 @@
-"""OTP notification delivery — Resend (email) and Twilio (SMS).
+"""Notification delivery — Resend (email, via published templates) and Twilio (SMS).
 
-In ENVIRONMENT=development all delivery is short-circuited and the OTP is
-printed to the console so engineers can test without real credentials.
+In ENVIRONMENT=development all delivery is short-circuited and logged instead
+so engineers can test without real credentials.
 
 In ENVIRONMENT=production the actual APIs are called.  Any exception is caught
-and logged; the function returns False so the auth flow can surface a friendly
-error rather than crashing.
+and logged; the function returns False so the caller can surface a friendly
+error (or simply carry on) rather than crashing.
 """
 
 import logging
@@ -14,31 +14,39 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_EMAIL_SUBJECT = "Your verification code"
-_EMAIL_HTML_TEMPLATE = """
-<div style="font-family:sans-serif;max-width:480px;margin:auto">
-  <h2>Your verification code</h2>
-  <p style="font-size:32px;letter-spacing:8px;font-weight:bold">{otp}</p>
-  <p>This code expires in {minutes} minutes. Do not share it with anyone.</p>
-</div>
-"""
+_DEFAULT_FROM = "Recast <onboarding@resend.dev>"
+OPS_FROM = "Recast Ops <onboarding@resend.dev>"
 
 
-async def send_otp_email(email: str, otp: str) -> bool:
-    """Send an OTP to *email* via Resend.
+async def send_templated_email(
+    template_id: str, to: str, variables: dict, from_override: str | None = None
+) -> bool:
+    """Send a published Resend template to *to*, filling in *variables*.
 
-    In development mode the OTP is printed to the console instead.
+    This is the one place application code touches ``resend.Emails.send`` —
+    every notification in this codebase should go through here rather than
+    building HTML/subject strings by hand.
+
+    Skips silently if *to* is falsy (e.g. the recipient has no email on
+    file). In development the send is logged instead, matching the OTP
+    flow's dev short-circuit.
 
     Args:
-        email: Recipient email address.
-        otp: 6-digit OTP string.
+        template_id: Alias of the published Resend template to use.
+        to: Recipient email address.
+        variables: Template variables, keyed exactly as defined on Resend.
+        from_override: Overrides the default "Recast <...>" sender — used
+            by the ops-facing templates ("Recast Ops <...>").
 
     Returns:
-        True on success, False on any delivery failure.
+        True on success (or logged in dev), False if skipped or delivery failed.
     """
+    if not to:
+        logger.debug("No recipient — skipping templated email '%s'", template_id)
+        return False
+
     if settings.ENVIRONMENT != "production":
-        print(f"\n[DEV MODE] OTP for {email}: {otp}\n", flush=True)
-        logger.info("DEV MODE — OTP for %s: %s", email, otp)
+        logger.info("[DEV MODE] Templated email '%s' to %s: %s", template_id, to, variables)
         return True
 
     try:
@@ -47,18 +55,32 @@ async def send_otp_email(email: str, otp: str) -> bool:
         resend.api_key = settings.RESEND_API_KEY
         resend.Emails.send(
             {
-                "from": settings.EMAIL_FROM,
-                "to": email,
-                "subject": _EMAIL_SUBJECT,
-                "html": _EMAIL_HTML_TEMPLATE.format(
-                    otp=otp, minutes=settings.OTP_EXPIRE_MINUTES
-                ),
+                "from": from_override or _DEFAULT_FROM,
+                "to": to,
+                "template": {"id": template_id, "variables": variables},
             }
         )
         return True
     except Exception as exc:
-        logger.error("Failed to send OTP email to %s: %s", email, exc)
+        logger.error("Failed to send templated email '%s' to %s: %s", template_id, to, exc)
         return False
+
+
+async def send_otp_email(email: str, otp: str) -> bool:
+    """Send an OTP to *email* via the "otp-verification" Resend template.
+
+    Args:
+        email: Recipient email address.
+        otp: 6-digit OTP string.
+
+    Returns:
+        True on success, False on any delivery failure.
+    """
+    return await send_templated_email(
+        "otp-verification",
+        email,
+        {"OTP_CODE": otp, "EXPIRY_MINUTES": settings.OTP_EXPIRE_MINUTES},
+    )
 
 
 async def send_otp_sms(phone: str, otp: str) -> bool:
@@ -90,54 +112,6 @@ async def send_otp_sms(phone: str, otp: str) -> bool:
         return True
     except Exception as exc:
         logger.error("Failed to send OTP SMS to %s: %s", phone, exc)
-        return False
-
-
-_ALERT_EMAIL_HTML_TEMPLATE = """
-<div style="font-family:sans-serif;max-width:560px;margin:auto">
-  <h2>{subject}</h2>
-  <pre style="white-space:pre-wrap;font-family:inherit;font-size:14px">{body}</pre>
-</div>
-"""
-
-
-async def send_alert_email(subject: str, body: str) -> bool:
-    """Send an ops alert to ALERT_EMAIL via Resend — same integration as OTP email.
-
-    Skips silently if ALERT_EMAIL isn't configured (matches the Slack alert's
-    no-op-until-configured contract). In development the alert is logged
-    instead of sent, matching send_otp_email's dev short-circuit.
-
-    Args:
-        subject: Short alert subject line.
-        body: Plain-text alert body (rendered inside a <pre> block).
-
-    Returns:
-        True if sent (or logged in dev), False if skipped or delivery failed.
-    """
-    if not settings.ALERT_EMAIL:
-        logger.debug("ALERT_EMAIL not configured — skipping alert email: %s", subject)
-        return False
-
-    if settings.ENVIRONMENT != "production":
-        logger.info("[DEV MODE] Alert email to %s — %s\n%s", settings.ALERT_EMAIL, subject, body)
-        return True
-
-    try:
-        import resend  # type: ignore[import-untyped]
-
-        resend.api_key = settings.RESEND_API_KEY
-        resend.Emails.send(
-            {
-                "from": settings.EMAIL_FROM,
-                "to": settings.ALERT_EMAIL,
-                "subject": f"[Recast Alert] {subject}",
-                "html": _ALERT_EMAIL_HTML_TEMPLATE.format(subject=subject, body=body),
-            }
-        )
-        return True
-    except Exception as exc:
-        logger.error("Failed to send alert email (%s): %s", subject, exc)
         return False
 
 

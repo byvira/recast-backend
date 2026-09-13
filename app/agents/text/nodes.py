@@ -30,6 +30,7 @@ from app.pipelines.text.hook_agent import apply_recommended_hook, run_hook_agent
 from app.pipelines.text.normalizer import clean_raw_content, extract_content_brief
 from app.pipelines.text.quality import run_quality_gate
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
+from app.prompts.registry import load_prompt
 from app.agents.text.event_emitter import EventEmitter
 from app.agents.text.narration import msg
 import random
@@ -42,175 +43,20 @@ logger = logging.getLogger(__name__)
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_brand_context_string(brand_profile: dict , batch_day_index: Optional[int] = None) -> str:
+def _build_brand_context_string(brand_profile: dict, batch_day_index: Optional[int] = None) -> str:
     """
     Build the full brand context string injected into every generation prompt.
     Includes voice examples, positioning, audience, and style directives.
     Voice EXAMPLES are critical — descriptions alone are not enough.
+
+    Renders app/prompts/fragments/brand_context.jinja (document_shape="agent_node").
     """
-    identity = brand_profile.get("identity") or {}
-    voice_tone = brand_profile.get("voice_tone") or {}
-    audience = brand_profile.get("audience") or {}
-    positioning = brand_profile.get("positioning_data") or {}
-    manual_data = brand_profile.get("manual_data") or {}
-    brand_type = brand_profile.get("brand_type", "Brand")
-
-    # ── Identity ──────────────────────────────────────────────────────────
-    if brand_type == "Product":
-        name = identity.get("productName") or identity.get("name", "")
-        description = identity.get("description", "")
-        category = identity.get("category", "")
-        use_cases = identity.get("useCases") or []
-    else:
-        name = identity.get("name", "")
-        description = identity.get("mission") or identity.get("description", "")
-        category = identity.get("industry", "")
-        use_cases = []
-
-    # ── Voice and tone ────────────────────────────────────────────────────
-    tones = voice_tone.get("tones") or []
-    humor = voice_tone.get("humor", "")
-    emoji = voice_tone.get("emoji", "")
-    style = voice_tone.get("style", "")
-
-    lines = ["=== BRAND VOICE — FOLLOW EXACTLY ==="]
-    lines.append("These instructions override all defaults. Apply every rule without exception.")
-    lines.append("")
-
-    if brand_type == "Product":
-        lines.append(f"Product: {name}")
-        if description:
-            lines.append(f"Description: {description}")
-        if category:
-            lines.append(f"Category: {category}")
-        if use_cases:
-            lines.append("Use cases:")
-            for uc in use_cases:
-                lines.append(f"  - {uc}")
-    else:
-        lines.append(f"Personal brand: {name}")
-        if description:
-            lines.append(f"Mission: {description}")
-        if category:
-            lines.append(f"Industry: {category}")
-
-    lines.append("")
-
-    # ── Audience ──────────────────────────────────────────────────────────
-    reading_level = audience.get("reading_level", "")
-    knowledge = audience.get("knowledge_base", "")
-    pain_point = audience.get("primary_pain_point", "")
-    goals = audience.get("goals", "")
-
-    if reading_level:
-        lines.append(f"Audience reading level: {reading_level}")
-    if knowledge:
-        lines.append(f"Audience knowledge level: {knowledge}")
-    if pain_point:
-        lines.append(f"Audience pain point: {pain_point}")
-    if goals:
-        lines.append(f"Audience goals: {goals}")
-    lines.append("")
-
-    # ── Tone and style ────────────────────────────────────────────────────
-    if tones:
-        lines.append(f"Tone: {', '.join(tones)}")
-    if humor:
-        lines.append(f"Humor: {humor}")
-    if emoji:
-        lines.append(f"Emoji: {emoji}")
-    if style:
-        lines.append(f"Style directives: {style}")
-    lines.append("")
-
-    # ── Positioning (product brands) ──────────────────────────────────────
-    if positioning:
-        uvp = positioning.get("uvp", "")
-        competitor = positioning.get("competitor", "")
-        differentiator = positioning.get("differentiator", "")
-        use_case = positioning.get("useCase", "")
-
-        if uvp:
-            lines.append(f"Value proposition: {uvp}")
-        if competitor:
-            lines.append(f"vs competitors: {competitor}")
-        if differentiator:
-            lines.append(f"Differentiator: {differentiator}")
-        if use_case:
-            lines.append(f"Real use case example: {use_case}")
-        lines.append("")
-
-    # ── Approved copy — CRITICAL ──────────────────────────────────────────
-    # These are the exact voice examples the LLM must learn from
-    openers = manual_data.get("openers") or []
-    closers = manual_data.get("closers") or []
-    phrases = manual_data.get("phrases") or []
-    banned = (
-        manual_data.get("banned_words")
-        or manual_data.get("bannedWords")
-        or []
+    return load_prompt(
+        "fragments/brand_context",
+        document_shape="agent_node",
+        brand_profile=brand_profile,
+        batch_day_index=batch_day_index,
     )
-    synonyms = (
-        manual_data.get("preferred_synonyms")
-        or manual_data.get("preferredSynonyms")
-        or []
-    )
-
-    if openers:
-        if batch_day_index is not None and len(openers) > 1:
-            suggested_opener = openers[batch_day_index % len(openers)]
-            lines.append(f"Opener pattern for today (use this style, not word-for-word):")
-            lines.append(f"  - {suggested_opener}")
-        else:
-            lines.append("Opener patterns (use these styles, not word-for-word):")
-            for opener in openers[:3]:
-                lines.append(f"  - {opener}")
-        lines.append("")
-
-    if closers:
-        if batch_day_index is not None and len(closers) > 1:
-           suggested_closer = closers[batch_day_index % len(closers)]
-           lines.append("Closer pattern for today (use this style, not word-for-word):")
-           lines.append(f"  - {suggested_closer}")
-        else:
-           lines.append("Closer patterns (use these styles, not word-for-word):")
-           for closer in closers[:3]:
-               lines.append(f"  - {closer}")
-        lines.append("")
-
-    if phrases:
-        hook_phrases = [p.get("text", "") for p in phrases if p.get("placement") == "hook" and p.get("text")]
-        transition_phrases = [p.get("text", "") for p in phrases if p.get("placement") == "transition" and p.get("text")]
-        any_phrases = [p.get("text", "") for p in phrases if p.get("placement") == "any" and p.get("text")]
-        close_phrases = [p.get("text", "") for p in phrases if p.get("placement") == "close" and p.get("text")]
-
-        if hook_phrases:
-            lines.append(f"Hook phrases: {', '.join(hook_phrases)}")
-        if transition_phrases:
-            lines.append(f"Transition phrases: {', '.join(transition_phrases)}")
-        if any_phrases:
-            lines.append(f"Signature phrases: {', '.join(any_phrases)}")
-        if close_phrases:
-            lines.append(f"Closing phrases: {', '.join(close_phrases)}")
-        lines.append("")
-
-    if banned:
-        lines.append("BANNED WORDS — never use these:")
-        for word in banned:
-            lines.append(f"  ✗ {word}")
-        lines.append("")
-
-    if synonyms:
-        valid_synonyms = [s for s in synonyms if s.get("original") and s.get("replacement")]
-        if valid_synonyms:
-            lines.append("Preferred word substitutions:")
-            for syn in valid_synonyms:
-                lines.append(f"  - '{syn['original']}' → '{syn['replacement']}'")
-            lines.append("")
-
-    lines.append("=== END BRAND VOICE ===")
-
-    return "\n".join(lines)
 
 
 def _extract_enforcement_data(brand_profile: dict) -> dict:
@@ -607,21 +453,19 @@ async def rewrite_node(state: TextAgentState) -> dict:
     approved_openers = state["extras"].get("approved_openers", [])
     approved_closers = state["extras"].get("approved_closers", [])
 
-    banned_list = ", ".join(banned_words) if banned_words else "none"
-    required_list = ", ".join(
-        p.get("text", "") for p in required_phrases if p.get("text", "")
-    ) if required_phrases else "none"
-    opener_list = " | ".join(approved_openers[:3]) if approved_openers else "none"
-    closer_list = " | ".join(approved_closers[:3]) if approved_closers else "none"
-
-    retry_feedback = (
-        "REWRITE FEEDBACK — fix every issue listed below. Do not repeat these mistakes.\n\n"
-        + "\n".join(f"  ✗ {issue}" for issue in hard_issues)
-        + f"\n\nENFORCEMENT CONTEXT FOR THIS RETRY:\n"
-        + f"  Banned words (never use any of these): {banned_list}\n"
-        + f"  Required phrases (every one must appear): {required_list}\n"
-        + f"  Approved openers (pick exactly one): {opener_list}\n"
-        + f"  Approved closers (pick exactly one): {closer_list}\n"
+    # Renders app/prompts/fragments/retry_feedback.jinja (kind="detail") — same
+    # template used by orchestrator.py::_build_retry_feedback. Note: this now
+    # renders "none" (not blank) when required_phrases is non-empty but every
+    # entry lacks usable text, matching orchestrator.py's behavior — the two
+    # implementations disagreed on this edge case before consolidation.
+    retry_feedback = load_prompt(
+        "fragments/retry_feedback",
+        kind="detail",
+        hard_issues=hard_issues,
+        banned_words=banned_words,
+        required_phrases=required_phrases,
+        approved_openers=approved_openers,
+        approved_closers=approved_closers,
     )
 
     updated_extras = {**state["extras"], "retry_feedback": retry_feedback}

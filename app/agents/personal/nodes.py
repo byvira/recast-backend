@@ -23,6 +23,7 @@ from app.agents.personal import thresholds as T
 from app.agents.personal.history import iter_member_content, known_pipeline
 from app.agents.personal.state import PersonaState
 from app.pipelines.text.generator import resolve_language_name
+from app.prompts.registry import load_prompt
 from app.shared.llm import GroqModel, call_llm_structured, cosine_similarity, embed_text
 
 logger = logging.getLogger(__name__)
@@ -309,19 +310,11 @@ async def judge_drift_node(state: PersonaState) -> dict:
         # No English-skip branch, and no "does not read English" claim (which
         # was outright false for an English-speaking member) — found via audit.
         # Every language, "en" included, goes through the identical instruction.
-        language_line = (
-            f'Write the "why" value in {resolve_language_name(language)} — '
-            f"that is the language the member reading it reads.\n"
-        )
-        prompt = (
-            "A voice-consistency check flagged the NEW PIECE as off the author's usual "
-            "voice. Using their recent pieces as the baseline, describe the difference.\n\n"
-            "BASELINE PIECES:\n"
-            + "\n---\n".join(t[:1200] for t in exemplars)
-            + "\n\nNEW PIECE:\n" + state["content_text"][:1800]
-            + "\n\n" + language_line
-            + 'Return JSON only: {"severity": "low"|"medium"|"high", '
-              '"why": "<=15 words, concrete, e.g. \'far more formal, much longer sentences\'"}'
+        prompt = load_prompt(
+            "personal/judge_drift",
+            exemplars=[t[:1200] for t in exemplars],
+            content_text=state["content_text"][:1800],
+            language_name=resolve_language_name(language),
         )
         try:
             # max_tokens raised — same reasoning-token-exhaustion risk as

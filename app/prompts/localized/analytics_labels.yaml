@@ -1,0 +1,23 @@
+# English source labels for the analytics report skeleton. Translated on
+# demand and cached via app.shared.localized_strings.get_localized_string()
+# — see agents/analytics/nodes.py::_report_labels()/format_report_node().
+title: "📊 ANALYTICS REPORT"
+question: "Question"
+platforms: "Platforms"
+period: "Period"
+period_value: "Last 7 days"
+overview: "📈 OVERVIEW"
+total_followers: "Total Followers:"
+total_impressions: "Total Impressions:"
+total_reach: "Total Reach:"
+posts_analyzed: "Posts Analyzed:"
+best_post: "🏆 BEST PERFORMING POST"
+no_posts: "No posts yet."
+engagement: "engagement rate"
+likes: "likes"
+comments: "comments"
+analysis: "🔍 ANALYSIS"
+recommendations: "💡 RECOMMENDATIONS"
+no_recommendations: "No recommendations available."
+warnings: "⚠️  WARNINGS"
+none: "None"

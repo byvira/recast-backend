@@ -1,0 +1,14 @@
+{%- if domain == "audio" %}
+{%- set quality_note = "\nIMPORTANT: Previous attempt was below quality threshold. Improve depth and engagement." if retry > 0 else "" %}
+Generate {{ output_type }} for this audio content:
+Topics: {{ topics }}
+Key quotes: {{ key_quotes }}
+Full transcript excerpt: {{ transcript_excerpt }}{{ quality_note }}
+{%- elif domain == "video" %}
+{%- set quality_note = "\nIMPORTANT: Previous attempt scored below quality threshold. Improve hooks, structure, and platform optimization." if retry > 0 else "" %}
+Generate {{ output_type }} content for {{ platform }} from this video:
+Key moments: {{ key_moments }}
+Topics: {{ topics }}
+Repurpose angles: {{ repurpose_angles }}
+Transcript excerpt: {{ transcript_excerpt }}{{ quality_note }}
+{%- endif -%}

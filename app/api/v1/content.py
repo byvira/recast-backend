@@ -13,7 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.core.middleware import limiter
+from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
+from app.db.mongo import users
 from app.pipelines.text.storage import (
     get_session,
     get_workspace_sessions,
@@ -28,6 +30,29 @@ from app.pipelines.text.storage import (
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+async def _notify_approval_decision(piece: dict, ctx: WorkspaceContext, action_type: str, piece_id: str) -> None:
+    """Email the content creator that their piece was approved/rejected.
+
+    Skipped when the creator is the one who made the decision — no one needs
+    an email about their own action.
+    """
+    creator_id = piece.get("user_id")
+    if not creator_id or creator_id == ctx.user_id:
+        return
+    creator = await users.find_one({"id": creator_id}, {"email": 1})
+    if creator and creator.get("email"):
+        await send_templated_email(
+            "content-approved-rejected",
+            creator["email"],
+            {
+                "ACTION_TYPE": action_type,
+                "ACTED_BY_NAME": ctx.user.get("name", ""),
+                "WORKSPACE_NAME": ctx.workspace.get("name", "your workspace"),
+                "PIECE_ID": piece_id,
+            },
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,6 +164,7 @@ async def approve_piece(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
+    await _notify_approval_decision(updated, ctx, "approved", piece_id)
     return updated
 
 
@@ -157,6 +183,7 @@ async def reject_piece(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
+    await _notify_approval_decision(updated, ctx, "rejected", piece_id)
     return updated
 
 

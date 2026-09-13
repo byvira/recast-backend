@@ -1,0 +1,7 @@
+# English source templates for analyze_node/recommend_node's deterministic
+# fallback strings. Translated on demand and cached via
+# app.shared.localized_strings.get_localized_string() — see
+# agents/analytics/nodes.py::_analytics_fallback().
+no_metrics: "No metrics available to analyze."
+analysis_unavailable: "Analysis unavailable."
+connect_accounts: "Connect social accounts to get recommendations."

@@ -3,6 +3,7 @@
 import json
 from datetime import datetime
 from app.agents.base import BaseAgentState
+from app.prompts.registry import load_prompt
 from app.utils.brand import build_brand_context
 from app.utils.llm import (
     call_llm_structured,
@@ -21,10 +22,7 @@ async def plan_node(state: BaseAgentState) -> dict:
     raw = state["raw_input"]
     concept = raw.get("prompt", "") if isinstance(raw, dict) else str(raw)
 
-    prompt = (
-        f"Create an image generation plan for: {concept}\n"
-        "Return JSON with key 'steps' as an array of short action strings."
-    )
+    prompt = load_prompt("media/shared/plan", domain="image", concept=concept)
     result = await call_llm_structured(prompt=prompt, system=brand_ctx)
     plan = result.get("steps", ["analyse", "generate", "evaluate", "deliver"])
 
@@ -46,7 +44,7 @@ async def analyse_node(state: BaseAgentState) -> dict:
 
     if image_bytes:
         vision_result = await call_vision(
-            prompt="Describe this image: extract style, colors, composition, and brand elements.",
+            prompt=load_prompt("media/shared/analyse", domain="image", variant="vision"),
             image_bytes=image_bytes,
         )
         analysis_text = vision_result
@@ -54,10 +52,8 @@ async def analyse_node(state: BaseAgentState) -> dict:
         vision_result = ""
         analysis_text = concept
 
-    prompt = (
-        f"Analyse this image brief for brand image generation:\n{analysis_text}\n\n"
-        "Return JSON with keys: 'visual_style' (str), 'color_palette' (list), "
-        "'composition' (str), 'mood' (str), 'brand_elements' (list)."
+    prompt = load_prompt(
+        "media/shared/analyse", domain="image", variant="text", analysis_text=analysis_text
     )
     analysis = await call_llm_structured(prompt=prompt, system=brand_ctx)
     if vision_result:
@@ -122,11 +118,7 @@ async def evaluate_node(state: BaseAgentState) -> dict:
 
     if image_bytes:
         vision_eval = await call_vision(
-            prompt=(
-                f"Evaluate this image for brand '{brand_name}'. "
-                "Rate brand alignment, visual quality, composition, and mood match (0-1 each). "
-                "Return only JSON."
-            ),
+            prompt=load_prompt("media/shared/evaluate", domain="image", variant="vision", brand_name=brand_name),
             image_bytes=image_bytes,
         )
         try:
@@ -134,10 +126,9 @@ async def evaluate_node(state: BaseAgentState) -> dict:
         except (json.JSONDecodeError, TypeError):
             scores_raw = {}
     else:
-        prompt = (
-            f"Evaluate this image prompt for brand '{brand_name}':\n{enhanced_prompt}\n\n"
-            "Return JSON with keys: 'brand_alignment' (0-1), 'visual_quality' (0-1), "
-            "'composition' (0-1), 'overall' (0-1)."
+        prompt = load_prompt(
+            "media/shared/evaluate", domain="image", variant="text",
+            brand_name=brand_name, enhanced_prompt=enhanced_prompt,
         )
         scores_raw = await call_llm_structured(prompt=prompt, system=brand_ctx)
 

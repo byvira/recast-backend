@@ -38,6 +38,7 @@ from groq import APIConnectionError, APIStatusError, AsyncGroq, RateLimitError
 
 from app.core.config import settings
 from app.core.tracing import add_run_metadata, traceable
+from app.prompts.registry import load_prompt
 from app.utils.jsonparser import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -135,11 +136,7 @@ def get_gemini_client() -> genai.Client:
 # Internal helpers
 # ─────────────────────────────────────────────────────────────
 
-_JSON_SYSTEM_SUFFIX = (
-    "Respond ONLY with valid JSON. "
-    "No explanation, no markdown, no backticks. "
-    "Start with { or ["
-)
+_JSON_SYSTEM_SUFFIX = load_prompt("fragments/json_output_contract")
 
 # Approximate chars-per-token for prompt budget estimation. Deliberately
 # conservative (overestimates token count) because Groq's real accounting

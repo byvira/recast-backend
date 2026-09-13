@@ -174,15 +174,33 @@ def style_divergence(piece_fp: dict, baseline_fp: dict) -> float:
     return round(0.5 * grade_term + 0.3 * len_term + 0.1 * q_term + 0.1 * emoji_term, 4)
 
 
-def style_deltas(piece: dict, baseline: dict) -> list[str]:
-    """Human-readable differences between a piece's style and the baseline.
+# English label text, keyed the same as style_delta_components()'s
+# `label_key` — used only by style_deltas() below to build its plain-English
+# strings. Localizing the same comparisons for an end-facing message goes
+# through style_delta_components() + get_localized_string() instead (see
+# app.agents.personal.assist), since a hardcoded English label baked into a
+# plain string can't be translated after the fact.
+_ENGLISH_LABELS = {
+    "sentence_length": "sentence length",
+    "emoji_use": "emoji use",
+    "questions": "questions",
+    "bullet_list_style": "bullet/list style",
+    "reading_grade": "reading grade",
+}
 
-    Only reports differences big enough to be worth mentioning. Thresholds here
-    are presentational, not detection logic, so they live inline.
+
+def style_delta_components(piece: dict, baseline: dict) -> list[dict]:
+    """Same comparisons as style_deltas(), as structured data instead of a
+    pre-formatted English string — so a caller that needs to show this to a
+    member can translate `label_key` and `direction` first, rather than
+    mixing a baked-in English fragment into an otherwise-localized message.
+
+    Each item: {"label_key", "pv", "bv", "unit", "direction"}, where
+    `direction` is one of "longer"/"shorter"/"more"/"less".
     """
-    out: list[str] = []
+    out: list[dict] = []
 
-    def cmp(key: str, label: str, unit: str, rel: float = 0.35, absmin: float = 0.0):
+    def cmp(key: str, label_key: str, unit: str, rel: float = 0.35, absmin: float = 0.0):
         bv = float(baseline.get(key, 0.0) or 0.0)
         pv = float(piece.get(key, 0.0) or 0.0)
         if bv == 0.0 and pv == 0.0:
@@ -195,11 +213,27 @@ def style_deltas(piece: dict, baseline: dict) -> list[str]:
         direction = "longer" if diff > 0 else "shorter"
         if key not in ("avg_sentence_len", "avg_word_len"):
             direction = "more" if diff > 0 else "less"
-        out.append(f"{label}: {pv:g}{unit} vs your usual {bv:g}{unit} ({direction})")
+        out.append({"label_key": label_key, "pv": pv, "bv": bv, "unit": unit, "direction": direction})
 
-    cmp("avg_sentence_len", "sentence length", " words", absmin=3)
-    cmp("emoji_rate", "emoji use", "/word", absmin=0.01)
+    cmp("avg_sentence_len", "sentence_length", " words", absmin=3)
+    cmp("emoji_rate", "emoji_use", "/word", absmin=0.01)
     cmp("question_rate", "questions", "/sentence", absmin=0.15)
-    cmp("list_rate", "bullet/list style", "", absmin=0.2)
-    cmp("reading_grade", "reading grade", "", rel=0.25, absmin=2)
+    cmp("list_rate", "bullet_list_style", "", absmin=0.2)
+    cmp("reading_grade", "reading_grade", "", rel=0.25, absmin=2)
     return out
+
+
+def style_deltas(piece: dict, baseline: dict) -> list[str]:
+    """Human-readable (English) differences between a piece's style and the
+    baseline. Only reports differences big enough to be worth mentioning.
+
+    This stays English-only intentionally — its one caller (assist.py) feeds
+    it straight into an LLM prompt as internal context, not shown to the
+    member directly. For a member-facing message, use
+    style_delta_components() + get_localized_string() instead.
+    """
+    return [
+        f"{_ENGLISH_LABELS[c['label_key']]}: {c['pv']:g}{c['unit']} vs your usual "
+        f"{c['bv']:g}{c['unit']} ({c['direction']})"
+        for c in style_delta_components(piece, baseline)
+    ]

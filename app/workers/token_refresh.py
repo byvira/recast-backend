@@ -6,8 +6,10 @@ Runs every 24 hours — refreshes workspace connections expiring within 7 days.
 import logging
 from datetime import datetime, timezone, timedelta
 
+from app.core.config import settings
+from app.core.notifications import send_templated_email
 from app.core.scheduler_lock import distributed_job_lock
-from app.db.mongo import workspace_connections
+from app.db.mongo import users, workspace_connections, workspaces
 from app.pipelines.publish.supervisor.alerts import alert_token_refresh_failure
 from app.pipelines.publish.token_store import (
     save_token,
@@ -92,6 +94,19 @@ async def refresh_expiring_tokens() -> None:
                 platform=platform,
                 error_message=str(e),
             )
+            ws_doc = await workspaces.find_one({"id": workspace_id})
+            if ws_doc and ws_doc.get("owner_id"):
+                owner = await users.find_one({"id": ws_doc["owner_id"]}, {"email": 1})
+                if owner and owner.get("email"):
+                    await send_templated_email(
+                        "platform-reconnect-needed",
+                        owner["email"],
+                        {
+                            "PLATFORM": platform,
+                            "WORKSPACE_NAME": ws_doc.get("name", "your workspace"),
+                            "RECONNECT_URL": f"{settings.FRONTEND_URL}/dashboard/settings",
+                        },
+                    )
 
     logger.info(
         "Token refresh complete — refreshed: %d, failed: %d",

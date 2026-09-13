@@ -1,0 +1,7 @@
+# English source templates for Remy's align_draft assist states.
+# Translated into a member's language on demand and cached via
+# app.shared.localized_strings.get_localized_string() — see assist.py.
+learning: "i'm still learning how you write — give me a few more pieces and i'll be able to tell you when a draft drifts from your usual voice."
+in_voice: "this reads like you — nothing i'd change on the voice front. go with it."
+drifting_lead: "this is drifting a bit from how you usually sound"
+drifting_fallback: "tighten it back toward your normal rhythm and opener."

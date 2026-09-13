@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from app.agents.base import BaseAgentState
+from app.prompts.registry import load_prompt
 from app.utils.brand import build_brand_context
 from app.utils.llm import call_llm, call_llm_structured, transcribe_audio, GroqModel
 
@@ -15,10 +16,7 @@ async def plan_node(state: BaseAgentState) -> dict:
     raw = state["raw_input"]
     title = raw.get("title", "") if isinstance(raw, dict) else str(raw)
 
-    prompt = (
-        f"Create a step-by-step audio content plan for: {title}\n"
-        "Return JSON with key 'steps' as an array of short action strings."
-    )
+    prompt = load_prompt("media/shared/plan", domain="audio", title=title)
     result = await call_llm_structured(prompt=prompt, system=brand_ctx)
     plan = result.get("steps", ["transcribe", "analyse", "generate", "evaluate", "deliver"])
 
@@ -69,11 +67,7 @@ async def analyse_node(state: BaseAgentState) -> dict:
     raw = state["raw_input"]
     output_type = raw.get("output_type", "show_notes") if isinstance(raw, dict) else "show_notes"
 
-    prompt = (
-        f"Analyse this audio transcript for {output_type} generation:\n\n{text[:3000]}\n\n"
-        "Return JSON with keys: 'topics' (list), 'key_quotes' (list), "
-        "'chapter_markers' (list of {time, title}), 'sentiment' (str)."
-    )
+    prompt = load_prompt("media/shared/analyse", domain="audio", output_type=output_type, text=text[:3000])
     analysis = await call_llm_structured(prompt=prompt, system=brand_ctx)
 
     return {
@@ -94,16 +88,10 @@ async def generate_node(state: BaseAgentState) -> dict:
     output_type = raw.get("output_type", "show_notes") if isinstance(raw, dict) else "show_notes"
     retry = state["retry_count"]
 
-    quality_note = (
-        "\nIMPORTANT: Previous attempt was below quality threshold. Improve depth and engagement."
-    ) if retry > 0 else ""
-
-    prompt = (
-        f"Generate {output_type} for this audio content:\n"
-        f"Topics: {analysis.get('topics', [])}\n"
-        f"Key quotes: {analysis.get('key_quotes', [])}\n"
-        f"Full transcript excerpt: {transcript.get('text', '')[:2000]}"
-        f"{quality_note}"
+    prompt = load_prompt(
+        "media/shared/generate", domain="audio", output_type=output_type,
+        topics=analysis.get("topics", []), key_quotes=analysis.get("key_quotes", []),
+        transcript_excerpt=transcript.get("text", "")[:2000], retry=retry,
     )
     content = await call_llm(prompt=prompt, system=brand_ctx, model=GroqModel.BALANCED)
 
@@ -129,11 +117,7 @@ async def evaluate_node(state: BaseAgentState) -> dict:
     content = state["intermediate_outputs"].get("generated_content", "")
     brand_name = state["brand"].get("name", "")
 
-    prompt = (
-        f"Evaluate this audio content output for brand '{brand_name}':\n\n{content}\n\n"
-        "Return JSON with keys: 'completeness' (0-1), 'brand_alignment' (0-1), "
-        "'accuracy' (0-1), 'overall' (0-1)."
-    )
+    prompt = load_prompt("media/shared/evaluate", domain="audio", brand_name=brand_name, content=content)
     scores_raw = await call_llm_structured(prompt=prompt, system=brand_ctx)
 
     quality_scores = {

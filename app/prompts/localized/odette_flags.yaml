@@ -1,0 +1,12 @@
+# English source templates for Odette's rule-flag summaries.
+# Translated into a workspace's language on demand and cached via
+# app.shared.localized_strings.get_localized_string(). {placeholder} tokens
+# are Python str.format() fields — see app/agents/supervisor/rules.py and
+# personas.py::odette_flag_summary() for the format_ctx built per flag_type.
+tier_seat_exceeded: "You're carrying {active_members} active members on a {tier} plan that seats {seats}. Add seats or remove {overage} member(s) to clear it."
+daily_publish_cap: "Publishing hit {count} in the last 24h against a {cap}/day cap on the {tier} plan. Throttle scheduling or move up a tier."
+rbac_violation: "A '{actor_role}' performed '{event_type}', which that role isn't permitted to do. Review the member's role and how the action was made."
+brand_voice_instability: "The brand voice was edited {count} times in 24h. Rapid churn here destabilises every member's output — consolidate the changes and lock it."
+member_churn: "{summary}. Confirm this was intended and that access was cleaned up."
+assistant_signal_storm: "{summary}. Worth a look — it usually means a shared cause (a brief change, a bad template, an automation loop)."
+__fallback__: "{flag_type_label}: {detail}"

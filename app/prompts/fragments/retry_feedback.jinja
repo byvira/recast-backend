@@ -1,0 +1,32 @@
+{% if kind == "detail" %}
+{#- Mirrors orchestrator.py::_build_retry_feedback() and agents/text/nodes.py::
+   rewrite_node's inline builder — the two were byte-identical in output shape,
+   differing only in where the caller sourced banned_words/required_phrases/
+   approved_openers/approved_closers/hard_issues from. #}
+{%- set required_texts = [] %}
+{%- for p in required_phrases %}
+{%- if p.get("text") %}
+{%- set _ = required_texts.append(p.get("text")) %}
+{%- endif %}
+{%- endfor %}
+{%- set issue_lines = [] %}
+{%- for issue in hard_issues %}
+{%- set _ = issue_lines.append("  ✗ " ~ issue) %}
+{%- endfor %}
+REWRITE FEEDBACK — fix every issue listed below. Do not repeat these mistakes.
+
+{{ issue_lines | join("\n") }}
+
+ENFORCEMENT CONTEXT FOR THIS RETRY:
+  Banned words (never use any of these): {{ banned_words | join(", ") if banned_words else "none" }}
+  Required phrases (every one must appear): {{ required_texts | join(", ") if required_texts else "none" }}
+  Approved openers (pick exactly one): {{ approved_openers[:3] | join(" | ") if approved_openers else "none" }}
+  Approved closers (pick exactly one): {{ approved_closers[:3] | join(" | ") if approved_closers else "none" }}
+{% elif kind == "wrapper" %}
+{#- Mirrors generator.py's and repurpose.py's retry_block wrapper — byte-identical
+   in both original files. Only rendered by callers when retry_feedback is
+   non-empty and retry_count > 0; the template itself doesn't gate on that. #}
+{{ "\n" }}⚠️ PREVIOUS ATTEMPT FAILED — FIX THESE ISSUES:
+{{ retry_feedback }}
+Every issue above must be resolved in this generation.
+{% endif %}

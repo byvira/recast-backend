@@ -1,79 +1,43 @@
 import logging
 from app.models.text import AgentTask, AgentResult, Platform
 from app.pipelines.text.brand_context import build_goal_context, build_tone_override
-from app.pipelines.text.generator import PLATFORM_RULES
-
-from app.shared.llm import call_llm_structured
-
-logger = logging.getLogger(__name__)
-
-
-
-REPURPOSE_INSTRUCTIONS = {
-    (Platform.BLOG, Platform.LINKEDIN): "Extract the single strongest insight. Rewrite as a hook-led LinkedIn post. Do not summarise — find the most shareable angle.",
-    (Platform.BLOG, Platform.TWITTER_THREAD): "Break this blog into a 7-tweet thread. Tweet 1 is a standalone hook. Each middle tweet covers one key point. Final tweet is a CTA.",
-    (Platform.BLOG, Platform.NEWSLETTER): "Rewrite as a conversational newsletter section. Remove formal blog structure. Add a personal angle and one concrete takeaway.",
-    (Platform.BLOG, Platform.INSTAGRAM): "Extract the strongest insight. Rewrite as an Instagram caption with a hook first line, 100-130 words, CTA, and hashtags.",
-(Platform.LINKEDIN, Platform.TWITTER): (
-    "Rewrite as a Twitter/X tweet. "
-    "HARD REQUIREMENT: minimum 200 characters, maximum 280 characters. "
-    "Count characters before outputting — if under 200, add a specific detail, outcome, or follow-up thought. "
-    "One complete punchy idea. Hook first. Do not just compress — expand the idea if needed."
-),
-    (Platform.LINKEDIN, Platform.TWITTER_THREAD): "Expand this LinkedIn post into a 7-tweet thread. Each tweet unpacks one idea from the post.",
-    (Platform.LINKEDIN, Platform.INSTAGRAM): "Rewrite as an Instagram caption. More conversational. Add a hook line and hashtags.",
-    (Platform.LINKEDIN, Platform.BLOG): "Expand this LinkedIn post into a full blog post. Add depth, examples, and structure.",
-    (Platform.NEWSLETTER, Platform.LINKEDIN): "Extract the main insight. Rewrite as a hook-led LinkedIn post.",
-    (Platform.NEWSLETTER, Platform.TWITTER_THREAD): "Convert to a Twitter thread. Each key point becomes one tweet.",
-    (Platform.TWITTER_THREAD, Platform.BLOG): "Expand this thread into a full blog post. Each tweet becomes a section with full detail.",
-    (Platform.TWITTER_THREAD, Platform.LINKEDIN): "Compress the thread's core argument into a single powerful LinkedIn post.",
-}
-
-FALLBACK_INSTRUCTION = "Adapt this content for {target}. Preserve the core message. Rewrite completely for the target platform's format, tone, and audience expectations."
-
-
-import logging
-from app.models.text import AgentTask, AgentResult, Platform
-from app.pipelines.text.brand_context import build_goal_context, build_tone_override
 from app.pipelines.text.generator import (
     PLATFORM_RULES,
     build_approved_copy_instruction,
     build_banned_words_instruction,
     build_language_instruction,
 )
+from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_structured
 
 logger = logging.getLogger(__name__)
 
 
-REPURPOSE_INSTRUCTIONS = {
-    (Platform.BLOG, Platform.LINKEDIN): "Extract the single strongest insight. Rewrite as a hook-led LinkedIn post. Do not summarise — find the most shareable angle.",
-    (Platform.BLOG, Platform.TWITTER_THREAD): "Break this blog into a 7-tweet thread. Tweet 1 is a standalone hook. Each middle tweet covers one key point. Final tweet is a CTA.",
-    (Platform.BLOG, Platform.NEWSLETTER): "Rewrite as a conversational newsletter section. Remove formal blog structure. Add a personal angle and one concrete takeaway.",
-    (Platform.BLOG, Platform.INSTAGRAM): "Extract the strongest insight. Rewrite as an Instagram caption with a hook first line, 100-130 words, CTA, and hashtags.",
-    (Platform.LINKEDIN, Platform.TWITTER): (
-        "Rewrite as a Twitter/X tweet. "
-        "HARD REQUIREMENT: minimum 200 characters, maximum 280 characters. "
-        "Count characters before outputting — if under 200, add a specific detail, outcome, or follow-up thought. "
-        "One complete punchy idea. Hook first. Do not just compress — expand the idea if needed."
-    ),
-    (Platform.LINKEDIN, Platform.TWITTER_THREAD): "Expand this LinkedIn post into a 7-tweet thread. Each tweet unpacks one idea from the post.",
-    (Platform.LINKEDIN, Platform.INSTAGRAM): "Rewrite as an Instagram caption. More conversational. Add a hook line and hashtags.",
-    (Platform.LINKEDIN, Platform.BLOG): "Expand this LinkedIn post into a full blog post. Add depth, examples, and structure.",
-    (Platform.NEWSLETTER, Platform.LINKEDIN): "Extract the main insight. Rewrite as a hook-led LinkedIn post.",
-    (Platform.NEWSLETTER, Platform.TWITTER_THREAD): "Convert to a Twitter thread. Each key point becomes one tweet.",
-    (Platform.TWITTER_THREAD, Platform.BLOG): "Expand this thread into a full blog post. Each tweet becomes a section with full detail.",
-    (Platform.TWITTER_THREAD, Platform.LINKEDIN): "Compress the thread's core argument into a single powerful LinkedIn post.",
+# Maps a (source, target) Platform pair to the key its instruction text is
+# rendered under in app/prompts/text/repurpose/platform_pairs.jinja. A pair
+# absent here falls back to app/prompts/text/repurpose/fallback.jinja.
+_REPURPOSE_PAIR_KEYS = {
+    (Platform.BLOG, Platform.LINKEDIN): "blog_linkedin",
+    (Platform.BLOG, Platform.TWITTER_THREAD): "blog_twitter_thread",
+    (Platform.BLOG, Platform.NEWSLETTER): "blog_newsletter",
+    (Platform.BLOG, Platform.INSTAGRAM): "blog_instagram",
+    (Platform.LINKEDIN, Platform.TWITTER): "linkedin_twitter",
+    (Platform.LINKEDIN, Platform.TWITTER_THREAD): "linkedin_twitter_thread",
+    (Platform.LINKEDIN, Platform.INSTAGRAM): "linkedin_instagram",
+    (Platform.LINKEDIN, Platform.BLOG): "linkedin_blog",
+    (Platform.NEWSLETTER, Platform.LINKEDIN): "newsletter_linkedin",
+    (Platform.NEWSLETTER, Platform.TWITTER_THREAD): "newsletter_twitter_thread",
+    (Platform.TWITTER_THREAD, Platform.BLOG): "twitter_thread_blog",
+    (Platform.TWITTER_THREAD, Platform.LINKEDIN): "twitter_thread_linkedin",
 }
-
-FALLBACK_INSTRUCTION = "Adapt this content for {target}. Preserve the core message. Rewrite completely for the target platform's format, tone, and audience expectations."
 
 
 async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> AgentResult:
-    instruction = REPURPOSE_INSTRUCTIONS.get(
-        (source_platform, task.platform),
-        FALLBACK_INSTRUCTION.format(target=task.platform.value),
-    )
+    pair_key = _REPURPOSE_PAIR_KEYS.get((source_platform, task.platform))
+    if pair_key:
+        instruction = load_prompt("text/repurpose/platform_pairs", pair=pair_key)
+    else:
+        instruction = load_prompt("text/repurpose/fallback", target=task.platform.value)
 
     goal_context = build_goal_context(task.metadata.get("goal"))
     tone_override = build_tone_override(task.metadata.get("tone"))
@@ -96,49 +60,24 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
     retry_count = task.retry_count or 0
     retry_block = ""
     if retry_feedback and retry_count > 0:
-        retry_block = (
-            f"\n⚠️ PREVIOUS ATTEMPT FAILED — FIX THESE ISSUES:\n"
-            f"{retry_feedback}\n"
-            f"Every issue above must be resolved in this generation.\n"
-        )
+        retry_block = load_prompt("fragments/retry_feedback", kind="wrapper", retry_feedback=retry_feedback)
 
     # ── Build prompt — always built regardless of retry state ────────────
-    prompt = f"""
-{language_instruction}
-
-REPURPOSING TASK: {instruction}
-{retry_block}
-SOURCE PLATFORM: {source_platform.value}
-
-SOURCE CONTENT:
-{task.content}
-
-{platform_rules}
-
-{approved_copy_instruction}
-
-ADDITIONAL RULES:
-{goal_context}
-{tone_override}
-{banned_instruction}
-
-━━━ BRAND VOICE — apply every rule below to the output ━━━
-{task.brand_context}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-CRITICAL: Do not copy sentences from the source. Rewrite everything in the brand voice above.
-Output must feel completely native to {task.platform.value}.
-Zero banned words. Use approved vocabulary only.
-{language_instruction}
-
-Return valid JSON:
-{{
-  "content": "...",
-  "word_count": 0,
-  "char_count": 0,
-  "platform": "{task.platform.value}"
-}}
-"""
+    prompt = load_prompt(
+        "text/repurpose/master",
+        language_instruction=language_instruction,
+        instruction=instruction,
+        retry_block=retry_block,
+        source_platform=source_platform.value,
+        content=task.content,
+        platform_rules=platform_rules,
+        approved_copy_instruction=approved_copy_instruction,
+        goal_context=goal_context,
+        tone_override=tone_override,
+        banned_instruction=banned_instruction,
+        brand_context=task.brand_context,
+        platform=task.platform.value,
+    )
 
     # See app/pipelines/text/generator.py's GENERATION_MAX_TOKENS comment —
     # gpt-oss-120b can burn its entire token budget on hidden reasoning for

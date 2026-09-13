@@ -8,9 +8,11 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.auth import get_current_user
+from app.core.config import settings
 from app.core.middleware import limiter
+from app.core.notifications import send_templated_email
 from app.core.rbac import require_permission
-from app.db.mongo import invites, workspace_members, workspaces
+from app.db.mongo import invites, users, workspace_members, workspaces
 from app.models.workspace import InviteMemberBody, InviteStatus
 
 router = APIRouter()
@@ -64,7 +66,19 @@ async def create_invite(
     }
     await invites.insert_one(invite_doc)
 
-    # TODO: send email with invite link containing invite_doc["token"]
+    invite_link = f"{settings.FRONTEND_URL}/invite/{invite_doc['token']}"
+    await send_templated_email(
+        "workspace-invite",
+        invite_doc["email"],
+        {
+            "INVITER_NAME": current_user["name"],
+            "WORKSPACE_NAME": ws["name"],
+            "ROLE": invite_doc["role"],
+            "INVITE_LINK": invite_link,
+            "EXPIRES_IN": "7 days",
+            "INVITER_INITIAL": current_user["name"][:1].upper() if current_user.get("name") else "?",
+        },
+    )
 
     return {"invite_id": invite_doc["id"], "token": invite_doc["token"]}
 
@@ -142,5 +156,18 @@ async def accept_invite(
         invite["workspace_id"], actor_user_id=current_user["id"], actor_role=invite["role"],
         subject_user_id=current_user["id"], role=invite["role"],
     )
+
+    inviter = await users.find_one({"id": invite["invited_by"]}, {"email": 1})
+    if inviter and inviter.get("email"):
+        ws = await workspaces.find_one({"id": invite["workspace_id"]}, {"name": 1})
+        await send_templated_email(
+            "invite-accepted",
+            inviter["email"],
+            {
+                "NEW_MEMBER_NAME": current_user["name"],
+                "WORKSPACE_NAME": (ws or {}).get("name", "your workspace"),
+                "ROLE": invite["role"],
+            },
+        )
 
     return {"workspace_id": invite["workspace_id"], "role": invite["role"]}

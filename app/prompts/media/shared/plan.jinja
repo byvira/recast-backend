@@ -1,0 +1,10 @@
+{% if domain == "image" %}
+Create an image generation plan for: {{ concept }}
+Return JSON with key 'steps' as an array of short action strings.
+{%- elif domain == "audio" %}
+Create a step-by-step audio content plan for: {{ title }}
+Return JSON with key 'steps' as an array of short action strings.
+{%- elif domain == "video" %}
+Create a video content plan for '{{ title }}' (goal: {{ output_type }}).
+Return JSON with key 'steps' as an array of short action strings.
+{%- endif -%}

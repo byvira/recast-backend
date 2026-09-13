@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.core.auth import get_current_user
 from app.core.middleware import limiter
+from app.core.notifications import send_templated_email
 from app.core.rbac import require_permission
 from app.core.tiers import TIER_DEFAULTS
 from app.db.mongo import users, workspaces, workspace_members
@@ -189,6 +190,12 @@ async def delete_workspace(
     if ws.get("is_personal"):
         raise HTTPException(status_code=400, detail="Personal workspaces cannot be deleted.")
 
+    members = await workspace_members.find(
+        {"workspace_id": workspace_id}, {"user_id": 1}
+    ).to_list(length=200)
+    member_ids = {m["user_id"] for m in members if m.get("user_id")}
+    member_ids.add(current_user["id"])
+
     await workspaces.delete_one({"id": workspace_id})
     await workspace_members.delete_many({"workspace_id": workspace_id})
     # Reset default_workspace_id for any member who had this as their default
@@ -196,6 +203,16 @@ async def delete_workspace(
         {"default_workspace_id": workspace_id},
         {"$set": {"default_workspace_id": None}},
     )
+
+    recipients = await users.find({"id": {"$in": list(member_ids)}}, {"email": 1}).to_list(length=200)
+    for r in recipients:
+        if r.get("email"):
+            await send_templated_email(
+                "workspace-deleted",
+                r["email"],
+                {"WORKSPACE_NAME": ws["name"], "DELETED_BY_NAME": current_user["name"]},
+            )
+
     return {"workspace_id": workspace_id, "deleted": True}
 
 
@@ -231,6 +248,20 @@ async def set_member_role(
         subject_user_id=member_user_id, from_role=(target or {}).get("role", ""),
         to_role=body.role.value,
     )
+
+    subject = await users.find_one({"id": member_user_id}, {"email": 1})
+    if subject and subject.get("email"):
+        await send_templated_email(
+            "role-changed",
+            subject["email"],
+            {
+                "WORKSPACE_NAME": (ws or {}).get("name", "your workspace"),
+                "OLD_ROLE": (target or {}).get("role", ""),
+                "NEW_ROLE": body.role.value,
+                "CHANGED_BY_NAME": current_user["name"],
+            },
+        )
+
     return {"workspace_id": workspace_id, "user_id": member_user_id, "role": body.role.value}
 
 
@@ -263,6 +294,18 @@ async def remove_member(
         workspace_id, actor_user_id=current_user["id"], actor_role=caller.get("role", ""),
         subject_user_id=member_user_id, role=(target or {}).get("role", ""),
     )
+
+    subject = await users.find_one({"id": member_user_id}, {"email": 1})
+    if subject and subject.get("email"):
+        await send_templated_email(
+            "member-removed",
+            subject["email"],
+            {
+                "WORKSPACE_NAME": (ws or {}).get("name", "your workspace"),
+                "REMOVED_BY_NAME": current_user["name"],
+            },
+        )
+
     await users.update_one(
         {"id": member_user_id, "default_workspace_id": workspace_id},
         {"$set": {"default_workspace_id": None}},

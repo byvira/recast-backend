@@ -1,0 +1,16 @@
+# English source templates for describing one style_delta_components() item
+# to a member. Translated on demand and cached via
+# app.shared.localized_strings.get_localized_string() — see assist.py.
+# {pv}/{bv}/{unit} are pre-formatted plain values; {direction} is itself a
+# separately-translated direction_* value below, substituted in before this
+# template is used as ctx — never a raw English fragment glued onto an
+# otherwise-localized message (the bug this fixes).
+sentence_length: "sentence length: {pv}{unit} vs your usual {bv}{unit} ({direction})"
+emoji_use: "emoji use: {pv}{unit} vs your usual {bv}{unit} ({direction})"
+questions: "questions: {pv}{unit} vs your usual {bv}{unit} ({direction})"
+bullet_list_style: "bullet/list style: {pv}{unit} vs your usual {bv}{unit} ({direction})"
+reading_grade: "reading grade: {pv}{unit} vs your usual {bv}{unit} ({direction})"
+direction_longer: "longer"
+direction_shorter: "shorter"
+direction_more: "more"
+direction_less: "less"

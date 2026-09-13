@@ -1,0 +1,23 @@
+{%- if banned_words %}
+{%- set replacements = {} %}
+{%- for syn in preferred_synonyms %}
+{%- set original = (syn.get("original") or "").strip().lower() %}
+{%- set replacement = (syn.get("replacement") or "").strip() %}
+{%- if original and replacement %}
+{%- set _ = replacements.update({original: replacement}) %}
+{%- endif %}
+{%- endfor %}
+
+BANNED WORDS — STRUCTURAL REPLACEMENTS REQUIRED:
+{% for word in banned_words %}
+{%- set word_lower = word.strip().lower() %}
+{%- if word_lower in replacements %}
+  ✗ NEVER '{{ word }}' → ✓ ALWAYS use '{{ replacements[word_lower] }}'
+{% else %}
+  ✗ NEVER '{{ word }}' → ✓ REPHRASE using brand vocabulary
+{% endif %}
+{%- endfor %}
+
+If you are about to write a banned word — STOP. Use the replacement instead.
+Content containing banned words will be automatically rejected and rewritten.
+{% endif %}

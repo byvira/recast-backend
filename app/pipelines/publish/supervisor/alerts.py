@@ -119,16 +119,19 @@ async def alert_fatal(
         error_message=error_message,
         user_id=user_id,
     )
-    from app.core.notifications import send_alert_email
-    await send_alert_email(
-        subject=f"Publish FATAL failure — {platform}",
-        body=(
-            f"Piece: {piece_id}\n"
-            f"Platform: {platform}\n"
-            f"User: {user_id}\n"
-            f"Workspace: {workspace_id}\n"
-            f"Error: {error_message}"
-        ),
+    from app.core.config import settings
+    from app.core.notifications import OPS_FROM, send_templated_email
+    await send_templated_email(
+        "publish-fatal-alert",
+        settings.ALERT_EMAIL,
+        {
+            "PIECE_ID": piece_id,
+            "PLATFORM": platform,
+            "USER_ID": user_id,
+            "WORKSPACE_ID": workspace_id,
+            "ERROR_MESSAGE": error_message,
+        },
+        from_override=OPS_FROM,
     )
 
 
@@ -144,12 +147,15 @@ async def alert_token_refresh_failure(
         f"Platform: {platform}\n"
         f"Error: {error_message}"
     )
-    from app.core.notifications import send_alert_email
-    await send_alert_email(
-        subject=f"Token refresh failed — {platform}",
-        body=(
-            f"Workspace: {workspace_id}\n"
-            f"Platform: {platform}\n"
-            f"Error: {error_message}"
-        ),
+    from app.core.config import settings
+    from app.core.notifications import OPS_FROM, send_templated_email
+    await send_templated_email(
+        "token-refresh-failed",
+        settings.ALERT_EMAIL,
+        {
+            "WORKSPACE_ID": workspace_id,
+            "PLATFORM": platform,
+            "ERROR_MESSAGE": error_message,
+        },
+        from_override=OPS_FROM,
     )

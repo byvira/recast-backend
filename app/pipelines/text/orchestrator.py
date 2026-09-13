@@ -28,6 +28,7 @@ from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.normalizer import normalise_input
 from app.pipelines.text.repurpose import run_repurpose_agent
 from app.pipelines.text.generator import validate_content
+from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
 from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
@@ -664,14 +665,7 @@ async def run_batch_pipeline(
     """
     from app.shared.llm import call_llm_structured
 
-    angle_prompt = f"""
-Generate {days} different content angles for the topic: "{topic_cluster}"
-Each angle must approach the topic from a distinctly different perspective.
-Vary the format: personal stories, data-driven, contrarian, how-to, case study.
-
-Return valid JSON only:
-{{"angles": ["angle 1 description", "angle 2 description", ...]}}
-"""
+    angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster)
     angle_result = await call_llm_structured(angle_prompt)
     angles = (
         angle_result.get("angles", [topic_cluster] * days)
@@ -707,20 +701,16 @@ Return valid JSON only:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_retry_feedback(hard_issues: list[str], enforcement: dict) -> str:
-    """Build a structured retry prompt from quality gate failures + enforcement context."""
-    banned_list  = ", ".join(enforcement["banned_words"]) if enforcement["banned_words"] else "none"
-    required_list = ", ".join(
-        p.get("text", "") for p in enforcement.get("required_phrases", []) if p.get("text")
-    ) or "none"
-    opener_list  = " | ".join(enforcement["approved_openers"][:3])  if enforcement["approved_openers"]  else "none"
-    closer_list  = " | ".join(enforcement["approved_closers"][:3])  if enforcement["approved_closers"]  else "none"
+    """Build a structured retry prompt from quality gate failures + enforcement context.
 
-    return (
-        "REWRITE FEEDBACK — fix every issue listed below. Do not repeat these mistakes.\n\n"
-        + "\n".join(f"  ✗ {issue}" for issue in hard_issues)
-        + "\n\nENFORCEMENT CONTEXT FOR THIS RETRY:\n"
-        + f"  Banned words (never use any of these): {banned_list}\n"
-        + f"  Required phrases (every one must appear): {required_list}\n"
-        + f"  Approved openers (pick exactly one): {opener_list}\n"
-        + f"  Approved closers (pick exactly one): {closer_list}\n"
+    Renders app/prompts/fragments/retry_feedback.jinja (kind="detail").
+    """
+    return load_prompt(
+        "fragments/retry_feedback",
+        kind="detail",
+        hard_issues=hard_issues,
+        banned_words=enforcement["banned_words"],
+        required_phrases=enforcement.get("required_phrases", []),
+        approved_openers=enforcement["approved_openers"],
+        approved_closers=enforcement["approved_closers"],
     )

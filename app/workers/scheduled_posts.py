@@ -7,13 +7,59 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from app.core.config import settings
+from app.core.notifications import send_templated_email
 from app.core.scheduler_lock import distributed_job_lock
-from app.db.mongo import content_pieces
+from app.db.mongo import content_pieces, users, workspaces
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
+from app.pipelines.publish.supervisor.alerts import alert_fatal
 from app.pipelines.publish.token_store import get_token
 
 logger = logging.getLogger(__name__)
+
+
+async def _notify_publish_failure(
+    *, piece_id: str, platform: str, user_id: str, brand_id: str,
+    workspace_id: str, error_message: str, scheduled_at: str = "",
+) -> None:
+    """Alert ops and email the content owner about a scheduled-publish failure.
+
+    Mirrors the FATAL alert path the synchronous /publish/now endpoint already
+    uses (app.api.v1.publish) — this worker previously fired no alert of any
+    kind. Never raises; a notification failure must not crash the scheduler.
+    """
+    try:
+        await alert_fatal(
+            piece_id=piece_id,
+            platform=platform,
+            user_id=user_id,
+            brand_id=brand_id,
+            error_code=None,
+            error_message=error_message,
+            workspace_id=workspace_id,
+        )
+    except Exception as e:
+        logger.error("alert_fatal failed for piece %s: %s", piece_id, e)
+
+    try:
+        owner = await users.find_one({"id": user_id}, {"email": 1})
+        ws = await workspaces.find_one({"id": workspace_id}, {"name": 1}) if workspace_id else None
+        if owner and owner.get("email"):
+            await send_templated_email(
+                "scheduled-post-failed",
+                owner["email"],
+                {
+                    "PLATFORM": platform,
+                    "WORKSPACE_NAME": (ws or {}).get("name", "your workspace"),
+                    "SCHEDULED_AT": scheduled_at,
+                    "ERROR_MESSAGE": error_message,
+                    "PIECE_ID": piece_id,
+                    "DASHBOARD_LINK": f"{settings.FRONTEND_URL}/dashboard",
+                },
+            )
+    except Exception as e:
+        logger.error("publish-failure email failed for piece %s: %s", piece_id, e)
 
 
 @distributed_job_lock("process_scheduled_posts", ttl_seconds=55)
@@ -64,6 +110,12 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 "updated_at": datetime.now(timezone.utc),
             }},
         )
+        await _notify_publish_failure(
+            piece_id=piece_id, platform=platform, user_id=user_id,
+            brand_id=piece.get("brand_id", ""), workspace_id="",
+            error_message="Missing workspace_id",
+            scheduled_at=piece.get("publish_scheduled_at", ""),
+        )
         return
 
     # Get token — scoped to the piece's workspace
@@ -80,6 +132,12 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 "last_error": f"No {platform} token found",
                 "updated_at": datetime.now(timezone.utc),
             }},
+        )
+        await _notify_publish_failure(
+            piece_id=piece_id, platform=platform, user_id=user_id,
+            brand_id=piece.get("brand_id", ""), workspace_id=workspace_id,
+            error_message=f"No {platform} token found",
+            scheduled_at=piece.get("publish_scheduled_at", ""),
         )
         return
 
@@ -141,6 +199,12 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 "last_error":     result.error_message,
                 "updated_at":     datetime.now(timezone.utc),
             }},
+        )
+        await _notify_publish_failure(
+            piece_id=piece_id, platform=platform, user_id=user_id,
+            brand_id=piece["brand_id"], workspace_id=workspace_id,
+            error_message=result.error_message or "Unknown error",
+            scheduled_at=piece.get("publish_scheduled_at", ""),
         )
         logger.error(
             "Scheduled piece %s failed on %s: %s",

@@ -24,7 +24,7 @@ from app.core.auth import (
 )
 from app.core.config import settings
 from app.core.middleware import limiter
-from app.core.notifications import send_otp
+from app.core.notifications import send_otp, send_templated_email
 from app.core.otp import (
     check_rate_limit,
     clear_otp_state,
@@ -300,13 +300,26 @@ async def signup(
 
     # Every user gets a personal workspace — the default scope for all per-account
     # resources until they create or join another. Non-deletable, single seat.
-    personal_ws_id = await create_personal_workspace(user_id, name=f"{body.name}'s Workspace")
+    workspace_name = f"{body.name}'s Workspace"
+    personal_ws_id = await create_personal_workspace(user_id, name=workspace_name)
     await users.update_one(
         {"id": user_id}, {"$set": {"default_workspace_id": personal_ws_id}}
     )
     user_doc["default_workspace_id"] = personal_ws_id
 
     await clear_otp_state(identifier)
+
+    if body.channel == OTPChannel.EMAIL:
+        await send_templated_email(
+            "welcome",
+            identifier,
+            {
+                "NAME": body.name,
+                "USERNAME": username,
+                "WORKSPACE_NAME": workspace_name,
+                "DASHBOARD_LINK": f"{settings.FRONTEND_URL}/dashboard",
+            },
+        )
 
     access_token  = create_access_token({"sub": user_id})
     refresh_token = create_refresh_token({"sub": user_id})

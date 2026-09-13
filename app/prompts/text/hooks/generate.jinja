@@ -1,0 +1,50 @@
+{%- set banned_openings_block = "" %}
+{%- if banned_openings %}
+{%- set ob_lines = ["", "BANNED HOOK OPENINGS — never start any hook with these:"] %}
+{%- for opening in banned_openings %}
+{%- set _ = ob_lines.append('  ✗ "' ~ opening ~ '"') %}
+{%- endfor %}
+{%- set _ = ob_lines.append("") %}
+{%- set _ = ob_lines.append("") %}
+{%- set banned_openings_block = ob_lines | join("\n") %}
+{%- endif %}
+{%- set banned_hashtag_block = "" %}
+{%- if banned_words %}
+{%- set vocab = [] %}
+{%- for w in banned_words %}
+{%- set _ = vocab.append("#" ~ (w | replace(" ", ""))) %}
+{%- endfor %}
+{%- set hb_lines = ["", "BANNED HASHTAG VOCABULARY: " ~ (vocab | join(", ")), "Never use these or close variations as hashtags.", ""] %}
+{%- set banned_hashtag_block = hb_lines | join("\n") %}
+{%- endif %}
+
+{{ brand_context }}
+
+Generate exactly 3 alternative opening hooks for the content below.
+Each hook must use a distinctly different structural approach.
+
+Hook 1 — Contrarian: Challenge a common belief or assumption the audience holds.
+Hook 2 — Specific outcome: Lead with a concrete number, result, timeframe, or outcome.
+Hook 3 — Uncomfortable truth: State an observation the audience feels but nobody says out loud.
+
+Rules for all hooks:
+- Maximum 2 sentences each
+- Must match the brand voice exactly
+- Must be suitable for {{ platform_label }}
+- Score each 1-10 for scroll-stopping power (be honest — most hooks are 5-7)
+- Use only specific details from the brand story — never invented statistics
+{{ banned_openings_block }}{{ banned_hashtag_block }}
+CONTENT:
+{{ content }}
+
+Return valid JSON only:
+{
+  "hooks": [
+    {"text": "...", "style": "Contrarian", "score": 8},
+    {"text": "...", "style": "Specific outcome", "score": 7},
+    {"text": "...", "style": "Uncomfortable truth", "score": 9}
+  ],
+  "recommended": 2
+}
+
+The recommended field is the index (0, 1, or 2) of the highest scoring hook.

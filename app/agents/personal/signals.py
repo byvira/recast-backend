@@ -24,6 +24,7 @@ from app.models.agent_events import (
     SignalMetric,
     SignalWindow,
 )
+from app.prompts.registry import load_localized
 from app.shared.events import emit_event
 
 logger = logging.getLogger(__name__)
@@ -108,36 +109,8 @@ async def emit_signal(
 # "en" included — is a Mongo lookup with zero LLM cost.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_REMY_ENGLISH_TEMPLATES: dict[str, str] = {
-    "voice_drift": (
-        "hey - this one reads a little off from how you usually sound{why_suffix}. "
-        "want me to pull it back toward your normal voice, or is the shift on purpose here?"
-    ),
-    "voice_drift_trend": (
-        "small heads-up: your last few pieces have been drifting away from your "
-        "established voice bit by bit - nothing dramatic in any single one, but the "
-        "trend's there. worth a look before it settles in."
-    ),
-    "volume_spike": (
-        "you've published a lot more than usual today ({today} vs your "
-        "~{mean}/day average). all good if it's intentional - just flagging "
-        "in case something's firing on repeat."
-    ),
-    "volume_drop": (
-        "noticed you've gone quiet the last few days after a steady stretch. no pressure "
-        "— just here when you want to pick it back up."
-    ),
-    "topic_shift": (
-        "your recent pieces have moved onto pretty different topics than what you'd been "
-        "covering. if you're deliberately pivoting, ignore this - otherwise you might be "
-        "drifting off your usual lane."
-    ),
-    "quality_regression": (
-        "a higher share of your recent drafts got flagged for review than normal. might be "
-        "worth slowing down a touch on the next few."
-    ),
-    "__fallback__": "flagging something worth a look on your recent content.",
-}
+# Source-of-truth English text lives in app/prompts/localized/remy_signals.yaml.
+_REMY_ENGLISH_TEMPLATES: dict[str, str] = load_localized("remy_signals")
 
 
 async def remy_message(signal_type: str, *, ctx: dict, language: str = "en") -> str:

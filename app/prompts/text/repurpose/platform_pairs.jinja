@@ -1,0 +1,25 @@
+{% if pair == "blog_linkedin" %}
+Extract the single strongest insight. Rewrite as a hook-led LinkedIn post. Do not summarise — find the most shareable angle.
+{%- elif pair == "blog_twitter_thread" %}
+Break this blog into a 7-tweet thread. Tweet 1 is a standalone hook. Each middle tweet covers one key point. Final tweet is a CTA.
+{%- elif pair == "blog_newsletter" %}
+Rewrite as a conversational newsletter section. Remove formal blog structure. Add a personal angle and one concrete takeaway.
+{%- elif pair == "blog_instagram" %}
+Extract the strongest insight. Rewrite as an Instagram caption with a hook first line, 100-130 words, CTA, and hashtags.
+{%- elif pair == "linkedin_twitter" %}
+Rewrite as a Twitter/X tweet. HARD REQUIREMENT: minimum 200 characters, maximum 280 characters. Count characters before outputting — if under 200, add a specific detail, outcome, or follow-up thought. One complete punchy idea. Hook first. Do not just compress — expand the idea if needed.
+{%- elif pair == "linkedin_twitter_thread" %}
+Expand this LinkedIn post into a 7-tweet thread. Each tweet unpacks one idea from the post.
+{%- elif pair == "linkedin_instagram" %}
+Rewrite as an Instagram caption. More conversational. Add a hook line and hashtags.
+{%- elif pair == "linkedin_blog" %}
+Expand this LinkedIn post into a full blog post. Add depth, examples, and structure.
+{%- elif pair == "newsletter_linkedin" %}
+Extract the main insight. Rewrite as a hook-led LinkedIn post.
+{%- elif pair == "newsletter_twitter_thread" %}
+Convert to a Twitter thread. Each key point becomes one tweet.
+{%- elif pair == "twitter_thread_blog" %}
+Expand this thread into a full blog post. Each tweet becomes a section with full detail.
+{%- elif pair == "twitter_thread_linkedin" %}
+Compress the thread's core argument into a single powerful LinkedIn post.
+{%- endif -%}

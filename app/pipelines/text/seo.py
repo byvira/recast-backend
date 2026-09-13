@@ -8,6 +8,7 @@ import logging
 import re
 from slugify import slugify
 from app.models.text import AgentTask, AgentResult, Platform
+from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_structured
 
 logger = logging.getLogger(__name__)
@@ -25,36 +26,11 @@ async def run_seo_agent(task: AgentTask, content: str) -> AgentResult:
     Returns title, meta description, primary keyword, secondary keywords,
     hashtags, URL slug, and video tags.
     """
-    platform_instruction = {
-        Platform.BLOG: "Focus on blog search intent. Keywords should match what a reader searches to find this article.",
-        Platform.NEWSLETTER: "Focus on newsletter discoverability and email subject line SEO.",
-        Platform.YOUTUBE: "Focus on YouTube search. Generate 8-12 video tags mixing broad and specific terms.",
-    }.get(task.platform, "")
+    platform_instruction = load_prompt("text/seo/platform_focus", platform=task.platform.name)
 
-    prompt = f"""
-You are an SEO specialist. Analyse the content and generate a complete SEO package.
-
-{platform_instruction}
-
-CONTENT:
-{content[:2000]}
-
-Return valid JSON only:
-{{
-  "title": "SEO title with primary keyword, 60 chars max",
-  "meta_description": "Compelling meta description with keyword, 155 chars max",
-  "primary_keyword": "the single most important search keyword",
-  "secondary_keywords": ["keyword 2", "keyword 3", "keyword 4", "keyword 5"],
-  "hashtags": ["specific-hashtag", "niche-hashtag"],
-  "slug": "url-friendly-slug-here",
-  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
-}}
-
-Rules:
-- Meta description MUST be under 160 characters
-- Hashtags must be specific, never generic like #content or #marketing
-- Slug lowercase with hyphens only, no special characters
-"""
+    prompt = load_prompt(
+        "text/seo/master", platform_instruction=platform_instruction, content=content[:2000]
+    )
 
     result = await call_llm_structured(prompt)
 
