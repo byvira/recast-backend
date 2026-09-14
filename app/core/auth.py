@@ -24,10 +24,19 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
     """Write access and refresh tokens as HttpOnly Secure cookies on the response.
 
     In development (non-production) the ``secure`` flag is disabled so cookies
-    work over plain HTTP on localhost. In production both cookies require HTTPS.
+    work over plain HTTP on localhost.
 
-    SameSite=lax prevents CSRF while still allowing top-level navigations
-    (e.g. OAuth redirects) to carry the cookie.
+    SameSite=None in production: the deployed frontend and backend sit on
+    unrelated origins (e.g. a vercel.app frontend calling an onrender.com
+    backend) — that's cross-*site*, not just cross-origin, and
+    SameSite=Lax cookies are never attached to cross-site fetch/XHR calls.
+    With Lax, login itself looks like it works (the Set-Cookie header is
+    still present on that response) but every subsequent request — even the
+    refresh call — silently goes out with no cookie, 401s, and the client
+    bounces back to the login page in a loop. SameSite=None requires Secure,
+    which is fine since production is already HTTPS-only; local dev (same
+    site, just a different port) keeps Lax so it still works over plain
+    HTTP.
 
     Args:
         response: FastAPI Response instance to attach cookies to.
@@ -35,6 +44,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         refresh_token: Signed JWT refresh token string.
     """
     is_prod = settings.ENVIRONMENT == "production"
+    samesite = "none" if is_prod else "lax"
 
     response.set_cookie(
         key="access_token",
@@ -42,7 +52,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         max_age=ACCESS_TOKEN_MAX_AGE,
         httponly=True,
         secure=is_prod,
-        samesite="lax",
+        samesite=samesite,
     )
     response.set_cookie(
         key="refresh_token",
@@ -50,7 +60,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         max_age=REFRESH_TOKEN_MAX_AGE,
         httponly=True,
         secure=is_prod,
-        samesite="lax",
+        samesite=samesite,
     )
 
 
@@ -58,13 +68,17 @@ def clear_auth_cookies(response: Response) -> None:
     """Delete access and refresh token cookies from the browser on logout.
 
     Deleting a cookie sets its Max-Age to 0, causing the browser to
-    discard it immediately on the next response receipt.
+    discard it immediately on the next response receipt. The browser only
+    honors a deletion if secure/samesite match how the cookie was
+    originally set, so these must track set_auth_cookies exactly.
 
     Args:
         response: FastAPI Response instance to remove cookies from.
     """
-    response.delete_cookie("access_token")
-    response.delete_cookie("refresh_token")
+    is_prod = settings.ENVIRONMENT == "production"
+    samesite = "none" if is_prod else "lax"
+    response.delete_cookie("access_token", secure=is_prod, samesite=samesite)
+    response.delete_cookie("refresh_token", secure=is_prod, samesite=samesite)
 
 
 def get_token_from_request(request: Request) -> str | None:
