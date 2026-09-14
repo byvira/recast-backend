@@ -26,8 +26,8 @@ Notable achievements:
 {% endfor %}
 {%- endif %}
 {%- elif brand_type == "Business" %}
-{%- if identity.get("companyName") %}
-Company: {{ identity["companyName"] }}
+{%- if identity.get("company_name") or identity.get("companyName") %}
+Company: {{ identity.get("company_name") or identity.get("companyName") }}
 {% endif %}
 {%- if identity.get("description") %}
 What they do: {{ identity["description"] }}
@@ -55,8 +55,8 @@ Mission: {{ identity["mission"] }}
 Industry: {{ identity["industry"] }}
 {% endif %}
 {%- elif brand_type == "Product" %}
-{%- if identity.get("productName") %}
-Product: {{ identity["productName"] }}
+{%- if identity.get("product_name") or identity.get("productName") %}
+Product: {{ identity.get("product_name") or identity.get("productName") }}
 {% endif %}
 {%- if identity.get("description") %}
 What it does: {{ identity["description"] }}
@@ -134,11 +134,11 @@ Audience interests: {{ audience["interests"] }}
 {%- if audience.get("goals") %}
 Audience goals: {{ audience["goals"] }}
 {% endif %}
-{%- if audience.get("buyingMotivations") %}
-Buying motivations: {{ audience["buyingMotivations"] }}
+{%- if audience.get("buying_motivations") or audience.get("buyingMotivations") %}
+Buying motivations: {{ audience.get("buying_motivations") or audience.get("buyingMotivations") }}
 {% endif %}
-{%- if audience.get("valueMetrics") %}
-Success metrics: {{ audience["valueMetrics"] }}
+{%- if audience.get("value_metrics") or audience.get("valueMetrics") %}
+Success metrics: {{ audience.get("value_metrics") or audience.get("valueMetrics") }}
 {% endif %}
 
 {% endif -%}
@@ -231,7 +231,7 @@ Preferred word substitutions:
 These instructions override all defaults. Apply every rule without exception.
 
 {% if brand_type == "Product" -%}
-Product: {{ identity.get("productName") or identity.get("name", "") }}
+Product: {{ identity.get("product_name") or identity.get("productName") or identity.get("name", "") }}
 {% if identity.get("description") %}
 Description: {{ identity["description"] }}
 {% endif %}
@@ -257,7 +257,7 @@ Differentiator: {{ positioning["differentiator"] }}
 Real use case example: {{ positioning["useCase"] }}
 {% endif %}
 {% elif brand_type == "Business" -%}
-Company: {{ identity.get("companyName") or identity.get("name", "") }}
+Company: {{ identity.get("company_name") or identity.get("companyName") or identity.get("name", "") }}
 {% if identity.get("description") %}
 What they do: {{ identity["description"] }}
 {% endif %}
