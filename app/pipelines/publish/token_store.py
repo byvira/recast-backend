@@ -160,6 +160,7 @@ async def get_all_tokens(workspace_id: str) -> list[dict]:
             "is_active": a.get("is_active", True),
             "connected_at": a.get("connected_at"),
             "expires_at": a.get("expires_at"),
+            "connected_by": a.get("connected_by", ""),
         }
         for a in accounts
     ]

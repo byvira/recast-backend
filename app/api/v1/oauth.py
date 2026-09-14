@@ -17,6 +17,7 @@ from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.pipelines.publish.registry import get_publisher
 from app.core.config import settings
+from app.db.mongo import users
 from app.pipelines.publish.token_store import (
     save_token,
     delete_token,
@@ -69,6 +70,17 @@ async def list_accounts(
 ) -> dict:
     """List all connected social accounts for the active workspace."""
     accounts = await get_all_tokens(ctx.workspace_id)
+
+    connector_ids = [a["connected_by"] for a in accounts if a.get("connected_by")]
+    connectors = {
+        u["id"]: u
+        for u in await users.find(
+            {"id": {"$in": connector_ids}}, {"id": 1, "name": 1}
+        ).to_list(length=100)
+    }
+    for a in accounts:
+        a["connected_by_name"] = connectors.get(a.get("connected_by", ""), {}).get("name", "")
+
     return {
         "accounts": accounts,
         "total":    len(accounts),
