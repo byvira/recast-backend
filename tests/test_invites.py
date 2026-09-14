@@ -1,5 +1,6 @@
-"""Integration tests for the 4 Invites endpoints, including RBAC and
-lifecycle (expired / already-accepted / already-member) negative cases.
+"""Integration tests for the Invites endpoints, including RBAC and
+lifecycle (expired / already-accepted / already-member / revoked) negative
+cases.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -193,3 +194,81 @@ async def test_accept_invite_expired_rejected(api_client, make_client):
     await signup_new_user(joiner)
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 410
+
+
+async def test_revoke_invite_requires_invite_members_permission(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Revoke Perms Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+
+    viewer_client, _ = await invite_and_accept(api_client, make_client, ws_id, "viewer")
+    res = await viewer_client.delete(f"/api/v1/invites/{ws_id}/{invite_id}")
+    assert res.status_code == 403
+
+    res = await api_client.delete(f"/api/v1/invites/{ws_id}/{invite_id}")
+    assert res.status_code == 200
+    assert res.json()["revoked"] is True
+
+
+async def test_revoke_invite_removes_it_from_pending_list(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Revoke List Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+
+    res = await api_client.get(f"/api/v1/invites/{ws_id}")
+    assert len(res.json()["items"]) == 1
+
+    res = await api_client.delete(f"/api/v1/invites/{ws_id}/{invite_id}")
+    assert res.status_code == 200
+
+    res = await api_client.get(f"/api/v1/invites/{ws_id}")
+    assert res.json()["items"] == []
+
+
+async def test_revoked_invite_cannot_be_accepted(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Revoke Then Accept Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+    token = res.json()["token"]
+
+    res = await api_client.delete(f"/api/v1/invites/{ws_id}/{invite_id}")
+    assert res.status_code == 200
+
+    joiner = make_client()
+    await signup_new_user(joiner)
+    res = await joiner.post(f"/api/v1/invites/accept/{token}")
+    assert res.status_code == 404
+
+
+async def test_revoke_invite_not_found(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Revoke 404 Space", tier="large")
+    res = await api_client.delete(f"/api/v1/invites/{ws_id}/not-a-real-invite-id")
+    assert res.status_code == 404
+
+
+async def test_revoke_already_accepted_invite_rejected(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Revoke Accepted Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+    token = res.json()["token"]
+
+    joiner = make_client()
+    await signup_new_user(joiner)
+    res = await joiner.post(f"/api/v1/invites/accept/{token}")
+    assert res.status_code == 200
+
+    res = await api_client.delete(f"/api/v1/invites/{ws_id}/{invite_id}")
+    assert res.status_code == 400

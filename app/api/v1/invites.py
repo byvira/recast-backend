@@ -100,6 +100,33 @@ async def list_invites(
     return {"items": docs}
 
 
+@router.delete("/{workspace_id}/{invite_id}")
+@limiter.limit("20/minute")
+async def revoke_invite(
+    request: Request,
+    workspace_id: str,
+    invite_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Revoke a pending invite — requires invite_members (same as sending one)."""
+    await require_permission(workspace_id, current_user["id"], "invite_members")
+
+    invite = await invites.find_one({"id": invite_id, "workspace_id": workspace_id})
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    if invite["status"] != InviteStatus.PENDING.value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot revoke an invite that is already {invite['status']}.",
+        )
+
+    await invites.update_one(
+        {"id": invite_id}, {"$set": {"status": InviteStatus.REVOKED.value}}
+    )
+
+    return {"invite_id": invite_id, "workspace_id": workspace_id, "revoked": True}
+
+
 @router.get("/accept/{token}")
 @limiter.limit("30/minute")
 async def preview_invite(request: Request, token: str) -> dict[str, Any]:
