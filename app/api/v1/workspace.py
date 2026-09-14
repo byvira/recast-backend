@@ -149,7 +149,7 @@ async def list_members(
     user_docs = {
         u["id"]: u
         for u in await users.find(
-            {"id": {"$in": user_ids}}, {"name": 1, "email": 1, "username": 1}
+            {"id": {"$in": user_ids}}, {"id": 1, "name": 1, "email": 1, "username": 1}
         ).to_list(length=100)
     }
     for d in docs:

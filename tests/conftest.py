@@ -182,6 +182,40 @@ async def signup_new_user(client: httpx.AsyncClient, name: str = "Test User") ->
     return res.json()["user"]
 
 
+async def create_workspace(client: httpx.AsyncClient, name: str, tier: str = "duo") -> str:
+    """Create a workspace as the given (already-authenticated) client's user.
+    Returns the new workspace_id."""
+    res = await client.post("/api/v1/workspaces/", json={"name": name, "tier": tier})
+    assert res.status_code == 201, res.text
+    return res.json()["workspace_id"]
+
+
+async def invite_and_accept(
+    owner_client: httpx.AsyncClient,
+    make_client,
+    workspace_id: str,
+    role: str,
+) -> tuple[httpx.AsyncClient, dict]:
+    """Invite a brand-new user to `workspace_id` as `role` and have them
+    accept immediately. Returns (member_client, member_profile).
+
+    Signs the invitee up under their own fresh random email rather than the
+    invited address — accept_invite doesn't check that they match (see the
+    module's final report), so this is a faithful stand-in for "someone
+    accepted this invite while logged in under some account"."""
+    res = await owner_client.post(
+        f"/api/v1/invites/{workspace_id}", json={"email": unique_email(), "role": role}
+    )
+    assert res.status_code == 201, res.text
+    token = res.json()["token"]
+
+    member_client = make_client()
+    member_profile = await signup_new_user(member_client)
+    res = await member_client.post(f"/api/v1/invites/accept/{token}")
+    assert res.status_code == 200, res.text
+    return member_client, member_profile
+
+
 @pytest.fixture
 def signup_user(make_client):
     """Factory fixture: `client, profile = await signup_user()` signs up a
