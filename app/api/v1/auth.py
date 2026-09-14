@@ -509,10 +509,19 @@ async def logout(
     refresh_token = request.cookies.get("refresh_token")
     if refresh_token:
         try:
+            # audience/issuer must be passed even though full validation
+            # isn't needed here — every token carries an `aud` claim, and
+            # python-jose raises JWTClaimsError (a JWTError subclass) on
+            # that claim's presence alone without an expected audience,
+            # which the except below would otherwise swallow silently
+            # (this previously made refresh-token blacklisting on logout a
+            # no-op for every request).
             payload = jwt.decode(
                 refresh_token,
                 settings.SECRET_KEY,
                 algorithms=[settings.ALGORITHM],
+                audience=settings.JWT_AUDIENCE,
+                issuer=settings.JWT_ISSUER,
             )
             # Only blacklist if token has remaining validity
             ttl = payload.get("exp", 0) - int(datetime.now(timezone.utc).timestamp())

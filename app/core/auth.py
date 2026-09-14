@@ -202,11 +202,19 @@ async def blacklist_token(token: str) -> None:
         token: Raw JWT string to invalidate immediately.
     """
     try:
-        # Decode without expiry verification to extract the exp claim
+        # Decode without expiry verification to extract the exp claim.
+        # audience/issuer must still be passed even though we don't care
+        # about validating them here — every token carries an `aud` claim,
+        # and python-jose raises JWTClaimsError on that claim's presence
+        # alone if no expected audience is given, which the bare except
+        # below would otherwise swallow silently (this previously made
+        # blacklisting a no-op for every token issued by this app).
         payload = jwt.decode(
             token,
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM],
+            audience=settings.JWT_AUDIENCE,
+            issuer=settings.JWT_ISSUER,
             options={"verify_exp": False},
         )
         exp = payload.get("exp", 0)
@@ -253,6 +261,15 @@ async def rotate_refresh_token(refresh_token: str) -> tuple[str, str]:
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid refresh token payload.")
+
+    # Reject a token already rotated away (or blacklisted at logout) —
+    # verify_token only checks the signature/claims, not revocation, so
+    # without this a replayed refresh token would still mint a fresh pair.
+    if await is_token_blacklisted(refresh_token):
+        raise HTTPException(
+            status_code=401,
+            detail="Refresh token has been revoked. Please log in again.",
+        )
 
     # Blacklist immediately before issuing replacement — prevents replay
     await blacklist_token(refresh_token)
