@@ -83,6 +83,63 @@ async def create_invite(
     return {"invite_id": invite_doc["id"], "token": invite_doc["token"]}
 
 
+@router.post("/{workspace_id}/{invite_id}/resend")
+@limiter.limit("20/minute")
+async def resend_invite(
+    request: Request,
+    workspace_id: str,
+    invite_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Resend a pending (or chronologically expired) invite.
+
+    Reuses the same token/link rather than minting a new one — if the
+    recipient still has the original email open, that link keeps working.
+    Refreshes expires_at to another 7 days out. Requires invite_members,
+    same as sending one.
+    """
+    await require_permission(workspace_id, current_user["id"], "invite_members")
+
+    invite = await invites.find_one({"id": invite_id, "workspace_id": workspace_id})
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found.")
+    if invite["status"] not in (InviteStatus.PENDING.value, InviteStatus.EXPIRED.value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot resend an invite that is already {invite['status']}.",
+        )
+
+    ws = await workspaces.find_one({"id": workspace_id})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+
+    new_expires_at = datetime.now(timezone.utc) + timedelta(days=7)
+    await invites.update_one(
+        {"id": invite_id},
+        {"$set": {"status": InviteStatus.PENDING.value, "expires_at": new_expires_at}},
+    )
+
+    invite_link = f"{settings.FRONTEND_URL}/invite/{invite['token']}"
+    await send_templated_email(
+        "workspace-invite",
+        invite["email"],
+        {
+            "INVITER_NAME": current_user["name"],
+            "WORKSPACE_NAME": ws["name"],
+            "ROLE": invite["role"],
+            "INVITE_LINK": invite_link,
+            "EXPIRES_IN": "7 days",
+            "INVITER_INITIAL": current_user["name"][:1].upper() if current_user.get("name") else "?",
+        },
+    )
+
+    return {
+        "invite_id": invite_id,
+        "workspace_id": workspace_id,
+        "expires_at": new_expires_at.isoformat(),
+    }
+
+
 @router.get("/{workspace_id}")
 @limiter.limit("50/minute")
 async def list_invites(

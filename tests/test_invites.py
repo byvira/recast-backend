@@ -272,3 +272,88 @@ async def test_revoke_already_accepted_invite_rejected(api_client, make_client):
 
     res = await api_client.delete(f"/api/v1/invites/{ws_id}/{invite_id}")
     assert res.status_code == 400
+
+
+async def test_resend_invite_requires_invite_members_permission(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Resend Perms Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+
+    viewer_client, _ = await invite_and_accept(api_client, make_client, ws_id, "viewer")
+    res = await viewer_client.post(f"/api/v1/invites/{ws_id}/{invite_id}/resend")
+    assert res.status_code == 403
+
+    res = await api_client.post(f"/api/v1/invites/{ws_id}/{invite_id}/resend")
+    assert res.status_code == 200
+    assert res.json()["invite_id"] == invite_id
+
+
+async def test_resend_invite_keeps_same_token_and_extends_expiry(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Resend Token Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+    original_token = res.json()["token"]
+
+    await invites_collection.update_one(
+        {"id": invite_id},
+        {"$set": {"expires_at": datetime.now(timezone.utc) - timedelta(days=1)}},
+    )
+
+    res = await api_client.post(f"/api/v1/invites/{ws_id}/{invite_id}/resend")
+    assert res.status_code == 200
+
+    doc = await invites_collection.find_one({"id": invite_id})
+    assert doc["token"] == original_token
+    assert doc["status"] == "pending"
+    # Motor returns naive datetimes from Mongo even though we wrote tz-aware ones.
+    stored_expiry = doc["expires_at"].replace(tzinfo=timezone.utc)
+    assert stored_expiry > datetime.now(timezone.utc)
+
+    # The (previously expired, now refreshed) link works again.
+    res = await api_client.get(f"/api/v1/invites/accept/{original_token}")
+    assert res.status_code == 200
+
+
+async def test_resend_invite_not_found(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Resend 404 Space", tier="large")
+    res = await api_client.post(f"/api/v1/invites/{ws_id}/not-a-real-invite-id/resend")
+    assert res.status_code == 404
+
+
+async def test_resend_already_accepted_invite_rejected(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Resend Accepted Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+    token = res.json()["token"]
+
+    joiner = make_client()
+    await signup_new_user(joiner)
+    res = await joiner.post(f"/api/v1/invites/accept/{token}")
+    assert res.status_code == 200
+
+    res = await api_client.post(f"/api/v1/invites/{ws_id}/{invite_id}/resend")
+    assert res.status_code == 400
+
+
+async def test_resend_revoked_invite_rejected(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Resend Revoked Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+
+    await api_client.delete(f"/api/v1/invites/{ws_id}/{invite_id}")
+
+    res = await api_client.post(f"/api/v1/invites/{ws_id}/{invite_id}/resend")
+    assert res.status_code == 400
