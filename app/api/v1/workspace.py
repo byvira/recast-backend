@@ -145,8 +145,19 @@ async def list_members(
         raise HTTPException(status_code=403, detail="Access denied.")
 
     docs = await workspace_members.find({"workspace_id": workspace_id}).to_list(length=100)
+    user_ids = [d["user_id"] for d in docs if d.get("user_id")]
+    user_docs = {
+        u["id"]: u
+        for u in await users.find(
+            {"id": {"$in": user_ids}}, {"name": 1, "email": 1, "username": 1}
+        ).to_list(length=100)
+    }
     for d in docs:
         d.pop("_id", None)
+        u = user_docs.get(d["user_id"], {})
+        d["name"] = u.get("name", "")
+        d["email"] = u.get("email", "")
+        d["username"] = u.get("username", "")
     return {"items": docs}
 
 
