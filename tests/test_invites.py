@@ -32,6 +32,8 @@ async def test_send_invite_requires_invite_members_permission(api_client, make_c
     )
     assert res.status_code == 201
     assert res.json()["token"]
+    # In dev/test mode, sending is short-circuited and always "succeeds".
+    assert res.json()["email_sent"] is True
 
 
 async def test_send_invite_enforces_seat_limit(api_client):
@@ -289,6 +291,7 @@ async def test_resend_invite_requires_invite_members_permission(api_client, make
     res = await api_client.post(f"/api/v1/invites/{ws_id}/{invite_id}/resend")
     assert res.status_code == 200
     assert res.json()["invite_id"] == invite_id
+    assert res.json()["email_sent"] is True
 
 
 async def test_resend_invite_keeps_same_token_and_extends_expiry(api_client):
@@ -426,3 +429,27 @@ async def test_list_all_shows_full_history_with_effective_status(api_client, mak
         v for k, v in by_id.items() if k not in (revoked_id, expired_id, pending_id)
     ]
     assert accepted_statuses == ["accepted"]
+
+
+async def test_create_invite_reports_email_delivery_failure(api_client, monkeypatch):
+    """create_invite never 500s over an email provider hiccup (the invite is
+    still created either way) — but the caller needs to know delivery
+    failed, since the only real fallback is sharing the link directly."""
+    import app.api.v1.invites as invites_module
+
+    async def fake_send_templated_email(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(invites_module, "send_templated_email", fake_send_templated_email)
+
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Email Failure Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    assert res.status_code == 201
+    assert res.json()["email_sent"] is False
+
+    # The invite itself was still created and is usable.
+    res = await api_client.get(f"/api/v1/invites/{ws_id}")
+    assert len(res.json()["items"]) == 1

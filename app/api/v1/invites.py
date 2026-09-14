@@ -81,7 +81,7 @@ async def create_invite(
     await invites.insert_one(invite_doc)
 
     invite_link = f"{settings.FRONTEND_URL}/invite/{invite_doc['token']}"
-    await send_templated_email(
+    email_sent = await send_templated_email(
         "workspace-invite",
         invite_doc["email"],
         {
@@ -94,7 +94,15 @@ async def create_invite(
         },
     )
 
-    return {"invite_id": invite_doc["id"], "token": invite_doc["token"]}
+    return {
+        "invite_id": invite_doc["id"],
+        "token": invite_doc["token"],
+        # send_templated_email swallows delivery failures (logs + returns
+        # False) so create_invite never 500s over an email provider hiccup —
+        # but the caller still needs to know, since the invite exists either
+        # way and the only real fallback is sharing the link directly.
+        "email_sent": email_sent,
+    }
 
 
 @router.post("/{workspace_id}/{invite_id}/resend")
@@ -134,7 +142,7 @@ async def resend_invite(
     )
 
     invite_link = f"{settings.FRONTEND_URL}/invite/{invite['token']}"
-    await send_templated_email(
+    email_sent = await send_templated_email(
         "workspace-invite",
         invite["email"],
         {
@@ -151,6 +159,7 @@ async def resend_invite(
         "invite_id": invite_id,
         "workspace_id": workspace_id,
         "expires_at": new_expires_at.isoformat(),
+        "email_sent": email_sent,
     }
 
 
