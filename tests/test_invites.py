@@ -127,13 +127,14 @@ async def test_accept_invite_requires_auth(api_client):
 async def test_accept_invite_success_adds_member_with_invited_role(api_client, make_client):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Join Space", tier="large")
+    invite_email = unique_email()
     res = await api_client.post(
-        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "editor"}
+        f"/api/v1/invites/{ws_id}", json={"email": invite_email, "role": "editor"}
     )
     token = res.json()["token"]
 
     joiner = make_client()
-    joiner_profile = await signup_new_user(joiner)
+    joiner_profile = await signup_new_user(joiner, email=invite_email)
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 200
     assert res.json()["workspace_id"] == ws_id
@@ -149,13 +150,14 @@ async def test_accept_invite_success_adds_member_with_invited_role(api_client, m
 async def test_accept_invite_twice_rejected(api_client, make_client):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Double Accept Space", tier="large")
+    invite_email = unique_email()
     res = await api_client.post(
-        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+        f"/api/v1/invites/{ws_id}", json={"email": invite_email, "role": "viewer"}
     )
     token = res.json()["token"]
 
     joiner = make_client()
-    await signup_new_user(joiner)
+    await signup_new_user(joiner, email=invite_email)
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 200
 
@@ -168,11 +170,11 @@ async def test_accept_invite_already_member_conflict(api_client, make_client):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Already Member Space", tier="large")
 
-    member_client, _ = await invite_and_accept(api_client, make_client, ws_id, "editor")
+    member_client, member_profile = await invite_and_accept(api_client, make_client, ws_id, "editor")
 
-    # A second, still-pending invite that resolves to a user already in the workspace.
+    # A second, still-pending invite to that same (already-a-member) email.
     res = await api_client.post(
-        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+        f"/api/v1/invites/{ws_id}", json={"email": member_profile["email"], "role": "viewer"}
     )
     token = res.json()["token"]
 
@@ -196,6 +198,27 @@ async def test_accept_invite_expired_rejected(api_client, make_client):
     await signup_new_user(joiner)
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 410
+
+
+async def test_accept_invite_email_mismatch_rejected(api_client, make_client):
+    """Regression test for a flagged-but-unfixed gap from earlier in this
+    module: any authenticated user holding the token could accept as
+    themselves, regardless of whether they were the invited person."""
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Email Mismatch Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    token = res.json()["token"]
+
+    wrong_person = make_client()
+    await signup_new_user(wrong_person)  # a different, unrelated random email
+    res = await wrong_person.post(f"/api/v1/invites/accept/{token}")
+    assert res.status_code == 403
+
+    # The invite is untouched — still acceptable by the actual invited email.
+    res = await api_client.get(f"/api/v1/invites/{ws_id}")
+    assert res.json()["items"][0]["status"] == "pending"
 
 
 async def test_revoke_invite_requires_invite_members_permission(api_client, make_client):
@@ -261,14 +284,15 @@ async def test_revoke_invite_not_found(api_client):
 async def test_revoke_already_accepted_invite_rejected(api_client, make_client):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Revoke Accepted Space", tier="large")
+    invite_email = unique_email()
     res = await api_client.post(
-        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+        f"/api/v1/invites/{ws_id}", json={"email": invite_email, "role": "viewer"}
     )
     invite_id = res.json()["invite_id"]
     token = res.json()["token"]
 
     joiner = make_client()
-    await signup_new_user(joiner)
+    await signup_new_user(joiner, email=invite_email)
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 200
 
@@ -333,14 +357,15 @@ async def test_resend_invite_not_found(api_client):
 async def test_resend_already_accepted_invite_rejected(api_client, make_client):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Resend Accepted Space", tier="large")
+    invite_email = unique_email()
     res = await api_client.post(
-        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+        f"/api/v1/invites/{ws_id}", json={"email": invite_email, "role": "viewer"}
     )
     invite_id = res.json()["invite_id"]
     token = res.json()["token"]
 
     joiner = make_client()
-    await signup_new_user(joiner)
+    await signup_new_user(joiner, email=invite_email)
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 200
 
@@ -388,13 +413,15 @@ async def test_list_all_shows_full_history_with_effective_status(api_client, mak
     ws_id = await create_workspace(api_client, "History Space", tier="large")
 
     # Accepted
+    accepted_invite_email = unique_email()
     res = await api_client.post(
-        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+        f"/api/v1/invites/{ws_id}", json={"email": accepted_invite_email, "role": "viewer"}
     )
     accepted_token = res.json()["token"]
     joiner = make_client()
-    await signup_new_user(joiner)
-    await joiner.post(f"/api/v1/invites/accept/{accepted_token}")
+    await signup_new_user(joiner, email=accepted_invite_email)
+    res = await joiner.post(f"/api/v1/invites/accept/{accepted_token}")
+    assert res.status_code == 200
 
     # Revoked
     res = await api_client.post(

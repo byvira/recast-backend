@@ -248,12 +248,25 @@ async def accept_invite(
     token: str,
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Accept an invite — requires the user to be logged in."""
+    """Accept an invite — requires the user to be logged in as the invited
+    identity. Rejects with 403 if the caller's account isn't the one the
+    invite was actually sent to (previously any authenticated holder of the
+    token could accept as themselves, regardless of email)."""
     invite = await invites.find_one({"token": token})
     if not invite or invite["status"] != InviteStatus.PENDING.value:
         raise HTTPException(status_code=404, detail="Invite not found or no longer valid.")
     if _is_expired(invite["expires_at"]):
         raise HTTPException(status_code=410, detail="Invite has expired.")
+
+    invited_email = invite["email"].lower()
+    caller_identifiers = {current_user.get("email", "").lower()}
+    caller_identifiers.update(i.lower() for i in current_user.get("auth_identifiers", []))
+    caller_identifiers.discard("")
+    if invited_email not in caller_identifiers:
+        raise HTTPException(
+            status_code=403,
+            detail=f"This invite was sent to {invite['email']}. Log in with that email to accept it.",
+        )
 
     existing = await workspace_members.find_one(
         {"workspace_id": invite["workspace_id"], "user_id": current_user["id"]}

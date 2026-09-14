@@ -147,14 +147,17 @@ async def read_otp_code(identifier: str) -> str:
     return code
 
 
-async def signup_new_user(client: httpx.AsyncClient, name: str = "Test User") -> dict:
+async def signup_new_user(
+    client: httpx.AsyncClient, name: str = "Test User", email: str | None = None
+) -> dict:
     """Full OTP -> signup flow for a brand-new user on the given client.
 
     Returns the user profile dict from the signup response. The client ends
     up holding the resulting access_token/refresh_token HttpOnly cookies,
-    same as a browser would.
+    same as a browser would. Pass `email` to sign up under a specific
+    address (e.g. one an invite was already sent to) instead of a random one.
     """
-    email = unique_email()
+    email = email or unique_email()
     res = await client.post(
         "/api/v1/auth/request-otp", json={"identifier": email, "channel": "email"}
     )
@@ -199,18 +202,17 @@ async def invite_and_accept(
     """Invite a brand-new user to `workspace_id` as `role` and have them
     accept immediately. Returns (member_client, member_profile).
 
-    Signs the invitee up under their own fresh random email rather than the
-    invited address — accept_invite doesn't check that they match (see the
-    module's final report), so this is a faithful stand-in for "someone
-    accepted this invite while logged in under some account"."""
+    accept_invite requires the accepting account's email to match the
+    invited address, so the invitee signs up under that exact email."""
+    invite_email = unique_email()
     res = await owner_client.post(
-        f"/api/v1/invites/{workspace_id}", json={"email": unique_email(), "role": role}
+        f"/api/v1/invites/{workspace_id}", json={"email": invite_email, "role": role}
     )
     assert res.status_code == 201, res.text
     token = res.json()["token"]
 
     member_client = make_client()
-    member_profile = await signup_new_user(member_client)
+    member_profile = await signup_new_user(member_client, email=invite_email)
     res = await member_client.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 200, res.text
     return member_client, member_profile
