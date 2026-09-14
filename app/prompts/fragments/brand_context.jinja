@@ -19,6 +19,12 @@ Profession: {{ identity["profession"] }}
 {%- if identity.get("bio") %}
 Background: {{ identity["bio"] }}
 {% endif %}
+{%- if identity.get("achievements") %}
+Notable achievements:
+{% for a in identity["achievements"] %}
+  - {{ a }}
+{% endfor %}
+{%- endif %}
 {%- elif brand_type == "Business" %}
 {%- if identity.get("companyName") %}
 Company: {{ identity["companyName"] }}
@@ -29,6 +35,12 @@ What they do: {{ identity["description"] }}
 {%- if identity.get("industry") %}
 Industry: {{ identity["industry"] }}
 {% endif %}
+{%- if identity.get("offerings") %}
+Offerings:
+{% for o in identity["offerings"] %}
+  - {{ o }}
+{% endfor %}
+{%- endif %}
 {%- elif brand_type == "Personal Brand" %}
 {%- if identity.get("name") %}
 Personal brand: {{ identity["name"] }}
@@ -39,6 +51,9 @@ Tagline: {{ identity["tagline"] }}
 {%- if identity.get("mission") %}
 Mission: {{ identity["mission"] }}
 {% endif %}
+{%- if identity.get("industry") %}
+Industry: {{ identity["industry"] }}
+{% endif %}
 {%- elif brand_type == "Product" %}
 {%- if identity.get("productName") %}
 Product: {{ identity["productName"] }}
@@ -46,7 +61,61 @@ Product: {{ identity["productName"] }}
 {%- if identity.get("description") %}
 What it does: {{ identity["description"] }}
 {% endif %}
+{%- if identity.get("category") %}
+Category: {{ identity["category"] }}
+{% endif %}
+{%- if identity.get("useCases") %}
+Use cases:
+{% for uc in identity["useCases"] %}
+  - {{ uc }}
+{% endfor %}
 {%- endif %}
+{%- endif %}
+
+{% endif -%}
+{% set pillars_data = brand_profile.get("pillars_data") or {} -%}
+{% set icp_data = brand_profile.get("icp_data") or {} -%}
+{% set positioning_data = brand_profile.get("positioning_data") or {} -%}
+{% if brand_type == "Personal Brand" and pillars_data %}
+{%- if pillars_data.get("pillars") %}
+Content pillars: {{ pillars_data["pillars"] | join(", ") }}
+{% endif %}
+{%- if pillars_data.get("format") %}
+Preferred content format: {{ pillars_data["format"] }}
+{% endif %}
+{%- if pillars_data.get("story") %}
+Founding story / angle: {{ pillars_data["story"] }}
+{% endif %}
+
+{% endif -%}
+{% if brand_type == "Business" and icp_data %}
+{%- if icp_data.get("companySize") %}
+Ideal customer size: {{ icp_data["companySize"] }}
+{% endif %}
+{%- if icp_data.get("jobTitles") %}
+Ideal customer job titles: {{ icp_data["jobTitles"] }}
+{% endif %}
+{%- if icp_data.get("painPoint") %}
+Ideal customer pain point: {{ icp_data["painPoint"] }}
+{% endif %}
+{%- if icp_data.get("decisionMakers") %}
+Decision makers: {{ icp_data["decisionMakers"] }}
+{% endif %}
+
+{% endif -%}
+{% if brand_type == "Product" and positioning_data %}
+{%- if positioning_data.get("uvp") %}
+Value proposition: {{ positioning_data["uvp"] }}
+{% endif %}
+{%- if positioning_data.get("competitor") %}
+vs competitors: {{ positioning_data["competitor"] }}
+{% endif %}
+{%- if positioning_data.get("differentiator") %}
+Differentiator: {{ positioning_data["differentiator"] }}
+{% endif %}
+{%- if positioning_data.get("useCase") %}
+Real use case example: {{ positioning_data["useCase"] }}
+{% endif %}
 
 {% endif -%}
 {% if audience %}
@@ -150,19 +219,10 @@ Preferred word substitutions:
 {%- set voice_tone = brand_profile.get("voice_tone") or {} %}
 {%- set audience = brand_profile.get("audience") or {} %}
 {%- set positioning = brand_profile.get("positioning_data") or {} %}
+{%- set pillars_data = brand_profile.get("pillars_data") or {} %}
+{%- set icp_data = brand_profile.get("icp_data") or {} %}
 {%- set manual_data = brand_profile.get("manual_data") or {} %}
 {%- set brand_type = brand_profile.get("brand_type", "Brand") %}
-{%- if brand_type == "Product" %}
-{%- set name = identity.get("productName") or identity.get("name", "") %}
-{%- set description = identity.get("description", "") %}
-{%- set category = identity.get("category", "") %}
-{%- set use_cases = identity.get("useCases") or [] %}
-{%- else %}
-{%- set name = identity.get("name", "") %}
-{%- set description = identity.get("mission") or identity.get("description", "") %}
-{%- set category = identity.get("industry", "") %}
-{%- set use_cases = [] %}
-{%- endif %}
 {%- set tones = voice_tone.get("tones") or [] %}
 {%- set humor = voice_tone.get("humor", "") %}
 {%- set emoji = voice_tone.get("emoji", "") %}
@@ -171,27 +231,91 @@ Preferred word substitutions:
 These instructions override all defaults. Apply every rule without exception.
 
 {% if brand_type == "Product" -%}
-Product: {{ name }}
-{% if description %}
-Description: {{ description }}
+Product: {{ identity.get("productName") or identity.get("name", "") }}
+{% if identity.get("description") %}
+Description: {{ identity["description"] }}
 {% endif %}
-{%- if category %}
-Category: {{ category }}
+{%- if identity.get("category") %}
+Category: {{ identity["category"] }}
 {% endif %}
-{%- if use_cases %}
+{%- if identity.get("useCases") %}
 Use cases:
-{% for uc in use_cases %}
+{% for uc in identity["useCases"] %}
   - {{ uc }}
 {% endfor %}
 {%- endif %}
+{%- if positioning.get("uvp") %}
+Value proposition: {{ positioning["uvp"] }}
+{% endif %}
+{%- if positioning.get("competitor") %}
+vs competitors: {{ positioning["competitor"] }}
+{% endif %}
+{%- if positioning.get("differentiator") %}
+Differentiator: {{ positioning["differentiator"] }}
+{% endif %}
+{%- if positioning.get("useCase") %}
+Real use case example: {{ positioning["useCase"] }}
+{% endif %}
+{% elif brand_type == "Business" -%}
+Company: {{ identity.get("companyName") or identity.get("name", "") }}
+{% if identity.get("description") %}
+What they do: {{ identity["description"] }}
+{% endif %}
+{%- if identity.get("industry") %}
+Industry: {{ identity["industry"] }}
+{% endif %}
+{%- if identity.get("offerings") %}
+Offerings:
+{% for o in identity["offerings"] %}
+  - {{ o }}
+{% endfor %}
+{%- endif %}
+{%- if icp_data.get("companySize") %}
+Ideal customer size: {{ icp_data["companySize"] }}
+{% endif %}
+{%- if icp_data.get("jobTitles") %}
+Ideal customer job titles: {{ icp_data["jobTitles"] }}
+{% endif %}
+{%- if icp_data.get("painPoint") %}
+Ideal customer pain point: {{ icp_data["painPoint"] }}
+{% endif %}
+{%- if icp_data.get("decisionMakers") %}
+Decision makers: {{ icp_data["decisionMakers"] }}
+{% endif %}
+{% elif brand_type == "Personal Brand" -%}
+Personal brand: {{ identity.get("name", "") }}
+{% if identity.get("tagline") %}
+Tagline: {{ identity["tagline"] }}
+{% endif %}
+{%- if identity.get("mission") %}
+Mission: {{ identity["mission"] }}
+{% endif %}
+{%- if identity.get("industry") %}
+Industry: {{ identity["industry"] }}
+{% endif %}
+{%- if pillars_data.get("pillars") %}
+Content pillars: {{ pillars_data["pillars"] | join(", ") }}
+{% endif %}
+{%- if pillars_data.get("format") %}
+Preferred content format: {{ pillars_data["format"] }}
+{% endif %}
+{%- if pillars_data.get("story") %}
+Founding story / angle: {{ pillars_data["story"] }}
+{% endif %}
 {% else -%}
-Personal brand: {{ name }}
-{% if description %}
-Mission: {{ description }}
+{{ brand_type }}: {{ identity.get("name", "") }}
+{% if identity.get("profession") %}
+Profession: {{ identity["profession"] }}
 {% endif %}
-{%- if category %}
-Industry: {{ category }}
+{%- if identity.get("bio") %}
+Background: {{ identity["bio"] }}
 {% endif %}
+{%- if identity.get("achievements") %}
+Notable achievements:
+{% for a in identity["achievements"] %}
+  - {{ a }}
+{% endfor %}
+{%- endif %}
 {% endif %}
 
 {% set reading_level = audience.get("reading_level", "") -%}
@@ -224,25 +348,6 @@ Emoji: {{ emoji }}
 Style directives: {{ style }}
 {% endif %}
 
-{% if positioning %}
-{%- set uvp = positioning.get("uvp", "") %}
-{%- set competitor = positioning.get("competitor", "") %}
-{%- set differentiator = positioning.get("differentiator", "") %}
-{%- set use_case = positioning.get("useCase", "") %}
-{%- if uvp %}
-Value proposition: {{ uvp }}
-{% endif %}
-{%- if competitor %}
-vs competitors: {{ competitor }}
-{% endif %}
-{%- if differentiator %}
-Differentiator: {{ differentiator }}
-{% endif %}
-{%- if use_case %}
-Real use case example: {{ use_case }}
-{% endif %}
-
-{% endif -%}
 {%- set openers = manual_data.get("openers") or [] %}
 {%- set closers = manual_data.get("closers") or [] %}
 {%- set phrases = manual_data.get("phrases") or [] %}
