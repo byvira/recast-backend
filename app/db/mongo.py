@@ -27,6 +27,10 @@ users: AsyncIOMotorCollection = get_client().get_default_database()["users"]
 text: AsyncIOMotorCollection = get_client().get_default_database()["text"]
 brand_profiles: AsyncIOMotorCollection = get_client().get_default_database()["brand_profiles"]
 onboarding_drafts: AsyncIOMotorCollection = get_client().get_default_database()["onboarding_drafts"]
+# Lightweight funnel telemetry — which onboarding step a user reached/completed
+# at. Deliberately separate from the governance-events pipeline (workspace_events):
+# this is product analytics, not a rule-engine input.
+onboarding_funnel_events: AsyncIOMotorCollection = get_client().get_default_database()["onboarding_funnel_events"]
 # ── Workspace / tenancy collections ──────────────────────────────────────────
 workspaces: AsyncIOMotorCollection = get_client().get_default_database()["workspaces"]
 workspace_members: AsyncIOMotorCollection = get_client().get_default_database()["workspace_members"]
@@ -128,6 +132,7 @@ async def create_indexes() -> None:
     await brand_profiles.create_index([("workspace_id", 1), ("brand_type", 1)])
     await onboarding_drafts.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)
     await onboarding_drafts.create_index("is_complete")
+    await onboarding_funnel_events.create_index([("workspace_id", 1), ("created_at", -1)])
 
     # ── Content sessions ──────────────────────────────────────────────────
     await content_sessions.create_index("session_id", unique=True)

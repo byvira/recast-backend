@@ -97,3 +97,71 @@ async def test_brand_not_found(api_client):
     await signup_new_user(api_client)
     res = await api_client.get("/api/v1/brand/does-not-exist")
     assert res.status_code == 404
+
+
+# ── Funnel telemetry ──────────────────────────────────────────────────────────
+
+async def test_funnel_event_requires_edit_brand_voice_permission(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Funnel Perms", tier="large")
+    viewer_client, _ = await invite_and_accept(api_client, make_client, ws_id, "viewer")
+
+    res = await viewer_client.post(
+        "/api/v1/onboarding/funnel-event",
+        json={"event": "step_reached", "step": 1, "step_title": "Operation Type"},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 403
+
+
+async def test_funnel_event_logs_and_report_reflects_it(api_client):
+    await signup_new_user(api_client)
+
+    for step, title in [(1, "Operation Type"), (2, "Core Identity"), (2, "Core Identity")]:
+        res = await api_client.post(
+            "/api/v1/onboarding/funnel-event",
+            json={
+                "event": "step_reached",
+                "step": step,
+                "step_title": title,
+                "total_steps": 6,
+                "brand_type": "Person",
+            },
+        )
+        assert res.status_code == 202
+
+    res = await api_client.post(
+        "/api/v1/onboarding/funnel-event",
+        json={"event": "completed", "step": 6, "step_title": "Platforms", "brand_type": "Person"},
+    )
+    assert res.status_code == 202
+
+    res = await api_client.get("/api/v1/onboarding/funnel-report")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["started"] == 1
+    assert body["completed"] == 1
+    assert body["completion_rate"] == 1.0
+
+    by_step = {(r["event"], r["step"]): r["count"] for r in body["by_step"]}
+    assert by_step[("step_reached", 1)] == 1
+    assert by_step[("step_reached", 2)] == 2  # logged twice — reflected, not deduped
+    assert by_step[("completed", 6)] == 1
+
+
+async def test_funnel_report_is_scoped_to_active_workspace(api_client, make_client):
+    await signup_new_user(api_client)
+    # Personal (default) workspace gets one event.
+    res = await api_client.post(
+        "/api/v1/onboarding/funnel-event",
+        json={"event": "step_reached", "step": 1, "step_title": "Operation Type"},
+    )
+    assert res.status_code == 202
+
+    # A second, separate workspace owned by the same user starts with none.
+    ws_id = await create_workspace(api_client, "Second Workspace", tier="duo")
+    res = await api_client.get(
+        "/api/v1/onboarding/funnel-report", headers={"X-Workspace-Id": ws_id}
+    )
+    assert res.status_code == 200
+    assert res.json()["started"] == 0

@@ -2,19 +2,24 @@
 
 Endpoints
 ---------
-POST   /api/v1/onboarding/draft   Upsert draft on every state change
-GET    /api/v1/onboarding/draft   Resume — returns 404 when no active draft (not an error)
-DELETE /api/v1/onboarding/draft   Cleanup — called automatically on onboarding complete
+POST   /api/v1/onboarding/draft         Upsert draft on every state change
+GET    /api/v1/onboarding/draft         Resume — returns 404 when no active draft (not an error)
+DELETE /api/v1/onboarding/draft         Cleanup — called automatically on onboarding complete
+POST   /api/v1/onboarding/funnel-event  Fire-and-forget wizard step telemetry
+GET    /api/v1/onboarding/funnel-report Aggregate funnel counts per step
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import onboarding_drafts
+from app.db.mongo import onboarding_drafts, onboarding_funnel_events
 from app.models.onboarding_draft import DraftResponse, SaveDraftBody
+from app.models.onboarding_funnel import LogFunnelEventBody
 
 router = APIRouter()
 
@@ -148,3 +153,90 @@ async def delete_draft(
     await onboarding_drafts.delete_one(
         {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
     )
+
+
+# ── POST /api/v1/onboarding/funnel-event ──────────────────────────────────────
+
+@router.post("/funnel-event", status_code=202)
+@limiter.limit("120/minute")
+async def log_funnel_event(
+    request: Request,
+    body: LogFunnelEventBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, str]:
+    """
+    Record one onboarding-wizard funnel event (step_reached or completed).
+
+    Fire-and-forget telemetry — never blocks or fails the wizard itself; the
+    frontend doesn't wait on this call before advancing. Answers "which step
+    do people actually stall at" with real data instead of persona-based
+    guesswork. See GET /funnel-report to read it back.
+    """
+    await onboarding_funnel_events.insert_one({
+        "id": str(uuid4()),
+        "workspace_id": ctx.workspace_id,
+        "user_id": ctx.user_id,
+        "brand_id": body.brand_id,
+        "brand_type": body.brand_type,
+        "event": body.event.value,
+        "step": body.step,
+        "step_title": body.step_title,
+        "total_steps": body.total_steps,
+        "created_at": datetime.now(timezone.utc),
+    })
+    return {"status": "logged"}
+
+
+# ── GET /api/v1/onboarding/funnel-report ──────────────────────────────────────
+
+@router.get("/funnel-report")
+@limiter.limit("30/minute")
+async def get_funnel_report(
+    request: Request,
+    days: int = Query(30, ge=1, le=365),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict[str, Any]:
+    """
+    Aggregate funnel-event counts for the caller's active workspace over the
+    last `days` days: how many step_reached events landed at each step, and
+    how many completed. Scoped to the active workspace, same as every other
+    read in this app — there's no cross-workspace admin surface to aggregate
+    globally from.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    match: dict[str, Any] = {"workspace_id": ctx.workspace_id, "created_at": {"$gte": since}}
+
+    pipeline = [
+        {"$match": match},
+        {
+            "$group": {
+                "_id": {"event": "$event", "step": "$step", "step_title": "$step_title"},
+                "count": {"$sum": 1},
+            }
+        },
+        {"$sort": {"_id.step": 1}},
+    ]
+    rows = await onboarding_funnel_events.aggregate(pipeline).to_list(length=500)
+
+    started = await onboarding_funnel_events.count_documents(
+        {**match, "event": "step_reached", "step": 1}
+    )
+    completed = await onboarding_funnel_events.count_documents(
+        {**match, "event": "completed"}
+    )
+
+    return {
+        "window_days": days,
+        "started": started,
+        "completed": completed,
+        "completion_rate": round(completed / started, 3) if started else None,
+        "by_step": [
+            {
+                "event": r["_id"]["event"],
+                "step": r["_id"]["step"],
+                "step_title": r["_id"]["step_title"],
+                "count": r["count"],
+            }
+            for r in rows
+        ],
+    }
