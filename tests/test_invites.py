@@ -357,3 +357,72 @@ async def test_resend_revoked_invite_rejected(api_client):
 
     res = await api_client.post(f"/api/v1/invites/{ws_id}/{invite_id}/resend")
     assert res.status_code == 400
+
+
+async def test_list_pending_excludes_chronologically_expired(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Expired Pending Space", tier="large")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    invite_id = res.json()["invite_id"]
+    await invites_collection.update_one(
+        {"id": invite_id},
+        {"$set": {"expires_at": datetime.now(timezone.utc) - timedelta(days=1)}},
+    )
+
+    # Stored status is still literally "pending" — nothing proactively flips it.
+    doc = await invites_collection.find_one({"id": invite_id})
+    assert doc["status"] == "pending"
+
+    res = await api_client.get(f"/api/v1/invites/{ws_id}")
+    assert res.status_code == 200
+    assert res.json()["items"] == []
+
+
+async def test_list_all_shows_full_history_with_effective_status(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "History Space", tier="large")
+
+    # Accepted
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    accepted_token = res.json()["token"]
+    joiner = make_client()
+    await signup_new_user(joiner)
+    await joiner.post(f"/api/v1/invites/accept/{accepted_token}")
+
+    # Revoked
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    revoked_id = res.json()["invite_id"]
+    await api_client.delete(f"/api/v1/invites/{ws_id}/{revoked_id}")
+
+    # Chronologically expired (stored status still "pending")
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    expired_id = res.json()["invite_id"]
+    await invites_collection.update_one(
+        {"id": expired_id},
+        {"$set": {"expires_at": datetime.now(timezone.utc) - timedelta(days=1)}},
+    )
+
+    # Still pending
+    res = await api_client.post(
+        f"/api/v1/invites/{ws_id}", json={"email": unique_email(), "role": "viewer"}
+    )
+    pending_id = res.json()["invite_id"]
+
+    res = await api_client.get(f"/api/v1/invites/{ws_id}", params={"status": "all"})
+    assert res.status_code == 200
+    by_id = {item["id"]: item["status"] for item in res.json()["items"]}
+    assert by_id[revoked_id] == "revoked"
+    assert by_id[expired_id] == "expired"
+    assert by_id[pending_id] == "pending"
+    accepted_statuses = [
+        v for k, v in by_id.items() if k not in (revoked_id, expired_id, pending_id)
+    ]
+    assert accepted_statuses == ["accepted"]

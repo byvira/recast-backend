@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.core.auth import get_current_user
 from app.core.config import settings
@@ -25,6 +25,20 @@ def _is_expired(expires_at) -> bool:
     if getattr(expires_at, "tzinfo", None) is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     return expires_at < datetime.now(timezone.utc)
+
+
+def _effective_status(invite: dict) -> str:
+    """The invite's displayable status.
+
+    Nothing proactively flips an invite's stored status to "expired" once
+    its expires_at passes — it just sits there still saying "pending"
+    until someone tries to preview/accept it (which 410s without writing
+    anything back). Callers that display status (list, history) need the
+    real picture rather than a stale "pending" forever.
+    """
+    if invite["status"] == InviteStatus.PENDING.value and _is_expired(invite["expires_at"]):
+        return InviteStatus.EXPIRED.value
+    return invite["status"]
 
 
 @router.post("/{workspace_id}", status_code=201)
@@ -145,15 +159,31 @@ async def resend_invite(
 async def list_invites(
     request: Request,
     workspace_id: str,
+    status: str = Query("pending", pattern="^(pending|all)$"),
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """List pending invites for a workspace."""
+    """List invites for a workspace.
+
+    status="pending" (default): only invites still actually awaiting a
+    response — chronologically expired ones are excluded even though their
+    stored status still says "pending" (see _effective_status).
+    status="all": full history including accepted/expired/revoked, newest
+    first, each with its real effective status.
+    """
     await require_permission(workspace_id, current_user["id"], "invite_members")
-    docs = await invites.find(
-        {"workspace_id": workspace_id, "status": InviteStatus.PENDING.value}
-    ).to_list(length=100)
+
+    query: dict[str, Any] = {"workspace_id": workspace_id}
+    if status == "pending":
+        query["status"] = InviteStatus.PENDING.value
+
+    docs = await invites.find(query).sort("created_at", -1).to_list(length=200)
     for d in docs:
         d.pop("_id", None)
+        d["status"] = _effective_status(d)
+
+    if status == "pending":
+        docs = [d for d in docs if d["status"] == InviteStatus.PENDING.value]
+
     return {"items": docs}
 
 
