@@ -228,7 +228,12 @@ app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
 if settings.ENVIRONMENT == "production":
-    origins = [settings.PRODUCTION_DOMAIN] if settings.PRODUCTION_DOMAIN else []
+    # Falls back to FRONTEND_URL when PRODUCTION_DOMAIN isn't set — the two
+    # are otherwise easy to set independently and forget one, silently
+    # reopening a CORS gap in production (as happened here: FRONTEND_URL
+    # was correct but PRODUCTION_DOMAIN was never set on Render).
+    production_domain = settings.PRODUCTION_DOMAIN or settings.FRONTEND_URL
+    origins = [production_domain] if production_domain else []
     origins += [o for o in settings.ALLOWED_ORIGINS if o not in origins]
 else:
     origins = list(settings.ALLOWED_ORIGINS)
