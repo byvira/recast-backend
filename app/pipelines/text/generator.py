@@ -429,6 +429,12 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
     # on reasoning alone (reasoning_tokens=2498/2500, finish_reason=length),
     # leaving zero tokens for the actual content. 4000 leaves headroom for
     # both. See app/pipelines/text/generator.py history / Stage 1 test notes.
+    #
+    # call_llm_structured now defaults reasoning_effort="low" (2026-09-15) —
+    # confirmed live that the unset default could burn the *entire* budget
+    # on hidden reasoning for a short, plain-English prompt too, not just
+    # the non-English case above; "low" fixed it (16.3s -> 5.5s on the same
+    # prompt, in the full generate+hooks path, with clean output both times).
     GENERATION_MAX_TOKENS = 4000
     result = await call_llm_structured(prompt, max_tokens=GENERATION_MAX_TOKENS)
 
@@ -437,16 +443,20 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
             "Structured output failed for %s — falling back to Groq plain text",
             task.platform,
         )
+        # word_count/char_count dropped from the requested schema (2026-09-15):
+        # both were always overwritten by the recompute step below anyway, so
+        # asking the model for them was pure downside — confirmed live that a
+        # model occasionally writing e.g. "word_count": fifty instead of a
+        # digit broke JSON parsing outright and forced this same fallback
+        # path, for a value nothing ever used.
         fallback_prompt = prompt.replace(
-            'Return valid JSON in exactly this format:\n{\n  "content": "the full generated content here",\n  "word_count": 0,\n  "char_count": 0,\n  "platform": "' + task.platform.value + '"\n}',
+            'Return valid JSON in exactly this format:\n{\n  "content": "the full generated content here",\n  "platform": "' + task.platform.value + '"\n}',
             "Output only the final content. No JSON. No explanation."
         )
         plain = await call_llm(fallback_prompt, model=GroqModel.BALANCED, max_tokens=GENERATION_MAX_TOKENS)
         content = plain.strip()
         result = {
             "content": content,
-            "word_count": len(content.split()),
-            "char_count": len(content),
             "platform": task.platform.value,
         }
 
