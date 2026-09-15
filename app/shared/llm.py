@@ -98,6 +98,80 @@ def get_usage_stats() -> dict[str, int]:
 
 
 # ─────────────────────────────────────────────────────────────
+# Concurrency governor — bounds simultaneous Groq requests
+# ─────────────────────────────────────────────────────────────
+#
+# GROQ_TPM_LIMIT is small (8000 on the current free tier) and a single
+# generation call alone can request up to 4000 max_tokens — a handful of
+# simultaneous requests (e.g. a few platforms generating in parallel, or a
+# couple of users overlapping) can exhaust the whole per-minute budget on
+# their own. When that happens the cost isn't "a bit slower" — it's
+# RateLimitError triggering _backoff_retry's 2s/4s/8s sleep cascade per
+# request. In-process only (see the module docstring's note on cross-
+# instance limits — this governs one worker's concurrency, not the
+# account's real ceiling across every instance sharing it): bounding how
+# many requests this process fires at once turns "race each other into a
+# rate limit" into "queue briefly," which is a smaller and far more
+# predictable cost.
+_GROQ_CONCURRENCY_LIMIT = 4
+_groq_semaphore = asyncio.Semaphore(_GROQ_CONCURRENCY_LIMIT)
+
+
+# ─────────────────────────────────────────────────────────────
+# Circuit breaker — stops paying the full retry/backoff tax on every
+# request once Groq is known-bad for the moment
+# ─────────────────────────────────────────────────────────────
+#
+# Without this, a genuinely degraded (not fully down) Groq costs *every*
+# request the same full price: timeout + SDK retries + the 2s/4s/8s
+# backoff, before finally falling back to Gemini. That's fine for one
+# unlucky request; it's a real, cumulative latency tax when it's actually
+# Groq having a bad few minutes. Trip after a run of consecutive
+# connection/rate-limit failures, skip straight to Gemini for a cooldown,
+# then let one trial request through to check recovery (half-open) rather
+# than guessing.
+class _GroqCircuitBreaker:
+    def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 30.0):
+        self._failure_threshold = failure_threshold
+        self._cooldown_seconds = cooldown_seconds
+        self._consecutive_failures = 0
+        self._opened_at: float | None = None
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._opened_at = None
+
+    def record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._failure_threshold and self._opened_at is None:
+            self._opened_at = time.time()
+            logger.warning(
+                "Groq circuit breaker OPEN after %d consecutive failures — "
+                "routing straight to Gemini for %.0fs",
+                self._consecutive_failures, self._cooldown_seconds,
+            )
+
+    def should_skip_groq(self) -> bool:
+        """True while the breaker is open and still within its cooldown.
+
+        Flips back to allowing one trial request (half-open) once the
+        cooldown elapses — record_success()/record_failure() from that
+        trial then decide whether to fully close or re-open.
+        """
+        if self._opened_at is None:
+            return False
+        if time.time() - self._opened_at >= self._cooldown_seconds:
+            logger.info("Groq circuit breaker half-open — allowing a trial request")
+            self._opened_at = None  # let this request through; outcome decides next state
+            self._consecutive_failures = self._failure_threshold - 1
+            return False
+        return True
+
+
+_groq_breaker = _GroqCircuitBreaker()
+
+
+# ─────────────────────────────────────────────────────────────
 # Clients — singletons
 # ─────────────────────────────────────────────────────────────
 
@@ -221,6 +295,42 @@ def _raw_text(response: Any) -> str:
     return response.choices[0].message.content or ""
 
 
+async def _groq_create(client: AsyncGroq, *, reasoning_effort: str | None, **kwargs: Any) -> Any:
+    """
+    client.chat.completions.create(), with reasoning_effort applied when a
+    caller asks for one — and silently omitted if the installed SDK/API
+    build doesn't accept it, same tolerance pattern already proven in
+    app.agents.supervisor.nodes._groq_chat.
+
+    Why this exists at all: gpt-oss-120b is a reasoning model that, left at
+    its own default reasoning depth, was observed live (2026-09-15) to spend
+    its *entire* max_tokens budget on hidden reasoning_tokens for a plain,
+    short, English generation prompt — not just the previously-documented
+    non-English case — leaving zero tokens for visible output and either
+    truncating to nothing or failing Groq's own JSON validation outright.
+    reasoning_effort="low" resolved it in side-by-side testing: 1.77s,
+    finish_reason=stop, real output, vs. an outright 400 with no
+    reasoning_effort set on the identical prompt. Every call site that
+    generates content-shaped output (not the supervisor's own multi-step
+    rule reasoning, which already sets "high" itself) should default low.
+
+    Also acquires _groq_semaphore for the duration of the request — see
+    that name's docstring for why every Groq call funnels through one
+    bounded gate rather than firing unbounded.
+    """
+    async with _groq_semaphore:
+        if reasoning_effort is None:
+            return await client.chat.completions.create(**kwargs)
+        try:
+            return await client.chat.completions.create(reasoning_effort=reasoning_effort, **kwargs)
+        except TypeError:
+            return await client.chat.completions.create(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - some Groq builds 400 instead of TypeError
+            if "reasoning_effort" in str(exc):
+                return await client.chat.completions.create(**kwargs)
+            raise
+
+
 # ─────────────────────────────────────────────────────────────
 # Exponential backoff for rate limits
 # ─────────────────────────────────────────────────────────────
@@ -262,19 +372,30 @@ async def call_llm(
     system: str = "",
     temperature: float = 0.7,
     max_tokens: int = 2500,
+    reasoning_effort: str | None = "low",
 ) -> str:
     """
     Plain text generation via Groq.
 
     Retries with exponential back-off on RateLimitError (up to 3 attempts),
     then falls back to FAST model, then raises HTTP 503.
+
+    reasoning_effort defaults to "low" — see _groq_create's docstring for
+    why: gpt-oss-120b at its default reasoning depth can burn the entire
+    token budget on hidden reasoning for an ordinary generation prompt,
+    producing empty output. Pass None to use the API's own default (only
+    the supervisor's own deliberately deep multi-step reasoning calls
+    should ever need more than "low" here), or "high" for a task that
+    genuinely needs deeper deliberation.
     """
     client   = get_groq_client()
     messages = _build_messages(prompt, system)
     capped   = _safe_max_tokens(prompt, system, max_tokens)
 
     async def _complete(mdl: GroqModel) -> str:
-        resp = await client.chat.completions.create(
+        resp = await _groq_create(
+            client,
+            reasoning_effort=reasoning_effort,
             model=mdl.value,
             messages=messages,
             temperature=temperature,
@@ -284,17 +405,33 @@ async def call_llm(
         _record_usage(mdl.value, resp.usage)
         return _raw_text(resp)
 
+    # Circuit breaker: if Groq has already failed enough times in a row to
+    # be considered down for the moment, skip the timeout+retries+backoff
+    # tax entirely and go straight to the already-known-working fallback.
+    if _groq_breaker.should_skip_groq():
+        try:
+            result = await call_llm_fallback(prompt=prompt, system=system)
+            return result
+        except Exception as exc:
+            logger.error("Gemini fallback also failed (breaker open): %s", exc)
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+
     try:
-        return await _backoff_retry(
+        result = await _backoff_retry(
             lambda: _complete(model),
             label=f"call_llm({model.name})",
         )
+        _groq_breaker.record_success()
+        return result
 
     except RateLimitError:
         logger.warning("Groq rate limit persists — falling back to FAST model")
         try:
-            return await _complete(GroqModel.FAST)
+            result = await _complete(GroqModel.FAST)
+            _groq_breaker.record_success()
+            return result
         except Exception:
+            _groq_breaker.record_failure()
             logger.warning("Groq FAST fallback also failed — falling back to Gemini")
             try:
                 return await call_llm_fallback(prompt=prompt, system=system)
@@ -306,6 +443,7 @@ async def call_llm(
                 )
 
     except APIConnectionError as exc:
+        _groq_breaker.record_failure()
         logger.error("Groq connection error: %s — falling back to Gemini", exc)
         try:
             return await call_llm_fallback(prompt=prompt, system=system)
@@ -319,6 +457,8 @@ async def call_llm(
         # already exceeds the account's per-minute ceiling, so retrying the
         # same request on Groq would just 413 again. Route straight to
         # Gemini, which has its own, independent (and much larger) budget.
+        # Not counted as a breaker failure — this is a property of this one
+        # request's size, not evidence Groq itself is degraded.
         logger.warning(
             "Groq returned %s (%s) — not a rate limit that retrying fixes, "
             "falling back to Gemini",
@@ -345,6 +485,7 @@ async def call_llm_stream(
     system: str = "",
     temperature: float = 0.7,
     max_tokens: int = 2500,
+    reasoning_effort: str | None = "low",
 ) -> AsyncIterator[str]:
     """
     Streaming plain text generation via Groq.
@@ -354,13 +495,18 @@ async def call_llm_stream(
     Usage:
         async for chunk in call_llm_stream(prompt):
             await websocket.send_text(chunk)
+
+    reasoning_effort defaults to "low" — same reasoning-token-budget risk
+    as call_llm/call_llm_structured; see _groq_create's docstring.
     """
     client   = get_groq_client()
     messages = _build_messages(prompt, system)
     capped   = _safe_max_tokens(prompt, system, max_tokens)
 
     try:
-        stream = await client.chat.completions.create(
+        stream = await _groq_create(
+            client,
+            reasoning_effort=reasoning_effort,
             model=model.value,
             messages=messages,
             temperature=temperature,
@@ -394,6 +540,7 @@ async def call_llm_structured(
     system: str = "",
     model: GroqModel = GroqModel.BALANCED,
     max_tokens: int = 2500,
+    reasoning_effort: str | None = "low",
 ) -> dict[str, Any]:
     """
     Structured JSON output via Groq.
@@ -409,13 +556,25 @@ async def call_llm_structured(
     Model guidance:
       BALANCED (default) — complex, multi-layer prompts
       FAST               — simple single-field extraction
+
+    reasoning_effort defaults to "low" — confirmed via live side-by-side
+    testing (2026-09-15) that leaving this unset lets gpt-oss-120b spend
+    its entire max_tokens budget on hidden reasoning_tokens even for a
+    short, plain-English generation prompt, producing empty/truncated
+    output — exactly the failure this function is supposed to hand back
+    as {} for the caller to fall back from, except here the fallback was
+    firing on ordinary requests, not genuine failures. "low" produced
+    complete, correctly-parsed JSON in a fraction of the time. See
+    _groq_create's docstring for the measured numbers.
     """
     client   = get_groq_client()
     messages = _build_messages(prompt, system, json_mode=True)
     capped   = _safe_max_tokens(prompt, system, max_tokens)
 
     async def _complete_and_parse(mdl: GroqModel) -> dict[str, Any]:
-        resp = await client.chat.completions.create(
+        resp = await _groq_create(
+            client,
+            reasoning_effort=reasoning_effort,
             model=mdl.value,
             messages=messages,
             temperature=0.3,
@@ -425,13 +584,26 @@ async def call_llm_structured(
         _record_usage(mdl.value, resp.usage)
         return parse_llm_json(_raw_text(resp))
 
+    # Circuit breaker — see call_llm()'s identical check for why: skip the
+    # timeout+retries+backoff tax entirely once Groq has already shown
+    # enough consecutive failures to be considered down for the moment.
+    if _groq_breaker.should_skip_groq():
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as exc:
+            logger.error("Gemini structured fallback also failed (breaker open): %s", exc)
+            return {}
+
     try:
-        return await _backoff_retry(
+        result = await _backoff_retry(
             lambda: _complete_and_parse(model),
             label=f"call_llm_structured({model.name})",
         )
+        _groq_breaker.record_success()
+        return result
 
     except RateLimitError:
+        _groq_breaker.record_failure()
         logger.warning("Groq structured call rate limit persisted after retries — falling back to Gemini")
         try:
             return await call_llm_structured_fallback(prompt=prompt, system=system)
@@ -440,6 +612,7 @@ async def call_llm_structured(
             return {}
 
     except APIConnectionError as exc:
+        _groq_breaker.record_failure()
         logger.error("Groq connection error: %s — falling back to Gemini", exc)
         try:
             return await call_llm_structured_fallback(prompt=prompt, system=system)
@@ -451,7 +624,8 @@ async def call_llm_structured(
         # See call_llm()'s identical branch: a 413 means this request's
         # prompt + max_tokens already exceeds the account's per-minute
         # ceiling — retrying on Groq would just 413 again, so go straight
-        # to Gemini's independent budget instead.
+        # to Gemini's independent budget instead. Not counted as a breaker
+        # failure — a property of this request's size, not Groq health.
         logger.warning(
             "Groq returned %s (%s) — not a rate limit that retrying fixes, "
             "falling back to Gemini",
