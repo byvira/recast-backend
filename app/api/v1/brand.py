@@ -20,6 +20,7 @@ from app.models.brand_profile import (
     CreateBrandProfileBody,
     SaveStepBody,
 )
+from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggestions
 
 router = APIRouter()
 
@@ -335,6 +336,43 @@ async def save_brand_step(
         "step": body.step,
         "next_step": body.step + 1,
     }
+
+
+@router.post("/{brand_id}/suggest-voice-patterns")
+@limiter.limit("10/minute")
+async def suggest_voice_patterns(
+    request: Request,
+    brand_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, Any]:
+    """
+    AI-draft a starting set of openers, closers, and signature phrases from
+    the brand's already-saved identity/audience/voice_tone.
+
+    Read-only with respect to the brand profile — this never writes
+    anything; the caller reviews and edits, then saves through the normal
+    PUT /{brand_id}/step call like any other manual entry. A failed or
+    empty generation is a 502 with a plain-language message, never a 500 —
+    this is a convenience on top of manual entry, not a dependency of it.
+    """
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    if not doc.get("identity"):
+        raise HTTPException(
+            status_code=400,
+            detail="Add a few identity details first — the more Recast knows, the better these suggestions will be.",
+        )
+
+    suggestions = await generate_voice_pattern_suggestions(doc)
+    if not suggestions:
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't generate suggestions right now. Please try again, or write your own below.",
+        )
+
+    return suggestions
 
 
 @router.put("/{brand_id}/complete")
