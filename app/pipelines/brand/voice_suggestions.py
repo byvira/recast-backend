@@ -103,9 +103,18 @@ def _tone_summary(voice_tone: dict) -> str:
 def _clean_string_list(value: Any, limit: int) -> list[str]:
     if not isinstance(value, list):
         return []
-    cleaned = [
-        v.strip() for v in value if isinstance(v, str) and v.strip()
-    ]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for v in value:
+        if not isinstance(v, str):
+            continue
+        v = v.strip()
+        # Case-insensitive de-dup — a model repeating near-identical
+        # suggestions is more useful shown once than twice.
+        if not v or v.lower() in seen:
+            continue
+        seen.add(v.lower())
+        cleaned.append(v)
     return cleaned[:limit]
 
 
@@ -113,15 +122,17 @@ def _clean_phrases(value: Any, limit: int) -> list[dict[str, str]]:
     if not isinstance(value, list):
         return []
     cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
     for item in value:
         if not isinstance(item, dict):
             continue
         text = str(item.get("text", "")).strip()
-        if not text:
+        if not text or text.lower() in seen:
             continue
         placement = str(item.get("placement", "any")).strip().lower()
         if placement not in _VALID_PLACEMENTS:
             placement = "any"
+        seen.add(text.lower())
         cleaned.append({"text": text, "placement": placement})
     return cleaned[:limit]
 

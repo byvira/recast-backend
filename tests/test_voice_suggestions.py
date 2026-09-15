@@ -91,6 +91,16 @@ def test_clean_string_list_rejects_non_list():
     assert _clean_string_list(None, limit=5) == []
 
 
+def test_clean_string_list_dedupes_case_insensitively():
+    # A model repeating a near-identical suggestion is more useful shown
+    # once — this also protects the frontend's index-based chip removal
+    # from ever having two chips that read identically.
+    assert _clean_string_list(["Let's go", "let's go", "LET'S GO", "New one"], limit=10) == [
+        "Let's go",
+        "New one",
+    ]
+
+
 def test_clean_phrases_drops_blank_text_and_defaults_bad_placement():
     raw = [
         {"text": "Let's go", "placement": "hook"},
@@ -105,6 +115,14 @@ def test_clean_phrases_drops_blank_text_and_defaults_bad_placement():
         {"text": "Ship it", "placement": "any"},
         {"text": "spaced", "placement": "close"},
     ]
+
+
+def test_clean_phrases_dedupes_by_text_case_insensitively():
+    raw = [
+        {"text": "Ship it", "placement": "hook"},
+        {"text": "ship it", "placement": "close"},  # duplicate text, different placement — still dropped
+    ]
+    assert _clean_phrases(raw, limit=10) == [{"text": "Ship it", "placement": "hook"}]
 
 
 def test_clean_phrases_caps_at_limit():
