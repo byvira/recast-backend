@@ -28,6 +28,7 @@ from app.core.middleware import MaxBodySizeMiddleware, RequestLoggingMiddleware,
 from app.db.mongo import create_indexes, get_client as get_mongo_client
 from app.db.migrations import run_startup_migrations
 from app.db.redis import get_redis
+from app.shared.llm import llm_health_check
 from app.api.v1 import text_stream
 from app.api.v1 import assistant as assistant_router
 from app.api.v1 import supervisor as supervisor_router
@@ -293,8 +294,18 @@ async def health_check() -> dict[str, str]:
 
 @app.get("/health/ready", tags=["Health"])
 async def health_ready() -> JSONResponse:
-    """Deep readiness check — pings Mongo and Redis. Point an external uptime
-    monitor here, not Render's health check."""
+    """Deep readiness check — pings Mongo, Redis, and both LLM providers.
+    Point an external uptime monitor here, not Render's health check.
+
+    Mongo/Redis are hard dependencies — every request needs them, so a
+    failure there flips overall status to "not ready" (503). Groq/Gemini
+    are not: this app works fine (auth, workspace, invites, settings —
+    everything but AI generation) with both LLM providers down, so an
+    LLM outage is reported in the body for monitoring/alerting to see and
+    page on distinctly, without marking the whole service down over a
+    degradation that leaves most of it working. Previously invisible to
+    any monitoring — llm_health_check() existed and was never called.
+    """
     problems: list[str] = []
 
     try:
@@ -308,9 +319,26 @@ async def health_ready() -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         problems.append(f"redis: {exc}")
 
+    llm_status = await llm_health_check()
+    llm_problems = [
+        f"{provider}: {info.get('detail', 'unknown error')}"
+        for provider, info in llm_status.items()
+        if info.get("status") != "ok"
+    ]
+
     if problems:
-        return JSONResponse(status_code=503, content={"status": "not ready", "problems": problems})
-    return JSONResponse(status_code=200, content={"status": "ready"})
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not ready", "problems": problems, "llm": llm_status},
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "ready",
+            "llm": llm_status,
+            "llm_degraded": bool(llm_problems),
+        },
+    )
 
 
 # --- Docs (Scalar) ---

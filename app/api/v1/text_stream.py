@@ -24,6 +24,7 @@ from fastapi.responses import StreamingResponse
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles
+from app.db.redis import get_cache, set_cache
 from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.agents.text.event_emitter import EventEmitter
@@ -34,10 +35,54 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Active sessions — maps session_id → (EventEmitter, workspace_id)
-# Used by resume endpoint to unblock paused pipelines. In-process only.
+# Used by resume endpoint to unblock paused pipelines. In-process only:
+# the EventEmitter wraps a live asyncio.Queue/Event tied to this process's
+# event loop and a running pipeline task, so it can never be handed to
+# another process regardless of what's in Redis.
+#
+# Every session is *also* mirrored into Redis (see _register_session /
+# _mark_session_ended below) purely as a status record — not the emitter,
+# just "this session_id belongs to this workspace, and is active/ended".
+# That's enough to turn a blind 404 into an accurate answer when a status
+# or resume request arrives after this process has restarted (deploy,
+# crash, OOM) since the session began: today's single-web-instance
+# deployment (see DEPLOY.md) means that's the only way this dict's
+# in-process-only nature actually bites, since there's no second instance
+# to route to. It does NOT make a pipeline resumable after a restart —
+# the blocked asyncio task and its call stack are gone the moment the
+# process dies, Redis or not; genuine crash-resumable pipelines would
+# need LangGraph-level checkpointing (interrupt()/Command(resume=...))
+# around real pause points, which is a materially larger change than a
+# status registry.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _active_sessions: dict[str, tuple[EventEmitter, str]] = {}
+
+_SESSION_TTL_SECONDS = 600           # generous ceiling: generation run + pause wait
+_SESSION_ENDED_TTL_SECONDS = 120     # short-lived "this session is over" marker
+
+
+def _session_cache_key(session_id: str) -> str:
+    return f"pipeline_session:{session_id}"
+
+
+async def _register_session(session_id: str, workspace_id: str) -> None:
+    await set_cache(
+        _session_cache_key(session_id),
+        {"workspace_id": workspace_id, "status": "active"},
+        ttl=_SESSION_TTL_SECONDS,
+    )
+
+
+async def _mark_session_ended(session_id: str, workspace_id: str) -> None:
+    """Called whether the pipeline finished, errored, or the client just
+    disconnected — in every case the session is no longer resumable, which
+    is the one fact a status/resume check actually needs."""
+    await set_cache(
+        _session_cache_key(session_id),
+        {"workspace_id": workspace_id, "status": "ended"},
+        ttl=_SESSION_ENDED_TTL_SECONDS,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +171,7 @@ async def generate_stream(
 
     # Register for resume endpoint (scoped to this workspace)
     _active_sessions[session_id] = (emitter, ctx.workspace_id)
+    await _register_session(session_id, ctx.workspace_id)
 
     async def event_stream():
         # Emit session started immediately so frontend can show queued cards
@@ -182,6 +228,7 @@ async def generate_stream(
 
         finally:
             _active_sessions.pop(session_id, None)
+            await _mark_session_ended(session_id, ctx.workspace_id)
             if not pipeline_task.done():
                 pipeline_task.cancel()
 
@@ -215,6 +262,19 @@ async def resume_pipeline(
     """
     entry = _active_sessions.get(session_id)
     if not entry or entry[1] != ctx.workspace_id:
+        cached = await get_cache(_session_cache_key(session_id))
+        if cached and cached.get("workspace_id") == ctx.workspace_id:
+            if cached.get("status") == "ended":
+                raise HTTPException(status_code=409, detail="Session already finished.")
+            # Registered in Redis (so it did exist and belongs to this
+            # workspace) but missing from this process's local dict —
+            # the only way that happens is this process restarted since
+            # the session began. The pipeline task died with it; there is
+            # nothing left to resume.
+            raise HTTPException(
+                status_code=410,
+                detail="Session was lost when the server restarted. Please start a new generation.",
+            )
         raise HTTPException(
             status_code=404,
             detail="Session not found or already complete.",
@@ -244,12 +304,22 @@ async def get_session_status(
 ) -> dict:
     """Check if a session is still active. Frontend calls on page load."""
     entry = _active_sessions.get(session_id)
-    is_active = bool(entry and entry[1] == ctx.workspace_id)
-    return {
-        "session_id": session_id,
-        "active":     is_active,
-        "can_resume": is_active,
-    }
+    if entry and entry[1] == ctx.workspace_id:
+        return {
+            "session_id": session_id,
+            "active":     True,
+            "can_resume": True,
+            "status":     "active",
+        }
+
+    cached = await get_cache(_session_cache_key(session_id))
+    if cached and cached.get("workspace_id") == ctx.workspace_id:
+        # Known to Redis but not running locally — either it legitimately
+        # ended, or this process restarted since the session began.
+        status = "ended" if cached.get("status") == "ended" else "lost"
+        return {"session_id": session_id, "active": False, "can_resume": False, "status": status}
+
+    return {"session_id": session_id, "active": False, "can_resume": False, "status": "not_found"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
