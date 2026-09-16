@@ -322,7 +322,10 @@ async def batch_generate(
 async def score_hook_endpoint(
     request: Request,
     body: ScoreHookRequest,
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    # LLM-backed (Groq) — used to require only membership, so a viewer could
+    # trigger real LLM calls with no gate at all. create_content matches the
+    # other content-generation-adjacent actions (refine, refine-chat, chips).
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> ScoreHookResponse:
     """
     Score the hook quality of existing content.
@@ -357,7 +360,10 @@ async def score_hook_endpoint(
 async def score_readability_endpoint(
     request: Request,
     body: ScoreReadabilityRequest,
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    # Pure computation, no LLM cost — gated the same as score-hook anyway,
+    # for consistency with the rest of this create-content-adjacent group
+    # rather than because this specific one is expensive.
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> ScoreReadabilityResponse:
     """
     Score the readability of content for a specific platform.
@@ -513,7 +519,7 @@ async def refine_chat(
 async def get_chips(
     request: Request,
     platform: str,
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> GetChipsResponse:
     """
     Get available chip names for a platform.
