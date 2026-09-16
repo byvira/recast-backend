@@ -214,8 +214,13 @@ async def generate_text_content(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
-    # Save to storage — non-blocking
-    await _save_result(result, goal=body.goal, tone=body.tone, label="generate")
+    # Save to storage — non-blocking. piece_ids line up with result.pieces
+    # in order (save_pipeline_result() iterates result.pieces itself), so
+    # zipping them back on is safe; a storage failure returns [] and every
+    # piece_id just stays None rather than mismatching to the wrong piece.
+    piece_ids = await _save_result(result, goal=body.goal, tone=body.tone, label="generate")
+    for piece, piece_id in zip(result.pieces, piece_ids):
+        piece.piece_id = piece_id
 
     return result
 
@@ -240,7 +245,7 @@ async def repurpose_content(
 
     try:
         result = await run_text_pipeline(
-            source_type=InputSourceType.TEXT,
+            source_type=body.source_type,
             content=body.source_content,
             platforms=body.target_platforms,
             brand_id=body.brand_id,
@@ -257,14 +262,17 @@ async def repurpose_content(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Repurpose error: {str(e)}")
 
-    # Save to storage — non-blocking
-    await _save_result(
+    # Save to storage — non-blocking. See generate_text_content()'s same
+    # zip for why this is safe.
+    piece_ids = await _save_result(
         result,
         goal=body.goal,
         tone=body.tone,
         is_repurpose=True,
         label="repurpose",
     )
+    for piece, piece_id in zip(result.pieces, piece_ids):
+        piece.piece_id = piece_id
 
     return result
 

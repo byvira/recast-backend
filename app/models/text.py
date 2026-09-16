@@ -152,7 +152,8 @@ class GenerateTextRequest(BaseModel):
 
 class RepurposeRequest(BaseModel):
     """
-    Repurpose mode — maps to RepurposeInput tab in ConfigPanel.
+    Repurpose mode — maps to RepurposeInput tab in ConfigPanel and to
+    Quick Recast (Library's "Recast Again").
     """
     source_content: str
     source_platform: Platform
@@ -162,6 +163,12 @@ class RepurposeRequest(BaseModel):
     tone: ToneOverride = ToneOverride.BRAND
     extras: ExtrasConfig = ExtrasConfig()
     language: Optional[str] = None  # see GenerateTextRequest.language
+    # "text" (default) or "url" — the handler used to hardcode "text"
+    # unconditionally, so pasting a URL into Quick Recast never actually
+    # scraped it (app.pipelines.text.scraper.scrape_url, already real and
+    # used by the main pipeline's "url" input mode) — it just fed the bare
+    # URL string to the LLM as if it were the source content.
+    source_type: InputSourceType = InputSourceType.TEXT
 
 
 class NormalisedInput(BaseModel):
@@ -224,6 +231,13 @@ class GeneratedPiece(BaseModel):
     """A single generated content piece for one platform."""
     platform: Platform
     workspace_id: str = ""
+    # Populated by the blocking /generate and /repurpose handlers after
+    # _save_result() persists the piece — GeneratedPiece itself never knows
+    # its own id (save_pipeline_result() generates it), so this stays None
+    # until the caller fills it in from that call's real return value. A
+    # frontend needs this to act on the piece afterward (approve/edit/
+    # schedule) instead of it looking saved with nothing real to act on.
+    piece_id: Optional[str] = None
     content: str
     word_count: int
     char_count: int
