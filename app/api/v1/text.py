@@ -109,11 +109,18 @@ async def _save_result(
     tone: Any = None,
     is_repurpose: bool = False,
     label: str = "result",
-) -> None:
+) -> list[str]:
     """
     Save pipeline result to MongoDB.
     Non-blocking — never fails the API response.
     Storage failure is logged but does not raise.
+
+    Returns the real, persisted piece_ids in the same order as
+    result.pieces — [] on a storage failure. save_pipeline_result()
+    generates each piece_id itself (GeneratedPiece has no piece_id field
+    of its own), so this is the only place that id is ever knowable;
+    callers that need to hand a real piece_id back to the frontend (see
+    regenerate_content below) must read it from here, not from `result`.
     """
     try:
         session_id, piece_ids = await save_pipeline_result(
@@ -126,8 +133,10 @@ async def _save_result(
             "Saved %s — session %s, %d pieces",
             label, session_id, len(piece_ids),
         )
+        return piece_ids
     except Exception as e:
         logger.error("Failed to save %s to storage: %s", label, e)
+        return []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -622,8 +631,14 @@ async def regenerate_content(
 
     piece = result.pieces[0]
 
-    # 6. Persist regenerated piece (non-blocking failure)
-    await _save_result(result, goal=goal_enum, tone=tone_enum, label="regenerate")
+    # 6. Persist regenerated piece (non-blocking failure) — the real
+    # piece_id only ever exists as this call's return value; GeneratedPiece
+    # itself has no piece_id field, so reading one off `piece` (as this
+    # used to do) always produced "", even though the piece really was
+    # saved. Confirmed: this is exactly the bug Stage 1 fixed for the SSE
+    # path, and it was independently present here too.
+    piece_ids = await _save_result(result, goal=goal_enum, tone=tone_enum, label="regenerate")
+    real_piece_id = piece_ids[0] if piece_ids else ""
 
     # 7. Build response
     hooks = piece.hooks or []
@@ -645,7 +660,7 @@ async def regenerate_content(
         hook_score=hook_score,
         readability_score=int(piece.readability_score or 0),
         readability_level=getattr(piece, "readability_level", "Standard") or "Standard",
-        piece_id=str(getattr(piece, "piece_id", "") or ""),
+        piece_id=real_piece_id,
         hashtags=list(seo.get("hashtags", []) or []),
         hook_alternatives=hook_alternatives,
     )
