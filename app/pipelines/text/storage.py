@@ -366,7 +366,15 @@ async def get_workspace_sessions(
     }
 
 
-KANBAN_STAGES = ("drafting", "staging", "scheduled", "published", "archived")
+KANBAN_STAGES = ("drafting", "staging", "scheduled", "published", "failed", "archived")
+
+# publish_status values that mean "queued to actually go out" — the real
+# worker-recognized "queued" plus its transient "publishing" follow-on.
+# "scheduled" is a dead legacy value: two write paths used to emit it
+# instead of "queued" (neither the real Module 2 Stage 9 fix), so it's kept
+# here only so pieces written before that fix still land in the right
+# kanban column rather than silently vanishing into "drafting".
+_QUEUED_LIKE = ("queued", "publishing", "scheduled")
 
 
 def compute_kanban_stage(piece: dict) -> str:
@@ -376,16 +384,18 @@ def compute_kanban_stage(piece: dict) -> str:
     scheduled -> published, plus a lateral archive) even though nothing in
     the real data model stores a "stage" — only ``approval_status``
     (pending/approved/rejected) and ``publish_status``
-    (pending/scheduled/published/failed) plus the ``archived`` flag exist.
-    Computing it on read instead of storing it avoids a second, driftable
-    source of truth.
+    (pending/queued/publishing/published/failed) plus the ``archived`` flag
+    exist. Computing it on read instead of storing it avoids a second,
+    driftable source of truth.
     """
     if piece.get("archived"):
         return "archived"
     publish_status = piece.get("publish_status")
     if publish_status == "published":
         return "published"
-    if publish_status == "scheduled":
+    if publish_status == "failed":
+        return "failed"
+    if publish_status in _QUEUED_LIKE:
         return "scheduled"
     if piece.get("approval_status") == "approved":
         return "staging"
@@ -401,14 +411,17 @@ def _stage_query(stage: str) -> dict:
     base = {"archived": {"$ne": True}}
     if stage == "published":
         return {**base, "publish_status": "published"}
+    if stage == "failed":
+        return {**base, "publish_status": "failed"}
     if stage == "scheduled":
-        return {**base, "publish_status": "scheduled"}
+        return {**base, "publish_status": {"$in": list(_QUEUED_LIKE)}}
+    not_queued_or_terminal = {"$nin": [*_QUEUED_LIKE, "published", "failed"]}
     if stage == "staging":
-        return {**base, "publish_status": {"$nin": ["scheduled", "published"]}, "approval_status": "approved"}
+        return {**base, "publish_status": not_queued_or_terminal, "approval_status": "approved"}
     if stage == "drafting":
         return {
             **base,
-            "publish_status": {"$nin": ["scheduled", "published"]},
+            "publish_status": not_queued_or_terminal,
             "approval_status": {"$ne": "approved"},
         }
     return {}
@@ -571,6 +584,7 @@ async def update_piece_status(
     approval_status: Optional[str] = None,
     publish_status: Optional[str] = None,
     publish_scheduled_at: Optional[str] = None,
+    publish_target: Optional[str] = None,
     archived: Optional[bool] = None,
 ) -> Optional[dict]:
     """Update approval, publish status, and/or archive flag of a piece."""
@@ -585,6 +599,8 @@ async def update_piece_status(
         updates["publish_status"] = publish_status
     if publish_scheduled_at is not None:
         updates["publish_scheduled_at"] = publish_scheduled_at
+    if publish_target is not None:
+        updates["publish_target"] = publish_target
     if archived is not None:
         updates["archived"] = archived
 

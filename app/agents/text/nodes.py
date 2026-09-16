@@ -566,7 +566,9 @@ async def collect_output_node(state: TextAgentState) -> dict:
         quality_issues=state["quality_issues"],
         flagged_for_review=state["flagged_for_review"],
         publish_target=state["publish_target"],
-        publish_status="scheduled" if state["schedule_mode"] == "scheduled" else "pending",
+        # "queued" (not the old, worker-incompatible "scheduled") is what
+        # app/workers/scheduled_posts.py polls for — see PublishStatus.
+        publish_status="queued" if state["schedule_mode"] == "scheduled" else "pending",
         publish_scheduled_at=state["scheduled_at"],
     )
 

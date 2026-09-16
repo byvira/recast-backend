@@ -195,25 +195,20 @@ async def get_calendar(
 
     db = get_db()
 
+    # Real publish_status values (app.models.text.PublishStatus):
+    # pending / queued / publishing / published / failed. "draft"/"scheduled"
+    # never existed in the real data — the query below used to filter on
+    # them and so silently excluded every real pending or queued piece.
     pieces = await db["content_pieces"].find(
         {
             "workspace_id": ctx.workspace_id,
             "deleted": {"$ne": True},
             "$or": [
+                {"publish_status": "published", "updated_at": {"$gte": start, "$lte": end}},
+                {"publish_scheduled_at": {"$gte": start, "$lte": end}},
                 {
-                    "publish_status": "published",
-                    "platform_results": {
-                        "$elemMatch": {
-                            "published_at": {"$gte": start, "$lte": end}
-                        }
-                    }
-                },
-                {
-                    "publish_scheduled_at": {"$gte": start, "$lte": end}
-                },
-                {
-                    "publish_status": {"$in": ["draft", "queued"]},
-                    "created_at":     {"$gte": start, "$lte": end}
+                    "publish_status": {"$in": ["pending", "failed"]},
+                    "created_at":     {"$gte": start, "$lte": end},
                 },
             ],
         },
@@ -221,16 +216,13 @@ async def get_calendar(
     ).to_list(length=500)
 
     days: dict[str, list] = {}
-    summary = {"total": 0, "published": 0, "scheduled": 0, "queued": 0, "draft": 0}
+    summary = {"total": 0, "published": 0, "queued": 0, "pending": 0, "failed": 0}
 
     for piece in pieces:
-        if piece.get("publish_status") == "published":
-            published_dates = [
-                r["published_at"]
-                for r in piece.get("platform_results", [])
-                if r.get("published_at") and r.get("status") == "published"
-            ]
-            display_date = min(published_dates) if published_dates else piece["created_at"]
+        publish_status = piece.get("publish_status", "pending")
+
+        if publish_status == "published":
+            display_date = piece.get("updated_at") or piece["created_at"]
         elif piece.get("publish_scheduled_at"):
             display_date = piece["publish_scheduled_at"]
         else:
@@ -244,33 +236,35 @@ async def get_calendar(
         if date_key not in days:
             days[date_key] = []
 
-        platforms = list({
-            r["platform"]
-            for r in piece.get("platform_results", [])
-        })
+        # Each content_pieces document is already exactly one platform's
+        # content (piece["platform"]) — there is no real multi-platform
+        # bundle per piece, so "platform_results" (an array field nothing
+        # ever wrote) is synthesized here as that one real result, not read
+        # from a field that was always empty.
+        platform_result = {
+            "platform":     piece.get("platform", ""),
+            "status":       publish_status,
+            "published_at": (piece.get("updated_at") if publish_status == "published" else None),
+            "post_url":     piece.get("platform_post_url"),
+        }
 
         days[date_key].append({
-            "id":               str(piece.get("id", piece["_id"])),
+            "id":               piece.get("piece_id", ""),
             "content_preview":  piece.get("content", "")[:120],
-            "status":           piece.get("publish_status", "draft"),
-            "platforms":        platforms,
+            "status":           publish_status,
+            "platforms":        [piece.get("platform", "")] if piece.get("platform") else [],
             "scheduled_at":     piece.get("publish_scheduled_at"),
             "created_at":       piece.get("created_at"),
-            "platform_results": [
-                {
-                    "platform":     r.get("platform"),
-                    "status":       r.get("status"),
-                    "published_at": r.get("published_at"),
-                    "post_url":     r.get("post_url"),
-                }
-                for r in piece.get("platform_results", [])
-            ],
+            "platform_results": [platform_result],
         })
 
-        status = piece.get("publish_status", "draft")
         summary["total"] += 1
-        if status in summary:
-            summary[status] += 1
+        # "publishing" is the few-seconds in-flight state — folded into
+        # "queued" for this monthly summary rather than adding a bucket
+        # a user would almost never actually see non-zero.
+        bucket = "queued" if publish_status == "publishing" else publish_status
+        if bucket in summary:
+            summary[bucket] += 1
 
     return {
         "year":    year,

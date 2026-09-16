@@ -302,8 +302,13 @@ async def run_text_pipeline(
                 # publish_target marks that this specific piece is meant to
                 # actually go out, not just be drafted/reviewed — only set
                 # for platforms the caller explicitly picked in "Publish To".
+                # Lowercased: the real publish system (token_store.get_token,
+                # scheduled_posts worker) keys connections by lowercase slug
+                # ("linkedin"), not the display-cased content Platform value
+                # ("LinkedIn") — storing the latter here silently broke
+                # every scheduled/queued piece's token lookup.
                 publish_target=(
-                    _platform_str(platform)
+                    _platform_str(platform).lower()
                     if _platform_str(platform) in publish_targets_set
                     else None
                 ),

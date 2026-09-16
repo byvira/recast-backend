@@ -1,5 +1,9 @@
 """
-Publish endpoints — publish now, schedule, cancel, status.
+Publish endpoints — publish now, status.
+
+Scheduling and cancelling a scheduled publish live on app.api.v1.content
+(/pieces/{id}/schedule, /pieces/{id}/cancel-schedule) — see the note above
+where this router's own schedule/cancel routes used to be.
 
 Workspace-scoped: content pieces and platform tokens are resolved within the
 caller's active workspace. Publishing requires the ``publish_content``
@@ -25,7 +29,6 @@ from app.pipelines.publish.supervisor.alerts import alert_fatal, save_incident
 from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
 from app.pipelines.publish.supervisor.retry import should_retry, get_retry_delay
 from app.pipelines.publish.supervisor.fixer import fix_content
-from app.pipelines.publish.validators import validate_for_platform
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -37,13 +40,11 @@ logger = logging.getLogger(__name__)
 
 class PublishNowRequest(BaseModel):
     piece_id: str
-    platform: str
-
-
-class ScheduleRequest(BaseModel):
-    piece_id: str
-    platform: str
-    scheduled_at: str   # ISO datetime string
+    # No separate `platform` field: a piece is always exactly one platform
+    # (piece["platform"]), so a caller-supplied platform could previously
+    # disagree with the piece's real platform and publish content generated
+    # for one network onto a completely different one's API. Derived from
+    # the piece server-side instead — see publish_now().
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,23 +110,30 @@ async def publish_now(
     """
     ws = ctx.workspace_id
     piece = await _get_verified_piece(body.piece_id, ws)
+    # Derived from the piece, not caller input — a piece is always exactly
+    # one platform, and the publish subsystem's own vocabulary (token_store,
+    # the PUBLISHERS registry, the scheduled_posts worker) is the lowercase
+    # slug ("linkedin"), not the display-cased content Platform value
+    # ("LinkedIn") that piece["platform"] actually holds.
+    display_platform = piece["platform"]
+    platform = display_platform.lower()
 
     # Check platform token exists for this workspace
-    token_data = await get_token(ws, body.platform)
+    token_data = await get_token(ws, platform)
     if not token_data:
         raise HTTPException(
             status_code=400,
-            detail=f"{body.platform} is not connected. "
-                   f"Connect at /api/v1/oauth/{body.platform}/connect",
+            detail=f"{display_platform} is not connected. "
+                   f"Connect at /api/v1/oauth/{platform}/connect",
         )
 
     # Get publisher
     try:
-        publisher = get_publisher(body.platform)
+        publisher = get_publisher(platform)
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"Platform '{body.platform}' not supported.",
+            detail=f"Platform '{display_platform}' not supported.",
         )
 
     # Build publish request
@@ -134,7 +142,7 @@ async def publish_now(
         workspace_id=ws,
         user_id=ctx.user_id,
         brand_id=piece["brand_id"],
-        platform=body.platform,
+        platform=platform,
         content=piece["content"],
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
@@ -161,13 +169,13 @@ async def publish_now(
             emit_content_published(
                 ws, pipeline_type=piece.get("pipeline_type", "text"),
                 actor_user_id=ctx.user_id, actor_role=ctx.role,
-                content_id=body.piece_id, target=body.platform,
+                content_id=body.piece_id, target=platform,
                 external_url=result.platform_post_url or "",
             )
             return {
                 "success":          True,
                 "piece_id":         body.piece_id,
-                "platform":         body.platform,
+                "platform":         platform,
                 "platform_post_id": result.platform_post_id,
                 "platform_post_url": result.platform_post_url,
                 "attempts":         attempt + 1,
@@ -180,7 +188,7 @@ async def publish_now(
 
         await save_incident(
             piece_id=body.piece_id,
-            platform=body.platform,
+            platform=platform,
             workspace_id=ws,
             user_id=ctx.user_id,
             brand_id=piece["brand_id"],
@@ -205,43 +213,48 @@ async def publish_now(
                         "platform-reconnect-needed",
                         owner["email"],
                         {
-                            "PLATFORM": body.platform,
+                            "PLATFORM": display_platform,
                             "WORKSPACE_NAME": ctx.workspace.get("name", "your workspace"),
                             "RECONNECT_URL": f"{settings.FRONTEND_URL}/dashboard/settings",
                         },
                     )
             raise HTTPException(
                 status_code=401,
-                detail=f"{body.platform} token expired or revoked. "
-                       f"Reconnect at /api/v1/oauth/{body.platform}/connect",
+                detail=f"{display_platform} token expired or revoked. "
+                       f"Reconnect at /api/v1/oauth/{platform}/connect",
             )
 
         if error_type == ErrorType.FIXABLE:
             fixed, new_content = fix_content(
-                body.platform, content, result.error_message or ""
+                platform, content, result.error_message or ""
             )
             if fixed:
                 content = new_content
                 attempt += 1
                 continue
             else:
+                # publish_status="failed" (not the old "flagged" — not a
+                # real PublishStatus value, so compute_kanban_stage in
+                # storage.py couldn't distinguish it from a normal
+                # approved-and-waiting piece and silently showed it as
+                # "staging" instead of surfacing the failure).
                 await _update_piece_status(
-                    body.piece_id, ws, "flagged",
+                    body.piece_id, ws, "failed",
                     error_message=result.error_message,
                     increment_attempts=True,
                 )
                 return {
                     "success":  False,
                     "piece_id": body.piece_id,
-                    "platform": body.platform,
-                    "status":   "flagged",
+                    "platform": platform,
+                    "status":   "failed",
                     "reason":   result.error_message,
                 }
 
         if error_type == ErrorType.FATAL:
             await alert_fatal(
                 piece_id=body.piece_id,
-                platform=body.platform,
+                platform=platform,
                 workspace_id=ws,
                 user_id=ctx.user_id,
                 brand_id=piece["brand_id"],
@@ -249,15 +262,15 @@ async def publish_now(
                 error_message=result.error_message or "",
             )
             await _update_piece_status(
-                body.piece_id, ws, "flagged",
+                body.piece_id, ws, "failed",
                 error_message=result.error_message,
                 increment_attempts=True,
             )
             return {
                 "success":  False,
                 "piece_id": body.piece_id,
-                "platform": body.platform,
-                "status":   "flagged",
+                "platform": platform,
+                "status":   "failed",
                 "reason":   result.error_message,
             }
 
@@ -267,7 +280,7 @@ async def publish_now(
             if delay > 0:
                 logger.info(
                     "Transient error on %s attempt %d — retrying in %ds",
-                    body.platform, attempt + 1, delay,
+                    platform, attempt + 1, delay,
                 )
                 await asyncio.sleep(min(delay, 10))
             attempt += 1
@@ -283,93 +296,24 @@ async def publish_now(
     return {
         "success":  False,
         "piece_id": body.piece_id,
-        "platform": body.platform,
+        "platform": platform,
         "status":   "failed",
         "reason":   "All retry attempts exhausted",
         "attempts": attempt,
     }
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SCHEDULE
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.post("/schedule")
-@limiter.limit("20/minute")
-async def schedule_post(
-    request: Request,
-    body: ScheduleRequest,
-    ctx: WorkspaceContext = Depends(require("publish_content")),
-) -> dict:
-    """
-    Schedule a piece for publishing at a future time.
-    The scheduled_posts worker fires the publish at the right time.
-    """
-    piece = await _get_verified_piece(body.piece_id, ctx.workspace_id)
-
-    token_data = await get_token(ctx.workspace_id, body.platform)
-    if not token_data:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{body.platform} is not connected.",
-        )
-
-    is_valid, issues = validate_for_platform(body.platform, piece["content"])
-    if not is_valid:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Content validation failed: {'; '.join(issues)}",
-        )
-
-    now = datetime.now(timezone.utc)
-    await content_pieces.update_one(
-        {"piece_id": body.piece_id, "workspace_id": ctx.workspace_id},
-        {"$set": {
-            "publish_status":       "queued",
-            "publish_scheduled_at": body.scheduled_at,
-            "publish_target":       body.platform,
-            "updated_at":           now,
-        }},
-    )
-
-    return {
-        "piece_id":     body.piece_id,
-        "platform":     body.platform,
-        "scheduled_at": body.scheduled_at,
-        "status":       "queued",
-    }
+# Scheduling now lives on app.api.v1.content's /pieces/{id}/schedule —
+# it used to be duplicated here with a different, worker-incompatible
+# publish_status value ("scheduled" instead of "queued"), so pieces
+# scheduled through this endpoint silently never got picked up by
+# app.workers.scheduled_posts. Nothing in the frontend called this route,
+# so removing it (rather than fixing a second implementation of the same
+# thing) is the real fix — one schedule path, not two.
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CANCEL SCHEDULED
-# ─────────────────────────────────────────────────────────────────────────────
-
-@router.delete("/{piece_id}")
-@limiter.limit("20/minute")
-async def cancel_scheduled(
-    request: Request,
-    piece_id: str,
-    ctx: WorkspaceContext = Depends(require("publish_content")),
-) -> dict:
-    """Cancel a scheduled post. Only works if status is queued."""
-    piece = await _get_verified_piece(piece_id, ctx.workspace_id)
-
-    if piece.get("publish_status") != "queued":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot cancel — post is '{piece.get('publish_status')}' not 'queued'.",
-        )
-
-    await content_pieces.update_one(
-        {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
-        {"$set": {
-            "publish_status":       "pending",
-            "publish_scheduled_at": None,
-            "updated_at":           datetime.now(timezone.utc),
-        }},
-    )
-
-    return {"piece_id": piece_id, "cancelled": True}
+# Cancelling now lives on app.api.v1.content's /pieces/{id}/cancel-schedule
+# for the same reason scheduling does — one implementation, not two.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -16,6 +16,9 @@ from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import users
+from app.pipelines.publish.registry import get_publisher
+from app.pipelines.publish.token_store import get_token
+from app.pipelines.publish.validators import validate_for_platform
 from app.pipelines.text.storage import (
     get_session,
     get_workspace_sessions,
@@ -231,15 +234,82 @@ async def schedule_piece(
     body: SchedulePieceRequest,
     ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> dict:
-    """Set a scheduled publish time for a piece."""
+    """
+    Schedule a piece for real future publishing.
+
+    A piece is always exactly one platform (``piece["platform"]``), so unlike
+    the old app.api.v1.publish /schedule this needs no separate platform
+    param — and unlike that endpoint's ``publish_status="scheduled"``, this
+    writes ``"queued"``, the value app.workers.scheduled_posts actually
+    polls for. Writing "scheduled" (or skipping the token/content checks
+    below) is exactly how a piece used to end up permanently stuck looking
+    scheduled in the UI while the worker silently never picked it up.
+    """
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+
+    platform = piece["platform"]
+    slug = platform.lower()
+
+    token_data = await get_token(ctx.workspace_id, slug)
+    if not token_data:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{platform} is not connected. Connect it in Settings before scheduling.",
+        )
+
+    try:
+        get_publisher(platform)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Publishing to {platform} isn't supported yet.",
+        )
+
+    is_valid, issues = validate_for_platform(platform, piece["content"])
+    if not is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Content validation failed: {'; '.join(issues)}",
+        )
+
     updated = await update_piece_status(
         piece_id=piece_id,
         workspace_id=ctx.workspace_id,
-        publish_status="scheduled",
+        publish_status="queued",
         publish_scheduled_at=body.scheduled_at,
+        publish_target=slug,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
+    return updated
+
+
+@router.post("/pieces/{piece_id}/cancel-schedule")
+@limiter.limit("30/minute")
+async def cancel_schedule_piece(
+    request: Request,
+    piece_id: str,
+    ctx: WorkspaceContext = Depends(require("approve_content")),
+) -> dict:
+    """Un-schedule a queued piece — back to pending, not sent to the worker."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    if piece.get("publish_status") not in ("queued", "publishing", "scheduled", "failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Piece is '{piece.get('publish_status')}', not scheduled — nothing to cancel.",
+        )
+
+    updated = await update_piece_status(
+        piece_id=piece_id,
+        workspace_id=ctx.workspace_id,
+        publish_status="pending",
+        publish_scheduled_at="",
+        publish_target="",
+    )
     return updated
 
 

@@ -278,8 +278,16 @@ class ApprovalStatus(str, PyEnum):
 
 
 class PublishStatus(str, PyEnum):
+    # "queued" is the real worker-recognized "scheduled and waiting to fire"
+    # state (app/workers/scheduled_posts.py polls for exactly this value).
+    # A prior "scheduled" value existed here too and both content.py's
+    # /pieces/{id}/schedule and the generation-time schedule_mode path wrote
+    # it instead of "queued" — pieces looked scheduled in the UI but the
+    # worker never picked them up. Fixed to all write QUEUED; the member is
+    # removed so nothing can regress to writing it again.
     PENDING    = "pending"
-    SCHEDULED  = "scheduled"
+    QUEUED     = "queued"
+    PUBLISHING = "publishing"
     PUBLISHED  = "published"
     FAILED     = "failed"
 
