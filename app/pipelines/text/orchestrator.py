@@ -247,6 +247,7 @@ async def run_text_pipeline(
     schedule_mode: str = "now",
     scheduled_at=None,
     batch_day_index: Optional[int] = None,
+    publish_targets: Optional[list[str]] = None,
 ) -> TextPipelineResult:
     """
     Main entry point for all text generation.
@@ -288,6 +289,7 @@ async def run_text_pipeline(
 
     # ── Normal generation path ────────────────────────────────────────────
     else:
+        publish_targets_set = set(publish_targets or [])
         platform_coros = [
             _run_single_platform(
                 platform=platform,
@@ -296,6 +298,14 @@ async def run_text_pipeline(
                 emitter=emitter,
                 session_id=session_id,
                 metadata=metadata,
+                # publish_target marks that this specific piece is meant to
+                # actually go out, not just be drafted/reviewed — only set
+                # for platforms the caller explicitly picked in "Publish To".
+                publish_target=(
+                    _platform_str(platform)
+                    if _platform_str(platform) in publish_targets_set
+                    else None
+                ),
                 schedule_mode=schedule_mode,
                 scheduled_at=scheduled_at,
                 is_repurpose=is_repurpose,
@@ -670,6 +680,7 @@ async def _run_single_repurpose(
                     h.get("hook", "") for h in hooks
                     if isinstance(h, dict) and h.get("hook")
                 ],
+                language=normalised.language,
             )
         except Exception as emit_err:
             logger.warning("emit_output_complete failed for repurpose %s: %s", platform, emit_err)

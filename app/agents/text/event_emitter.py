@@ -105,6 +105,7 @@ class EventEmitter:
         piece_id:          str,
         hashtags:          list[str] | None = None,
         hook_alternatives: list[str] | None = None,
+        language:          str = "en",
     ) -> None:
         """Signal that a platform's output is fully complete and ready for approval."""
         await self.emit("output_complete", {
@@ -122,6 +123,7 @@ class EventEmitter:
             "piece_id":          piece_id,
             "hashtags":          hashtags or [],
             "hook_alternatives": hook_alternatives or [],
+            "language":          language,
         })
 
     async def emit_paused(

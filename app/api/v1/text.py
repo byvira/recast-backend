@@ -198,6 +198,7 @@ async def generate_text_content(
             language=language,
             schedule_mode=body.schedule_mode.value,
             scheduled_at=body.scheduled_at,
+            publish_targets=body.publish_targets,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

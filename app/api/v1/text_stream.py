@@ -104,6 +104,7 @@ async def generate_stream(
     goal:          Optional[str]  = Query(None,      description="awareness | engagement | conversion | retention | education"),
     schedule_mode: Optional[str]  = Query(None,      description="now | scheduled | draft"),
     scheduled_at:  Optional[str]  = Query(None,      description="ISO datetime for scheduled posts"),
+    publish_targets: Optional[str] = Query(None,     description="Comma-separated subset of platforms to actually publish"),
     # None = no per-request preference stated; falls through to the same
     # workspace > caller-account > "en" precedence chain as /api/v1/text/generate
     # (see app.shared.language and api/v1/text.py::_resolve_request_language).
@@ -162,6 +163,7 @@ async def generate_stream(
             schedule_mode=ScheduleMode(schedule_mode) if schedule_mode else ScheduleMode.NOW,
             scheduled_at=scheduled_at,
             language=effective_language,
+            publish_targets=publish_targets.split(",") if publish_targets else [],
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"Invalid parameter: {e}")
@@ -352,6 +354,7 @@ async def _run_pipeline_with_emitter(
             language=body.language,
             schedule_mode=body.schedule_mode.value if body.schedule_mode else "now",
             scheduled_at=body.scheduled_at,
+            publish_targets=body.publish_targets,
             emitter=emitter,
             session_id=session_id,
         )
