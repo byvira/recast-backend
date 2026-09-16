@@ -637,14 +637,39 @@ async def regenerate_content(
 
     piece = result.pieces[0]
 
-    # 6. Persist regenerated piece (non-blocking failure) — the real
-    # piece_id only ever exists as this call's return value; GeneratedPiece
-    # itself has no piece_id field, so reading one off `piece` (as this
-    # used to do) always produced "", even though the piece really was
-    # saved. Confirmed: this is exactly the bug Stage 1 fixed for the SSE
-    # path, and it was independently present here too.
-    piece_ids = await _save_result(result, goal=goal_enum, tone=tone_enum, label="regenerate")
-    real_piece_id = piece_ids[0] if piece_ids else ""
+    # 6. Persist regenerated content. Product decision: regenerating an
+    # existing piece creates a new VERSION of that same piece — the same
+    # mechanism chips/chat-refine/manual-edit all already use — not a
+    # disconnected second piece with no link back to the card the user
+    # clicked regenerate on. Only falls back to creating a brand-new piece
+    # when there's genuinely nothing to version onto (no piece_id given, or
+    # the given one didn't resolve — e.g. wrong workspace, already deleted).
+    real_piece_id = ""
+    if body.piece_id:
+        updated = await update_piece_content(
+            piece_id=body.piece_id,
+            workspace_id=ctx.workspace_id,
+            new_content=piece.content,
+            action="regenerated",
+            instruction="Regenerated from scratch",
+        )
+        if updated:
+            real_piece_id = body.piece_id
+        else:
+            logger.warning(
+                "Regenerate: piece_id %s did not resolve to a real piece in "
+                "this workspace — falling back to creating a new one.",
+                body.piece_id,
+            )
+
+    if not real_piece_id:
+        # The real piece_id only ever exists as _save_result's return value;
+        # GeneratedPiece itself has no piece_id field, so reading one off
+        # `piece` (as this used to do unconditionally) always produced "",
+        # even though the piece really was saved. Same root cause Stage 1
+        # fixed for the SSE path, independently present here too.
+        piece_ids = await _save_result(result, goal=goal_enum, tone=tone_enum, label="regenerate")
+        real_piece_id = piece_ids[0] if piece_ids else ""
 
     # 7. Build response
     hooks = piece.hooks or []
