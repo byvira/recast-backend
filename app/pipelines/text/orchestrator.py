@@ -591,6 +591,56 @@ async def _run_single_repurpose(
         except Exception as e:
             logger.warning("SEO agent failed on repurpose path for %s: %s", platform, e)
 
+    # ── Persist for real before telling the frontend this card is done ─────
+    # Same fix as the normal generation path's collect_output_node — a
+    # repurposed piece used to be emitted with piece_id="" too, since this
+    # path never goes through the graph at all and has always built its own
+    # GeneratedPiece by hand. Best-effort: never let a storage failure stop
+    # the card from reaching the user.
+    piece_id = ""
+    try:
+        from app.pipelines.text.storage import ensure_session_exists, save_live_piece
+
+        await ensure_session_exists(
+            session_id=normalised.session_id,
+            workspace_id=normalised.workspace_id,
+            user_id=normalised.user_id,
+            brand_id=normalised.brand_id,
+            source_type=(
+                normalised.source_type.value
+                if hasattr(normalised.source_type, "value")
+                else str(normalised.source_type)
+            ),
+            goal=metadata.get("goal"),
+            tone=metadata.get("tone"),
+            is_repurpose=True,
+            schedule_mode=schedule_mode,
+            scheduled_at=scheduled_at,
+        )
+        piece_id = await save_live_piece(
+            session_id=normalised.session_id,
+            workspace_id=normalised.workspace_id,
+            user_id=normalised.user_id,
+            brand_id=normalised.brand_id,
+            platform=_platform_str(platform),
+            content=content_str,
+            word_count=len(content_str.split()),
+            char_count=len(content_str),
+            hooks=hooks,
+            seo=seo_package,
+            quality_passed=is_valid,
+            quality_issues=issues,
+            flagged_for_review=not is_valid,
+            repurposed=True,
+            publish_status=schedule_mode,
+            publish_scheduled_at=scheduled_at,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to persist repurposed piece for %s session %s: %s",
+            platform, session_id, exc, exc_info=True,
+        )
+
     # ── Emit output_complete — always fires ───────────────────────────────
     if emitter:
         try:
@@ -614,7 +664,7 @@ async def _run_single_repurpose(
                 angle_score=0,
                 hook_version=recommended_hook_index + 1,
                 generation_time=0.0,
-                piece_id="",
+                piece_id=piece_id,
                 hashtags=[],
                 hook_alternatives=[
                     h.get("hook", "") for h in hooks

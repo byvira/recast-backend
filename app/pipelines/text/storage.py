@@ -39,6 +39,157 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# LIVE (SSE) PERSISTENCE — one piece at a time, as each platform finishes
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# save_pipeline_result() below saves an entire TextPipelineResult in one go,
+# which only works for the blocking /generate, /repurpose and /batch routes
+# that await the whole pipeline before saving anything. The SSE route
+# (GET /api/v1/pipeline/generate/stream) streams each platform's
+# output_complete event the moment that platform's own graph run finishes —
+# platforms run in parallel, so there is no single "whole result" to save
+# until every platform is done, and output_complete needs a real piece_id
+# immediately, not after the fact. ensure_session_exists() and
+# save_live_piece() below let each platform persist itself independently,
+# the instant it finishes, so the piece_id handed back in that platform's
+# own output_complete event is real and immediately usable by
+# approve/refine/rescore/versions — not the empty string every SSE-driven
+# card carried before this.
+
+async def ensure_session_exists(
+    session_id: str,
+    workspace_id: str,
+    user_id: str,
+    brand_id: str,
+    source_type: str,
+    goal: Optional[str] = None,
+    tone: Optional[str] = None,
+    is_repurpose: bool = False,
+    batch_mode: bool = False,
+    schedule_mode: str = "now",
+    scheduled_at: Optional[str] = None,
+) -> None:
+    """Idempotent — safe to call once per platform. Platforms for one
+    generation run finish concurrently and each calls this before saving its
+    own piece; the upsert with $setOnInsert means whichever platform gets
+    there first creates the session document and every later call is just a
+    no-op touch of updated_at, so there's no race to coordinate explicitly.
+    """
+    now = datetime.now(timezone.utc)
+    await content_sessions.update_one(
+        {"session_id": session_id},
+        {
+            "$setOnInsert": {
+                "session_id": session_id,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "brand_id": brand_id,
+                "source_type": source_type,
+                "platforms": [],
+                "goal": goal,
+                "tone": tone,
+                "batch_mode": batch_mode,
+                "is_repurpose": is_repurpose,
+                "schedule_mode": schedule_mode or "now",
+                "scheduled_at": str(scheduled_at) if scheduled_at else None,
+                "pieces_count": 0,
+                "created_at": now,
+            },
+            "$set": {"updated_at": now},
+        },
+        upsert=True,
+    )
+
+
+async def save_live_piece(
+    session_id: str,
+    workspace_id: str,
+    user_id: str,
+    brand_id: str,
+    platform: str,
+    content: str,
+    word_count: int,
+    char_count: int,
+    hooks: Optional[list[dict]] = None,
+    seo: Optional[dict] = None,
+    quality_passed: bool = True,
+    quality_issues: Optional[list[str]] = None,
+    flagged_for_review: bool = False,
+    readability_score: Optional[float] = None,
+    repurposed: bool = False,
+    publish_status: Optional[str] = None,
+    publish_scheduled_at=None,
+    publish_target: Optional[str] = None,
+) -> str:
+    """Persist one freshly-generated piece the moment its own graph run
+    finishes. Mirrors save_pipeline_result's piece/version-1 document shape
+    exactly, so a piece created this way is indistinguishable to every
+    downstream reader (approve, refine, versions, Drafts/Library) from one
+    created by the blocking /generate route. Requires ensure_session_exists()
+    to have been called first for this session_id. Returns the real piece_id.
+    """
+    now = datetime.now(timezone.utc)
+    piece_id = str(uuid4())
+
+    piece_doc = {
+        "piece_id": piece_id,
+        "session_id": session_id,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "brand_id": brand_id,
+        "platform": platform,
+        "content": content,
+        "word_count": word_count,
+        "char_count": char_count,
+        "hooks": hooks or [],
+        "seo": seo or {},
+        "quality_passed": quality_passed,
+        "quality_issues": quality_issues or [],
+        "flagged_for_review": flagged_for_review,
+        "readability_score": readability_score,
+        "approval_status": ApprovalStatus.PENDING.value,
+        "repurposed": repurposed,
+        "publish_status": publish_status or PublishStatus.PENDING.value,
+        "publish_scheduled_at": publish_scheduled_at,
+        "publish_target": publish_target,
+        "publish_job_id": None,
+        "version_count": 1,
+        "deleted": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await content_pieces.insert_one(piece_doc)
+
+    version_doc = {
+        "version_id": str(uuid4()),
+        "piece_id": piece_id,
+        "session_id": session_id,
+        "workspace_id": workspace_id,
+        "user_id": user_id,
+        "version_number": 1,
+        "content": content,
+        "word_count": word_count,
+        "char_count": char_count,
+        "action": "original",
+        "instruction": "Initial generation",
+        "platform": platform,
+        "created_at": now,
+    }
+    await content_piece_versions.insert_one(version_doc)
+
+    await content_sessions.update_one(
+        {"session_id": session_id},
+        {
+            "$addToSet": {"platforms": platform},
+            "$inc": {"pieces_count": 1},
+            "$set": {"updated_at": now},
+        },
+    )
+
+    return piece_id
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # SAVE PIPELINE RESULT
 # ─────────────────────────────────────────────────────────────────────────────
 

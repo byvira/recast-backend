@@ -587,6 +587,57 @@ async def collect_output_node(state: TextAgentState) -> dict:
         hook_score = latest_piece.get("hook_score", 0) or 0
         is_flagged = latest_piece.get("flagged_for_review", False)
 
+        # ── Persist for real before telling the frontend this card is done ──
+        # Every SSE-generated piece used to be emitted with piece_id="" —
+        # nothing was ever saved, so approve/refine/rescore/versions had no
+        # real piece to act on no matter what the UI did. Best-effort: a
+        # storage failure here must never stop the card from reaching the
+        # user, so it falls back to the old empty-id behaviour and logs
+        # rather than raising.
+        piece_id = ""
+        try:
+            from app.pipelines.text.storage import ensure_session_exists, save_live_piece
+
+            source_type = state.get("source_type")
+            await ensure_session_exists(
+                session_id=state["session_id"],
+                workspace_id=state["workspace_id"],
+                user_id=state["user_id"],
+                brand_id=state["brand_id"],
+                source_type=source_type.value if hasattr(source_type, "value") else str(source_type),
+                goal=state["extras"].get("goal"),
+                tone=state["extras"].get("tone"),
+                is_repurpose=state.get("is_repurpose", False),
+                batch_mode=state.get("batch_mode", False),
+                schedule_mode=state.get("schedule_mode", "now"),
+                scheduled_at=state.get("scheduled_at"),
+            )
+            piece_id = await save_live_piece(
+                session_id=state["session_id"],
+                workspace_id=state["workspace_id"],
+                user_id=state["user_id"],
+                brand_id=state["brand_id"],
+                platform=platform,
+                content=latest_piece.get("content", ""),
+                word_count=latest_piece.get("word_count", 0),
+                char_count=latest_piece.get("char_count", 0),
+                hooks=latest_piece.get("hooks", []),
+                seo=latest_piece.get("seo", {}),
+                quality_passed=latest_piece.get("quality_passed", True),
+                quality_issues=latest_piece.get("quality_issues", []),
+                flagged_for_review=is_flagged,
+                readability_score=latest_piece.get("readability_score"),
+                repurposed=latest_piece.get("repurposed", False),
+                publish_status=latest_piece.get("publish_status"),
+                publish_scheduled_at=latest_piece.get("publish_scheduled_at"),
+                publish_target=latest_piece.get("publish_target"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "collect_output_node: failed to persist piece for %s session %s: %s",
+                platform, state.get("session_id"), exc, exc_info=True,
+            )
+
         commentary = msg.build_card_commentary(
             angle_name="Auto",
             angle_score=0,
@@ -609,7 +660,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
             angle_score=0,
             hook_version=1,
             generation_time=0.0,
-            piece_id=latest_piece.get("piece_id", ""),
+            piece_id=piece_id,
             hashtags=latest_piece.get("hashtags", []) or [],
             hook_alternatives=[],
         )
