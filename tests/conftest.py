@@ -229,3 +229,85 @@ def signup_user(make_client):
         return client, profile
 
     return _do
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM mock layer — Module 2 (Content Pipeline)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This codebase's own established rule: no automated test ever calls a real
+# LLM (see e.g. test_voice_suggestions.py, test_llm_shared.py). The pattern
+# used everywhere else in this suite is per-test monkeypatch.setattr on
+# whichever module actually imported call_llm/call_llm_structured — Python
+# binds `from x import y` locally at import time, so patching
+# app.shared.llm.call_llm itself does nothing; the *consuming* module's own
+# bound reference is what actually runs at call time.
+#
+# Module 2 (chip-refine, chat-refine, score-hook, regenerate, repurpose)
+# hits this in six different modules, so this fixture patches all of them
+# in one call instead of every test file repeating the same import-and-patch
+# boilerplate six times over.
+
+_LLM_CONSUMER_MODULES = [
+    "app.pipelines.text.chips",         # call_llm        — chip-refine
+    "app.pipelines.text.refiner",       # call_llm_chat    — chat-refine
+    "app.pipelines.text.scorer",        # call_llm_structured — score-hook
+    "app.pipelines.text.generator",     # call_llm, call_llm_structured — generate/regenerate
+    "app.pipelines.text.hook_agent",    # call_llm_structured — hook variants
+    "app.pipelines.text.seo",           # call_llm_structured — SEO package
+    "app.pipelines.text.repurpose",     # call_llm_structured — repurpose
+    "app.pipelines.text.normalizer",    # call_llm, call_llm_structured — input normalisation
+]
+
+
+@pytest.fixture
+def mock_llm(monkeypatch):
+    """Reusable LLM mock for every Module 2 test — never a real Groq call.
+
+    Patches call_llm / call_llm_structured / call_llm_chat across every
+    known consumer module at once. Defaults to plausible non-empty
+    responses so a test that doesn't care about the exact generated text
+    still exercises real code (word counts, version writes, etc.) rather
+    than tripping on emptiness. Override per test via the returned handle:
+
+        async def test_x(mock_llm):
+            mock_llm.set_structured({"refined": "New punchy content", "changed": True})
+            res = await client.post(...)
+    """
+    import importlib
+
+    state = {
+        "plain": "Mocked generated content — realistic length for word/char counts.",
+        "structured": {},
+        "chat": "Mocked refined content.",
+    }
+
+    async def _fake_call_llm(*args, **kwargs):
+        return state["plain"]
+
+    async def _fake_call_llm_structured(*args, **kwargs):
+        return state["structured"]
+
+    async def _fake_call_llm_chat(*args, **kwargs):
+        return state["chat"]
+
+    for module_path in _LLM_CONSUMER_MODULES:
+        module = importlib.import_module(module_path)
+        if hasattr(module, "call_llm"):
+            monkeypatch.setattr(module, "call_llm", _fake_call_llm)
+        if hasattr(module, "call_llm_structured"):
+            monkeypatch.setattr(module, "call_llm_structured", _fake_call_llm_structured)
+        if hasattr(module, "call_llm_chat"):
+            monkeypatch.setattr(module, "call_llm_chat", _fake_call_llm_chat)
+
+    class _MockLLMHandle:
+        def set_plain(self, value: str) -> None:
+            state["plain"] = value
+
+        def set_structured(self, value: dict) -> None:
+            state["structured"] = value
+
+        def set_chat(self, value: str) -> None:
+            state["chat"] = value
+
+    return _MockLLMHandle()
