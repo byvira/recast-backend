@@ -19,6 +19,7 @@ from app.db.mongo import users
 from app.pipelines.text.storage import (
     get_session,
     get_workspace_sessions,
+    get_workspace_pieces,
     get_piece,
     update_piece_content,
     update_piece_status,
@@ -71,6 +72,10 @@ class SchedulePieceRequest(BaseModel):
     scheduled_at: str     # ISO datetime string
 
 
+class ArchivePieceRequest(BaseModel):
+    archived: bool = True
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,6 +115,37 @@ async def get_session_detail(
 # ─────────────────────────────────────────────────────────────────────────────
 # PIECE ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/pieces")
+@limiter.limit("60/minute")
+async def list_pieces(
+    request: Request,
+    platform: Optional[str] = Query(None),
+    approval_status: Optional[str] = Query(None),
+    brand_id: Optional[str] = Query(None),
+    stage: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """
+    Flat, paginated list of pieces across every session in the workspace,
+    most recent first. Powers Drafts and Library (Module 2 Stage 8) — both
+    need the real piece history, not grouped by session the way
+    /sessions/{id} returns it. Each item includes a derived ``stage``
+    (drafting/staging/scheduled/published/archived) and resolved
+    ``author_name``/``brand_name`` for display.
+    """
+    return await get_workspace_pieces(
+        workspace_id=ctx.workspace_id,
+        page=page,
+        limit=limit,
+        platform=platform,
+        approval_status=approval_status,
+        brand_id=brand_id,
+        stage=stage,
+    )
+
 
 @router.get("/pieces/{piece_id}")
 @limiter.limit("60/minute")
@@ -201,6 +237,27 @@ async def schedule_piece(
         workspace_id=ctx.workspace_id,
         publish_status="scheduled",
         publish_scheduled_at=body.scheduled_at,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    return updated
+
+
+@router.patch("/pieces/{piece_id}/archive")
+@limiter.limit("30/minute")
+async def archive_piece(
+    request: Request,
+    piece_id: str,
+    body: ArchivePieceRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Archive (or unarchive, with archived: false) a piece. A housekeeping
+    action distinct from approve/reject — it's the Drafts kanban's lateral
+    'Archive' move, available from any stage."""
+    updated = await update_piece_status(
+        piece_id=piece_id,
+        workspace_id=ctx.workspace_id,
+        archived=body.archived,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")

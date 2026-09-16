@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional
 
-from app.db.mongo import content_sessions, content_pieces, content_piece_versions
+from app.db.mongo import content_sessions, content_pieces, content_piece_versions, users, brand_profiles
 from app.models.text import (
     ContentSession,
     ContentPiece,
@@ -366,6 +366,130 @@ async def get_workspace_sessions(
     }
 
 
+KANBAN_STAGES = ("drafting", "staging", "scheduled", "published", "archived")
+
+
+def compute_kanban_stage(piece: dict) -> str:
+    """Derive the Drafts/Library kanban stage from real status fields.
+
+    Drafts preserves the mock UI's 4-step workflow (drafting -> staging ->
+    scheduled -> published, plus a lateral archive) even though nothing in
+    the real data model stores a "stage" — only ``approval_status``
+    (pending/approved/rejected) and ``publish_status``
+    (pending/scheduled/published/failed) plus the ``archived`` flag exist.
+    Computing it on read instead of storing it avoids a second, driftable
+    source of truth.
+    """
+    if piece.get("archived"):
+        return "archived"
+    publish_status = piece.get("publish_status")
+    if publish_status == "published":
+        return "published"
+    if publish_status == "scheduled":
+        return "scheduled"
+    if piece.get("approval_status") == "approved":
+        return "staging"
+    return "drafting"
+
+
+def _stage_query(stage: str) -> dict:
+    """Translate a kanban stage filter into the real-field Mongo query that
+    produces it, so pagination/counts stay correct (computing in Python
+    after the DB skip/limit would paginate over the wrong set)."""
+    if stage == "archived":
+        return {"archived": True}
+    base = {"archived": {"$ne": True}}
+    if stage == "published":
+        return {**base, "publish_status": "published"}
+    if stage == "scheduled":
+        return {**base, "publish_status": "scheduled"}
+    if stage == "staging":
+        return {**base, "publish_status": {"$nin": ["scheduled", "published"]}, "approval_status": "approved"}
+    if stage == "drafting":
+        return {
+            **base,
+            "publish_status": {"$nin": ["scheduled", "published"]},
+            "approval_status": {"$ne": "approved"},
+        }
+    return {}
+
+
+async def _attach_display_names(pieces: list[dict]) -> None:
+    """Batch-resolve author (user) and brand display names onto each piece
+    dict in place. Two bulk lookups regardless of list size, not N+1."""
+    user_ids = {p.get("user_id") for p in pieces if p.get("user_id")}
+    brand_ids = {p.get("brand_id") for p in pieces if p.get("brand_id")}
+
+    user_names: dict[str, str] = {}
+    if user_ids:
+        async for u in users.find({"id": {"$in": list(user_ids)}}, {"id": 1, "name": 1}):
+            user_names[u["id"]] = u.get("name") or "Unknown"
+
+    brand_names: dict[str, str] = {}
+    if brand_ids:
+        async for b in brand_profiles.find({"id": {"$in": list(brand_ids)}}, {"id": 1, "identity": 1}):
+            identity = b.get("identity") or {}
+            brand_names[b["id"]] = (
+                identity.get("name")
+                or identity.get("productName")
+                or identity.get("company_name")
+                or identity.get("companyName")
+                or "Untitled Brand"
+            )
+
+    for p in pieces:
+        p["author_name"] = user_names.get(p.get("user_id", ""), "Unknown")
+        p["brand_name"] = brand_names.get(p.get("brand_id", ""), "Untitled Brand")
+
+
+async def get_workspace_pieces(
+    workspace_id: str,
+    page: int = 1,
+    limit: int = 20,
+    platform: Optional[str] = None,
+    approval_status: Optional[str] = None,
+    brand_id: Optional[str] = None,
+    stage: Optional[str] = None,
+) -> dict:
+    """
+    Paginated, flat list of pieces across every session in the workspace,
+    most recent first — deliberately not grouped by session. Powers
+    Drafts and Library (Module 2 Stage 8): both need the real piece
+    history regardless of session, not the session-then-pieces shape
+    get_session()/get_workspace_sessions() return.
+    """
+    query: dict = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
+    if platform:
+        query["platform"] = platform
+    if approval_status:
+        query["approval_status"] = approval_status
+    if brand_id:
+        query["brand_id"] = brand_id
+    if stage and stage in KANBAN_STAGES:
+        query.update(_stage_query(stage))
+
+    skip = (page - 1) * limit
+    total = await content_pieces.count_documents(query)
+
+    pieces = await content_pieces.find(query).sort(
+        "created_at", -1
+    ).skip(skip).limit(limit).to_list(length=limit)
+
+    for p in pieces:
+        p.pop("_id", None)
+        p["stage"] = compute_kanban_stage(p)
+
+    await _attach_display_names(pieces)
+
+    return {
+        "items": pieces,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "has_more": (skip + limit) < total,
+    }
+
+
 async def get_piece(piece_id: str, workspace_id: str) -> Optional[dict]:
     """Fetch one piece by piece_id. Returns None if not found or outside the workspace."""
     piece = await content_pieces.find_one(
@@ -374,6 +498,7 @@ async def get_piece(piece_id: str, workspace_id: str) -> Optional[dict]:
     if not piece or piece.get("workspace_id") != workspace_id:
         return None
     piece.pop("_id", None)
+    piece["stage"] = compute_kanban_stage(piece)
     return piece
 
 
@@ -446,8 +571,9 @@ async def update_piece_status(
     approval_status: Optional[str] = None,
     publish_status: Optional[str] = None,
     publish_scheduled_at: Optional[str] = None,
+    archived: Optional[bool] = None,
 ) -> Optional[dict]:
-    """Update approval or publish status of a piece."""
+    """Update approval, publish status, and/or archive flag of a piece."""
     piece = await get_piece(piece_id, workspace_id)
     if not piece:
         return None
@@ -459,6 +585,8 @@ async def update_piece_status(
         updates["publish_status"] = publish_status
     if publish_scheduled_at is not None:
         updates["publish_scheduled_at"] = publish_scheduled_at
+    if archived is not None:
+        updates["archived"] = archived
 
     await content_pieces.update_one(
         {"piece_id": piece_id, "workspace_id": workspace_id}, {"$set": updates}
