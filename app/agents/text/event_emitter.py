@@ -106,8 +106,15 @@ class EventEmitter:
         hashtags:          list[str] | None = None,
         hook_alternatives: list[str] | None = None,
         language:          str = "en",
+        batch_day_index:   int | None = None,
     ) -> None:
-        """Signal that a platform's output is fully complete and ready for approval."""
+        """Signal that a platform's output is fully complete and ready for approval.
+
+        batch_day_index is only set for a batch-mode run (one platform,
+        several days) — the frontend needs it to tell apart several cards
+        that otherwise share the same platform, since a plain platform-only
+        card identity (correct for every non-batch run) would collide.
+        """
         await self.emit("output_complete", {
             "platform":          platform,
             "content":           content,
@@ -124,6 +131,7 @@ class EventEmitter:
             "hashtags":          hashtags or [],
             "hook_alternatives": hook_alternatives or [],
             "language":          language,
+            "batch_day_index":   batch_day_index,
         })
 
     async def emit_paused(

@@ -664,6 +664,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
             hashtags=latest_piece.get("hashtags", []) or [],
             hook_alternatives=[],
             language=state.get("language", "en"),
+            batch_day_index=state.get("batch_day_index"),
         )
         await emitter.emit_log(msg.platform_complete(platform=platform, hook_score=hook_score))
 

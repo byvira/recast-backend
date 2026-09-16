@@ -248,6 +248,7 @@ async def run_text_pipeline(
     scheduled_at=None,
     batch_day_index: Optional[int] = None,
     publish_targets: Optional[list[str]] = None,
+    emit_completion: bool = True,
 ) -> TextPipelineResult:
     """
     Main entry point for all text generation.
@@ -338,10 +339,15 @@ async def run_text_pipeline(
             else:
                 pieces.append(result)
 
-    # ── Always emit pipeline_complete ─────────────────────────────────────
-    # Fires after ALL platforms (success or failure) are gathered.
-    # This is what closes the SSE stream on the frontend.
-    if emitter:
+    # ── Emit pipeline_complete ──────────────────────────────────────────────
+    # Fires after ALL platforms (success or failure) are gathered. This is
+    # what closes the SSE stream on the frontend — so a batch run (several
+    # of these calls sharing one emitter, one per day) must suppress every
+    # call but the last, or the stream would close after day one instead of
+    # after the whole batch. run_batch_pipeline passes emit_completion=False
+    # for that reason and sends its own single emit_complete once every day
+    # is done.
+    if emitter and emit_completion:
         await emitter.emit_complete(
             session_id=session_id or normalised.session_id,
             total_pieces=len(pieces),
@@ -717,14 +723,31 @@ async def run_batch_pipeline(
     is_repurpose: bool = False,
     source_platform: Optional[Platform] = None,
     language: str = "en",
+    emitter=None,
+    outer_session_id: Optional[str] = None,
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
     Generates different content angles for the same topic cluster.
     Days run sequentially to respect Groq rate limits.
     Platforms within each day run in parallel via the graph.
+
+    emitter/outer_session_id are only set when called from the SSE route
+    (GET /pipeline/generate/stream) — the blocking /text/batch route calls
+    this with neither, and every day just runs headless with no live
+    progress, same as before. When an emitter is given, every day's
+    run_text_pipeline call shares it so events for all N days stream over
+    the one SSE connection; each day still gets its own fresh session_id
+    (its own real content_sessions/content_pieces documents — one real
+    generation run in its own right, just orchestrated together), and each
+    day suppresses its own pipeline_complete (emit_completion=False) since
+    that event closes the SSE stream — only the batch's own final
+    emit_complete below, after every day is actually done, may do that.
     """
     from app.shared.llm import call_llm_structured
+
+    if emitter:
+        await emitter.emit_log(f"Planning {days} days of content angles for this topic…")
 
     angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster)
     angle_result = await call_llm_structured(angle_prompt)
@@ -737,6 +760,8 @@ async def run_batch_pipeline(
     results = []
     for i, angle in enumerate(angles[:days]):
         logger.info("Batch day %d/%d — angle: %s", i + 1, days, angle[:60])
+        if emitter:
+            await emitter.emit_log(f"Day {i + 1}/{days} — {angle[:80]}")
         result = await run_text_pipeline(
             source_type=InputSourceType.TOPIC,
             content=angle,
@@ -750,9 +775,18 @@ async def run_batch_pipeline(
             is_repurpose=is_repurpose,
             source_platform=source_platform,
             language=language,
+            emitter=emitter,
+            session_id=str(uuid4()),
+            emit_completion=False,
         )
         result.batch_mode = True
         results.append(result)
+
+    if emitter:
+        await emitter.emit_complete(
+            session_id=outer_session_id or "",
+            total_pieces=sum(len(r.pieces) for r in results),
+        )
 
     return results
 

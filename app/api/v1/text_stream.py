@@ -28,10 +28,15 @@ from app.db.redis import get_cache, set_cache
 from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.agents.text.event_emitter import EventEmitter
-from app.pipelines.text.orchestrator import run_text_pipeline
+from app.pipelines.text.orchestrator import run_text_pipeline, run_batch_pipeline
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Matches run_batch_pipeline's own default and BatchModeToggle's frontend
+# copy ("Agent will generate 7 posts across selected platforms") — not
+# currently configurable per request.
+BATCH_DAYS = 7
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Active sessions — maps session_id → (EventEmitter, workspace_id)
@@ -176,11 +181,19 @@ async def generate_stream(
     await _register_session(session_id, ctx.workspace_id)
 
     async def event_stream():
-        # Emit session started immediately so frontend can show queued cards
+        # Emit session started immediately so frontend can show queued cards.
+        # In batch mode the real card count is platforms × days, not just
+        # platforms — the frontend needs platform_count to mean "how many
+        # cards to pre-render as queued," and batch_days to know how to
+        # label/key them (each output_complete event's own batch_day_index
+        # says exactly which card it belongs to; this is just the upfront
+        # total so queued placeholders can render before any of them land).
         yield _sse("session_started", {
             "session_id":     session_id,
             "platforms":      body.platforms,
-            "platform_count": len(body.platforms),
+            "platform_count": len(body.platforms) * (BATCH_DAYS if body.batch_mode else 1),
+            "batch_mode":     body.batch_mode,
+            "batch_days":     BATCH_DAYS if body.batch_mode else None,
         })
 
         # Start pipeline in background — does not block SSE stream
@@ -336,28 +349,47 @@ async def _run_pipeline_with_emitter(
     user_id:      str,
 ) -> None:
     """
-    Wraps run_text_pipeline with error handling.
-    All exceptions caught and emitted as pipeline_error events.
+    Wraps run_text_pipeline (or, in batch mode, run_batch_pipeline) with
+    error handling. All exceptions caught and emitted as pipeline_error
+    events.
     """
     try:
-        await run_text_pipeline(
-            source_type=body.source_type,
-            content=body.content,
-            platforms=body.platforms,
-            brand_id=body.brand_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            extras=body.extras,
-            goal=body.goal,
-            tone=body.tone,
-            intent=body.intent,
-            language=body.language,
-            schedule_mode=body.schedule_mode.value if body.schedule_mode else "now",
-            scheduled_at=body.scheduled_at,
-            publish_targets=body.publish_targets,
-            emitter=emitter,
-            session_id=session_id,
-        )
+        if body.batch_mode:
+            # Batch mode is single-platform by construction (ConfigPanel's
+            # BatchModeToggle restricts selection to one platform when it's
+            # on) — body.platforms is a one-element list either way.
+            await run_batch_pipeline(
+                topic_cluster=body.content,
+                platforms=body.platforms,
+                brand_id=body.brand_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                extras=body.extras,
+                days=BATCH_DAYS,
+                detected_intent=body.intent,
+                language=body.language,
+                emitter=emitter,
+                outer_session_id=session_id,
+            )
+        else:
+            await run_text_pipeline(
+                source_type=body.source_type,
+                content=body.content,
+                platforms=body.platforms,
+                brand_id=body.brand_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                extras=body.extras,
+                goal=body.goal,
+                tone=body.tone,
+                intent=body.intent,
+                language=body.language,
+                schedule_mode=body.schedule_mode.value if body.schedule_mode else "now",
+                scheduled_at=body.scheduled_at,
+                publish_targets=body.publish_targets,
+                emitter=emitter,
+                session_id=session_id,
+            )
     except Exception as exc:
         logger.error(
             "Pipeline failed — session %s: %s",
