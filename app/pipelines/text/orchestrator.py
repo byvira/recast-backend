@@ -698,6 +698,15 @@ async def _run_single_repurpose(
 
     return GeneratedPiece(
         platform=platform,
+        # Real piece_id from the live persist above — the caller
+        # (repurpose_content in app/api/v1/text.py) used to call
+        # save_pipeline_result() again on the whole result, which
+        # unconditionally re-inserts a session document with the same
+        # session_id ensure_session_exists() just upserted a few lines up;
+        # MongoDB's unique index on content_sessions.session_id rejected
+        # it, the exception was swallowed, and no piece_id ever came back.
+        # That redundant call is removed now that piece_id is real here.
+        piece_id=piece_id or None,
         content=content_str,
         word_count=len(content_str.split()),
         char_count=len(content_str),

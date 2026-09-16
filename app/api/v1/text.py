@@ -214,13 +214,18 @@ async def generate_text_content(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
 
-    # Save to storage — non-blocking. piece_ids line up with result.pieces
-    # in order (save_pipeline_result() iterates result.pieces itself), so
-    # zipping them back on is safe; a storage failure returns [] and every
-    # piece_id just stays None rather than mismatching to the wrong piece.
-    piece_ids = await _save_result(result, goal=body.goal, tone=body.tone, label="generate")
-    for piece, piece_id in zip(result.pieces, piece_ids):
-        piece.piece_id = piece_id
+    # The graph's collect_output_node already persisted every piece for real
+    # (ensure_session_exists + save_live_piece, live, per platform) and
+    # stamped its real piece_id onto it — save_pipeline_result() used to run
+    # again unconditionally here and re-insert a session document with the
+    # same session_id that call just upserted, which MongoDB's unique index
+    # on content_sessions.session_id rejects (E11000). Only fall back to it
+    # if live persistence left every piece without an id (e.g. it failed
+    # outright for every platform), so there's still a real save either way.
+    if not any(p.piece_id for p in result.pieces):
+        piece_ids = await _save_result(result, goal=body.goal, tone=body.tone, label="generate")
+        for piece, piece_id in zip(result.pieces, piece_ids):
+            piece.piece_id = piece_id
 
     return result
 
@@ -262,17 +267,21 @@ async def repurpose_content(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Repurpose error: {str(e)}")
 
-    # Save to storage — non-blocking. See generate_text_content()'s same
-    # zip for why this is safe.
-    piece_ids = await _save_result(
-        result,
-        goal=body.goal,
-        tone=body.tone,
-        is_repurpose=True,
-        label="repurpose",
-    )
-    for piece, piece_id in zip(result.pieces, piece_ids):
-        piece.piece_id = piece_id
+    # _run_single_repurpose already persisted every piece for real (live,
+    # per platform) and stamped its real piece_id onto it — see
+    # generate_text_content()'s identical comment for why calling
+    # save_pipeline_result() again unconditionally here used to crash into
+    # MongoDB's unique index on content_sessions.session_id.
+    if not any(p.piece_id for p in result.pieces):
+        piece_ids = await _save_result(
+            result,
+            goal=body.goal,
+            tone=body.tone,
+            is_repurpose=True,
+            label="repurpose",
+        )
+        for piece, piece_id in zip(result.pieces, piece_ids):
+            piece.piece_id = piece_id
 
     return result
 

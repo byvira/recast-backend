@@ -640,6 +640,16 @@ async def collect_output_node(state: TextAgentState) -> dict:
                 platform, state.get("session_id"), exc, exc_info=True,
             )
 
+        # Real piece_id onto the piece this node is about to return — without
+        # this, the blocking (non-SSE) caller's own redundant save_pipeline_
+        # result() call was the only source of a piece_id, and that call
+        # unconditionally re-inserts a session document with the same
+        # session_id this block just (idempotently) upserted above, which
+        # MongoDB's unique index rejects. See app/api/v1/text.py — the
+        # redundant call is removed there now that piece_id is real here.
+        if piece_id:
+            pieces[-1]["piece_id"] = piece_id
+
         commentary = msg.build_card_commentary(
             angle_name="Auto",
             angle_score=0,

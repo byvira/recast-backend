@@ -10,8 +10,18 @@ works and is workspace-scoped.
 
 from uuid import uuid4
 
+from app.pipelines.publish.token_store import save_token
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 from tests.conftest import create_workspace
+
+
+async def _connect_linkedin(workspace_id: str) -> None:
+    await save_token(
+        workspace_id=workspace_id, platform="linkedin",
+        access_token="fake-access-token", refresh_token=None,
+        expires_at=None, platform_user_id="urn:li:person:test",
+        username="test-user", connected_by="",
+    )
 
 
 async def _seed_piece(workspace_id: str, user_id: str, brand_id: str, platform: str = "LinkedIn") -> str:
@@ -49,6 +59,7 @@ async def test_approved_piece_stage_is_staging(signup_user):
 async def test_scheduled_piece_stage_is_scheduled(signup_user):
     client, profile = await signup_user()
     ws_id = await create_workspace(client, "Stage WS")
+    await _connect_linkedin(ws_id)
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
     await client.patch(f"/api/v1/content/pieces/{piece_id}/approve", headers={"X-Workspace-Id": ws_id})
 
