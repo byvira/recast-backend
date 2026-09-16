@@ -93,6 +93,42 @@ async def test_brand_create_get_step_and_complete_lifecycle(api_client):
     assert res.json()["onboarding_done"] is True
 
 
+async def test_brand_step3_type_specific_data_survives_the_round_trip(api_client):
+    """_build_step_update() writes pillars_data/icp_data/positioning_data
+    straight into the Mongo document, but BrandProfile (the response model)
+    never declared those fields — _doc_to_brand_profile() silently dropped
+    them from every GET response even though they were really saved. This
+    is what made the onboarding wizard's resume flow (and any other real
+    consumer of GET /brand/{id}) unable to see step 3's answers at all for
+    Personal Brand/Business/Product types."""
+    await signup_new_user(api_client)
+
+    res = await api_client.post("/api/v1/brand/", json={"brand_type": "Business"})
+    brand_id = res.json()["brand_profile_id"]
+
+    icp_payload = {
+        "companySize": "SMBs (10-100)",
+        "jobTitles": "Head of Growth",
+        "painPoint": "Manual repurposing eats a full day a week",
+        "decisionMakers": "VP Marketing",
+    }
+    res = await api_client.put(
+        f"/api/v1/brand/{brand_id}/step", json={"step": 3, "data": icp_payload},
+    )
+    assert res.status_code == 200, res.text
+
+    res = await api_client.get(f"/api/v1/brand/{brand_id}")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["icp_data"] is not None
+    assert body["icp_data"]["painPoint"] == "Manual repurposing eats a full day a week"
+    # The other two type-specific fields stay genuinely empty, not silently
+    # populated with something — this brand is Business, not Personal
+    # Brand or Product.
+    assert body["pillars_data"] is None
+    assert body["positioning_data"] is None
+
+
 async def test_brand_not_found(api_client):
     await signup_new_user(api_client)
     res = await api_client.get("/api/v1/brand/does-not-exist")

@@ -179,6 +179,15 @@ class BrandProfile(BaseModel):
     setup_path: Optional[SetupPath] = None
     extraction_data: Optional[ExtractionData] = None
     manual_data: Optional[ManualData] = None
+    # Step 3's type-specific answers (Personal Brand/Business/Product only —
+    # Person has no step 3 of this kind). _build_step_update() in
+    # app/api/v1/brand.py already writes these into the Mongo document; they
+    # were missing here entirely, so _doc_to_brand_profile() silently
+    # dropped them from every API response even though they were saved —
+    # the onboarding wizard's resume flow had no way to see them.
+    pillars_data: Optional[dict] = None
+    icp_data: Optional[dict] = None
+    positioning_data: Optional[dict] = None
     completed_steps: list[str] = []
     platforms: list[str] = []
     blueprint_version: str = "2.0"
