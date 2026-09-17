@@ -531,6 +531,8 @@ async def update_piece_content(
     Automatically creates a new version and increments version_count.
     Returns updated piece or None if not found.
     """
+    from app.pipelines.text.quality import flesch_reading_ease
+
     piece = await get_piece(piece_id, workspace_id)
     if not piece:
         return None
@@ -539,6 +541,16 @@ async def update_piece_content(
     new_version_number = piece.get("version_count", 1) + 1
     new_word_count = len(new_content.split())
     new_char_count = len(new_content)
+    # readability_score used to just go stale here — this is the only write
+    # path for manual edits, chip/chat refinement, version restore, and
+    # regenerate-with-an-existing-piece_id, none of which ever recomputed
+    # it, so the stored score kept describing whatever content the piece
+    # had *before* this edit (or stayed permanently null if the piece
+    # started out non-Latin-script and the edit changed that). Recomputing
+    # here — the same flesch_reading_ease() the initial generation quality
+    # gate uses — closes every one of those gaps in the one place they all
+    # funnel through, instead of fixing each caller separately.
+    new_readability_score = flesch_reading_ease(new_content)
 
     # Update piece
     await content_pieces.update_one(
@@ -548,6 +560,7 @@ async def update_piece_content(
             "word_count": new_word_count,
             "char_count": new_char_count,
             "version_count": new_version_number,
+            "readability_score": new_readability_score,
             "updated_at": now,
         }},
     )

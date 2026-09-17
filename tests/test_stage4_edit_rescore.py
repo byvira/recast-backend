@@ -68,6 +68,36 @@ async def test_edit_piece_persists_and_creates_a_new_version(signup_user):
     assert version_list[-1]["action"] == "manual_edit"
 
 
+async def test_edit_piece_recomputes_stale_readability_score(signup_user):
+    """update_piece_content() used to only touch content/word_count/
+    char_count/version_count — readability_score was never recomputed on
+    manual edit, chip/chat refinement, or version restore, so it silently
+    described whatever content the piece had *before* the edit (or stayed
+    permanently null if the piece started non-Latin-script). This is the
+    fix: it must reflect the content actually stored after the edit."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Edit WS")
+    piece_id = await _seed_piece(ws_id, profile["id"])  # seeded with no readability_score at all
+
+    before = await client.get(
+        f"/api/v1/content/pieces/{piece_id}", headers={"X-Workspace-Id": ws_id},
+    )
+    assert before.json()["readability_score"] is None
+
+    res = await client.patch(
+        f"/api/v1/content/pieces/{piece_id}",
+        json={"content": "Short sentences work well. They are easy to read. Most people prefer them."},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["readability_score"] is not None
+
+    after = await client.get(
+        f"/api/v1/content/pieces/{piece_id}", headers={"X-Workspace-Id": ws_id},
+    )
+    assert after.json()["readability_score"] is not None
+
+
 async def test_edit_piece_rejects_empty_content(signup_user):
     client, profile = await signup_user()
     ws_id = await create_workspace(client, "Edit WS")
