@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace
 from app.db.mongo import get_db
+from app.pipelines.text.storage import compute_kanban_stage
 from app.pipelines.analytics.aggregator import (
     fetch_account_metrics_all,
     fetch_post_metrics_all,
@@ -252,6 +253,12 @@ async def get_calendar(
             "id":               piece.get("piece_id", ""),
             "content_preview":  piece.get("content", "")[:120],
             "status":           publish_status,
+            # Calendar used to be read-only — "status" alone (bare
+            # publish_status) can't tell drafting apart from staging, both
+            # of which read as "pending". Real KanbanStage lets the
+            # frontend offer the correct next action (and only that one)
+            # per card instead of guessing.
+            "stage":            compute_kanban_stage(piece),
             "platforms":        [piece.get("platform", "")] if piece.get("platform") else [],
             "scheduled_at":     piece.get("publish_scheduled_at"),
             "created_at":       piece.get("created_at"),
