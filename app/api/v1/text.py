@@ -18,6 +18,8 @@ from app.db.mongo import brand_profiles
 from app.models.text import (
     BatchGenerateRequest,
     GenerateTextRequest,
+    PreviewUrlRequest,
+    PreviewUrlResponse,
     RepurposeRequest,
     TextPipelineResult,
     ContentIntent,
@@ -35,6 +37,7 @@ from app.models.scorer import (
 from app.models.chips import ApplyChipRequest, ApplyChipResponse, GetChipsResponse
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.pipelines.text.orchestrator import run_batch_pipeline, run_text_pipeline
+from app.pipelines.text.scraper import preview_url
 from app.pipelines.text.scorer import score_hook, score_readability
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.chips import apply_chip, get_chips_for_platform, CHIP_PROMPTS
@@ -137,6 +140,29 @@ async def _save_result(
     except Exception as e:
         logger.error("Failed to save %s to storage: %s", label, e)
         return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# URL PREVIEW
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/preview-url", response_model=PreviewUrlResponse)
+@limiter.limit("20/minute")
+async def preview_url_content(
+    request: Request,
+    body: PreviewUrlRequest,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> PreviewUrlResponse:
+    """
+    Fetch a URL and return a lightweight preview (title/snippet/word count)
+    for the URL input tab's "Fetch" button — before this, that button showed
+    a hardcoded fake preview card for literally any URL typed in.
+    """
+    try:
+        result = await preview_url(body.url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return PreviewUrlResponse(**result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -264,6 +290,14 @@ async def repurpose_content(
             intent=ContentIntent.AUTO,
             language=language,
         )
+    except ValueError as e:
+        # Bad input, not a server failure — an unscrapable/JS-gated/paywalled
+        # URL (scrape_url's ValueError) is the common case reported by
+        # users. Same distinction generate_text_content() already makes;
+        # this endpoint was folding it into a generic 500 "Repurpose error"
+        # instead, which reads as "something broke" rather than "try a
+        # different URL or paste the content directly".
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Repurpose error: {str(e)}")
 

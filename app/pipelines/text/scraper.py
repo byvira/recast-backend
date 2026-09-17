@@ -83,6 +83,61 @@ def _fetch_and_extract(url: str) -> str | None:
     )
 
 
+def _fetch_and_preview(url: str) -> dict:
+    _guard_public_url(url)
+    downloaded = trafilatura.fetch_url(url)
+    if not downloaded:
+        return {"title": None, "snippet": None, "word_count": 0}
+
+    text = trafilatura.extract(
+        downloaded, include_comments=False, include_tables=True, no_fallback=False, config=_config,
+    )
+    metadata = trafilatura.extract_metadata(downloaded, default_url=url)
+
+    snippet = None
+    word_count = 0
+    if text:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        clean = "\n".join(lines)
+        word_count = len(clean.split())
+        snippet = clean[:220].strip()
+        if len(clean) > 220:
+            snippet += "…"
+
+    return {
+        "title": (metadata.title if metadata else None) or None,
+        "snippet": snippet,
+        "word_count": word_count,
+    }
+
+
+async def preview_url(url: str) -> dict:
+    """Fetch a URL and return {title, snippet, word_count} for a live "what
+    will be scraped" preview before the user commits to running the
+    pipeline — the frontend's URL input used to show a hardcoded fake
+    preview card ("blog.example.com", a canned Discord-community quote) for
+    literally any URL typed in, regardless of what was actually there.
+
+    Does not raise when the page isn't extractable — returns nulls instead,
+    so the frontend can say "couldn't preview this page" without treating
+    it as a hard error. The real scrape_url() (used by generation itself)
+    still raises ValueError on the same condition, since that path can't
+    proceed without real content.
+    """
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc or parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Invalid URL format: {url}")
+
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_executor, _fetch_and_preview, url)
+    except BlockedURLError as e:
+        raise ValueError(str(e))
+    except Exception as e:
+        logger.warning("Preview fetch failed for %s: %s", url, e)
+        return {"title": None, "snippet": None, "word_count": 0}
+
+
 async def scrape_url(url: str) -> str:
     """
     Extract readable text from any URL using trafilatura.

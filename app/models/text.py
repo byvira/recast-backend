@@ -1,10 +1,27 @@
 """Pydantic models for the text content pipeline — aligned with frontend ConfigPanel."""
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from enum import Enum as PyEnum
+
+# Em dashes are a well-known LLM writing tell users flagged repeatedly as
+# "AI slop" — prompt instructions alone don't reliably stop models from
+# using them, so GeneratedPiece strips them unconditionally below. Matches
+# with surrounding whitespace so "great—impactful" and "great — impactful"
+# both collapse to a single ", " rather than losing the word boundary.
+_EM_DASH_RE = re.compile(r"\s*—\s*")
+
+
+def strip_em_dashes(text: str) -> str:
+    if "—" not in text:
+        return text
+    cleaned = _EM_DASH_RE.sub(", ", text)
+    cleaned = re.sub(r",\s*,", ",", cleaned)          # "foo, , bar" → "foo, bar"
+    cleaned = re.sub(r"\s+([,.!?])", r"\1", cleaned)   # no space before punctuation
+    return cleaned.strip()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LANGUAGE — ISO 639-1 → display-name table for languages this codebase has a
@@ -254,6 +271,35 @@ class GeneratedPiece(BaseModel):
     publish_status: Optional[str] = None
     publish_scheduled_at: Optional[datetime] = None
     publish_job_id: Optional[str] = None
+
+    @field_validator("content")
+    @classmethod
+    def _strip_em_dashes(cls, v: str) -> str:
+        return strip_em_dashes(v)
+
+    @model_validator(mode="after")
+    def _sync_counts_to_content(self) -> "GeneratedPiece":
+        # word_count/char_count are computed by callers from the pre-strip
+        # content; keep them accurate against whatever content ends up on
+        # the model (a no-op when there was nothing to strip).
+        self.word_count = len(self.content.split())
+        self.char_count = len(self.content)
+        return self
+
+
+class PreviewUrlRequest(BaseModel):
+    url: str
+
+
+class PreviewUrlResponse(BaseModel):
+    # A "what will be scraped" preview for the URL input tab, shown before
+    # the user commits to running the pipeline. title/snippet are None when
+    # the page couldn't be fetched or had no extractable text — the
+    # frontend shows "couldn't preview this page" rather than treating it
+    # as fatal.
+    title: Optional[str] = None
+    snippet: Optional[str] = None
+    word_count: int = 0
 
 
 class TextPipelineResult(BaseModel):

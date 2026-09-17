@@ -35,6 +35,21 @@ logger = logging.getLogger(__name__)
 # of truth shared with request validation); this module only builds the
 # prompt-facing instruction text from it.
 # ─────────────────────────────────────────────────────────────────────────────
+# Some languages have a formal/literary register an LLM defaults to that
+# reads as stiff or unnatural in everyday social content — reported for
+# Tamil specifically (LLMs default to செந்தமிழ் / classical written Tamil
+# even for a casual announcement post). Keyed by the same normalised code
+# resolve_language_name() uses, so "ta", "ta-IN", "Tamil" all match.
+CONVERSATIONAL_REGISTER_NOTES: dict[str, str] = {
+    "ta": (
+        "Use everyday spoken Tamil (பேச்சு தமிழ்) — the way people actually "
+        "talk and post on social media — not formal literary Tamil (செந்தமிழ்). "
+        "Natural, colloquial words and phrasing, not textbook or ceremonial "
+        "vocabulary."
+    ),
+}
+
+
 def resolve_language_name(code: str) -> str:
     """Resolve a language code/string to the display name used in prompts.
 
@@ -73,7 +88,11 @@ def build_language_instruction(language_code: str) -> str:
     reuse, not as illustrations of structure. This line is the fix.
     """
     name = resolve_language_name(language_code)
-    return load_prompt("text/generate/language_instruction", name=name)
+    normalised = (language_code or "").strip().lower().split("-")[0]
+    register_note = CONVERSATIONAL_REGISTER_NOTES.get(normalised, "")
+    return load_prompt(
+        "text/generate/language_instruction", name=name, register_note=register_note
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
