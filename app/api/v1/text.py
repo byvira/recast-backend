@@ -440,8 +440,10 @@ async def refine_content(
     If piece_id provided, saves a new version to version history.
     Brand voice and banned words enforced on output.
     """
-    # Validate chip exists before hitting the DB
-    if body.chip not in CHIP_PROMPTS:
+    # Validate chip exists before hitting the DB — skipped for a custom,
+    # user-authored instruction (Feature 5), which isn't in CHIP_PROMPTS by
+    # definition.
+    if not body.custom_instruction and body.chip not in CHIP_PROMPTS:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown chip '{body.chip}'. Available: {', '.join(CHIP_PROMPTS.keys())}",
@@ -458,6 +460,7 @@ async def refine_content(
         platform=body.platform,
         brand_context=brand_context,
         banned_words=enforcement.get("banned_words", []),
+        custom_instruction=body.custom_instruction,
     )
 
     # Save version if piece_id provided and content changed
@@ -468,7 +471,7 @@ async def refine_content(
                 workspace_id=ctx.workspace_id,
                 new_content=result["refined"],
                 action=body.chip,
-                instruction=CHIP_PROMPTS.get(body.chip, body.chip),
+                instruction=body.custom_instruction or CHIP_PROMPTS.get(body.chip, body.chip),
             )
             logger.info(
                 "Version saved for piece %s via chip %s",

@@ -12,6 +12,7 @@ Usage:
 """
 
 import logging
+from typing import Optional
 from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm, GroqModel
 
@@ -115,29 +116,35 @@ async def apply_chip(
     platform: str,
     brand_context: str,
     banned_words: list[str] = [],
+    custom_instruction: Optional[str] = None,
 ) -> dict:
     """
     Apply a quick action chip to existing content.
 
     Args:
-        content:       the content to refine
-        chip_name:     which chip to apply — must be in CHIP_PROMPTS
-        platform:      target platform — affects formatting rules
-        brand_context: full brand voice context string
-        banned_words:  list of words that must not appear in output
+        content:            the content to refine
+        chip_name:          which chip to apply — looked up in CHIP_PROMPTS,
+                             unless custom_instruction is given, in which
+                             case this is just a display label (any string)
+        platform:           target platform — affects formatting rules
+        brand_context:      full brand voice context string
+        banned_words:       list of words that must not appear in output
+        custom_instruction: a user-authored instruction (Feature 5) — used
+                             as-is instead of looking chip_name up in the
+                             fixed CHIP_PROMPTS set
 
     Returns:
         {
           original:    original content unchanged
           refined:     refined content after chip applied
-          chip:        chip name applied
+          chip:        chip name/label applied
           platform:    platform
           word_count:  refined content word count
           char_count:  refined content char count
           changed:     True if refined differs from original
         }
     """
-    instruction = CHIP_PROMPTS.get(chip_name)
+    instruction = custom_instruction or CHIP_PROMPTS.get(chip_name)
     if not instruction:
         logger.warning("Unknown chip: %s — returning original", chip_name)
         return {

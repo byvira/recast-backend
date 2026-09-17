@@ -150,3 +150,60 @@ async def test_apply_chip_saves_a_real_new_version(signup_user, mock_llm):
     version_list = versions.json()["versions"]
     assert len(version_list) == 2
     assert version_list[-1]["action"] == "shorten"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Custom chips (Feature 5) — a user-authored instruction, not one of the
+# fixed CHIP_PROMPTS names
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_apply_custom_chip_bypasses_the_fixed_chip_set(signup_user, mock_llm):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Custom Chip WS")
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+
+    mock_llm.set_plain("Rewritten like a scrappy founder at 2am.")
+
+    res = await client.post(
+        "/api/v1/text/refine",
+        json={
+            "content": "Original content before any chip is applied.",
+            "chip": "Sound like a scrappy founder",
+            "custom_instruction": "Sound like a scrappy founder writing at 2am.",
+            "platform": "LinkedIn",
+            "brand_id": brand_id,
+            "piece_id": piece_id,
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["refined"] == "Rewritten like a scrappy founder at 2am."
+
+    versions = await client.get(
+        f"/api/v1/content/pieces/{piece_id}/versions", headers={"X-Workspace-Id": ws_id},
+    )
+    version_list = versions.json()["versions"]
+    assert version_list[-1]["action"] == "Sound like a scrappy founder"
+    assert version_list[-1]["instruction"] == "Sound like a scrappy founder writing at 2am."
+
+
+async def test_refine_without_custom_instruction_still_rejects_unknown_chip(signup_user, mock_llm):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Custom Chip WS")
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+
+    res = await client.post(
+        "/api/v1/text/refine",
+        json={
+            "content": "Original content before any chip is applied.",
+            "chip": "not_a_real_chip",
+            "platform": "LinkedIn",
+            "brand_id": brand_id,
+            "piece_id": piece_id,
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 400
