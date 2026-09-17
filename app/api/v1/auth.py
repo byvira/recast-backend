@@ -34,7 +34,7 @@ from app.core.otp import (
     verify_otp,
 )
 from app.core.workspace import create_personal_workspace
-from app.db.mongo import users
+from app.db.mongo import brand_profiles, users
 from app.db.redis import get_redis
 from app.models.user import (
     AuthResponse,
@@ -79,7 +79,7 @@ def _validate_identifier_format(identifier: str, channel: OTPChannel) -> None:
             )
 
 
-def _build_profile_response(user: dict) -> UserProfileResponse:
+async def _build_profile_response(user: dict) -> UserProfileResponse:
     """Convert a raw MongoDB user document into a typed UserProfileResponse.
 
     Strips internal MongoDB fields (e.g. _id) and applies safe defaults for
@@ -91,6 +91,17 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
     Returns:
         A fully populated UserProfileResponse Pydantic model instance.
     """
+    # brand_profiles is a workspace-scoped resource (app/api/v1/brand.py),
+    # never actually written to the user document — resolve it live against
+    # the account's default workspace instead of trusting a field that was
+    # always []. Same fix as app/api/v1/users.py's _build_profile_response.
+    workspace_id = user.get("default_workspace_id")
+    brand_profile_ids: list[str] = []
+    if workspace_id:
+        brand_profile_ids = await brand_profiles.distinct(
+            "id", {"workspace_id": workspace_id}
+        )
+
     return UserProfileResponse(
         id=user["id"],
         name=user["name"],
@@ -99,15 +110,15 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
         bio=user.get("bio", ""),
         website=user.get("website", ""),
         timezone=user.get("timezone", "UTC"),
-        email=user.get("email"),     
-        phone=user.get("phone"),        
+        email=user.get("email"),
+        phone=user.get("phone"),
         language=user.get("language", "en"),
         preferred_platforms=user.get("preferred_platforms", []),
         plan=user.get("plan", UserPlan.FREE),
         credits_used=user.get("credits_used", 0),
         credits_limit=user.get("credits_limit", 100),
         onboarding_done=user.get("onboarding_done", False),
-        brand_profiles=user.get("brand_profiles", []),
+        brand_profiles=brand_profile_ids,
         default_workspace_id=user.get("default_workspace_id"),
         created_at=user["created_at"],
     )
@@ -330,7 +341,7 @@ async def signup(
     return AuthResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        user=_build_profile_response(user_doc),
+        user=await _build_profile_response(user_doc),
     )
 
 
@@ -405,7 +416,7 @@ async def login(
     return AuthResponse(
         access_token=access_token,
         refresh_token=refresh_token,
-        user=_build_profile_response(user),
+        user=await _build_profile_response(user),
     )
 
 

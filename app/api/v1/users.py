@@ -1,33 +1,52 @@
 """User profile routes — read and update the authenticated user's profile."""
 
-from typing import Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pymongo.errors import DuplicateKeyError
 
 from app.core.auth import get_current_user, is_username_taken
 from app.core.middleware import limiter
-from app.db.mongo import users, workspace_members, workspaces
+from app.db.mongo import brand_profiles, users, workspace_members, workspaces
 from app.models.user import PublicProfileResponse, UserProfileResponse, UserUpdateBody
 
 router = APIRouter()
 
 
-def _build_profile_response(user: dict) -> UserProfileResponse:
+async def _build_profile_response(
+    user: dict, x_workspace_id: Optional[str] = None
+) -> UserProfileResponse:
     """Convert a raw MongoDB user document to UserProfileResponse.
 
     Args:
         user: Raw dict from MongoDB.
+        x_workspace_id: Active workspace, if the caller sent one — used to
+            resolve ``brand_profiles`` for the response (see below).
 
     Returns:
         UserProfileResponse instance.
     """
     from app.models.user import UserPlan
+
+    # brand_profiles used to be read straight off the user document, but
+    # nothing ever wrote to that field (brand profiles are workspace-scoped
+    # resources created via POST /brand/, keyed by workspace_id — see
+    # app/api/v1/brand.py) so it was permanently []. Resolve it live from
+    # the real collection instead, scoped the same way every other
+    # workspace-owned resource is (X-Workspace-Id header, falling back to
+    # the account's default workspace).
+    workspace_id = x_workspace_id or user.get("default_workspace_id")
+    brand_profile_ids: list[str] = []
+    if workspace_id:
+        brand_profile_ids = await brand_profiles.distinct(
+            "id", {"workspace_id": workspace_id}
+        )
+
     return UserProfileResponse(
         id=user["id"],
         name=user["name"],
         username=user["username"],
-        email=user.get("email", ""),                        
+        email=user.get("email", ""),
         avatar_url=user.get("avatar_url", ""),
         bio=user.get("bio", ""),
         website=user.get("website", ""),
@@ -38,7 +57,7 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
         credits_used=user.get("credits_used", 0),
         credits_limit=user.get("credits_limit", 100),
         onboarding_done=user.get("onboarding_done", False),
-        brand_profiles=user.get("brand_profiles", []),
+        brand_profiles=brand_profile_ids,
         social_accounts=user.get("social_accounts", []),
         auth_identifiers=user.get("auth_identifiers", []),
         default_workspace_id=user.get("default_workspace_id"),
@@ -52,17 +71,19 @@ def _build_profile_response(user: dict) -> UserProfileResponse:
 async def get_my_profile(
     request: Request,
     current_user: dict[str, Any] = Depends(get_current_user),
+    x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
 ) -> UserProfileResponse:
     """Return the authenticated user's profile.
 
     Args:
         request: FastAPI Request (required by slowapi).
         current_user: Full user document injected by get_current_user.
+        x_workspace_id: Active workspace, used to resolve brand_profiles.
 
     Returns:
         UserProfileResponse with all non-sensitive fields.
     """
-    return _build_profile_response(current_user)
+    return await _build_profile_response(current_user, x_workspace_id)
 
 
 @router.put("/me", response_model=UserProfileResponse)
@@ -71,6 +92,7 @@ async def update_my_profile(
     request: Request,
     body: UserUpdateBody,
     current_user: dict[str, Any] = Depends(get_current_user),
+    x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
 ) -> UserProfileResponse:
     """Update allowed fields on the authenticated user's profile.
 
@@ -116,7 +138,7 @@ async def update_my_profile(
         update_fields["default_workspace_id"] = body.default_workspace_id
 
     if not update_fields:
-        return _build_profile_response(current_user)
+        return await _build_profile_response(current_user, x_workspace_id)
 
     try:
         await users.update_one(
@@ -133,7 +155,7 @@ async def update_my_profile(
     if not updated:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    return _build_profile_response(updated)
+    return await _build_profile_response(updated, x_workspace_id)
 
 
 @router.get("/me/workspaces")
