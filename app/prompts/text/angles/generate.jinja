@@ -1,0 +1,43 @@
+{%- set banned_block = "" %}
+{%- if banned_words %}
+{%- set bw_lines = ["", "BANNED WORDS — never use these or close variations:"] %}
+{%- for w in banned_words %}
+{%- set _ = bw_lines.append('  ✗ "' ~ w ~ '"') %}
+{%- endfor %}
+{%- set _ = bw_lines.append("") %}
+{%- set banned_block = bw_lines | join("\n") %}
+{%- endif %}
+
+{{ brand_context }}
+
+Rewrite the content below 3 separate times for {{ platform_label }}, each
+using a distinctly different strategic angle — not just a different tone,
+a genuinely different choice of what to lead with and emphasize.
+
+Angle 1 — Contrarian: Challenge the conventional wisdom on this topic.
+  Lead with what most people get wrong.
+Angle 2 — Personal story: Lead with the lived experience or specific
+  moment behind this — the "why", not just the "what".
+Angle 3 — Concrete outcome: Lead with the specific, measurable result —
+  a number, a timeframe, a before/after — using only real details from
+  the source content, never an invented statistic.
+
+Rules for all 3 rewrites:
+- Full-length content for {{ platform_label }}, not a snippet or teaser
+- Must match the brand voice exactly
+- Every sentence must earn its place with a specific detail from the
+  source content — delete anything generic enough to apply to any brand
+- Never invent facts, numbers, or claims not in the source content
+- Never use em dashes (—) anywhere in the output
+{{ banned_block }}
+SOURCE CONTENT:
+{{ content }}
+
+Return valid JSON only:
+{
+  "angles": [
+    {"name": "Contrarian", "rationale": "one sentence on why this framing works here", "content": "the full rewritten piece"},
+    {"name": "Personal story", "rationale": "...", "content": "..."},
+    {"name": "Concrete outcome", "rationale": "...", "content": "..."}
+  ]
+}

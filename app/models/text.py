@@ -227,6 +227,33 @@ class HookVariant(BaseModel):
     score: int
 
 
+# Feature 8 — Library's "Repurpose with 3 Fresh Angles" opened the generic
+# Quick Recast modal (cross-platform repurposing), not an actual angle
+# comparison — there was no real angle concept anywhere in the backend to
+# preview (the old angle_used/angle_score fields were hardcoded
+# "auto"/0 placeholders, never real). This is that real capability.
+class AngleVariant(BaseModel):
+    name: str
+    rationale: str
+    content: str
+
+    @field_validator("content")
+    @classmethod
+    def _strip_em_dashes(cls, v: str) -> str:
+        return strip_em_dashes(v)
+
+
+class GenerateAnglesRequest(BaseModel):
+    content: str
+    platform: Platform
+    brand_id: str
+    piece_id: Optional[str] = None
+
+
+class GenerateAnglesResponse(BaseModel):
+    angles: list[AngleVariant]
+
+
 class SEOPackage(BaseModel):
     title: str
     meta_description: str

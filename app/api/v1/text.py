@@ -26,6 +26,9 @@ from app.models.text import (
     RegenerateRequest,
     RegenerateResponse,
     InputSourceType,
+    AgentTask,
+    GenerateAnglesRequest,
+    GenerateAnglesResponse,
 
 )
 from app.models.scorer import (
@@ -41,6 +44,7 @@ from app.pipelines.text.scraper import preview_url
 from app.pipelines.text.scorer import score_hook, score_readability
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.chips import apply_chip, get_chips_for_platform, CHIP_PROMPTS
+from app.pipelines.text.angles import run_angles_agent
 from app.pipelines.text.storage import save_pipeline_result, update_piece_content
 from app.agents.text.nodes import _extract_enforcement_data
 from app.models.refiner import RefineChatRequest, RefineChatResponse
@@ -485,6 +489,48 @@ async def refine_content(
             )
 
     return ApplyChipResponse(**result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANGLES — Feature 8's real "3 Fresh Angles"
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/angles", response_model=GenerateAnglesResponse)
+@limiter.limit("15/minute")
+async def generate_angles(
+    request: Request,
+    body: GenerateAnglesRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> GenerateAnglesResponse:
+    """
+    Generate 3 genuinely distinct strategic angles on existing content —
+    not 3 tone variations, 3 different choices of what to lead with.
+    Read-only: does not persist anything. The frontend calls PATCH
+    /content/pieces/{id} separately once the user picks one to keep.
+    """
+    brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
+    brand_context = build_brand_context(brand_profile)
+    enforcement = _extract_enforcement_data(brand_profile)
+
+    result = await run_angles_agent(
+        AgentTask(
+            agent="angles",
+            platform=body.platform,
+            content=body.content,
+            brand_context=brand_context,
+            session_id=body.piece_id or "angles-preview",
+            metadata={"banned_words": enforcement.get("banned_words", [])},
+        )
+    )
+
+    if not result.success:
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't generate angle variants — please try again.",
+        )
+
+    return GenerateAnglesResponse(angles=result.output["angles"])
+
 
 @router.post("/refine-chat", response_model=RefineChatResponse)
 @limiter.limit("20/minute")

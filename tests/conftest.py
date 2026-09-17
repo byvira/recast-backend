@@ -254,6 +254,7 @@ _LLM_CONSUMER_MODULES = [
     "app.pipelines.text.scorer",        # call_llm_structured — score-hook
     "app.pipelines.text.generator",     # call_llm, call_llm_structured — generate/regenerate
     "app.pipelines.text.hook_agent",    # call_llm_structured — hook variants
+    "app.pipelines.text.angles",        # call_llm_structured — angle variants (Feature 8)
     "app.pipelines.text.seo",           # call_llm_structured — SEO package
     "app.pipelines.text.repurpose",     # call_llm_structured — repurpose
     "app.pipelines.text.normalizer",    # call_llm, call_llm_structured — input normalisation
