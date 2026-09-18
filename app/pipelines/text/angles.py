@@ -13,7 +13,9 @@ with and emphasize, each a full rewrite.
 import logging
 
 from app.models.text import AgentTask, AgentResult
+from app.pipelines.text.generator import build_language_instruction
 from app.prompts.registry import load_prompt
+from app.shared.language import detect_language
 from app.shared.llm import call_llm_structured
 
 logger = logging.getLogger(__name__)
@@ -27,12 +29,23 @@ async def run_angles_agent(task: AgentTask) -> AgentResult:
     """
     platform_label = task.platform.value if task.platform else "social media"
 
+    # Angles rewrite *existing* content, so the source content's own
+    # language should win outright — unlike fresh generation (which
+    # resolves a request/workspace/user default), there's no "default" here
+    # that should ever override what the user actually wrote. Without this,
+    # every prompt in this file was English-only regardless of input, and
+    # Tamil (or any non-English) source content came back rewritten in
+    # English every time.
+    detected = detect_language(task.content)
+    language_instruction = build_language_instruction(detected or "en")
+
     prompt = load_prompt(
         "text/angles/generate",
         brand_context=task.brand_context,
         platform_label=platform_label,
         banned_words=task.metadata.get("banned_words", []),
         content=task.content[:4000],
+        language_instruction=language_instruction,
     )
 
     # Three full-length rewrites in one JSON response need real headroom —

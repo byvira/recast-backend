@@ -11,6 +11,8 @@ Runs with the LLM mocked — never a real Groq call.
 
 from uuid import uuid4
 
+from app.models.text import AgentTask
+from app.pipelines.text import angles as angles_module
 from tests.conftest import create_workspace
 
 
@@ -85,6 +87,40 @@ async def test_generate_angles_502_when_llm_returns_nothing_usable(signup_user, 
         headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 502
+
+
+async def test_angles_prompt_preserves_source_language(monkeypatch):
+    """Angles rewrite *existing* content — the source's own language must
+    win outright, unlike fresh generation. Before this fix, generate.jinja
+    had no language slot at all and every angle came back in English
+    regardless of input (e.g. Tamil source content -> English angles)."""
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm_structured(prompt: str, *args, **kwargs):
+        captured["prompt"] = prompt
+        return {
+            "angles": [
+                {"name": "Contrarian", "rationale": "r", "content": "c"},
+                {"name": "Personal story", "rationale": "r", "content": "c"},
+                {"name": "Concrete outcome", "rationale": "r", "content": "c"},
+            ],
+        }
+
+    monkeypatch.setattr(angles_module, "call_llm_structured", _fake_call_llm_structured)
+
+    tamil_content = "வளர்ச்சி குழுக்கள் ஒவ்வொரு வாரமும் ஒரு முழு வேலை நாளை மறுவடிவமைப்பில் வீணடிக்கின்றன."
+    task = AgentTask(
+        agent="angles",
+        platform=None,
+        content=tamil_content,
+        brand_context="A B2B SaaS brand.",
+        session_id=str(uuid4()),
+    )
+
+    result = await angles_module.run_angles_agent(task)
+
+    assert result.success is True
+    assert "Tamil" in captured["prompt"]
 
 
 async def test_generate_angles_blocked_for_viewer(signup_user, make_client):

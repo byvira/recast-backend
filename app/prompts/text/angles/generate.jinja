@@ -8,6 +8,8 @@
 {%- set banned_block = bw_lines | join("\n") %}
 {%- endif %}
 
+{{ language_instruction }}
+
 {{ brand_context }}
 
 Rewrite the content below 3 separate times for {{ platform_label }}, each
@@ -29,6 +31,7 @@ Rules for all 3 rewrites:
   source content — delete anything generic enough to apply to any brand
 - Never invent facts, numbers, or claims not in the source content
 - Never use em dashes (—) anywhere in the output
+{{ language_instruction }}
 {{ banned_block }}
 SOURCE CONTENT:
 {{ content }}
