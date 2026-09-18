@@ -164,3 +164,80 @@ async def test_repurposed_piece_can_be_approved_and_edited_for_real(signup_user,
     )
     assert edit_res.status_code == 200, edit_res.text
     assert edit_res.json()["content"] == "Manually tweaked after repurposing."
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Enforced structure_rules (Presets' "Generate with this preset" / Simulate)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_repurpose_with_structure_rules_returns_sections_within_limits(signup_user, mock_llm):
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Repurpose WS")
+    brand_id = await _create_brand(client, ws_id)
+
+    mock_llm.set_structured({
+        "sections": [
+            {"section_name": "Hook", "content": "Short punchy hook."},
+            {"section_name": "Body", "content": "A body section that stays well within budget."},
+        ],
+    })
+
+    res = await client.post(
+        "/api/v1/text/repurpose",
+        json={
+            "source_content": "Some long-form source content to adapt.",
+            "source_platform": "Blog",
+            "target_platforms": ["LinkedIn"],
+            "brand_id": brand_id,
+            "structure_rules": [
+                {"section_name": "Hook", "char_limit": 100, "guidelines": "Grab attention"},
+                {"section_name": "Body", "char_limit": 300, "guidelines": "Explain the idea"},
+            ],
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    piece = res.json()["pieces"][0]
+    assert piece["quality_passed"] is True
+    assert piece["sections"] is not None
+    assert len(piece["sections"]) == 2
+    assert piece["sections"][0]["section_name"] == "Hook"
+    assert piece["sections"][0]["char_limit"] == 100
+    # content is the flattened join of the sections — every existing
+    # consumer (publish, chip refine, frontend cards) only reads this.
+    assert "Short punchy hook." in piece["content"]
+    assert "A body section" in piece["content"]
+
+
+async def test_repurpose_structure_rules_flags_when_section_exceeds_limit_after_retry(signup_user, mock_llm):
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Repurpose WS")
+    brand_id = await _create_brand(client, ws_id)
+
+    # The mock returns the exact same (over-limit) section on both the
+    # initial call and the one retry — a real LLM might fix it on retry,
+    # but this exercises the "still over after retry -> flagged" branch,
+    # which the always-identical mock response makes deterministic to test.
+    over_limit_content = "x" * 150
+    mock_llm.set_structured({
+        "sections": [{"section_name": "Hook", "content": over_limit_content}],
+    })
+
+    res = await client.post(
+        "/api/v1/text/repurpose",
+        json={
+            "source_content": "Some long-form source content to adapt.",
+            "source_platform": "Blog",
+            "target_platforms": ["LinkedIn"],
+            "brand_id": brand_id,
+            "structure_rules": [
+                {"section_name": "Hook", "char_limit": 50, "guidelines": "Grab attention"},
+            ],
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    piece = res.json()["pieces"][0]
+    assert piece["quality_passed"] is False
+    assert piece["flagged_for_review"] is True
+    assert any("Hook" in issue and "character limit" in issue for issue in piece["quality_issues"])

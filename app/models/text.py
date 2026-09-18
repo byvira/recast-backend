@@ -167,6 +167,21 @@ class GenerateTextRequest(BaseModel):
     batch_days: int = Field(7, ge=1, le=30)
 
 
+class StructureRuleInput(BaseModel):
+    """One section of an enforced generation template — mirrors Presets'
+    PresetStepRule (app/models/preset.py) field-for-field, but kept as its
+    own small model here rather than importing across modules, same
+    precedent as the frontend's separate PresetStepRule/PresetStepRuleApi
+    types. When a RepurposeRequest carries a list of these, each target
+    platform's content is generated section-by-section with each
+    section's char_limit mechanically enforced (one retry, then flagged),
+    instead of the structure being folded into the source text as
+    advisory prose the LLM may or may not follow."""
+    section_name: str
+    char_limit: int
+    guidelines: str = ""
+
+
 class RepurposeRequest(BaseModel):
     """
     Repurpose mode — maps to RepurposeInput tab in ConfigPanel and to
@@ -186,6 +201,8 @@ class RepurposeRequest(BaseModel):
     # used by the main pipeline's "url" input mode) — it just fed the bare
     # URL string to the LLM as if it were the source content.
     source_type: InputSourceType = InputSourceType.TEXT
+    # Presets' "Generate with this preset" / Simulate — see StructureRuleInput.
+    structure_rules: Optional[list[StructureRuleInput]] = None
 
 
 class NormalisedInput(BaseModel):
@@ -290,6 +307,18 @@ class QualityResult(BaseModel):
     readability_score: Optional[float] = None
 
 
+class GeneratedSection(BaseModel):
+    """One enforced-template section of a generated piece — see
+    StructureRuleInput. char_count is the real length of `content`;
+    char_limit is copied from the request's structure rule so a reader can
+    see the section stayed within budget without cross-referencing the
+    original preset."""
+    section_name: str
+    content: str
+    char_limit: int
+    char_count: int
+
+
 class GeneratedPiece(BaseModel):
     """A single generated content piece for one platform."""
     platform: Platform
@@ -302,6 +331,12 @@ class GeneratedPiece(BaseModel):
     # schedule) instead of it looking saved with nothing real to act on.
     piece_id: Optional[str] = None
     content: str
+    # Set only when generated from an enforced structure_rules template —
+    # `content` above is always the flattened join of these sections (every
+    # existing consumer — publish, chip refine, hook/SEO scoring, frontend
+    # cards — only ever reads `content`), this is the breakdown for anyone
+    # who wants to see per-section results.
+    sections: Optional[list[GeneratedSection]] = None
     word_count: int
     char_count: int
     hooks: list[dict] = []
@@ -435,6 +470,7 @@ class ContentPiece(BaseModel):
     brand_id: str
     platform: str
     content: str
+    sections: Optional[list[GeneratedSection]] = None
     word_count: int = 0
     char_count: int = 0
     hooks: list[dict] = []

@@ -96,3 +96,63 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
     return AgentResult(
         agent="repurpose", platform=task.platform, output=result, success=True
     )
+
+
+async def run_structured_repurpose_agent(task: AgentTask, source_platform: Platform) -> AgentResult:
+    """Enforced-template counterpart to run_repurpose_agent() — generates
+    task.metadata["structure_rules"] (a list of {section_name, char_limit,
+    guidelines} dicts) as named, independently-length-limited sections
+    instead of one free-form content string. See app/prompts/text/repurpose/
+    structured.jinja and app.pipelines.text.generator.validate_structured_sections
+    for the enforcement half of this feature."""
+    structure_rules = task.metadata.get("structure_rules") or []
+
+    pair_key = _REPURPOSE_PAIR_KEYS.get((source_platform, task.platform))
+    if pair_key:
+        instruction = load_prompt("text/repurpose/platform_pairs", pair=pair_key)
+    else:
+        instruction = load_prompt("text/repurpose/fallback", target=task.platform.value)
+
+    goal_context = build_goal_context(task.metadata.get("goal"))
+    tone_override = build_tone_override(task.metadata.get("tone"))
+    platform_rules = PLATFORM_RULES.get(task.platform, "")
+    language_instruction = build_language_instruction(task.metadata.get("language", "en"))
+
+    banned_words = task.metadata.get("banned_words", [])
+    preferred_synonyms = task.metadata.get("preferred_synonyms", [])
+    approved_copy_instruction = build_approved_copy_instruction(task)
+    banned_instruction = build_banned_words_instruction(banned_words, preferred_synonyms)
+
+    retry_feedback = task.metadata.get("retry_feedback", "")
+    retry_count = task.retry_count or 0
+    retry_block = ""
+    if retry_feedback and retry_count > 0:
+        retry_block = load_prompt("fragments/retry_feedback", kind="wrapper", retry_feedback=retry_feedback)
+
+    prompt = load_prompt(
+        "text/repurpose/structured",
+        language_instruction=language_instruction,
+        instruction=instruction,
+        retry_block=retry_block,
+        source_platform=source_platform.value,
+        content=task.content,
+        platform_rules=platform_rules,
+        approved_copy_instruction=approved_copy_instruction,
+        goal_context=goal_context,
+        tone_override=tone_override,
+        banned_instruction=banned_instruction,
+        brand_context=task.brand_context,
+        platform=task.platform.value,
+        structure_rules=structure_rules,
+    )
+
+    result = await call_llm_structured(prompt, max_tokens=4000)
+
+    if not result or "sections" not in result or not isinstance(result["sections"], list):
+        return AgentResult(
+            agent="repurpose", platform=task.platform, output={}, success=False
+        )
+
+    return AgentResult(
+        agent="repurpose", platform=task.platform, output=result, success=True
+    )

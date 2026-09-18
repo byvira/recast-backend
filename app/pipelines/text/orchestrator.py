@@ -17,6 +17,7 @@ from app.models.text import (
     AgentTask,
     ContentGoal,
     GeneratedPiece,
+    GeneratedSection,
     InputSourceType,
     NormalisedInput,
     ContentIntent,
@@ -26,8 +27,8 @@ from app.models.text import (
 )
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.normalizer import normalise_input
-from app.pipelines.text.repurpose import run_repurpose_agent
-from app.pipelines.text.generator import validate_content
+from app.pipelines.text.repurpose import run_repurpose_agent, run_structured_repurpose_agent
+from app.pipelines.text.generator import validate_content, validate_structured_sections
 from app.shared.llm import call_llm_structured
 from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data
@@ -250,6 +251,7 @@ async def run_text_pipeline(
     batch_day_index: Optional[int] = None,
     publish_targets: Optional[list[str]] = None,
     emit_completion: bool = True,
+    structure_rules: Optional[list[dict]] = None,
 ) -> TextPipelineResult:
     """
     Main entry point for all text generation.
@@ -287,6 +289,7 @@ async def run_text_pipeline(
             scheduled_at=scheduled_at,
             emitter=emitter,
             session_id=session_id,
+            structure_rules=structure_rules,
         )
 
     # ── Normal generation path ────────────────────────────────────────────
@@ -406,6 +409,7 @@ async def _run_repurpose_path(
     scheduled_at,
     emitter,
     session_id,
+    structure_rules: Optional[list[dict]] = None,
 ) -> list[GeneratedPiece]:
     """
     Repurpose path — adapts existing content to new platforms.
@@ -428,6 +432,7 @@ async def _run_repurpose_path(
             scheduled_at=scheduled_at,
             emitter=emitter,
             session_id=session_id,
+            structure_rules=structure_rules,
         )
         for platform in platforms
     ]
@@ -466,11 +471,18 @@ async def _run_single_repurpose(
     scheduled_at,
     emitter,
     session_id,
+    structure_rules: Optional[list[dict]] = None,
 ) -> GeneratedPiece:
     """
     Repurpose a single platform — with one retry and hook/SEO enrichment.
     Always emits output_complete before returning so the frontend card
     transitions correctly even on failure.
+
+    When structure_rules is given (Presets' "Generate with this preset" /
+    Simulate), generation and validation branch to the enforced-template
+    path: run_structured_repurpose_agent() + validate_structured_sections()
+    instead of the normal free-form run_repurpose_agent() + validate_content()
+    — same one-retry-then-flag shape either way.
     """
     base_metadata = {
         **metadata,
@@ -479,11 +491,46 @@ async def _run_single_repurpose(
         "approved_openers":   enforcement["approved_openers"],
         "approved_closers":   enforcement["approved_closers"],
         "preferred_synonyms": enforcement.get("preferred_synonyms", []),
+        "structure_rules":    structure_rules,
     }
+    generate_fn = run_structured_repurpose_agent if structure_rules else run_repurpose_agent
+    sections: Optional[list[GeneratedSection]] = None
+
+    def _validate(sections_raw: Optional[list[dict]], content: str) -> tuple[bool, list[str]]:
+        if structure_rules:
+            return validate_structured_sections(
+                sections=sections_raw or [],
+                structure_rules=structure_rules,
+                banned_words=enforcement["banned_words"],
+                required_phrases=enforcement.get("required_phrases", []),
+            )
+        return validate_content(
+            content=content,
+            platform=platform,
+            banned_words=enforcement["banned_words"],
+            required_phrases=enforcement.get("required_phrases", []),
+            approved_openers=enforcement["approved_openers"],
+            approved_closers=enforcement["approved_closers"],
+        )
+
+    def _sections_from_output(output: dict) -> tuple[Optional[list[GeneratedSection]], str]:
+        if not structure_rules:
+            return None, output.get("content", "")
+        raw_sections = output.get("sections", [])
+        built = [
+            GeneratedSection(
+                section_name=s.get("section_name", rule.get("section_name", "")),
+                content=s.get("content", ""),
+                char_limit=rule.get("char_limit", 0),
+                char_count=len(s.get("content", "")),
+            )
+            for s, rule in zip(raw_sections, structure_rules)
+        ]
+        return built, "\n\n".join(s.content for s in built)
 
     # ── Initial generation ────────────────────────────────────────────────
     try:
-        result = await run_repurpose_agent(
+        result = await generate_fn(
             AgentTask(
                 agent="repurpose",
                 platform=platform,
@@ -513,17 +560,11 @@ async def _run_single_repurpose(
             flagged_for_review=True, repurposed=True,
         )
 
-    content_str = result.output.get("content", "")
+    sections, content_str = _sections_from_output(result.output)
+    raw_sections = result.output.get("sections") if structure_rules else None
 
     # ── Quality validation ────────────────────────────────────────────────
-    is_valid, issues = validate_content(
-        content=content_str,
-        platform=platform,
-        banned_words=enforcement["banned_words"],
-        required_phrases=enforcement.get("required_phrases", []),
-        approved_openers=enforcement["approved_openers"],
-        approved_closers=enforcement["approved_closers"],
-    )
+    is_valid, issues = _validate(raw_sections, content_str)
 
     # ── One retry on hard failure ─────────────────────────────────────────
     if not is_valid:
@@ -531,7 +572,7 @@ async def _run_single_repurpose(
         retry_feedback = _build_retry_feedback(hard_issues, enforcement)
 
         try:
-            retry_result = await run_repurpose_agent(
+            retry_result = await generate_fn(
                 AgentTask(
                     agent="repurpose",
                     platform=platform,
@@ -544,16 +585,11 @@ async def _run_single_repurpose(
                 source_platform,
             )
             if retry_result.success:
-                retry_content = retry_result.output.get("content", "")
-                is_valid, issues = validate_content(
-                    content=retry_content,
-                    platform=platform,
-                    banned_words=enforcement["banned_words"],
-                    required_phrases=enforcement.get("required_phrases", []),
-                    approved_openers=enforcement["approved_openers"],
-                    approved_closers=enforcement["approved_closers"],
-                )
+                retry_sections, retry_content = _sections_from_output(retry_result.output)
+                retry_raw_sections = retry_result.output.get("sections") if structure_rules else None
+                is_valid, issues = _validate(retry_raw_sections, retry_content)
                 content_str = retry_content
+                sections = retry_sections
                 logger.info("Repurpose retry complete for %s — quality_passed: %s", platform, is_valid)
             else:
                 logger.warning("Repurpose retry returned no content for %s — flagging", platform)
@@ -655,6 +691,7 @@ async def _run_single_repurpose(
             quality_issues=issues,
             flagged_for_review=not is_valid,
             repurposed=True,
+            sections=[s.model_dump() for s in sections] if sections else None,
             # "queued"/"pending" (not the raw "now"/"scheduled" schedule_mode
             # value) is what content_pieces.publish_status and the calendar
             # query (get_calendar) actually recognise — see the identical
@@ -717,6 +754,7 @@ async def _run_single_repurpose(
         # That redundant call is removed now that piece_id is real here.
         piece_id=piece_id or None,
         content=content_str,
+        sections=sections,
         word_count=len(content_str.split()),
         char_count=len(content_str),
         hooks=hooks,

@@ -120,6 +120,7 @@ async def save_live_piece(
     publish_status: Optional[str] = None,
     publish_scheduled_at=None,
     publish_target: Optional[str] = None,
+    sections: Optional[list[dict]] = None,
 ) -> str:
     """Persist one freshly-generated piece the moment its own graph run
     finishes. Mirrors save_pipeline_result's piece/version-1 document shape
@@ -139,6 +140,7 @@ async def save_live_piece(
         "brand_id": brand_id,
         "platform": platform,
         "content": content,
+        "sections": sections,
         "word_count": word_count,
         "char_count": char_count,
         "hooks": hooks or [],

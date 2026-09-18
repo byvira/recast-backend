@@ -354,6 +354,62 @@ def validate_content(
 
     return is_valid, all_issues
 
+
+def validate_structured_sections(
+    sections: List[Dict],
+    structure_rules: List[Dict],
+    banned_words: List[str],
+    required_phrases: List[Dict],
+) -> Tuple[bool, List[str]]:
+    """Validate an enforced-template generation — the structural counterpart
+    to validate_content() above, but checking each section's real length
+    against its own structure_rules char_limit instead of a single
+    platform-wide length gate. Deliberately does NOT run validate_content()'s
+    generic min-length/opening/closing/weasel-word checks: those assume a
+    normal free-form post, and a preset's own structure_rules already define
+    what "right length" means for this content, section by section.
+
+    Returns (is_valid, list_of_issues) — same shape/contract as
+    validate_content(), so callers plug straight into the existing
+    single-retry-then-flag pattern and _build_retry_feedback().
+    """
+    hard_issues: List[str] = []
+    joined = "\n\n".join(s.get("content", "") for s in sections)
+    joined_lower = joined.lower()
+
+    # ── Hard gate — banned words, across the whole piece ──────────────────
+    for word in banned_words:
+        pattern = r'\b' + re.escape(word.strip().lower()) + r'\b'
+        if re.search(pattern, joined_lower):
+            hard_issues.append(f"Banned word found: '{word}'")
+
+    # ── Hard gate — required phrases, across the whole piece ──────────────
+    for phrase_obj in required_phrases:
+        phrase = (phrase_obj.get("text") or "").strip()
+        if phrase and phrase.lower() not in joined_lower:
+            hard_issues.append(f"Required brand phrase missing: '{phrase}'")
+
+    # ── Hard gate — every section present, each within its char_limit ─────
+    rules_by_index = {i: rule for i, rule in enumerate(structure_rules)}
+    if len(sections) < len(structure_rules):
+        hard_issues.append(
+            f"Missing sections: expected {len(structure_rules)}, got {len(sections)}"
+        )
+    for i, section in enumerate(sections):
+        rule = rules_by_index.get(i)
+        if not rule:
+            continue
+        char_limit = rule.get("char_limit", 0)
+        content = section.get("content", "")
+        char_count = len(content)
+        if char_limit and char_count > char_limit:
+            hard_issues.append(
+                f"Section '{rule.get('section_name', i)}' exceeded its {char_limit} "
+                f"character limit: {char_count}/{char_limit}"
+            )
+
+    return len(hard_issues) == 0, hard_issues
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN GENERATOR
 # ─────────────────────────────────────────────────────────────────────────────

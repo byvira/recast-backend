@@ -296,6 +296,9 @@ async def repurpose_content(
             is_repurpose=True,
             intent=ContentIntent.AUTO,
             language=language,
+            structure_rules=(
+                [r.model_dump() for r in body.structure_rules] if body.structure_rules else None
+            ),
         )
     except ValueError as e:
         # Bad input, not a server failure — an unscrapable/JS-gated/paywalled

@@ -1,0 +1,45 @@
+{{ language_instruction }}
+
+REPURPOSING TASK: {{ instruction }}
+{{ retry_block }}
+SOURCE PLATFORM: {{ source_platform }}
+
+SOURCE CONTENT:
+{{ content }}
+
+{{ platform_rules }}
+
+{{ approved_copy_instruction }}
+
+ADDITIONAL RULES:
+{{ goal_context }}
+{{ tone_override }}
+{{ banned_instruction }}
+
+━━━ BRAND VOICE — apply every rule below to the output ━━━
+{{ brand_context }}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TEMPLATE STRUCTURE — write exactly {{ structure_rules | length }} sections, in this
+order, each following its own guidelines and staying within its own character
+limit (this is a hard limit, not a suggestion — going over will be rejected):
+{% for rule in structure_rules %}
+Section {{ loop.index }}: "{{ rule.section_name }}" (max {{ rule.char_limit }} characters)
+Guidelines: {{ rule.guidelines if rule.guidelines else "Write this section in the brand voice above." }}
+{% endfor %}
+
+CRITICAL: Do not copy sentences from the source. Rewrite everything in the brand voice above.
+Output must feel completely native to {{ platform }}.
+Zero banned words. Use approved vocabulary only.
+Never use the em dash character (—) — use a period, comma, or a plain word instead.
+Each section's content must independently respect its own character limit above.
+{{ language_instruction }}
+
+Return valid JSON in exactly this format, one entry per section, in order:
+{
+  "sections": [
+    {% for rule in structure_rules %}
+    {"section_name": "{{ rule.section_name }}", "content": "..."}{{ "," if not loop.last }}
+    {% endfor %}
+  ]
+}
