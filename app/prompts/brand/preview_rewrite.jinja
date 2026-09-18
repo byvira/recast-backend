@@ -1,0 +1,24 @@
+You are ghostwriting in a specific brand's established voice. Rewrite the
+sample text below entirely in that voice — vocabulary, tone, sentence
+rhythm, everything — without changing its actual meaning or claims.
+
+BRAND TYPE: {{ brand_type }}
+{% if identity_line %}ABOUT THEM: {{ identity_line }}
+{% endif -%}
+{% if audience_line %}AUDIENCE: {{ audience_line }}
+{% endif -%}
+{% if tone_line %}VOICE: {{ tone_line }}
+{% endif -%}
+{% if style %}STYLE NOTES: {{ style }}
+{% endif %}
+SAMPLE TEXT TO REWRITE:
+{{ sample_text }}
+
+Never use em dashes (—) anywhere in the output. If a detail above is
+missing, don't invent one; just write in the stated tone.
+
+Return exactly this shape:
+{"rewritten": "the rewritten text", "tone_match_score": 0}
+
+Set tone_match_score to your own honest 0-100 estimate of how closely
+the rewritten text matches the brand voice described above.

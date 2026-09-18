@@ -180,6 +180,23 @@ class UpdateVoiceBody(BaseModel):
     manual_data: ManualData | None = None
 
 
+class PreviewRewriteBody(BaseModel):
+    """My Voices' Playground tab — rewrite arbitrary sample text in this
+    brand's real voice. Read-only: never persists anything."""
+
+    sample_text: str
+
+
+class PreviewRewriteResponse(BaseModel):
+    rewritten: str
+    # The model's own estimate of how closely `rewritten` matches the
+    # brand voice profile — real per-input variation (unlike the old
+    # Playground mock, which showed a fixed 98.2% regardless of input),
+    # but still a self-assessment, not a rigorous, independently
+    # verified metric.
+    tone_match_score: int
+
+
 class BrandProfile(BaseModel):
     """Full brand profile document as stored in MongoDB."""
 

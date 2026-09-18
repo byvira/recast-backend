@@ -18,10 +18,13 @@ from app.models.brand_profile import (
     BrandProfile,
     BrandType,
     CreateBrandProfileBody,
+    PreviewRewriteBody,
+    PreviewRewriteResponse,
     SaveStepBody,
     UpdateVoiceBody,
 )
 from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggestions
+from app.pipelines.brand.voice_playground import preview_rewrite_in_voice
 
 router = APIRouter()
 
@@ -425,6 +428,36 @@ async def suggest_voice_patterns(
         )
 
     return suggestions
+
+
+@router.post("/{brand_id}/preview-rewrite", response_model=PreviewRewriteResponse)
+@limiter.limit("20/minute")
+async def preview_voice_rewrite(
+    request: Request,
+    brand_id: str,
+    body: PreviewRewriteBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> PreviewRewriteResponse:
+    """
+    My Voices' Playground tab — rewrite arbitrary sample text in this
+    brand's real voice, with a real per-input tone-match estimate (not the
+    old mock's fixed 98.2% shown for every input). Read-only: never
+    persists anything.
+    """
+    if not body.sample_text.strip():
+        raise HTTPException(status_code=400, detail="Sample text cannot be empty.")
+
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    result = await preview_rewrite_in_voice(doc, body.sample_text)
+    if not result:
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't generate a preview rewrite right now. Please try again.",
+        )
+    return PreviewRewriteResponse(**result)
 
 
 @router.put("/{brand_id}/complete")
