@@ -198,6 +198,7 @@ async def save_pipeline_result(
     goal: Optional[str] = None,
     tone: Optional[str] = None,
     is_repurpose: bool = False,
+    campaign_id: Optional[str] = None,
 ) -> tuple[str, list[str]]:
     """
     Save a complete pipeline result to MongoDB.
@@ -205,6 +206,9 @@ async def save_pipeline_result(
     Creates Version 1 (original) for every piece automatically.
 
     ``result.workspace_id`` is the scope; ``result.user_id`` is the creator.
+    ``campaign_id`` tags every piece for a campaign's generate-next-batch
+    run (mirrors how session_id already links pieces) — None for every
+    other caller, unchanged from before this param existed.
 
     Returns:
         (session_id, list of piece_ids)
@@ -248,6 +252,7 @@ async def save_pipeline_result(
             "workspace_id": workspace_id,
             "user_id": result.user_id,        # creator (audit)
             "brand_id": result.brand_id,
+            "campaign_id": campaign_id,
             "platform": platform_value,
             "content": piece.content,
             "word_count": piece.word_count,

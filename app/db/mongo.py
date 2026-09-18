@@ -150,6 +150,7 @@ async def create_indexes() -> None:
     await content_pieces.create_index([("workspace_id", 1), ("created_at", -1)])
     await content_pieces.create_index([("workspace_id", 1), ("approval_status", 1)])
     await content_pieces.create_index([("workspace_id", 1), ("publish_status", 1)])
+    await content_pieces.create_index("campaign_id")
 
     # ── Content piece versions ────────────────────────────────────────────
     await content_piece_versions.create_index("version_id", unique=True)
@@ -160,6 +161,11 @@ async def create_indexes() -> None:
     await presets.create_index("id", unique=True)
     await presets.create_index([("workspace_id", 1), ("deleted", 1), ("updated_at", -1)])
     await presets.create_index([("workspace_id", 1), ("category", 1)])
+
+    # ── Campaigns ────────────────────────────────────────────────────────
+    campaigns = get_client().get_default_database()["campaigns"]
+    await campaigns.create_index("id", unique=True)
+    await campaigns.create_index([("workspace_id", 1), ("deleted", 1), ("updated_at", -1)])
 
     publish_incidents = get_client().get_default_database()["publish_incidents"]
 

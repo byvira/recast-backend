@@ -22,6 +22,7 @@ from app.api.v1 import onboarding_draft as drafts_router
 from app.api.v1 import users as users_router
 from app.api.v1 import content, oauth, publish
 from app.api.v1 import presets as presets_router
+from app.api.v1 import campaigns as campaigns_router
 from app.core.config import settings
 from app.api.v1 import workspace, invites
 from app.core.logger import logger, setup_logging
@@ -273,6 +274,7 @@ app.include_router(brand_router.router,   prefix="/api/v1/brand",      tags=["Br
 app.include_router(drafts_router.router,  prefix="/api/v1/onboarding", tags=["Drafts"])
 app.include_router(content.router,        prefix="/api/v1/content",    tags=["Content"])
 app.include_router(presets_router.router, prefix="/api/v1/presets",    tags=["Presets"])
+app.include_router(campaigns_router.router, prefix="/api/v1/campaigns", tags=["Campaigns"])
 app.include_router(text.router,           prefix="/api/v1/text",       tags=["Text Pipeline"])
 app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Audio"])
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
