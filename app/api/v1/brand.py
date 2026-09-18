@@ -19,6 +19,7 @@ from app.models.brand_profile import (
     BrandType,
     CreateBrandProfileBody,
     SaveStepBody,
+    UpdateVoiceBody,
 )
 from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggestions
 
@@ -340,6 +341,53 @@ async def save_brand_step(
         "step": body.step,
         "next_step": body.step + 1,
     }
+
+
+@router.patch("/{brand_id}/voice")
+@limiter.limit("30/minute")
+async def update_brand_voice(
+    request: Request,
+    brand_id: str,
+    body: UpdateVoiceBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, Any]:
+    """
+    #9c — edit tone and vocabulary directly from the Voice Blueprint view,
+    without routing back through the onboarding wizard. Each field is set
+    independently; omitting one leaves it untouched (unlike PUT /step's
+    "setup" step, which overwrites manual_data wholesale alongside
+    extraction_data/setup_path from the same payload).
+    """
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    update: dict[str, Any] = {"updated_at": datetime.now(timezone.utc)}
+    changed_fields: list[str] = []
+    if body.voice_tone is not None:
+        update["voice_tone"] = body.voice_tone.model_dump()
+        changed_fields.append("voice_tone")
+    if body.manual_data is not None:
+        update["manual_data"] = body.manual_data.model_dump()
+        changed_fields.append("manual_data")
+
+    if not changed_fields:
+        raise HTTPException(status_code=400, detail="Nothing to update.")
+
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": update}
+    )
+
+    if "voice_tone" in changed_fields:
+        from app.shared.governance_events import emit_brand_voice_updated
+        emit_brand_voice_updated(
+            ctx.workspace_id, actor_user_id=ctx.user_id, actor_role=ctx.role,
+            brand_id=brand_id, changed_fields=changed_fields,
+            diff_summary="voice/vocabulary edited inline",
+        )
+
+    updated_doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated_doc).model_dump()
 
 
 @router.post("/{brand_id}/suggest-voice-patterns")

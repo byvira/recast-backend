@@ -129,6 +129,69 @@ async def test_brand_step3_type_specific_data_survives_the_round_trip(api_client
     assert body["positioning_data"] is None
 
 
+async def test_update_voice_sets_only_the_fields_provided(api_client):
+    """#9c — inline editing on the Voice Blueprint view. PATCH /voice must
+    set voice_tone/manual_data independently — unlike PUT /step's "setup"
+    step, which overwrites manual_data wholesale alongside
+    extraction_data/setup_path from the same payload, omitting a field
+    here must leave it untouched rather than nulling it out."""
+    await signup_new_user(api_client)
+    res = await api_client.post("/api/v1/brand/", json={"brand_type": "Person"})
+    brand_id = res.json()["brand_profile_id"]
+
+    # Seed manual_data via the real setup step first, same as onboarding would.
+    res = await api_client.put(
+        f"/api/v1/brand/{brand_id}/step",
+        json={"step": 5, "data": {
+            "setup_path": "manual",
+            "manual_data": {"openers": ["Here's the thing."], "closers": [], "phrases": [], "banned_words": [], "preferred_synonyms": []},
+        }},
+    )
+    assert res.status_code == 200, res.text
+
+    # Now edit only voice_tone via the new endpoint.
+    res = await api_client.patch(
+        f"/api/v1/brand/{brand_id}/voice",
+        json={"voice_tone": {"tones": ["direct", "witty"], "humor": "Subtle", "emoji": "Never", "style": "Short sentences."}},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["voice_tone"]["tones"] == ["direct", "witty"]
+    # manual_data (seeded above, not touched by this call) must survive untouched.
+    assert body["manual_data"]["openers"] == ["Here's the thing."]
+
+
+async def test_update_voice_edits_manual_data_independently(api_client):
+    await signup_new_user(api_client)
+    res = await api_client.post("/api/v1/brand/", json={"brand_type": "Person"})
+    brand_id = res.json()["brand_profile_id"]
+
+    res = await api_client.patch(
+        f"/api/v1/brand/{brand_id}/voice",
+        json={"manual_data": {"openers": [], "closers": [], "phrases": [], "banned_words": ["synergy"], "preferred_synonyms": []}},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["manual_data"]["banned_words"] == ["synergy"]
+
+
+async def test_update_voice_404_for_nonexistent_brand(api_client):
+    await signup_new_user(api_client)
+    res = await api_client.patch(
+        "/api/v1/brand/does-not-exist/voice",
+        json={"voice_tone": {"tones": ["direct"]}},
+    )
+    assert res.status_code == 404
+
+
+async def test_update_voice_400_when_nothing_provided(api_client):
+    await signup_new_user(api_client)
+    res = await api_client.post("/api/v1/brand/", json={"brand_type": "Person"})
+    brand_id = res.json()["brand_profile_id"]
+
+    res = await api_client.patch(f"/api/v1/brand/{brand_id}/voice", json={})
+    assert res.status_code == 400
+
+
 async def test_brand_not_found(api_client):
     await signup_new_user(api_client)
     res = await api_client.get("/api/v1/brand/does-not-exist")

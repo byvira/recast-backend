@@ -166,6 +166,20 @@ class SaveStepBody(BaseModel):
     data: dict
 
 
+class UpdateVoiceBody(BaseModel):
+    """Request body for editing tone/vocabulary directly, outside the
+    onboarding step sequence (#9c — inline editing on the Voice Blueprint
+    view). Each field is set independently ($set only what's provided) —
+    unlike PUT /{id}/step's "setup" step, which overwrites manual_data
+    wholesale alongside extraction_data and setup_path from the same
+    payload, this can't accidentally null out sibling fields the caller
+    didn't mean to touch.
+    """
+
+    voice_tone: VoiceTone | None = None
+    manual_data: ManualData | None = None
+
+
 class BrandProfile(BaseModel):
     """Full brand profile document as stored in MongoDB."""
 
