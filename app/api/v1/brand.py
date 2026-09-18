@@ -15,12 +15,15 @@ from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles, users
 from app.models.brand_profile import (
+    AddTrainingSampleBody,
     BrandProfile,
     BrandType,
     CreateBrandProfileBody,
     PreviewRewriteBody,
     PreviewRewriteResponse,
     SaveStepBody,
+    TrainingSample,
+    UpdateCalibrationBody,
     UpdateVoiceBody,
 )
 from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggestions
@@ -67,7 +70,7 @@ def normalise_brand_keys(data: dict) -> dict:
 
 def _doc_to_brand_profile(doc: dict) -> BrandProfile:
     """Convert a raw MongoDB document to a BrandProfile model instance."""
-    from app.models.brand_profile import AudienceProfile, VoiceTone
+    from app.models.brand_profile import AudienceProfile, VoiceCalibration, VoiceTone
 
     return BrandProfile(
         id=doc["id"],
@@ -88,6 +91,9 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         blueprint_version=doc.get("blueprint_version", "2.0"),
         is_complete=doc.get("is_complete", False),
         onboarding_step=doc.get("onboarding_step", 1),
+        is_default=doc.get("is_default", False),
+        calibration=VoiceCalibration(**doc["calibration"]) if doc.get("calibration") else VoiceCalibration(),
+        training_samples=doc.get("training_samples", []),
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
     )
@@ -458,6 +464,119 @@ async def preview_voice_rewrite(
             detail="Couldn't generate a preview rewrite right now. Please try again.",
         )
     return PreviewRewriteResponse(**result)
+
+
+@router.patch("/{brand_id}/calibration", response_model=BrandProfile)
+@limiter.limit("30/minute")
+async def update_brand_calibration(
+    request: Request,
+    brand_id: str,
+    body: UpdateCalibrationBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """
+    My Voices' Calibration tab — full replace, matching the page's single
+    "Save Voice Settings" button saving everything at once.
+    """
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": {
+            "calibration": body.calibration.model_dump(),
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
+
+
+@router.post("/{brand_id}/training-samples", response_model=BrandProfile, status_code=201)
+@limiter.limit("30/minute")
+async def add_training_sample(
+    request: Request,
+    brand_id: str,
+    body: AddTrainingSampleBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """My Voices' Training tab — append a real writing sample."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    if not body.content.strip():
+        raise HTTPException(status_code=400, detail="Sample content cannot be empty.")
+
+    content = body.content.strip()
+    sample = TrainingSample(
+        id=str(uuid4()),
+        title=body.title.strip() or "Untitled sample",
+        source_type=body.source_type,
+        word_count=len(content.split()),
+        snippet=content[:180] + ("..." if len(content) > 180 else ""),
+        extracted_traits=[],
+        added_at=datetime.now(timezone.utc),
+    )
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {
+            "$push": {"training_samples": sample.model_dump()},
+            "$set": {"updated_at": datetime.now(timezone.utc)},
+        },
+    )
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
+
+
+@router.delete("/{brand_id}/training-samples/{sample_id}", response_model=BrandProfile)
+@limiter.limit("30/minute")
+async def delete_training_sample(
+    request: Request,
+    brand_id: str,
+    sample_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {
+            "$pull": {"training_samples": {"id": sample_id}},
+            "$set": {"updated_at": datetime.now(timezone.utc)},
+        },
+    )
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
+
+
+@router.patch("/{brand_id}/set-default", response_model=BrandProfile)
+@limiter.limit("30/minute")
+async def set_default_brand(
+    request: Request,
+    brand_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """My Voices' "Set as Default" — exactly one default brand per
+    workspace; clears every sibling atomically rather than trusting the
+    caller to have deselected the old one."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    now = datetime.now(timezone.utc)
+    await brand_profiles.update_many(
+        {"workspace_id": ctx.workspace_id, "id": {"$ne": brand_id}},
+        {"$set": {"is_default": False, "updated_at": now}},
+    )
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"is_default": True, "updated_at": now}},
+    )
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
 
 
 @router.put("/{brand_id}/complete")

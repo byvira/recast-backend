@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -180,6 +180,65 @@ class UpdateVoiceBody(BaseModel):
     manual_data: ManualData | None = None
 
 
+class VoiceCalibration(BaseModel):
+    """My Voices' Calibration tab — a separate, more granular tone-tuning
+    surface than voice_tone (which drives real generation prompts
+    directly). Deliberately its own model rather than folded into
+    VoiceTone: e.g. emoji_usage here is a 4-way UI preference
+    (none/minimal/bullets/expressive), distinct from voice_tone.emoji's
+    3-way generation instruction (Never/Sometimes/Often) — conflating
+    them would make one UI silently override the other's meaning.
+    Saved as one unit (matches the page's own single "Save Voice
+    Settings" button), not field-by-field like UpdateVoiceBody.
+    """
+
+    formality: int = Field(50, ge=0, le=100)
+    directness: int = Field(50, ge=0, le=100)
+    humor: int = Field(50, ge=0, le=100)
+    optimism: int = Field(50, ge=0, le=100)
+    energy: int = Field(50, ge=0, le=100)
+    sentence_length: Literal["short", "balanced", "flowing"] = "balanced"
+    paragraph_spacing: Literal["single", "double", "dense"] = "single"
+    vocabulary_level: Literal["simple", "technical", "academic"] = "simple"
+    hook_aggressiveness: int = Field(50, ge=0, le=100)
+    emoji_usage: Literal["none", "minimal", "bullets", "expressive"] = "minimal"
+    allow_em_dashes: bool = True
+    allow_ellipses: bool = False
+    use_lowercase_bullets: bool = True
+    channel_rules: dict[str, str] = Field(default_factory=dict)
+    signature_phrases: list[str] = Field(default_factory=list)
+
+
+class TrainingSample(BaseModel):
+    """My Voices' Training tab — a writing sample the user pasted in to
+    teach this voice. extracted_traits stays empty until real trait
+    analysis exists (an LLM call, not built here) — the original mock
+    always showed 3 fixed fake traits regardless of content; an empty
+    list is more honest than fabricating that analysis."""
+
+    id: str
+    title: str
+    source_type: Literal["post", "newsletter", "transcript", "notes"]
+    word_count: int
+    snippet: str
+    extracted_traits: list[str] = Field(default_factory=list)
+    added_at: datetime
+
+
+class UpdateCalibrationBody(BaseModel):
+    """Full replace — matches the Calibration tab's single 'Save Voice
+    Settings' button saving everything at once, not incremental
+    per-field patches."""
+
+    calibration: VoiceCalibration
+
+
+class AddTrainingSampleBody(BaseModel):
+    title: str
+    source_type: Literal["post", "newsletter", "transcript", "notes"]
+    content: str
+
+
 class PreviewRewriteBody(BaseModel):
     """My Voices' Playground tab — rewrite arbitrary sample text in this
     brand's real voice. Read-only: never persists anything."""
@@ -224,5 +283,11 @@ class BrandProfile(BaseModel):
     blueprint_version: str = "2.0"
     is_complete: bool = False
     onboarding_step: int = 1
+    # My Voices page — one workspace-wide default brand voice. No workspace
+    # ever has more than one is_default=True brand (see set_default_brand
+    # in app/api/v1/brand.py, which clears every sibling atomically).
+    is_default: bool = False
+    calibration: VoiceCalibration = Field(default_factory=VoiceCalibration)
+    training_samples: list[TrainingSample] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
