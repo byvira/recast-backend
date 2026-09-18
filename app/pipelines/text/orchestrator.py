@@ -653,7 +653,14 @@ async def _run_single_repurpose(
             quality_issues=issues,
             flagged_for_review=not is_valid,
             repurposed=True,
-            publish_status=schedule_mode,
+            # "queued"/"pending" (not the raw "now"/"scheduled" schedule_mode
+            # value) is what content_pieces.publish_status and the calendar
+            # query (get_calendar) actually recognise — see the identical
+            # mapping in app/agents/text/nodes.py. Storing schedule_mode
+            # directly left every repurposed piece with an invalid
+            # publish_status ("now"), which get_calendar's $or never
+            # matches, so repurposed content never appeared on the calendar.
+            publish_status="queued" if schedule_mode == "scheduled" else "pending",
             publish_scheduled_at=scheduled_at,
         )
     except Exception as exc:
@@ -716,7 +723,7 @@ async def _run_single_repurpose(
         quality_issues=issues,
         flagged_for_review=not is_valid,
         repurposed=True,
-        publish_status=schedule_mode,
+        publish_status="queued" if schedule_mode == "scheduled" else "pending",
         publish_scheduled_at=scheduled_at,
     )
 

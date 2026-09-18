@@ -87,6 +87,48 @@ async def test_repurposed_piece_is_real_and_fetchable(signup_user, mock_llm):
     assert piece["stage"] == "drafting"
 
 
+async def test_repurposed_piece_appears_on_the_calendar(signup_user, mock_llm):
+    """_run_single_repurpose() used to store the raw schedule_mode value
+    ("now"/"scheduled") directly as publish_status, which isn't a real
+    PublishStatus value — get_calendar's $or (published / has a
+    publish_scheduled_at / pending-or-failed with created_at in range)
+    never matched "now", so every Quick-Recast piece was invisible on
+    every month's calendar, permanently. publish_status must map to the
+    same "pending"/"queued" values app/agents/text/nodes.py uses for the
+    normal generate path."""
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Repurpose Calendar WS")
+    brand_id = await _create_brand(client, ws_id)
+
+    mock_llm.set_structured({"content": "Repurposed for the calendar."})
+    mock_llm.set_plain("Repurposed for the calendar.")
+
+    res = await client.post(
+        "/api/v1/text/repurpose",
+        json={
+            "source_content": "Original long-form content.",
+            "source_platform": "LinkedIn",
+            "target_platforms": ["Twitter/X"],
+            "brand_id": brand_id,
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    piece_id = res.json()["pieces"][0]["piece_id"]
+
+    check = await client.get(f"/api/v1/content/pieces/{piece_id}", headers={"X-Workspace-Id": ws_id})
+    assert check.json()["publish_status"] == "pending"
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    cal_res = await client.get(
+        f"/api/v1/analytics/calendar?year={now.year}&month={now.month}",
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert cal_res.status_code == 200, cal_res.text
+    all_ids = [p["id"] for day in cal_res.json()["days"].values() for p in day]
+    assert piece_id in all_ids, "repurposed piece did not appear on the calendar"
+
+
 async def test_repurposed_piece_can_be_approved_and_edited_for_real(signup_user, mock_llm):
     """The whole point of fixing piece_id: a repurposed piece must be a
     real, actionable piece, not just visible text with no id behind it."""
