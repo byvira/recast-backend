@@ -260,6 +260,7 @@ _LLM_CONSUMER_MODULES = [
     "app.pipelines.text.repurpose_suggest",  # call_llm_structured — repurpose AI suggestions
     "app.pipelines.text.normalizer",    # call_llm, call_llm_structured — input normalisation
     "app.pipelines.brand.voice_playground",  # call_llm_structured — voice preview-rewrite
+    "app.pipelines.text.orchestrator",  # call_llm_structured — batch mode's angle planning
 ]
 
 

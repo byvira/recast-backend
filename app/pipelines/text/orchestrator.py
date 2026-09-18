@@ -28,6 +28,7 @@ from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.normalizer import normalise_input
 from app.pipelines.text.repurpose import run_repurpose_agent
 from app.pipelines.text.generator import validate_content
+from app.shared.llm import call_llm_structured
 from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
@@ -765,8 +766,6 @@ async def run_batch_pipeline(
     that event closes the SSE stream — only the batch's own final
     emit_complete below, after every day is actually done, may do that.
     """
-    from app.shared.llm import call_llm_structured
-
     if emitter:
         await emitter.emit_log(f"Planning {days} days of content angles for this topic…")
 
