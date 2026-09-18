@@ -468,13 +468,15 @@ async def get_workspace_pieces(
     approval_status: Optional[str] = None,
     brand_id: Optional[str] = None,
     stage: Optional[str] = None,
+    campaign_id: Optional[str] = None,
 ) -> dict:
     """
     Paginated, flat list of pieces across every session in the workspace,
     most recent first — deliberately not grouped by session. Powers
     Drafts and Library (Module 2 Stage 8): both need the real piece
     history regardless of session, not the session-then-pieces shape
-    get_session()/get_workspace_sessions() return.
+    get_session()/get_workspace_sessions() return. ``campaign_id`` powers
+    the real Pipeline page's per-campaign branch view.
     """
     query: dict = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
     if platform:
@@ -483,6 +485,8 @@ async def get_workspace_pieces(
         query["approval_status"] = approval_status
     if brand_id:
         query["brand_id"] = brand_id
+    if campaign_id:
+        query["campaign_id"] = campaign_id
     if stage and stage in KANBAN_STAGES:
         query.update(_stage_query(stage))
 

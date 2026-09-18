@@ -58,6 +58,61 @@ async def test_create_campaign_404_for_nonexistent_brand(api_client):
     assert res.status_code == 404
 
 
+async def test_create_campaign_scrapes_article_url(api_client, monkeypatch):
+    import app.api.v1.campaigns as campaigns_module
+
+    async def fake_scrape_url(url: str) -> str:
+        return "The full scraped article body, well past the 100-char minimum used elsewhere in this app."
+
+    monkeypatch.setattr(campaigns_module, "scrape_url", fake_scrape_url)
+
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(
+            brand_id,
+            source_type="article_url",
+            topic_cluster="https://example.com/some-article",
+        ),
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["source_type"] == "article_url"
+    assert body["source_url"] == "https://example.com/some-article"
+    assert body["topic_cluster"] == "The full scraped article body, well past the 100-char minimum used elsewhere in this app."
+
+
+async def test_create_campaign_400_when_article_url_fails_to_scrape(api_client, monkeypatch):
+    import app.api.v1.campaigns as campaigns_module
+
+    async def fake_scrape_url(url: str) -> str:
+        raise ValueError(f"Could not extract readable content from URL: {url}")
+
+    monkeypatch.setattr(campaigns_module, "scrape_url", fake_scrape_url)
+
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(brand_id, source_type="article_url", topic_cluster="https://example.com/paywalled"),
+    )
+    assert res.status_code == 400
+
+
+async def test_create_campaign_rejects_unsupported_source_types(api_client):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+
+    for source_type in ("youtube", "audio_upload", "podcast_rss"):
+        res = await api_client.post(
+            "/api/v1/campaigns/", json=_valid_body(brand_id, source_type=source_type),
+        )
+        assert res.status_code == 400, f"{source_type} should be rejected: {res.text}"
+
+
 async def test_create_campaign_400_for_invalid_platform(api_client):
     await signup_new_user(api_client)
     brand_id = await _create_brand(api_client)

@@ -127,6 +127,7 @@ async def list_pieces(
     approval_status: Optional[str] = Query(None),
     brand_id: Optional[str] = Query(None),
     stage: Optional[str] = Query(None),
+    campaign_id: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     ctx: WorkspaceContext = Depends(get_current_workspace),
@@ -137,7 +138,8 @@ async def list_pieces(
     need the real piece history, not grouped by session the way
     /sessions/{id} returns it. Each item includes a derived ``stage``
     (drafting/staging/scheduled/published/archived) and resolved
-    ``author_name``/``brand_name`` for display.
+    ``author_name``/``brand_name`` for display. ``campaign_id`` powers the
+    real Pipeline page's per-campaign branch view.
     """
     return await get_workspace_pieces(
         workspace_id=ctx.workspace_id,
@@ -147,6 +149,7 @@ async def list_pieces(
         approval_status=approval_status,
         brand_id=brand_id,
         stage=stage,
+        campaign_id=campaign_id,
     )
 
 

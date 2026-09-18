@@ -25,13 +25,16 @@ from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles, content_pieces, get_campaigns_collection
 from app.models.campaign import (
+    UNSUPPORTED_CAMPAIGN_SOURCES,
     Campaign,
+    CampaignSourceType,
     CampaignStatus,
     CreateCampaignRequest,
     UpdateCampaignRequest,
 )
 from app.models.text import ExtrasConfig, Platform
 from app.pipelines.text.orchestrator import run_batch_pipeline
+from app.pipelines.text.scraper import scrape_url
 from app.pipelines.text.storage import KANBAN_STAGES, compute_kanban_stage, save_pipeline_result
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 
@@ -70,6 +73,16 @@ async def create_campaign(
     if not brand:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
+    if body.source_type in UNSUPPORTED_CAMPAIGN_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{body.source_type.value.replace('_', ' ').title()} campaigns aren't "
+                "available yet — audio/video transcription isn't wired up. Use a topic "
+                "brief or article URL for now."
+            ),
+        )
+
     try:
         platforms = [Platform(p) for p in body.platforms]
     except ValueError as e:
@@ -77,13 +90,24 @@ async def create_campaign(
     if not platforms:
         raise HTTPException(status_code=400, detail="At least one platform is required.")
 
+    topic_cluster = body.topic_cluster
+    source_url = None
+    if body.source_type == CampaignSourceType.ARTICLE_URL:
+        source_url = body.topic_cluster
+        try:
+            topic_cluster = await scrape_url(source_url)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     now = datetime.now(timezone.utc)
     doc = {
         "id": str(uuid4()),
         "workspace_id": ctx.workspace_id,
         "brand_id": body.brand_id,
         "name": body.name,
-        "topic_cluster": body.topic_cluster,
+        "topic_cluster": topic_cluster,
+        "source_type": body.source_type.value,
+        "source_url": source_url,
         "content_types": ["text"],  # Phase 1 — see module docstring
         "platforms": [p.value for p in platforms],
         "cadence": body.cadence.model_dump(),
@@ -98,17 +122,27 @@ async def create_campaign(
     return _doc_to_campaign(doc)
 
 
-@router.get("/", response_model=list[Campaign])
+@router.get("/")
 @limiter.limit("60/minute")
 async def list_campaigns(
     request: Request,
     ctx: WorkspaceContext = Depends(get_current_workspace),
-) -> list[Campaign]:
+) -> list[dict[str, Any]]:
+    """
+    Includes each campaign's real progress inline (same computation
+    GET /{campaign_id} does) — the Pipeline page's job list needs each
+    job's real status/branch data to filter/render without an N+1 query
+    per card.
+    """
     docs = await get_campaigns_collection().find(
         {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
         sort=[("updated_at", -1)],
     ).to_list(length=200)
-    return [_doc_to_campaign(d) for d in docs]
+    out = []
+    for doc in docs:
+        progress = await _campaign_progress(ctx.workspace_id, doc["id"])
+        out.append({**_doc_to_campaign(doc).model_dump(), "progress": progress})
+    return out
 
 
 @router.get("/{campaign_id}")
