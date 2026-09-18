@@ -228,6 +228,7 @@ async def save_pipeline_result(
         "goal": goal,
         "tone": tone,
         "batch_mode": result.batch_mode,
+        "batch_day_index": result.batch_day_index,
         "is_repurpose": is_repurpose,
         "schedule_mode": result.schedule_mode or "now",
         "scheduled_at": str(result.scheduled_at) if result.scheduled_at else None,
@@ -253,6 +254,8 @@ async def save_pipeline_result(
             "user_id": result.user_id,        # creator (audit)
             "brand_id": result.brand_id,
             "campaign_id": campaign_id,
+            "batch_day_index": result.batch_day_index,
+            "angle": result.angle,
             "platform": platform_value,
             "content": piece.content,
             "word_count": piece.word_count,

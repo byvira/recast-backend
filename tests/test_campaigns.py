@@ -276,3 +276,155 @@ async def test_generate_next_batch_requires_create_content_permission(api_client
         f"/api/v1/campaigns/{campaign_id}/generate-next-batch", headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 403
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recurring cadence (Phase 3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_create_campaign_with_daily_cadence_sets_next_run_at(api_client):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(brand_id, cadence={"frequency": "daily", "days_per_batch": 3}),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["cadence"]["next_run_at"] is not None
+
+
+async def test_create_campaign_manual_cadence_has_no_next_run_at(api_client):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+
+    res = await api_client.post("/api/v1/campaigns/", json=_valid_body(brand_id))
+    assert res.status_code == 201, res.text
+    assert res.json()["cadence"]["next_run_at"] is None
+
+
+async def test_update_campaign_cadence_to_manual_clears_next_run_at(api_client):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(brand_id, cadence={"frequency": "daily", "days_per_batch": 7}),
+    )
+    campaign_id = res.json()["id"]
+    assert res.json()["cadence"]["next_run_at"] is not None
+
+    res = await api_client.patch(
+        f"/api/v1/campaigns/{campaign_id}",
+        json={"cadence": {"frequency": "manual", "days_per_batch": 7}},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["cadence"]["next_run_at"] is None
+
+
+async def test_generate_next_batch_advances_next_run_at_and_last_generated_at(api_client, mock_llm):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(brand_id, cadence={"frequency": "daily", "days_per_batch": 1}),
+    )
+    campaign_id = res.json()["id"]
+    next_run_before = res.json()["cadence"]["next_run_at"]
+    assert res.json()["last_generated_at"] is None
+
+    mock_llm.set_structured({"angles": ["Only angle"]})
+    mock_llm.set_plain("Real generated content.")
+
+    res = await api_client.post(f"/api/v1/campaigns/{campaign_id}/generate-next-batch")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["last_generated_at"] is not None
+    assert body["cadence"]["next_run_at"] is not None
+    assert body["cadence"]["next_run_at"] > next_run_before
+
+
+async def test_generate_next_batch_400_for_invalid_stored_platform(api_client, mock_llm):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    res = await api_client.post("/api/v1/campaigns/", json=_valid_body(brand_id))
+    campaign_id = res.json()["id"]
+
+    # Simulate stale/bad data bypassing create-time validation — direct
+    # Mongo write, since the API itself never accepts an invalid platform.
+    from app.db.mongo import get_campaigns_collection
+    await get_campaigns_collection().update_one(
+        {"id": campaign_id}, {"$set": {"platforms": ["NotARealPlatform"]}},
+    )
+
+    res = await api_client.post(f"/api/v1/campaigns/{campaign_id}/generate-next-batch")
+    assert res.status_code == 400, res.text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-platform / multi-day generation (Phase 2)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_create_campaign_accepts_platforms_by_day(api_client):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(
+            brand_id,
+            platforms=["LinkedIn"],
+            platforms_by_day=[["LinkedIn"], ["LinkedIn", "Twitter/X"]],
+            cadence={"frequency": "manual", "days_per_batch": 2},
+        ),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["platforms_by_day"] == [["LinkedIn"], ["LinkedIn", "Twitter/X"]]
+
+
+async def test_generate_next_batch_varies_platforms_per_day(api_client, mock_llm):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(
+            brand_id,
+            platforms=["LinkedIn"],
+            platforms_by_day=[["LinkedIn"], ["LinkedIn", "Twitter/X"]],
+            cadence={"frequency": "manual", "days_per_batch": 2},
+        ),
+    )
+    campaign_id = res.json()["id"]
+
+    mock_llm.set_structured({"angles": ["Day one angle", "Day two angle"]})
+    mock_llm.set_plain("Real generated content.")
+
+    res = await api_client.post(f"/api/v1/campaigns/{campaign_id}/generate-next-batch")
+    assert res.status_code == 200, res.text
+    assert res.json()["pieces_generated_this_run"] == 3  # day0: 1 platform, day1: 2 platforms
+
+    from app.db.mongo import content_pieces
+    day0 = await content_pieces.count_documents({"campaign_id": campaign_id, "batch_day_index": 0})
+    day1 = await content_pieces.count_documents({"campaign_id": campaign_id, "batch_day_index": 1})
+    assert day0 == 1
+    assert day1 == 2
+
+
+async def test_generate_next_batch_tags_pieces_with_batch_day_index_and_angle(api_client, mock_llm):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    res = await api_client.post(
+        "/api/v1/campaigns/",
+        json=_valid_body(brand_id, platforms=["LinkedIn"], cadence={"frequency": "manual", "days_per_batch": 2}),
+    )
+    campaign_id = res.json()["id"]
+
+    mock_llm.set_structured({"angles": ["Angle A", "Angle B"]})
+    mock_llm.set_plain("Real generated content.")
+
+    res = await api_client.post(f"/api/v1/campaigns/{campaign_id}/generate-next-batch")
+    assert res.status_code == 200, res.text
+
+    from app.db.mongo import content_pieces
+    pieces = await content_pieces.find({"campaign_id": campaign_id}).to_list(length=None)
+    assert sorted({p["batch_day_index"] for p in pieces}) == [0, 1]
+    assert all(p["angle"] for p in pieces)

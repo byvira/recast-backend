@@ -120,3 +120,73 @@ async def test_batch_pipeline_streams_all_days_over_one_emitter(mock_llm):
         session_doc = await content_sessions.find_one({"session_id": sid})
         assert session_doc is not None
         assert session_doc["workspace_id"] == workspace_id
+
+
+async def _minimal_batch_kwargs(mock_llm, workspace_id: str, brand_id: str, user_id: str) -> dict:
+    await brand_profiles.insert_one({
+        "id": brand_id,
+        "workspace_id": workspace_id,
+        "brand_type": "Person",
+        "is_complete": True,
+        "identity": {"name": "Test", "role": "Founder"},
+        "voice_tone": {"tones": ["direct"], "humor": "Subtle", "emoji": "Sometimes", "style": "punchy"},
+        "manual_data": {"openers": [], "closers": [], "phrases": [], "banned_words": []},
+        "audience": {"reading_level": "General", "knowledge_base": "Beginner", "primary_pain_point": "time"},
+    })
+    mock_llm.set_plain("Real batch-day content.")
+
+    class Extras:
+        hook_variations = False
+        hashtags = False
+        auto_cta = False
+        seo_meta = False
+        grammar_check = False
+        plagiarism_check = False
+        avoid_blacklist = False
+        pdf_export = False
+
+    return {"brand_id": brand_id, "workspace_id": workspace_id, "user_id": user_id, "extras": Extras()}
+
+
+async def test_batch_pipeline_varies_platforms_per_day(mock_llm):
+    workspace_id, brand_id, user_id = str(uuid4()), str(uuid4()), str(uuid4())
+    kwargs = await _minimal_batch_kwargs(mock_llm, workspace_id, brand_id, user_id)
+
+    mock_llm.set_structured({"angles": ["Day one angle", "Day two angle"]})
+
+    results = await run_batch_pipeline(
+        topic_cluster="Async teams ship faster",
+        platforms=[Platform.LINKEDIN],
+        platforms_by_day=[[Platform.LINKEDIN], [Platform.LINKEDIN, Platform.TWITTER]],
+        days=2,
+        **kwargs,
+    )
+
+    assert len(results) == 2
+    assert len(results[0].pieces) == 1
+    assert len(results[1].pieces) == 2
+
+
+async def test_batch_pipeline_on_day_complete_callback_fires_per_day(mock_llm):
+    workspace_id, brand_id, user_id = str(uuid4()), str(uuid4()), str(uuid4())
+    kwargs = await _minimal_batch_kwargs(mock_llm, workspace_id, brand_id, user_id)
+
+    mock_llm.set_structured({"angles": ["Angle A", "Angle B", "Angle C"]})
+
+    seen: list[tuple[int, object]] = []
+
+    async def on_day_complete(day_index, result):
+        seen.append((day_index, result))
+
+    days = 3
+    results = await run_batch_pipeline(
+        topic_cluster="Async teams ship faster",
+        platforms=[Platform.LINKEDIN],
+        days=days,
+        on_day_complete=on_day_complete,
+        **kwargs,
+    )
+
+    assert len(seen) == days
+    assert [i for i, _ in seen] == list(range(days))
+    assert [r for _, r in seen] == results

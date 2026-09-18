@@ -36,6 +36,7 @@ from app.api.v1 import assistant as assistant_router
 from app.api.v1 import supervisor as supervisor_router
 from app.db.redis import close_redis
 from app.workers.scheduled_posts import process_scheduled_posts
+from app.workers.campaign_scheduler import run_due_campaign_batches
 from app.workers.token_refresh import refresh_expiring_tokens
 from app.pipelines.analytics.scheduler import refresh_analytics
 from app.api.v1 import analytics as analytics_router
@@ -122,9 +123,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("MongoDB connected, indexes created, migrations applied")
 
     # Start scheduler
-    scheduler.add_job(process_scheduled_posts, "interval", minutes=1, id="scheduled_posts")
-    scheduler.add_job(refresh_expiring_tokens, "interval", hours=24, id="token_refresh")
-    scheduler.add_job(refresh_analytics,       "interval", hours=6,    id="analytics_refresh") 
+    scheduler.add_job(process_scheduled_posts,  "interval", minutes=1, id="scheduled_posts")
+    scheduler.add_job(run_due_campaign_batches, "interval", minutes=1, id="campaign_batches")
+    scheduler.add_job(refresh_expiring_tokens,  "interval", hours=24, id="token_refresh")
+    scheduler.add_job(refresh_analytics,        "interval", hours=6,    id="analytics_refresh")
     scheduler.start()
     logger.info("Background workers started")
 

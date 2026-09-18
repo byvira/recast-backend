@@ -1,17 +1,15 @@
 """Pydantic models for campaign management.
 
-Phase 1 of the "bulk campaigns" architecture — a campaign groups multiple
-generation runs (today: one topic cluster -> N days of content via the
-existing run_batch_pipeline()) under one tracked entity, so the Pipeline
-page can show real, aggregate progress instead of the fully-mocked view
-it had before. This model previously existed as a dead scaffold (no API
-route or anything else in the codebase ever referenced it) — this is
-the real thing.
+A campaign groups multiple generation runs (one topic cluster -> N days of
+content via run_batch_pipeline()) under one tracked entity, with real
+aggregate progress across its pieces, optional per-day platform variation
+(`platforms_by_day`), and optional recurring auto-generation
+(`cadence.frequency` + `cadence.next_run_at`, polled by
+app.workers.campaign_scheduler).
 
-Phase 1 deliberately only wires `content_types: ["text"]` — run_batch_
-pipeline() is text-only and single-platform-set today. Audio/video/image
-support and multi-platform-per-type campaigns are Phase 2 (would
-generalise run_batch_pipeline itself, not just this model).
+Still text-only — `content_types` is hardcoded to `["text"]` at creation
+time; audio/video/image support has no real pipeline behind it yet
+(app/api/v1/audio.py and video.py are unimplemented stubs).
 """
 
 from datetime import datetime
@@ -61,13 +59,15 @@ class CampaignStatus(str, Enum):
 
 
 class CampaignCadence(BaseModel):
-    """How generate-next-batch is meant to be run. Phase 1 stores this as
-    plain metadata the caller acts on manually — recurring automation
-    (a worker actually calling generate-next-batch on `frequency`) is
-    Phase 3, not built here."""
+    """How generate-next-batch is run. `next_run_at` is server-computed only
+    (set/advanced by generate_campaign_batch, never trusted from a client
+    body even though this model is embedded directly in Create/Update
+    requests) — it's what app.workers.campaign_scheduler polls to find
+    campaigns due for automatic regeneration."""
 
-    frequency: str = "manual"  # "manual" | "daily" | "weekly" — automation not built yet
+    frequency: str = "manual"  # "manual" | "daily" | "weekly"
     days_per_batch: int = 7  # passed straight to run_batch_pipeline's `days`
+    next_run_at: Optional[datetime] = None
 
 
 class Campaign(BaseModel):
@@ -83,6 +83,11 @@ class Campaign(BaseModel):
     source_url: Optional[str] = None
     content_types: list[ContentType] = Field(default_factory=lambda: [ContentType.TEXT])
     platforms: list[str] = Field(default_factory=list)  # real Platform values, e.g. "LinkedIn"
+    # Optional per-day platform override — platforms_by_day[i] is used for
+    # day i instead of the flat `platforms` list, when present. None (the
+    # default) reproduces the flat-list behaviour every existing campaign
+    # already relies on.
+    platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
     status: CampaignStatus = CampaignStatus.DRAFT
     # Every piece_id generated across every generate-next-batch run for
@@ -90,6 +95,7 @@ class Campaign(BaseModel):
     # (mirrors how session_id already links pieces), so this list is a
     # convenience/ordering record, not the source of truth for membership.
     piece_ids: list[str] = Field(default_factory=list)
+    last_generated_at: Optional[datetime] = None
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -104,6 +110,7 @@ class CreateCampaignRequest(BaseModel):
     topic_cluster: str
     source_type: CampaignSourceType = CampaignSourceType.RAW_TEXT
     platforms: list[str]
+    platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
 
 
@@ -111,17 +118,6 @@ class UpdateCampaignRequest(BaseModel):
     name: Optional[str] = None
     topic_cluster: Optional[str] = None
     platforms: Optional[list[str]] = None
+    platforms_by_day: Optional[list[list[str]]] = None
     status: Optional[CampaignStatus] = None
     cadence: Optional[CampaignCadence] = None
-
-
-class CampaignSchedule(BaseModel):
-    """Scheduling configuration for a campaign's recurring publish events —
-    Phase 3 (cadence automation). Not wired to anything yet; kept here so
-    the eventual worker has a settled shape to write against."""
-
-    campaign_id: str
-    platform: str
-    publish_at: datetime
-    recurring: bool = False
-    recurrence_rule: Optional[str] = None

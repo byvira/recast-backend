@@ -359,6 +359,8 @@ class TextPipelineResult(BaseModel):
     schedule_mode: str = "now"
     scheduled_at: Optional[datetime] = None
     batch_mode: bool = False
+    batch_day_index: Optional[int] = None
+    angle: Optional[str] = None
     created_at: datetime
     pdf_export_url: Optional[str] = None
     batch_job_id: Optional[str] = None
@@ -448,6 +450,12 @@ class ContentPiece(BaseModel):
     publish_target: Optional[str] = None
     publish_job_id: Optional[str] = None
     version_count: int = 1
+    # Set only for pieces generated via run_batch_pipeline (campaigns'
+    # generate-next-batch) — which day of the batch produced this piece,
+    # and the AI-planned angle used for that day. None for non-batch
+    # generation/repurpose.
+    batch_day_index: Optional[int] = None
+    angle: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

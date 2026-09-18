@@ -8,7 +8,7 @@ One auto-retry per platform on hard quality failure — handled inside the graph
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from app.agents.text.graph import build_single_platform_graph
 from app.agents.text.state import build_initial_state
@@ -369,6 +369,7 @@ async def run_text_pipeline(
         schedule_mode=schedule_mode,
         scheduled_at=scheduled_at,
         batch_mode=False,
+        batch_day_index=batch_day_index,
         created_at=datetime.now(timezone.utc),
         assistant_nudge=await _safe_assistant_nudge(workspace_id, user_id),
     )
@@ -747,6 +748,8 @@ async def run_batch_pipeline(
     language: str = "en",
     emitter=None,
     outer_session_id: Optional[str] = None,
+    platforms_by_day: Optional[list[list[Platform]]] = None,
+    on_day_complete: Optional[Callable[[int, TextPipelineResult], Awaitable[None]]] = None,
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
@@ -765,6 +768,18 @@ async def run_batch_pipeline(
     day suppresses its own pipeline_complete (emit_completion=False) since
     that event closes the SSE stream — only the batch's own final
     emit_complete below, after every day is actually done, may do that.
+
+    platforms_by_day, when given, overrides `platforms` for individual days
+    (platforms_by_day[i] for day i) — lets a campaign vary which platforms
+    run on which day instead of the same fixed set every day. None (every
+    caller before this param existed) reproduces the original behaviour
+    exactly.
+
+    on_day_complete, when given, is awaited with (day_index, result) right
+    after each day finishes — lets a caller (campaigns' generate_campaign_
+    batch) persist pieces incrementally as each day completes instead of
+    waiting for the whole batch, so progress can be polled mid-run. Purely
+    additive: it doesn't touch the emitter/completion contract above.
     """
     if emitter:
         await emitter.emit_log(f"Planning {days} days of content angles for this topic…")
@@ -782,10 +797,13 @@ async def run_batch_pipeline(
         logger.info("Batch day %d/%d — angle: %s", i + 1, days, angle[:60])
         if emitter:
             await emitter.emit_log(f"Day {i + 1}/{days} — {angle[:80]}")
+        day_platforms = (
+            platforms_by_day[i] if platforms_by_day and i < len(platforms_by_day) else platforms
+        )
         result = await run_text_pipeline(
             source_type=InputSourceType.TOPIC,
             content=angle,
-            platforms=platforms,
+            platforms=day_platforms,
             brand_id=brand_id,
             workspace_id=workspace_id,
             user_id=user_id,
@@ -800,6 +818,9 @@ async def run_batch_pipeline(
             emit_completion=False,
         )
         result.batch_mode = True
+        result.angle = angle
+        if on_day_complete:
+            await on_day_complete(i, result)
         results.append(result)
 
     if emitter:

@@ -1,14 +1,14 @@
-"""Campaign endpoints — Phase 1 of the "bulk campaigns" architecture.
+"""Campaign endpoints — the "bulk campaigns" architecture.
 
-A campaign groups multiple generation runs (today: one topic cluster ->
-N days of content via the existing run_batch_pipeline()) under one
-tracked entity, with real aggregate progress computed from the pieces it
-generated — replacing the Pipeline page's fully-mocked view.
+A campaign groups multiple generation runs (one topic cluster -> N days
+of content via run_batch_pipeline(), optionally varying platforms per
+day via `platforms_by_day`) under one tracked entity, with real aggregate
+progress computed from the pieces it generated, and optional recurring
+auto-generation (cadence.frequency + cadence.next_run_at, polled by
+app.workers.campaign_scheduler).
 
-Phase 1 is text-only, single-platform-set per campaign — run_batch_
-pipeline() itself doesn't support multiple content types or multiple
-platform groups in one run yet; generalising it is Phase 2, not this
-file. Workspace-scoped. Reads require membership; create/update/delete/
+Still text-only — content_types is hardcoded to ["text"] at creation.
+Workspace-scoped. Reads require membership; create/update/delete/
 generate-next-batch require ``create_content`` (the same gate content
 generation itself already uses — a campaign is a coordination layer on
 top of pipelines that already exist, not a new generation engine).
@@ -32,11 +32,10 @@ from app.models.campaign import (
     CreateCampaignRequest,
     UpdateCampaignRequest,
 )
-from app.models.text import ExtrasConfig, Platform
-from app.pipelines.text.orchestrator import run_batch_pipeline
+from app.models.text import Platform
+from app.pipelines.campaigns.batch_runner import generate_campaign_batch
 from app.pipelines.text.scraper import scrape_url
-from app.pipelines.text.storage import KANBAN_STAGES, compute_kanban_stage, save_pipeline_result
-from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
+from app.pipelines.text.storage import KANBAN_STAGES, compute_kanban_stage
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -100,6 +99,11 @@ async def create_campaign(
             raise HTTPException(status_code=400, detail=str(e))
 
     now = datetime.now(timezone.utc)
+    cadence = body.cadence.model_dump()
+    # next_run_at is server-computed only — CampaignCadence is embedded
+    # directly in the request body, so a client could otherwise set it
+    # itself and jump the scheduler's queue.
+    cadence["next_run_at"] = now if cadence.get("frequency") != "manual" else None
     doc = {
         "id": str(uuid4()),
         "workspace_id": ctx.workspace_id,
@@ -108,11 +112,13 @@ async def create_campaign(
         "topic_cluster": topic_cluster,
         "source_type": body.source_type.value,
         "source_url": source_url,
-        "content_types": ["text"],  # Phase 1 — see module docstring
+        "content_types": ["text"],  # text-only — see module docstring
         "platforms": [p.value for p in platforms],
-        "cadence": body.cadence.model_dump(),
+        "platforms_by_day": body.platforms_by_day,
+        "cadence": cadence,
         "status": CampaignStatus.DRAFT.value,
         "piece_ids": [],
+        "last_generated_at": None,
         "created_by": ctx.user_id,
         "created_at": now,
         "updated_at": now,
@@ -182,9 +188,15 @@ async def update_campaign(
             update["platforms"] = [Platform(p).value for p in payload["platforms"]]
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid platform: {e}")
-    for field in ("name", "topic_cluster", "status", "cadence"):
+    for field in ("name", "topic_cluster", "status", "cadence", "platforms_by_day"):
         if field in payload and payload[field] is not None:
             update[field] = payload[field]
+
+    if "cadence" in update:
+        # Same server-computed-only rule as create_campaign — recompute
+        # next_run_at from the new frequency rather than trust the client.
+        now = datetime.now(timezone.utc)
+        update["cadence"]["next_run_at"] = now if update["cadence"].get("frequency") != "manual" else None
 
     if not update:
         raise HTTPException(status_code=400, detail="Nothing to update.")
@@ -220,80 +232,28 @@ async def generate_next_batch(
     ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> dict[str, Any]:
     """
-    Run one more batch for this campaign — the existing run_batch_pipeline()
-    (topic cluster -> N days of content, one platform set, already used by
-    /text/batch), tagging every resulting piece with this campaign_id.
-    Expensive; rate limited same as /text/batch.
+    Run one more batch for this campaign via generate_campaign_batch() —
+    the same helper app.workers.campaign_scheduler calls automatically for
+    campaigns with a non-manual cadence. Expensive; rate limited same as
+    /text/batch.
     """
     campaign = await get_campaigns_collection().find_one(
         {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
     )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found.")
-    if campaign.get("content_types") != ["text"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Only text campaigns are supported right now.",
-        )
-
-    brand = await brand_profiles.find_one({"id": campaign["brand_id"], "workspace_id": ctx.workspace_id})
-    if not brand or not brand.get("is_complete"):
-        raise HTTPException(
-            status_code=400,
-            detail="Brand profile is not complete. Finish onboarding first.",
-        )
-
-    language = first_present_or_none(
-        await workspace_language(ctx.workspace_id),
-        await user_language(ctx.user_id),
-    ) or detect_language(campaign["topic_cluster"]) or "en"
-
-    days = campaign.get("cadence", {}).get("days_per_batch", 7)
-    platforms = [Platform(p) for p in campaign["platforms"]]
 
     try:
-        results = await run_batch_pipeline(
-            topic_cluster=campaign["topic_cluster"],
-            platforms=platforms,
-            brand_id=campaign["brand_id"],
-            workspace_id=ctx.workspace_id,
-            user_id=ctx.user_id,
-            extras=ExtrasConfig(),
-            days=days,
-            language=language,
-        )
+        result = await generate_campaign_batch(campaign, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Campaign batch generation error: {str(e)}")
-
-    new_piece_ids: list[str] = []
-    for i, day_result in enumerate(results):
-        try:
-            _, piece_ids = await save_pipeline_result(
-                day_result,
-                campaign_id=campaign_id,
-            )
-            new_piece_ids.extend(piece_ids)
-        except Exception as e:
-            logger.error(
-                "Failed to save campaign %s day %d: %s", campaign_id, i + 1, e,
-            )
-
-    now = datetime.now(timezone.utc)
-    await get_campaigns_collection().update_one(
-        {"id": campaign_id, "workspace_id": ctx.workspace_id},
-        {
-            "$push": {"piece_ids": {"$each": new_piece_ids}},
-            "$set": {
-                "updated_at": now,
-                **({"status": CampaignStatus.ACTIVE.value} if campaign["status"] == CampaignStatus.DRAFT.value else {}),
-            },
-        },
-    )
 
     updated = await get_campaigns_collection().find_one({"id": campaign_id, "workspace_id": ctx.workspace_id})
     progress = await _campaign_progress(ctx.workspace_id, campaign_id)
     return {
         **_doc_to_campaign(updated).model_dump(),
         "progress": progress,
-        "pieces_generated_this_run": len(new_piece_ids),
+        "pieces_generated_this_run": len(result["new_piece_ids"]),
     }

@@ -166,6 +166,8 @@ async def create_indexes() -> None:
     campaigns = get_client().get_default_database()["campaigns"]
     await campaigns.create_index("id", unique=True)
     await campaigns.create_index([("workspace_id", 1), ("deleted", 1), ("updated_at", -1)])
+    # app.workers.campaign_scheduler's due-campaign poll.
+    await campaigns.create_index([("status", 1), ("cadence.frequency", 1), ("cadence.next_run_at", 1)])
 
     publish_incidents = get_client().get_default_database()["publish_incidents"]
 
