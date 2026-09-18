@@ -44,6 +44,7 @@ content_pieces: AsyncIOMotorCollection = get_client().get_default_database()["co
 content_piece_versions: AsyncIOMotorCollection = get_client().get_default_database()["content_piece_versions"]
 account_metrics: AsyncIOMotorCollection = get_client().get_default_database()["account_metrics"]
 post_metrics: AsyncIOMotorCollection    = get_client().get_default_database()["post_metrics"]
+presets: AsyncIOMotorCollection          = get_client().get_default_database()["presets"]
 
 # ── Two-layer agent architecture (personal assistant + workspace supervisor) ──
 workspace_events: AsyncIOMotorCollection     = get_client().get_default_database()["workspace_events"]
@@ -154,6 +155,11 @@ async def create_indexes() -> None:
     await content_piece_versions.create_index("version_id", unique=True)
     await content_piece_versions.create_index("piece_id")
     await content_piece_versions.create_index([("piece_id", 1), ("version_number", 1)])
+
+    # ── Presets ──────────────────────────────────────────────────────────
+    await presets.create_index("id", unique=True)
+    await presets.create_index([("workspace_id", 1), ("deleted", 1), ("updated_at", -1)])
+    await presets.create_index([("workspace_id", 1), ("category", 1)])
 
     publish_incidents = get_client().get_default_database()["publish_incidents"]
 
