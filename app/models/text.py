@@ -254,6 +254,25 @@ class GenerateAnglesResponse(BaseModel):
     angles: list[AngleVariant]
 
 
+# New repurpose flow — an "AI Suggestions" step between input and
+# generation. Quick Recast used to jump straight from a raw paste to
+# blind platform checkboxes with no read of the content itself; this is a
+# read-only, cheap suggestion call (no persistence, no full rewrite) the
+# user can accept or override before the real /repurpose call runs.
+class SuggestRepurposeRequest(BaseModel):
+    source_content: str
+    source_platform: Platform
+    brand_id: str
+    source_type: InputSourceType = InputSourceType.TEXT
+
+
+class RepurposeSuggestion(BaseModel):
+    suggested_platforms: list[Platform]
+    rationale: str
+    suggested_tone: Optional[str] = None
+    suggested_angle: Optional[str] = None
+
+
 class SEOPackage(BaseModel):
     title: str
     meta_description: str

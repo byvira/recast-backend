@@ -29,6 +29,8 @@ from app.models.text import (
     AgentTask,
     GenerateAnglesRequest,
     GenerateAnglesResponse,
+    SuggestRepurposeRequest,
+    RepurposeSuggestion,
 
 )
 from app.models.scorer import (
@@ -40,11 +42,12 @@ from app.models.scorer import (
 from app.models.chips import ApplyChipRequest, ApplyChipResponse, GetChipsResponse
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.pipelines.text.orchestrator import run_batch_pipeline, run_text_pipeline
-from app.pipelines.text.scraper import preview_url
+from app.pipelines.text.scraper import preview_url, scrape_url
 from app.pipelines.text.scorer import score_hook, score_readability
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.chips import apply_chip, get_chips_for_platform, CHIP_PROMPTS
 from app.pipelines.text.angles import run_angles_agent
+from app.pipelines.text.repurpose_suggest import suggest_repurpose_targets
 from app.pipelines.text.storage import save_pipeline_result, update_piece_content
 from app.agents.text.nodes import _extract_enforcement_data
 from app.models.refiner import RefineChatRequest, RefineChatResponse
@@ -322,6 +325,37 @@ async def repurpose_content(
             piece.piece_id = piece_id
 
     return result
+
+
+@router.post("/repurpose/suggest", response_model=RepurposeSuggestion)
+@limiter.limit("20/minute")
+async def suggest_repurpose(
+    request: Request,
+    body: SuggestRepurposeRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> RepurposeSuggestion:
+    """
+    New repurpose flow's "AI Suggestions" step — a cheap, read-only call
+    suggesting which platforms best fit this content (and a tone/angle
+    note) before the user commits to a full /repurpose generation. Never
+    persists anything; a suggestion failure never blocks manual picking.
+    """
+    brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
+    brand_context = build_brand_context(brand_profile)
+
+    content = body.source_content
+    if body.source_type == InputSourceType.URL:
+        try:
+            content = await scrape_url(body.source_content)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    result = await suggest_repurpose_targets(
+        content=content,
+        source_platform=body.source_platform,
+        brand_context=brand_context,
+    )
+    return RepurposeSuggestion(**result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

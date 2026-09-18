@@ -1,0 +1,23 @@
+{{ language_instruction }}
+
+{{ brand_context }}
+
+The user wrote the content below on {{ source_platform }} and wants to
+repurpose it for other platforms. Suggest which platform(s) genuinely fit
+this specific content best — not a generic "post everywhere" answer — and
+a brief note on tone and angle for repurposing it well.
+
+Choose only from these candidate platforms: {{ candidate_platforms | join(", ") }}.
+Pick 1-2, whichever actually fits — never all of them by default, and
+never {{ source_platform }} itself (that's the source, not a target).
+
+SOURCE CONTENT:
+{{ content }}
+
+Return valid JSON only:
+{
+  "suggested_platforms": ["..."],
+  "rationale": "one sentence explaining why these platforms fit this content",
+  "suggested_tone": "one or two words for the best tone on those platforms",
+  "suggested_angle": "one short sentence on what to lead with when repurposing"
+}

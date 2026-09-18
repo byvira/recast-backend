@@ -257,6 +257,7 @@ _LLM_CONSUMER_MODULES = [
     "app.pipelines.text.angles",        # call_llm_structured — angle variants (Feature 8)
     "app.pipelines.text.seo",           # call_llm_structured — SEO package
     "app.pipelines.text.repurpose",     # call_llm_structured — repurpose
+    "app.pipelines.text.repurpose_suggest",  # call_llm_structured — repurpose AI suggestions
     "app.pipelines.text.normalizer",    # call_llm, call_llm_structured — input normalisation
 ]
 
