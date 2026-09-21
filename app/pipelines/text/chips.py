@@ -14,6 +14,7 @@ Usage:
 import logging
 from typing import Optional
 from app.prompts.registry import load_prompt
+from app.pipelines.text.brand_context import build_tone_override
 from app.pipelines.text.generator import build_language_instruction
 from app.shared.llm import call_llm, GroqModel
 
@@ -119,6 +120,7 @@ async def apply_chip(
     banned_words: list[str] = [],
     custom_instruction: Optional[str] = None,
     language: str = "en",
+    default_tone: Optional[str] = None,
 ) -> dict:
     """
     Apply a quick action chip to existing content.
@@ -139,6 +141,13 @@ async def apply_chip(
                              awareness at all, silently defaulting to
                              whatever language the LLM felt like regardless
                              of the piece's/workspace's real language
+        default_tone:       the brand's persistent default tone (My Voices >
+                             Calibration), if set — chip refinement had no
+                             tone-override mechanism at all before this;
+                             chips themselves (more_casual/more_formal) stay
+                             the per-run tone tool, this only fills in the
+                             brand's own standing default the same way
+                             generation/regenerate already do
 
     Returns:
         {
@@ -173,6 +182,7 @@ async def apply_chip(
         instruction=instruction,
         content=content,
         language_instruction=build_language_instruction(language),
+        tone_override=build_tone_override(default_tone, language),
     )
 
     refined = await call_llm(prompt, model=GroqModel.BALANCED)

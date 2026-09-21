@@ -504,6 +504,7 @@ async def refine_content(
         banned_words=enforcement.get("banned_words", []),
         custom_instruction=body.custom_instruction,
         language=language,
+        default_tone=brand_profile.get("default_tone"),
     )
 
     # Save version if piece_id provided and content changed
@@ -619,6 +620,7 @@ async def refine_chat(
         platform=body.platform,
         banned_words=enforcement.get("banned_words", []),
         language=language,
+        default_tone=brand_profile.get("default_tone"),
     )
 
     refined = refined.strip()

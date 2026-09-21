@@ -54,3 +54,34 @@ def test_none_tone_with_default_set_uses_the_default():
     must behave the same as explicit ToneOverride.BRAND."""
     out = _build_metadata(_extras(), tone=None, default_tone="direct")
     assert out["tone"] == "direct"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /refine and /refine-chat — neither ever called build_tone_override() at
+# all before this, so a brand's default_tone was silently ignored during
+# chip refinement and chat refinement even though /generate, /regenerate,
+# and /repurpose all respected it. Direct-render checks, no LLM/HTTP calls,
+# same pattern as tests/test_tone_language_resonance.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_refine_chat_system_prompt_applies_brand_default_tone():
+    from app.pipelines.text.refiner import build_refinement_system
+
+    out = build_refinement_system("BRAND CTX", "LinkedIn", [], "en", "professional")
+    assert "TONE OVERRIDE" in out
+    assert "professional, polished register" in out
+
+
+def test_refine_chat_system_prompt_has_no_tone_override_when_default_unset():
+    from app.pipelines.text.refiner import build_refinement_system
+
+    out = build_refinement_system("BRAND CTX", "LinkedIn", [], "en", None)
+    assert "TONE OVERRIDE" not in out
+
+
+def test_refine_chat_default_tone_composes_with_non_english_language():
+    from app.pipelines.text.refiner import build_refinement_system
+
+    out = build_refinement_system("BRAND CTX", "LinkedIn", [], "ta", "casual")
+    assert "Natural code-switching is expected" in out
+    assert "Tamil" in out
