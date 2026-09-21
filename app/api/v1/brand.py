@@ -94,6 +94,7 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         onboarding_step=doc.get("onboarding_step", 1),
         is_default=doc.get("is_default", False),
         is_active=doc.get("is_active", True),
+        default_tone=doc.get("default_tone"),
         calibration=VoiceCalibration(**doc["calibration"]) if doc.get("calibration") else VoiceCalibration(),
         training_samples=doc.get("training_samples", []),
         created_at=doc["created_at"],
@@ -381,6 +382,9 @@ async def update_brand_voice(
     if body.manual_data is not None:
         update["manual_data"] = body.manual_data.model_dump()
         changed_fields.append("manual_data")
+    if body.default_tone is not None:
+        update["default_tone"] = body.default_tone.value
+        changed_fields.append("default_tone")
 
     if not changed_fields:
         raise HTTPException(status_code=400, detail="Nothing to update.")

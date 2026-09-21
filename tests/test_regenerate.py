@@ -154,3 +154,75 @@ async def test_regenerate_preserves_source_language(signup_user, monkeypatch):
     )
     assert res.status_code == 200, res.text
     assert "Tamil" in captured["prompt"]
+
+
+async def test_regenerate_applies_brand_default_tone_when_none_picked(signup_user, monkeypatch):
+    """My Voices > Calibration tab's persistent default tone
+    (BrandProfile.default_tone) — regenerate's request model defaults
+    `tone` to the string "brand" whenever the caller doesn't pick one
+    (app/models/text.py RegenerateRequest.tone), which the handler always
+    converts to an explicit ToneOverride.BRAND, never None
+    (app/api/v1/text.py:737). _build_metadata() must recognise that as
+    "no explicit override" and fall through to the brand's own
+    default_tone rather than silently ignoring it — confirmed here by
+    capturing the real prompt sent to the LLM and asserting the
+    Professional TONE OVERRIDE text actually appears."""
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Regenerate WS")
+    brand_id = await _create_brand(client, ws_id)
+    res = await client.patch(
+        f"/api/v1/brand/{brand_id}/voice",
+        json={"default_tone": "professional"},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm_structured(prompt: str, *args, **kwargs):
+        captured["prompt"] = prompt
+        return {"content": "Regenerated content.", "platform": "LinkedIn"}
+
+    monkeypatch.setattr(generator_module, "call_llm_structured", _fake_call_llm_structured)
+
+    res = await client.post(
+        "/api/v1/text/regenerate",
+        json={"platform": "LinkedIn", "brand_id": brand_id, "content": "Some source content."},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    assert "TONE OVERRIDE" in captured["prompt"]
+    assert "professional, polished register" in captured["prompt"]
+
+
+async def test_regenerate_explicit_tone_wins_over_brand_default(signup_user, monkeypatch):
+    """An explicit per-run tone override must still take priority over the
+    brand's persistent default, not be silently replaced by it."""
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Regenerate WS")
+    brand_id = await _create_brand(client, ws_id)
+    await client.patch(
+        f"/api/v1/brand/{brand_id}/voice",
+        json={"default_tone": "professional"},
+        headers={"X-Workspace-Id": ws_id},
+    )
+
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm_structured(prompt: str, *args, **kwargs):
+        captured["prompt"] = prompt
+        return {"content": "Regenerated content.", "platform": "LinkedIn"}
+
+    monkeypatch.setattr(generator_module, "call_llm_structured", _fake_call_llm_structured)
+
+    res = await client.post(
+        "/api/v1/text/regenerate",
+        json={
+            "platform": "LinkedIn", "brand_id": brand_id, "content": "Some source content.",
+            "tone": "casual",
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    assert "casual, conversational tone" in captured["prompt"]
+    assert "professional, polished register" not in captured["prompt"]

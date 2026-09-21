@@ -174,6 +174,47 @@ async def test_update_voice_edits_manual_data_independently(api_client):
     assert res.json()["manual_data"]["banned_words"] == ["synergy"]
 
 
+async def test_update_voice_sets_default_tone_and_round_trips(api_client):
+    """My Voices > Calibration tab's persistent default tone — a brand's
+    own default for every generation when no per-run ToneSelector override
+    is picked (app/pipelines/text/orchestrator.py::_build_metadata)."""
+    await signup_new_user(api_client)
+    res = await api_client.post("/api/v1/brand/", json={"brand_type": "Person"})
+    brand_id = res.json()["brand_profile_id"]
+
+    res = await api_client.patch(
+        f"/api/v1/brand/{brand_id}/voice",
+        json={"default_tone": "professional"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["default_tone"] == "professional"
+
+    res = await api_client.get(f"/api/v1/brand/{brand_id}")
+    assert res.json()["default_tone"] == "professional"
+
+
+async def test_update_voice_resets_default_tone_to_brand(api_client):
+    """An explicit "brand" value (not omitting the field) is how a caller
+    clears a previously-set persistent default."""
+    await signup_new_user(api_client)
+    res = await api_client.post("/api/v1/brand/", json={"brand_type": "Person"})
+    brand_id = res.json()["brand_profile_id"]
+
+    await api_client.patch(f"/api/v1/brand/{brand_id}/voice", json={"default_tone": "casual"})
+    res = await api_client.patch(f"/api/v1/brand/{brand_id}/voice", json={"default_tone": "brand"})
+    assert res.status_code == 200, res.text
+    assert res.json()["default_tone"] == "brand"
+
+
+async def test_new_brand_has_no_default_tone(api_client):
+    await signup_new_user(api_client)
+    res = await api_client.post("/api/v1/brand/", json={"brand_type": "Person"})
+    brand_id = res.json()["brand_profile_id"]
+
+    res = await api_client.get(f"/api/v1/brand/{brand_id}")
+    assert res.json()["default_tone"] is None
+
+
 async def test_update_voice_404_for_nonexistent_brand(api_client):
     await signup_new_user(api_client)
     res = await api_client.patch(

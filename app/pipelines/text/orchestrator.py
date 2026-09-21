@@ -47,12 +47,33 @@ _text_graph = build_single_platform_graph()
 # HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_metadata(extras, goal=None, tone=None, language: str = "en") -> dict:
+def _build_metadata(
+    extras, goal=None, tone=None, language: str = "en", default_tone: Optional[str] = None
+) -> dict:
     """
     Build the metadata dict stored in TextAgentState.extras.
     Every node reads what it needs from state["extras"].
     Carries all toggle states, style overrides, and language.
+
+    `default_tone` is the brand profile's own persistent tone default (My
+    Voices > Calibration tab) — used only when the caller didn't pass an
+    explicit per-run `tone` override, so a brand configured with e.g.
+    "professional" gets that treatment on every generation without anyone
+    needing to pick it from the ToneSelector each time. An explicit `tone`
+    always wins; "brand" (or unset) means no persistent default, same as
+    before this existed.
+
+    Every real caller (text.py, text_stream.py) always constructs a
+    ToneOverride object rather than passing None — defaulting to
+    ToneOverride.BRAND when the user picked nothing — so "no explicit
+    override" is recognised by `tone.value == "brand"`, not `tone is None`.
     """
+    if tone and tone.value != "brand":
+        resolved_tone = tone.value
+    elif default_tone and default_tone != "brand":
+        resolved_tone = default_tone
+    else:
+        resolved_tone = "brand"
     return {
         "hook_variations":   extras.hook_variations,
         "hashtags":          extras.hashtags,
@@ -63,7 +84,7 @@ def _build_metadata(extras, goal=None, tone=None, language: str = "en") -> dict:
         "avoid_blacklist":   extras.avoid_blacklist,
         "pdf_export":        extras.pdf_export,
         "goal":              goal.value if goal else None,
-        "tone":              tone.value if tone else "brand",
+        "tone":              resolved_tone,
         "language":          language,
     }
 
@@ -265,7 +286,9 @@ async def run_text_pipeline(
     if not brand_profile:
         raise ValueError(f"Brand profile not found: {brand_id}")
 
-    metadata   = _build_metadata(extras, goal, tone, language=language)
+    metadata   = _build_metadata(
+        extras, goal, tone, language=language, default_tone=brand_profile.get("default_tone")
+    )
     normalised = await normalise_input(
         source_type=source_type,
         content=content,

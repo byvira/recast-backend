@@ -6,6 +6,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from app.models.text import ToneOverride
+
 
 class BrandType(str, Enum):
     """Category of brand being set up."""
@@ -178,6 +180,10 @@ class UpdateVoiceBody(BaseModel):
 
     voice_tone: VoiceTone | None = None
     manual_data: ManualData | None = None
+    # None = don't touch (same convention as the two fields above). An
+    # explicit ToneOverride.BRAND is how a caller resets back to "no
+    # persistent default" — distinct from omitting the field entirely.
+    default_tone: ToneOverride | None = None
 
 
 class VoiceCalibration(BaseModel):
@@ -296,6 +302,11 @@ class BrandProfile(BaseModel):
     # identity/voice_tone and fall back to the generic natural-voice line
     # instead, so the system keeps working with an inactive brand selected.
     is_active: bool = True
+    # My Voices > Calibration tab — a persistent tone applied to every
+    # generation for this brand when no per-run ToneSelector override is
+    # picked. None (or the stored value "brand") both mean "no persistent
+    # default" — resolved in app/pipelines/text/orchestrator.py::_build_metadata().
+    default_tone: Optional[str] = None
     calibration: VoiceCalibration = Field(default_factory=VoiceCalibration)
     training_samples: list[TrainingSample] = Field(default_factory=list)
     created_at: datetime
