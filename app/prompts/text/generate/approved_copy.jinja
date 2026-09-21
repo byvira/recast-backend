@@ -11,7 +11,9 @@ APPROVED OPENER — pick EXACTLY ONE. Use it as your very first line.
   {{ loop.index }}. {{ opener }}
 {% endfor -%}
 RULE: Only ONE opener in the entire content. The other two must NOT appear.
-Adapt the style to fit your angle but keep the core idea.
+Adapt the style to fit your angle but keep the core idea — and if the
+language instruction above calls for a language other than English,
+express that idea in that language; never paste this English text literally.
 {% endif %}
 {% if closers %}
 
@@ -20,11 +22,17 @@ APPROVED CLOSER — pick EXACTLY ONE. Use it as your very last line.
   {{ loop.index }}. {{ closer }}
 {% endfor -%}
 RULE: Only ONE closer in the entire content. The other two must NOT appear anywhere.
-Adapt the style to fit your angle but keep the core idea.
+Adapt the style to fit your angle but keep the core idea — and if the
+language instruction above calls for a language other than English,
+express that idea in that language; never paste this English text literally.
 {% endif %}
 {% if valid_phrases %}
 
-REQUIRED PHRASES — weave these naturally into the content:
+REQUIRED PHRASES — weave the MEANING of each of these naturally into the
+content. These are written in English here only to tell you what idea to
+include. If the language instruction above calls for a language other than
+English, express each phrase's meaning in that language, in your own
+words — never insert the English text itself, not even in quotes:
 {% for phrase in valid_phrases %}
   - '{{ phrase.text }}' (placement: {{ phrase.placement }})
 {% endfor %}
