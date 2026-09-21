@@ -323,7 +323,10 @@ async def connect_threads(
     params   = {
         "client_id":     settings.THREADS_APP_ID,
         "redirect_uri":  settings.THREADS_REDIRECT_URI,
-        "scope":         "threads_basic,threads_content_publish",
+        # threads_manage_insights — without it, the analytics fetcher's
+        # /threads_insights calls 4xx for every workspace connected before
+        # this scope was added (they need to reconnect for it to apply).
+        "scope":         "threads_basic,threads_content_publish,threads_manage_insights",
         "response_type": "code",
         "state":         state,
     }

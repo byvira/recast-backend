@@ -82,11 +82,17 @@ class ThreadsAnalyticsFetcher(AnalyticsFetcher):
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
 
-                # Profile
+                # Profile — followers_count is not a valid field on this
+                # plain object endpoint (it's only exposed via
+                # /threads_insights below), and threads_count doesn't exist
+                # at all ("Tried accessing nonexisting field", confirmed via
+                # a raw API call) — requesting either was causing a 500 from
+                # Threads' API on every real connected account. total_posts
+                # is left at 0 — there is no real field for it on this node.
                 profile_resp = await client.get(
                     f"{THREADS_BASE}/{platform_user_id}",
                     params={
-                        "fields":       "id,username,followers_count,threads_count",
+                        "fields":       "id,username",
                         "access_token": access_token,
                     },
                 )
@@ -112,6 +118,16 @@ class ThreadsAnalyticsFetcher(AnalyticsFetcher):
                         if name == "views":            total_views = value
                         if name == "likes":            total_likes = value
                         if name == "followers_count":  followers   = value
+                else:
+                    # threads_insights (unlike the plain profile fetch above)
+                    # requires the threads_manage_insights scope — see
+                    # connect_threads() in app/api/v1/oauth.py. A workspace
+                    # connected before that scope was requested needs to
+                    # reconnect Threads for this to stop 4xx-ing.
+                    logger.warning(
+                        "Threads account insights unavailable for %s — %d: %s",
+                        platform_user_id, insights_resp.status_code, insights_resp.text[:300],
+                    )
 
                 return AccountMetrics(
                     platform=self.platform,

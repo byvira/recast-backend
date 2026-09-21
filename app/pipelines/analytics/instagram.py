@@ -46,11 +46,17 @@ class InstagramAnalyticsFetcher(AnalyticsFetcher):
                 likes    = media.get("like_count", 0)
                 comments = media.get("comments_count", 0)
 
-                # Insights — reach, impressions, saves
+                # Insights — reach, views, saves. Meta deprecated Instagram's
+                # "impressions" metric (April 21 2025) in favor of "views" —
+                # this was silently returning all-zero metrics for every
+                # real post.
                 insights_resp = await client.get(
                     f"{GRAPH_BASE}/{platform_post_id}/insights",
                     params={
-                        "metric":       "impressions,reach,saved",
+                        "metric":       "views,reach,saved",
+                        # Required as of Graph API v22+ — these are all
+                        # "total_value"-style metrics now, not time-series.
+                        "metric_type":  "total_value",
                         "access_token": access_token,
                     },
                 )
@@ -59,14 +65,14 @@ class InstagramAnalyticsFetcher(AnalyticsFetcher):
                 if insights_resp.status_code == 200:
                     for item in insights_resp.json().get("data", []):
                         name  = item.get("name")
-                        value = item.get("values", [{}])[0].get("value", 0)
-                        if name == "impressions": impressions = value
-                        if name == "reach":       reach       = value
-                        if name == "saved":       saves       = value
+                        value = item.get("total_value", {}).get("value", 0)
+                        if name == "views": impressions = value
+                        if name == "reach": reach       = value
+                        if name == "saved": saves       = value
                 else:
                     logger.warning(
-                        "Instagram insights unavailable for post %s — %d",
-                        platform_post_id, insights_resp.status_code,
+                        "Instagram insights unavailable for post %s — %d: %s",
+                        platform_post_id, insights_resp.status_code, insights_resp.text[:300],
                     )
 
                 return PostMetrics(
@@ -113,12 +119,17 @@ class InstagramAnalyticsFetcher(AnalyticsFetcher):
                 profile_resp.raise_for_status()
                 profile = profile_resp.json()
 
-                # Account insights — impressions, reach, profile_views
+                # Account insights — views, reach. Meta deprecated both
+                # "impressions" (April 21 2025, replaced by "views") and
+                # "profile_views" (Jan 8 2025, no direct replacement) for
+                # Instagram account-level insights — this was silently
+                # returning all-zero metrics for every connected account.
                 insights_resp = await client.get(
                     f"{GRAPH_BASE}/{platform_user_id}/insights",
                     params={
-                        "metric":  "impressions,reach,profile_views",
-                        "period":  "day",
+                        "metric":       "views,reach",
+                        "period":       "day",
+                        "metric_type":  "total_value",
                         "access_token": access_token,
                     },
                 )
@@ -128,10 +139,14 @@ class InstagramAnalyticsFetcher(AnalyticsFetcher):
                 if insights_resp.status_code == 200:
                     for item in insights_resp.json().get("data", []):
                         name  = item.get("name")
-                        total = sum(v.get("value", 0) for v in item.get("values", []))
-                        if name == "impressions":   impressions   = total
-                        if name == "reach":         reach         = total
-                        if name == "profile_views": profile_views = total
+                        total = item.get("total_value", {}).get("value", 0)
+                        if name == "views": impressions = total
+                        if name == "reach": reach        = total
+                else:
+                    logger.warning(
+                        "Instagram account insights unavailable for %s — %d: %s",
+                        platform_user_id, insights_resp.status_code, insights_resp.text[:300],
+                    )
 
                 return AccountMetrics(
                     platform=self.platform,

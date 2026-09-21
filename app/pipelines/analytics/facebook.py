@@ -50,11 +50,15 @@ class FacebookAnalyticsFetcher(AnalyticsFetcher):
                 comments = post.get("comments",  {}).get("summary", {}).get("total_count", 0)
                 shares   = post.get("shares",    {}).get("count", 0)
 
-                # Post insights — impressions, reach, clicks
+                # Post insights — views/reach/clicks. Meta deprecated
+                # post_impressions/post_impressions_unique (400 as of
+                # Nov 15 2025) in favor of post_media_view/
+                # post_total_media_view_unique — this was silently
+                # returning all-zero metrics for every real published post.
                 insights_resp = await client.get(
                     f"{GRAPH_BASE}/{platform_post_id}/insights",
                     params={
-                        "metric":       "post_impressions,post_impressions_unique,post_clicks",
+                        "metric":       "post_media_view,post_total_media_view_unique,post_clicks",
                         "access_token": access_token,
                     },
                 )
@@ -65,13 +69,13 @@ class FacebookAnalyticsFetcher(AnalyticsFetcher):
                     for item in insights_resp.json().get("data", []):
                         name  = item.get("name")
                         value = item.get("values", [{}])[0].get("value", 0)
-                        if name == "post_impressions":        impressions = value
-                        if name == "post_impressions_unique": reach       = value
-                        if name == "post_clicks":             clicks      = value
+                        if name == "post_media_view":               impressions = value
+                        if name == "post_total_media_view_unique":  reach       = value
+                        if name == "post_clicks":                   clicks      = value
                 else:
                     logger.warning(
-                        "Facebook post insights unavailable for %s — %d",
-                        platform_post_id, insights_resp.status_code,
+                        "Facebook post insights unavailable for %s — %d: %s",
+                        platform_post_id, insights_resp.status_code, insights_resp.text[:300],
                     )
 
                 return PostMetrics(
@@ -122,11 +126,15 @@ class FacebookAnalyticsFetcher(AnalyticsFetcher):
                 page_resp.raise_for_status()
                 page = page_resp.json()
 
-                # Page insights — impressions, reach
+                # Page insights — views/reach. Meta deprecated page_impressions
+                # and page_impressions_unique (400 as of Nov 15 2025) in favor
+                # of page_media_view/page_total_media_view_unique — this was
+                # silently returning all-zero metrics for every workspace.
+                # page_views_total (profile views) is unaffected, kept as-is.
                 insights_resp = await client.get(
                     f"{GRAPH_BASE}/{platform_user_id}/insights",
                     params={
-                        "metric":       "page_impressions,page_impressions_unique,page_views_total",
+                        "metric":       "page_media_view,page_total_media_view_unique,page_views_total",
                         "period":       "day",
                         "access_token": access_token,
                     },
@@ -138,13 +146,13 @@ class FacebookAnalyticsFetcher(AnalyticsFetcher):
                     for item in insights_resp.json().get("data", []):
                         name  = item.get("name")
                         total = sum(v.get("value", 0) for v in item.get("values", []))
-                        if name == "page_impressions":        impressions   = total
-                        if name == "page_impressions_unique": reach         = total
-                        if name == "page_views_total":        profile_views = total
+                        if name == "page_media_view":               impressions   = total
+                        if name == "page_total_media_view_unique":  reach         = total
+                        if name == "page_views_total":               profile_views = total
                 else:
                     logger.warning(
-                        "Facebook page insights unavailable for %s — %d",
-                        platform_user_id, insights_resp.status_code,
+                        "Facebook page insights unavailable for %s — %d: %s",
+                        platform_user_id, insights_resp.status_code, insights_resp.text[:300],
                     )
 
                 return AccountMetrics(

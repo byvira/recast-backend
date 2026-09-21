@@ -101,20 +101,29 @@ class LinkedInAnalyticsFetcher(AnalyticsFetcher):
             async with httpx.AsyncClient(timeout=15.0) as client:
                 headers = {"Authorization": f"Bearer {access_token}"}
 
+                # /v2/me with localizedFirstName/localizedLastName requires
+                # the legacy r_liteprofile scope, which this app's OAuth
+                # flow (app/pipelines/publish/linkedin/oauth.py) never
+                # requests — it uses OpenID Connect (openid, profile, email,
+                # w_member_social), which was returning a 403 here on every
+                # real connected account. /v2/userinfo is the OIDC-scoped
+                # equivalent, already used successfully in exchange_code().
                 profile_resp = await client.get(
-                    f"{LINKEDIN_BASE}/me",
-                    params={"fields": "id,localizedFirstName,localizedLastName"},
+                    "https://api.linkedin.com/v2/userinfo",
                     headers=headers,
                 )
                 profile_resp.raise_for_status()
                 profile = profile_resp.json()
+                username = profile.get("name", "")
 
-                username = (
-                    f"{profile.get('localizedFirstName', '')} "
-                    f"{profile.get('localizedLastName', '')}".strip()
-                )
-
-                # Follower stats
+                # Follower count via /networkSizes requires r_organization_social
+                # or Marketing Developer Platform partner access — neither of
+                # which this app's basic member OAuth scopes grant. This is a
+                # real LinkedIn API access-tier limitation, not a bug: a
+                # personal member token cannot read its own follower count
+                # through the public API. Left in (harmless, degrades to 0
+                # on any non-200) in case a future workspace connects via a
+                # Company Page token instead, which can succeed here.
                 follower_resp = await client.get(
                     f"{LINKEDIN_BASE}/networkSizes/{platform_user_id}",
                     params={"edgeType": "CompanyFollowedByMember"},
@@ -124,6 +133,13 @@ class LinkedInAnalyticsFetcher(AnalyticsFetcher):
                 followers = 0
                 if follower_resp.status_code == 200:
                     followers = follower_resp.json().get("firstDegreeSize", 0)
+                else:
+                    logger.info(
+                        "LinkedIn follower count unavailable for %s (status %d) — "
+                        "requires r_organization_social/Marketing API access this "
+                        "app's member OAuth scopes don't have.",
+                        platform_user_id, follower_resp.status_code,
+                    )
 
                 return AccountMetrics(
                     platform=self.platform,

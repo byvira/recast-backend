@@ -1,13 +1,37 @@
 """Shared file storage helpers using Cloudinary."""
 
+import cloudinary
 import cloudinary.uploader
 from enum import Enum
+
+from app.core.config import settings
 
 class ContentType(str, Enum):
     IMAGE = "recast_images"
     VIDEO = "recast_video"
     AUDIO = "recast_audio"
     THUMBNAIL = "recast_thumbnails"
+
+_configured = False
+
+
+def _ensure_configured() -> None:
+    """Lazy, idempotent Cloudinary SDK init — nothing in the app ever
+    called cloudinary.config() before, so every upload_file()/get_file_url()/
+    delete_file() call would have failed at runtime despite CLOUDINARY_*
+    being set in config/.env (this module was entirely unused until now).
+    Same lazy-singleton pattern as token_store.py's _get_fernet()."""
+    global _configured
+    if _configured:
+        return
+    cloudinary.config(
+        cloud_name=settings.CLOUDINARY_CLOUD_NAME,
+        api_key=settings.CLOUDINARY_API_KEY,
+        api_secret=settings.CLOUDINARY_API_SECRET,
+        secure=True,
+    )
+    _configured = True
+
 
 def _get_resource_type(content_type: ContentType) -> str:
     if content_type == ContentType.VIDEO or content_type == ContentType.AUDIO:
