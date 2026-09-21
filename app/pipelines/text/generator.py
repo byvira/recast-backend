@@ -88,9 +88,26 @@ def build_language_instruction(language_code: str) -> str:
     SPECIFICITY_INSTRUCTION/ENGAGEMENT_PATTERNS as its opening line even when
     correctly instructed to write in Hindi — it was treating them as text to
     reuse, not as illustrations of structure. This line is the fix.
+
+    A code containing "+" (e.g. "ta+en") is a deliberate mixed-language
+    mode — real Tanglish/Hinglish-style code-switching, not a request to
+    translate into one language. These are a genuinely different ask from
+    every single-language code below, so they get a dedicated early-return
+    branch and their own prompt fragment (mixed_language_instruction.jinja,
+    which independently carries the same "never copy prompt text literally"
+    protection) rather than being squeezed into the single-language template.
     """
+    normalised = (language_code or "").strip().lower()
+    if "+" in normalised:
+        lang1_code, _, lang2_code = normalised.partition("+")
+        return load_prompt(
+            "text/generate/mixed_language_instruction",
+            lang1=resolve_language_name(lang1_code),
+            lang2=resolve_language_name(lang2_code),
+        )
+
     name = resolve_language_name(language_code)
-    normalised = (language_code or "").strip().lower().split("-")[0]
+    normalised = normalised.split("-")[0]
     register_note = CONVERSATIONAL_REGISTER_NOTES.get(normalised, "")
     return load_prompt(
         "text/generate/language_instruction", name=name, register_note=register_note

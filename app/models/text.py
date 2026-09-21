@@ -58,6 +58,27 @@ LANGUAGE_NAMES: dict[str, str] = {
     "nl": "Dutch",
     "pl": "Polish",
     "sw": "Swahili",
+    # Standalone entries needed so build_language_instruction()'s mixed-mode
+    # branch can resolve each half of a "+" code independently (e.g. "kn+en"
+    # splits into "kn" and "en", each resolved separately) — these three
+    # were missing even though the frontend's constants/languages.ts already
+    # offers them as regular single-language choices.
+    "kn": "Kannada",
+    "ml": "Malayalam",
+    "tl": "Filipino",
+    # Mixed-language (code-switched) modes — a deliberate blended register,
+    # not a translation target. build_language_instruction() detects the
+    # "+" and renders a dedicated instruction instead of "respond entirely
+    # in X"; these display names are used wherever resolve_language_name()
+    # is already called (e.g. build_tone_override()'s code-switching text).
+    "ta+en": "Tamil and English (Tanglish)",
+    "hi+en": "Hindi and English (Hinglish)",
+    "te+en": "Telugu and English (Tenglish)",
+    "kn+en": "Kannada and English (Kanglish)",
+    "ml+en": "Malayalam and English (Manglish)",
+    "bn+en": "Bengali and English (Benglish)",
+    "es+en": "Spanish and English (Spanglish)",
+    "tl+en": "Filipino and English (Taglish)",
 }
 
 

@@ -79,7 +79,11 @@ def build_tone_override(tone: Optional[str], language_code: str = "en") -> str:
         return ""
 
     normalised_lang = (language_code or "en").strip().lower().split("-")[0]
-    if normalised_lang and normalised_lang != "en":
+    # A mixed-language code (e.g. "ta+en") already gets a dedicated
+    # code-switching directive from build_language_instruction()'s own
+    # mixed_language_instruction.jinja — skip this addition here to avoid
+    # two overlapping instructions in the same prompt.
+    if normalised_lang and normalised_lang != "en" and "+" not in normalised_lang:
         name = resolve_language_name(language_code)
         if tone in _INFORMAL_TONES:
             instruction += (
