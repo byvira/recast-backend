@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -34,8 +35,14 @@ from app.models.campaign import (
 )
 from app.models.text import Platform
 from app.pipelines.campaigns.batch_runner import generate_campaign_batch
+from app.pipelines.campaigns.suggest import suggest_campaign_topics
+from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.scraper import scrape_url
 from app.pipelines.text.storage import KANBAN_STAGES, compute_kanban_stage
+from app.shared.storage import ContentType as UploadContentType, upload_file
+
+MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024  # 5MB
+ALLOWED_THUMBNAIL_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -293,3 +300,78 @@ async def generate_next_batch(
         "progress": progress,
         "pieces_generated_this_run": len(result["new_piece_ids"]),
     }
+
+
+@router.post("/{campaign_id}/thumbnail", response_model=Campaign)
+@limiter.limit("10/minute")
+async def upload_campaign_thumbnail(
+    request: Request,
+    campaign_id: str,
+    file: UploadFile = File(...),
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> Campaign:
+    """User-uploaded thumbnail only — there's no real image-generation
+    pipeline to derive one from (ContentType.IMAGE stays a stub, see
+    app/api/v1/image.py). Stored on Cloudinary under the uploading user's
+    id, same convention app.shared.storage already documents."""
+    campaign = await get_campaigns_collection().find_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+
+    if file.content_type not in ALLOWED_THUMBNAIL_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported image type '{file.content_type}'. Use JPEG, PNG, or WebP.",
+        )
+
+    contents = await file.read()
+    if len(contents) > MAX_THUMBNAIL_BYTES:
+        raise HTTPException(status_code=400, detail="Thumbnail must be 5MB or smaller.")
+
+    try:
+        thumbnail_url = await upload_file(contents, UploadContentType.THUMBNAIL, ctx.user_id)
+    except Exception as e:
+        logger.error("Campaign thumbnail upload failed for %s: %s", campaign_id, e)
+        raise HTTPException(status_code=502, detail="Thumbnail upload failed. Try again.")
+
+    await get_campaigns_collection().update_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"thumbnail_url": thumbnail_url, "updated_at": datetime.now(timezone.utc)}},
+    )
+    updated = await get_campaigns_collection().find_one({"id": campaign_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_campaign(updated)
+
+
+class SuggestCampaignTopicsRequest(BaseModel):
+    topic_cluster: str
+    brand_id: str
+    existing_topics: list[str] = []
+
+
+@router.post("/suggest-topics")
+@limiter.limit("20/minute")
+async def suggest_topics(
+    request: Request,
+    body: SuggestCampaignTopicsRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict[str, Any]:
+    """
+    Real "AI Suggestions" step for the campaign runner form — read-only,
+    never persists anything, mirrors /text/repurpose/suggest's pattern
+    (app.pipelines.text.repurpose_suggest.suggest_repurpose_targets): a
+    single cheap structured LLM call the user can accept or ignore, not a
+    blocker to filling the form manually.
+    """
+    brand = await brand_profiles.find_one({"id": body.brand_id, "workspace_id": ctx.workspace_id})
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    brand_context = build_brand_context(brand)
+    result = await suggest_campaign_topics(
+        topic_cluster=body.topic_cluster,
+        brand_context=brand_context,
+        existing_topics=body.existing_topics,
+    )
+    return result

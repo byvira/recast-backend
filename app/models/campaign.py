@@ -90,6 +90,10 @@ class Campaign(BaseModel):
     platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
     status: CampaignStatus = CampaignStatus.DRAFT
+    # Cloudinary secure_url, set via POST /{campaign_id}/thumbnail. User-
+    # uploaded only — there is no real image-generation pipeline to derive
+    # one from (see ContentType.IMAGE's stub status).
+    thumbnail_url: Optional[str] = None
     # Every piece_id generated across every generate-next-batch run for
     # this campaign — content_pieces also carries campaign_id directly
     # (mirrors how session_id already links pieces), so this list is a

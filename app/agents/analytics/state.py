@@ -12,6 +12,14 @@ Lifecycle:
 from typing import Any, Optional
 from typing_extensions import TypedDict
 
+# The "no real question" default — used by GET /ask (full dashboard report,
+# no question needed) and AnalyticsAskRequest's default. analyze_node and
+# format_report_node compare against this exact string to decide whether to
+# run the fixed 4-point overview structure or genuinely answer a specific
+# question — see their docstrings. Centralized here so the API layer and
+# the graph nodes can never drift out of sync on what "no question" means.
+DEFAULT_OVERVIEW_QUESTION = "Give me a full performance overview for the last 7 days."
+
 
 class AnalyticsAgentState(TypedDict):
 
@@ -39,7 +47,7 @@ class AnalyticsAgentState(TypedDict):
 
 def build_initial_state(
     workspace_id: str,
-    question: str = "Give me a full performance overview.",
+    question: str = DEFAULT_OVERVIEW_QUESTION,
     user_id: str = "",
     language: str = "en",
 ) -> AnalyticsAgentState:

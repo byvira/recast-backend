@@ -1,0 +1,26 @@
+{{ brand_context }}
+
+The user is setting up a content campaign around this topic cluster / brief:
+
+TOPIC CLUSTER:
+{{ topic_cluster }}
+
+{% if existing_topics %}
+They've already listed these specific angles/topics to cover:
+{% for t in existing_topics %}
+- {{ t }}
+{% endfor %}
+Suggest angles that are genuinely different from these — don't repeat them.
+{% endif %}
+
+Suggest 3 additional specific angles or topics that would make this
+campaign stronger — concrete, non-generic, each answerable in one real
+piece of content (not vague themes). Also suggest one overall tone this
+campaign should lean into.
+
+Return valid JSON only:
+{
+  "suggested_topics": ["...", "...", "..."],
+  "suggested_tone": "one or two words",
+  "rationale": "one sentence explaining why these angles fit this brief"
+}

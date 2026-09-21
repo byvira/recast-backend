@@ -14,7 +14,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 
-from app.agents.analytics.state import AnalyticsAgentState
+from app.agents.analytics.state import AnalyticsAgentState, DEFAULT_OVERVIEW_QUESTION
 from app.pipelines.analytics.aggregator import (
     fetch_account_metrics_all,
     fetch_post_metrics_all,
@@ -153,9 +153,21 @@ async def analyze_node(state: AnalyticsAgentState) -> dict:
     """
     LLM interprets the metrics — finds trends, patterns, anomalies.
     Writes: analysis
+
+    Was always running the same fixed 4-point checklist (best platform /
+    trends / content type / underperformers) regardless of what the user
+    actually asked — {{ question }} was interpolated into the prompt but
+    the instructions never referenced it, so "What should I post next?"
+    and "Give me a full overview" produced structurally identical output.
+    Now branches: the default overview question (GET /ask, or POST /ask
+    with no real question) keeps that fixed checklist; any other real
+    question gets analytics/analyze_question.jinja, which answers it
+    directly instead of running the generic checklist.
     """
     if not state["account_metrics"]:
         return {"analysis": await _analytics_fallback(state.get("language", "en"), "no_metrics")}
+
+    is_overview = state["question"] == DEFAULT_OVERVIEW_QUESTION
 
     # Build a clean metrics summary for the LLM
     account_summary = "\n".join([
@@ -187,7 +199,7 @@ async def analyze_node(state: AnalyticsAgentState) -> dict:
     # written to hold for English itself (no "not English" caveat that would
     # self-contradict when the target language IS English).
     prompt = load_prompt(
-        "analytics/analyze",
+        "analytics/analyze" if is_overview else "analytics/analyze_question",
         question=state["question"],
         account_summary=account_summary,
         post_summary=post_summary,
@@ -230,6 +242,7 @@ async def recommend_node(state: AnalyticsAgentState) -> dict:
     # No English-skip branch — see analyze_node's identical fix above.
     prompt = load_prompt(
         "analytics/recommend",
+        question=state["question"],
         analysis=state["analysis"],
         language_name=resolve_language_name(language),
         example_line=load_fixture("analytics_recommend_example")["example_line"],
@@ -295,9 +308,39 @@ async def format_report_node(state: AnalyticsAgentState) -> dict:
     English regardless of state["language"], so even a fully-translated
     analysis/recommendations body was still wrapped in an English-only
     skeleton ("ANALYTICS REPORT", "OVERVIEW", ...).
+
+    Previously always built the full OVERVIEW/BEST POST/ANALYSIS/
+    RECOMMENDATIONS skeleton regardless of what was asked — every question
+    typed into the "Ask" chat came back looking identical (same metrics
+    block, same generic structure), since only state["question"] itself
+    was swapped into a header line. Now: the default overview question
+    (GET /ask, or POST /ask with no real question — see analyze_node) keeps
+    that full skeleton, matching the Performance page's "Report" tab, which
+    expects it. Any other real question gets a short, direct Q&A format
+    instead — analyze_node already made analysis itself answer the
+    question directly rather than running the generic checklist; this just
+    stops re-burying that direct answer under an unrelated metrics dump.
     """
     language = state.get("language", "en")
     L = await _report_labels(language)
+    is_overview = state["question"] == DEFAULT_OVERVIEW_QUESTION
+
+    recs_str = "\n".join(
+        f"  {i+1}. {r}" for i, r in enumerate(state["recommendations"])
+    ) if state["recommendations"] else f"  {L['no_recommendations']}"
+
+    if not is_overview:
+        report = f"""{L["question"]}: {state["question"]}
+
+{L["answer"]}
+{state["analysis"]}
+
+{L["recommendations"]}
+{recs_str}
+"""
+        if state["errors"]:
+            report += f"\n{L['warnings']}\n" + "\n".join(f"  - {e}" for e in state["errors"])
+        return {"report": report}
 
     platforms_str = ", ".join(
         p.upper() for p in state["connected_platforms"]
@@ -319,10 +362,6 @@ async def format_report_node(state: AnalyticsAgentState) -> dict:
         f"{best_post.get('comments', 0)} {L['comments']})"
         if best_post else L["no_posts"]
     )
-
-    recs_str = "\n".join(
-        f"  {i+1}. {r}" for i, r in enumerate(state["recommendations"])
-    ) if state["recommendations"] else f"  {L['no_recommendations']}"
 
     report = f"""{L["title"]}
 {'=' * 50}

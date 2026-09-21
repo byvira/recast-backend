@@ -28,13 +28,14 @@ from app.pipelines.analytics.aggregator import (
 )
 from app.pipelines.analytics.snapshots import compute_deltas, get_previous_totals
 from app.agents.analytics.graph import run_analytics
+from app.agents.analytics.state import DEFAULT_OVERVIEW_QUESTION
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 class AnalyticsAskRequest(BaseModel):
-    question: Optional[str] = "Give me a full performance overview for the last 7 days."
+    question: Optional[str] = DEFAULT_OVERVIEW_QUESTION
 
 
 @router.get("/accounts")
@@ -146,7 +147,12 @@ async def ask_analytics(
 ) -> dict:
     result = await run_analytics(
         workspace_id=ctx.workspace_id,
-        question=body.question,
+        # An empty/whitespace question from the client means "no real
+        # question" just as much as omitting the field does — falls back to
+        # the same default the graph nodes compare against to decide
+        # whether to run the fixed overview structure or genuinely answer
+        # a specific question.
+        question=(body.question or "").strip() or DEFAULT_OVERVIEW_QUESTION,
         user_id=ctx.user_id,
     )
     return {
@@ -167,7 +173,7 @@ async def get_dashboard_report(
 ) -> dict:
     result = await run_analytics(
         workspace_id=ctx.workspace_id,
-        question="Give me a full performance overview for the last 7 days.",
+        question=DEFAULT_OVERVIEW_QUESTION,
         user_id=ctx.user_id,
     )
     return {

@@ -428,3 +428,100 @@ async def test_generate_next_batch_tags_pieces_with_batch_day_index_and_angle(ap
     pieces = await content_pieces.find({"campaign_id": campaign_id}).to_list(length=None)
     assert sorted({p["batch_day_index"] for p in pieces}) == [0, 1]
     assert all(p["angle"] for p in pieces)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thumbnail upload — real Cloudinary call mocked out, never hits the network
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_upload_campaign_thumbnail(api_client, monkeypatch):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    res = await api_client.post("/api/v1/campaigns/", json=_valid_body(brand_id))
+    campaign_id = res.json()["id"]
+    assert res.json()["thumbnail_url"] is None
+
+    async def _fake_upload_file(file: bytes, content_type, user_id: str, filename=None) -> str:
+        return "https://res.cloudinary.com/demo/image/upload/v1/recast/thumbnails/fake.png"
+
+    import app.api.v1.campaigns as campaigns_module
+    monkeypatch.setattr(campaigns_module, "upload_file", _fake_upload_file)
+
+    res = await api_client.post(
+        f"/api/v1/campaigns/{campaign_id}/thumbnail",
+        files={"file": ("thumb.png", b"\x89PNG\r\n\x1a\n fake bytes", "image/png")},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["thumbnail_url"] == "https://res.cloudinary.com/demo/image/upload/v1/recast/thumbnails/fake.png"
+
+    res2 = await api_client.get(f"/api/v1/campaigns/{campaign_id}")
+    assert res2.json()["thumbnail_url"] == "https://res.cloudinary.com/demo/image/upload/v1/recast/thumbnails/fake.png"
+
+
+async def test_upload_campaign_thumbnail_rejects_bad_content_type(api_client):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    res = await api_client.post("/api/v1/campaigns/", json=_valid_body(brand_id))
+    campaign_id = res.json()["id"]
+
+    res = await api_client.post(
+        f"/api/v1/campaigns/{campaign_id}/thumbnail",
+        files={"file": ("thumb.gif", b"GIF89a fake", "image/gif")},
+    )
+    assert res.status_code == 400
+    assert "Unsupported image type" in res.json()["detail"]
+
+
+async def test_upload_campaign_thumbnail_404_for_nonexistent_campaign(api_client):
+    await signup_new_user(api_client)
+    res = await api_client.post(
+        "/api/v1/campaigns/does-not-exist/thumbnail",
+        files={"file": ("thumb.png", b"fake", "image/png")},
+    )
+    assert res.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Campaign topic AI suggestions
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_suggest_topics_returns_llm_suggestions(api_client, mock_llm):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+
+    mock_llm.set_structured({
+        "suggested_topics": ["Angle one", "Angle two", "Angle three"],
+        "suggested_tone": "Confident",
+        "rationale": "These angles fit the brief.",
+    })
+
+    res = await api_client.post(
+        "/api/v1/campaigns/suggest-topics",
+        json={"topic_cluster": "B2B SaaS onboarding friction", "brand_id": brand_id, "existing_topics": []},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["suggested_topics"] == ["Angle one", "Angle two", "Angle three"]
+    assert body["suggested_tone"] == "Confident"
+
+
+async def test_suggest_topics_falls_back_gracefully_when_llm_returns_nothing(api_client, mock_llm):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    mock_llm.set_structured({})
+
+    res = await api_client.post(
+        "/api/v1/campaigns/suggest-topics",
+        json={"topic_cluster": "B2B SaaS onboarding friction", "brand_id": brand_id},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["suggested_topics"] == []
+
+
+async def test_suggest_topics_404_for_nonexistent_brand(api_client):
+    await signup_new_user(api_client)
+    res = await api_client.post(
+        "/api/v1/campaigns/suggest-topics",
+        json={"topic_cluster": "Some brief", "brand_id": "does-not-exist"},
+    )
+    assert res.status_code == 404
