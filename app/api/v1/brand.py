@@ -22,6 +22,7 @@ from app.models.brand_profile import (
     PreviewRewriteBody,
     PreviewRewriteResponse,
     SaveStepBody,
+    SetActiveBrandBody,
     TrainingSample,
     UpdateCalibrationBody,
     UpdateVoiceBody,
@@ -92,6 +93,7 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         is_complete=doc.get("is_complete", False),
         onboarding_step=doc.get("onboarding_step", 1),
         is_default=doc.get("is_default", False),
+        is_active=doc.get("is_active", True),
         calibration=VoiceCalibration(**doc["calibration"]) if doc.get("calibration") else VoiceCalibration(),
         training_samples=doc.get("training_samples", []),
         created_at=doc["created_at"],
@@ -574,6 +576,30 @@ async def set_default_brand(
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": ctx.workspace_id},
         {"$set": {"is_default": True, "updated_at": now}},
+    )
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
+
+
+@router.patch("/{brand_id}/set-active", response_model=BrandProfile)
+@limiter.limit("30/minute")
+async def set_active_brand(
+    request: Request,
+    brand_id: str,
+    body: SetActiveBrandBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """My Voices' on/off toggle. Unlike set-default this isn't exclusive —
+    any number of brands can be active or inactive independently. Disabling
+    never blocks generation; it only makes brand_context.py/.jinja skip this
+    brand's specific voice and fall back to a generic natural one."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"is_active": body.is_active, "updated_at": datetime.now(timezone.utc)}},
     )
     updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     return _doc_to_brand_profile(updated)

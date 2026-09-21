@@ -239,6 +239,10 @@ class AddTrainingSampleBody(BaseModel):
     content: str
 
 
+class SetActiveBrandBody(BaseModel):
+    is_active: bool
+
+
 class PreviewRewriteBody(BaseModel):
     """My Voices' Playground tab — rewrite arbitrary sample text in this
     brand's real voice. Read-only: never persists anything."""
@@ -287,6 +291,11 @@ class BrandProfile(BaseModel):
     # ever has more than one is_default=True brand (see set_default_brand
     # in app/api/v1/brand.py, which clears every sibling atomically).
     is_default: bool = False
+    # Real on/off switch for this voice. Disabling never blocks generation —
+    # brand_context.py/brand_context.jinja skip this brand's specific
+    # identity/voice_tone and fall back to the generic natural-voice line
+    # instead, so the system keeps working with an inactive brand selected.
+    is_active: bool = True
     calibration: VoiceCalibration = Field(default_factory=VoiceCalibration)
     training_samples: list[TrainingSample] = Field(default_factory=list)
     created_at: datetime

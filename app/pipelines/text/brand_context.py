@@ -50,6 +50,8 @@ def build_tone_override(tone: Optional[str]) -> str:
         "casual": "TONE OVERRIDE (this run only): Write in a casual, conversational tone. Contractions welcome. Like a knowledgeable friend talking, not presenting.",
         "punchy": "TONE OVERRIDE (this run only): Write punchy. Short sentences. Bold statements. Cut every word that doesn't pull its weight. High energy.",
         "storytelling": "TONE OVERRIDE (this run only): Use narrative storytelling. Open with a scene or moment. Build through the piece. Make it personal and specific.",
+        "professional": "TONE OVERRIDE (this run only): Write with a professional, polished register — credible and composed, like a skilled practitioner speaking plainly to a peer. Avoid corporate jargon, buzzwords, and empty formal filler. Confident and clear, not stiff.",
+        "direct": "TONE OVERRIDE (this run only): Say exactly what you mean, plainly and literally. No metaphors, no hedging, no flourish. Short, concrete statements the reader can act on immediately.",
     }
     if not tone or tone == "brand":
         return ""

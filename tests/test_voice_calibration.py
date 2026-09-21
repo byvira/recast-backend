@@ -153,3 +153,59 @@ async def test_set_default_brand_404_for_nonexistent(api_client):
     await signup_new_user(api_client)
     res = await api_client.patch("/api/v1/brand/does-not-exist/set-default")
     assert res.status_code == 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Active/inactive voice toggle
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_new_brand_is_active_by_default(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Active Voice WS", tier="large")
+    brand_id = await _create_brand(api_client, ws_id)
+
+    res = await api_client.get(f"/api/v1/brand/{brand_id}", headers={"X-Workspace-Id": ws_id})
+    assert res.json()["is_active"] is True
+
+
+async def test_set_active_brand_toggles_independently_of_siblings(api_client):
+    """Unlike set-default, this isn't exclusive — turning one brand off
+    must not affect another brand's active state."""
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Active Voice WS", tier="large")
+    brand_a = await _create_brand(api_client, ws_id)
+    brand_b = await _create_brand(api_client, ws_id)
+
+    res = await api_client.patch(
+        f"/api/v1/brand/{brand_a}/set-active", json={"is_active": False}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["is_active"] is False
+
+    res = await api_client.get(f"/api/v1/brand/{brand_b}", headers={"X-Workspace-Id": ws_id})
+    assert res.json()["is_active"] is True
+
+    res = await api_client.patch(
+        f"/api/v1/brand/{brand_a}/set-active", json={"is_active": True}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200
+    assert res.json()["is_active"] is True
+
+
+async def test_set_active_brand_404_for_nonexistent(api_client):
+    await signup_new_user(api_client)
+    res = await api_client.patch("/api/v1/brand/does-not-exist/set-active", json={"is_active": False})
+    assert res.status_code == 404
+
+
+async def test_set_active_brand_requires_edit_brand_voice_permission(api_client, make_client):
+    owner_client = api_client
+    await signup_new_user(owner_client)
+    ws_id = await create_workspace(owner_client, "Active Voice WS", tier="large")
+    brand_id = await _create_brand(owner_client, ws_id)
+    viewer_client, _ = await invite_and_accept(owner_client, make_client, ws_id, "viewer")
+
+    res = await viewer_client.patch(
+        f"/api/v1/brand/{brand_id}/set-active", json={"is_active": False}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 403

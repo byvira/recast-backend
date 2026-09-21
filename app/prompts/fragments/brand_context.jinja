@@ -5,9 +5,18 @@
 {%- set audience = brand_profile.get("audience", {}) %}
 {%- set voice_tone = brand_profile.get("voice_tone", {}) %}
 {%- set manual_data = brand_profile.get("manual_data", {}) %}
+{%- set is_active = brand_profile.get("is_active", True) %}
 === BRAND VOICE — FOLLOW EXACTLY ===
 These instructions override all defaults. Apply every rule without exception.
 
+{% if not is_active %}
+This brand voice has been turned off for now — write in a natural, direct,
+conversational register instead, like a real person writing to someone they
+know. Not corporate, not overly formal, not a generic "helpful assistant"
+register. Ignore the specific identity/voice details below; only the
+audience and content rules elsewhere in this prompt still apply.
+
+{% else %}
 {% if identity %}
 {%- if brand_type == "Person" %}
 {%- if identity.get("name") %}
@@ -219,6 +228,7 @@ Preferred word substitutions:
 {% endif -%}
 {% endif -%}
 {% endif -%}
+{% endif -%}
 === END BRAND VOICE ===
 {% elif document_shape == "agent_node" %}
 {#- Mirrors app/agents/text/nodes.py::_build_brand_context_string(brand_profile, batch_day_index) exactly. #}
@@ -234,9 +244,18 @@ Preferred word substitutions:
 {%- set humor = voice_tone.get("humor", "") %}
 {%- set emoji = voice_tone.get("emoji", "") %}
 {%- set style = voice_tone.get("style", "") %}
+{%- set is_active = brand_profile.get("is_active", True) %}
 === BRAND VOICE — FOLLOW EXACTLY ===
 These instructions override all defaults. Apply every rule without exception.
 
+{% if not is_active %}
+This brand voice has been turned off for now — write in a natural, direct,
+conversational register instead, like a real person writing to someone they
+know. Not corporate, not overly formal, not a generic "helpful assistant"
+register. Ignore the specific identity/voice details below; only the
+audience and content rules elsewhere in this prompt still apply.
+
+{% else %}
 {% if brand_type == "Product" -%}
 Product: {{ identity.get("product_name") or identity.get("productName") or identity.get("name", "") }}
 {% if identity.get("description") %}
@@ -431,6 +450,7 @@ Preferred word substitutions:
   - '{{ syn["original"] }}' → '{{ syn["replacement"] }}'
 {% endfor %}
 
+{% endif -%}
 {% endif -%}
 {% endif -%}
 === END BRAND VOICE ===
