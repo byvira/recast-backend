@@ -12,6 +12,7 @@ from app.pipelines.analytics.aggregator import (
     fetch_post_metrics_all,
     fetch_account_metrics_all,
 )
+from app.pipelines.analytics.snapshots import record_daily_snapshot
 from app.db.mongo import get_db
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,7 @@ async def _refresh_workspace_analytics(db, workspace_id: str):
 
     if not posts_to_fetch:
         logger.info("No posts to refresh for workspace %s", workspace_id)
+        await record_daily_snapshot(workspace_id)
         return
 
     post_metrics = await fetch_post_metrics_all(
@@ -131,3 +133,9 @@ async def _refresh_workspace_analytics(db, workspace_id: str):
         "Post metrics saved for workspace %s — %d posts",
         workspace_id, len(post_metrics),
     )
+
+    # Record today's totals snapshot — the real baseline
+    # get_previous_totals() diffs against for the Home page's
+    # week-over-week deltas. Cheap (same read /analytics/summary already
+    # does) and idempotent per day.
+    await record_daily_snapshot(workspace_id)

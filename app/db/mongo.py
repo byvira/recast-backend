@@ -45,6 +45,9 @@ content_piece_versions: AsyncIOMotorCollection = get_client().get_default_databa
 account_metrics: AsyncIOMotorCollection = get_client().get_default_database()["account_metrics"]
 post_metrics: AsyncIOMotorCollection    = get_client().get_default_database()["post_metrics"]
 presets: AsyncIOMotorCollection          = get_client().get_default_database()["presets"]
+# app.pipelines.analytics.snapshots — one row per workspace per day, the
+# real baseline for the Home page's week-over-week deltas.
+analytics_daily_snapshots: AsyncIOMotorCollection = get_client().get_default_database()["analytics_daily_snapshots"]
 
 # ── Two-layer agent architecture (personal assistant + workspace supervisor) ──
 workspace_events: AsyncIOMotorCollection     = get_client().get_default_database()["workspace_events"]
@@ -125,6 +128,7 @@ async def create_indexes() -> None:
         [("workspace_id", 1), ("platform", 1), ("platform_post_id", 1)], unique=True
     )
     await post_metrics.create_index([("workspace_id", 1), ("fetched_at", -1)])
+    await analytics_daily_snapshots.create_index([("workspace_id", 1), ("date", 1)], unique=True)
 
     # ── Brand profiles ────────────────────────────────────────────────────
     await brand_profiles.create_index("workspace_id")

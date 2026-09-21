@@ -26,6 +26,7 @@ from app.pipelines.analytics.aggregator import (
     fetch_post_metrics_all,
     summarize,
 )
+from app.pipelines.analytics.snapshots import compute_deltas, get_previous_totals
 from app.agents.analytics.graph import run_analytics
 
 router = APIRouter()
@@ -93,7 +94,15 @@ async def get_summary(
     from app.pipelines.analytics.base import AccountMetrics, PostMetrics
     account_metrics = [AccountMetrics(**d) for d in account_docs]
     post_metrics    = [PostMetrics(**d)    for d in post_docs]
-    return summarize(account_metrics, post_metrics)
+    summary = summarize(account_metrics, post_metrics)
+
+    # Real week-over-week delta for the Home page's Insights Strip — None
+    # (not a fabricated 0%) until this workspace has a snapshot at least
+    # ~7 days old (see app.pipelines.analytics.snapshots).
+    previous_totals = await get_previous_totals(ctx.workspace_id)
+    summary["previous_totals"] = previous_totals
+    summary["deltas"] = compute_deltas(summary["totals"], previous_totals)
+    return summary
 
 
 @router.get("/refresh")
