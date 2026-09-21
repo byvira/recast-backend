@@ -75,6 +75,22 @@ async def get_post_metrics(
     ).to_list(length=limit)
     for m in metrics:
         m["id"] = str(m.pop("_id"))
+
+    # post_metrics (app.pipelines.analytics.base.PostMetrics) has no
+    # content field at all — post_id is really the originating piece_id
+    # (every analytics fetcher sets post_id=piece_id) — join against
+    # content_pieces here so the Performance page's "Top Posts" table has
+    # real text to show instead of always rendering an empty '""'.
+    piece_ids = [m["post_id"] for m in metrics if m.get("post_id")]
+    content_by_piece_id: dict[str, str] = {}
+    if piece_ids:
+        pieces = await db["content_pieces"].find(
+            {"piece_id": {"$in": piece_ids}}, {"piece_id": 1, "content": 1}
+        ).to_list(length=len(piece_ids))
+        content_by_piece_id = {p["piece_id"]: p.get("content", "") for p in pieces}
+    for m in metrics:
+        m["content"] = content_by_piece_id.get(m.get("post_id"), "")
+
     return {"metrics": metrics, "total": len(metrics)}
 
 
