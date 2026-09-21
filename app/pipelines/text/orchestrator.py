@@ -396,6 +396,7 @@ async def run_text_pipeline(
         scheduled_at=scheduled_at,
         batch_mode=False,
         batch_day_index=batch_day_index,
+        source_platform=_platform_str(source_platform) if source_platform else None,
         created_at=datetime.now(timezone.utc),
         assistant_nudge=await _safe_assistant_nudge(workspace_id, user_id),
     )
@@ -715,6 +716,7 @@ async def _run_single_repurpose(
             flagged_for_review=not is_valid,
             repurposed=True,
             sections=[s.model_dump() for s in sections] if sections else None,
+            source_platform=_platform_str(source_platform),
             # "queued"/"pending" (not the raw "now"/"scheduled" schedule_mode
             # value) is what content_pieces.publish_status and the calendar
             # query (get_calendar) actually recognise — see the identical

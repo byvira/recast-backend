@@ -13,6 +13,7 @@ publish_status vocabulary (pending/queued/publishing/published/failed).
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from app.db.mongo import content_pieces, get_campaigns_collection
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 from tests.conftest import create_workspace
 
@@ -93,6 +94,38 @@ async def test_calendar_returns_real_kanban_stage(signup_user):
     )
     piece2 = [p for day in res2.json()["days"].values() for p in day][0]
     assert piece2["stage"] == "staging"
+
+
+async def test_calendar_includes_campaign_name_for_campaign_pieces(signup_user):
+    """R2-6 — the calendar had no campaign association at all. A piece's
+    campaign_id was already stored (see app.pipelines.text.storage's
+    campaign_id field) but never joined against the campaigns collection
+    or returned here, so there was nothing for the frontend to show."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Calendar WS")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+
+    campaign_id = str(uuid4())
+    await get_campaigns_collection().insert_one({
+        "id": campaign_id, "workspace_id": ws_id, "name": "Launch Week",
+        "brand_id": str(uuid4()), "topic_cluster": "launch", "source_type": "raw_text",
+        "source_url": None, "content_types": ["text"], "platforms": ["LinkedIn"],
+        "platforms_by_day": None,
+        "cadence": {"frequency": "manual", "days_per_batch": 1, "next_run_at": None},
+        "status": "draft", "piece_ids": [], "last_generated_at": None,
+        "created_by": profile["id"], "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc), "deleted": False,
+    })
+    await content_pieces.update_one({"piece_id": piece_id}, {"$set": {"campaign_id": campaign_id}})
+
+    now = datetime.now(timezone.utc)
+    res = await client.get(
+        f"/api/v1/analytics/calendar?year={now.year}&month={now.month}",
+        headers={"X-Workspace-Id": ws_id},
+    )
+    piece = [p for day in res.json()["days"].values() for p in day][0]
+    assert piece["campaign_id"] == campaign_id
+    assert piece["campaign_name"] == "Launch Week"
 
 
 async def test_calendar_summary_uses_real_status_vocabulary(signup_user):

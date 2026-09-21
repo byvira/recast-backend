@@ -61,6 +61,42 @@ async def _campaign_progress(workspace_id: str, campaign_id: str) -> dict[str, i
     return counts
 
 
+async def _campaign_progress_bulk(
+    workspace_id: str, campaign_ids: list[str]
+) -> dict[str, dict[str, int]]:
+    """Same per-stage counts as _campaign_progress, for every campaign in
+    one query instead of one per campaign — list_campaigns' docstring
+    already claimed this, but actually called _campaign_progress in a loop
+    (one content_pieces query per campaign card)."""
+    def _empty_counts() -> dict[str, int]:
+        counts = {stage: 0 for stage in KANBAN_STAGES}
+        counts["total"] = 0
+        return counts
+
+    progress = {cid: _empty_counts() for cid in campaign_ids}
+    if not campaign_ids:
+        return progress
+
+    docs = await content_pieces.find(
+        {
+            "workspace_id": workspace_id,
+            "campaign_id": {"$in": campaign_ids},
+            "deleted": {"$ne": True},
+        },
+        {"archived": 1, "publish_status": 1, "approval_status": 1, "campaign_id": 1},
+    ).to_list(length=None)
+
+    for doc in docs:
+        cid = doc.get("campaign_id")
+        if cid not in progress:
+            continue
+        stage = compute_kanban_stage(doc)
+        progress[cid][stage] = progress[cid].get(stage, 0) + 1
+        progress[cid]["total"] += 1
+
+    return progress
+
+
 @router.post("/", response_model=Campaign, status_code=201)
 @limiter.limit("20/minute")
 async def create_campaign(
@@ -144,11 +180,11 @@ async def list_campaigns(
         {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
         sort=[("updated_at", -1)],
     ).to_list(length=200)
-    out = []
-    for doc in docs:
-        progress = await _campaign_progress(ctx.workspace_id, doc["id"])
-        out.append({**_doc_to_campaign(doc).model_dump(), "progress": progress})
-    return out
+    progress_by_id = await _campaign_progress_bulk(ctx.workspace_id, [doc["id"] for doc in docs])
+    return [
+        {**_doc_to_campaign(doc).model_dump(), "progress": progress_by_id[doc["id"]]}
+        for doc in docs
+    ]
 
 
 @router.get("/{campaign_id}")

@@ -60,6 +60,27 @@ def _consume_state(state: str) -> dict | None:
     return data
 
 
+def _derive_profile_url(platform: str, username: str, platform_user_id: str = "") -> str | None:
+    """Best-effort public profile URL from data already returned by the OAuth
+    flow — no extra API calls. None where the platform doesn't expose a
+    reliable public-profile pattern from what we have (LinkedIn's OAuth
+    response has no public vanity URL; Google's "username" is an email/name,
+    not a public profile slug)."""
+    if platform == "instagram" and username:
+        return f"https://instagram.com/{username}"
+    if platform == "facebook" and platform_user_id:
+        return f"https://facebook.com/{platform_user_id}"
+    if platform == "threads" and username:
+        return f"https://www.threads.net/@{username}"
+    if platform == "youtube" and platform_user_id:
+        return f"https://www.youtube.com/channel/{platform_user_id}"
+    if platform == "bluesky" and username:
+        return f"https://bsky.app/profile/{username}"
+    if platform == "reddit" and username:
+        return f"https://reddit.com/user/{username}"
+    return None
+
+
 def _oauth_popup_response(success: bool, message: str) -> HTMLResponse:
     """The OAuth callback runs inside the small popup window
     openOAuthPopup() (Frontend/Recast/lib/api/social.connect.ts) opened —
@@ -146,6 +167,7 @@ async def connect_bluesky(
         platform_user_id=token_data.get("platform_user_id", ""),
         username=token_data.get("username", body.handle),
         connected_by=ctx.user_id,
+        profile_url=_derive_profile_url("bluesky", token_data.get("username", body.handle)),
     )
 
     return {
@@ -232,6 +254,7 @@ async def meta_callback(
             platform_user_id=token_data["ig_user_id"],
             username=token_data.get("username", ""),
             connected_by=user_id,
+            profile_url=_derive_profile_url("instagram", token_data.get("username", "")),
         )
         connected.append("instagram")
         logger.info("Instagram connected for user %s", user_id)
@@ -255,6 +278,7 @@ async def meta_callback(
             platform_user_id=first_page["id"],
             username=first_page.get("name", ""),
             connected_by=user_id,
+            profile_url=_derive_profile_url("facebook", first_page.get("name", ""), first_page["id"]),
         )
         connected.append("facebook")
         logger.info(
@@ -396,6 +420,7 @@ async def threads_callback(
         platform_user_id=user_id_threads,
         username=username,
         connected_by=user_id,
+        profile_url=_derive_profile_url("threads", username),
     )
 
     return _oauth_popup_response(True, "Threads connected successfully.")
@@ -484,6 +509,7 @@ async def google_callback(
             platform_user_id=token_data["youtube_channel_id"],
             username=token_data.get("youtube_channel_name", token_data.get("username", "")),
             connected_by=user_id,
+            profile_url=_derive_profile_url("youtube", "", token_data["youtube_channel_id"]),
         )
         connected.append("youtube")
         logger.info(
@@ -575,6 +601,9 @@ async def oauth_callback(
         platform_user_id=token_data.get("platform_user_id", ""),
         username=token_data.get("username", ""),
         connected_by=user_id,
+        profile_url=_derive_profile_url(
+            platform, token_data.get("username", ""), token_data.get("platform_user_id", "")
+        ),
     )
 
     return _oauth_popup_response(True, f"{platform} connected successfully.")

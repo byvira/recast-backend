@@ -68,6 +68,7 @@ async def save_token(
     platform_user_id: str,
     username: str,
     connected_by: str = "",
+    profile_url: Optional[str] = None,
 ) -> None:
     """
     Save or update OAuth tokens for a workspace + platform.
@@ -86,6 +87,7 @@ async def save_token(
                 "expires_at": expires_at,
                 "platform_user_id": platform_user_id,
                 "username": username,
+                "profile_url": profile_url,
                 "is_active": True,
                 "last_refreshed_at": now,
             },
@@ -124,6 +126,7 @@ async def get_token(workspace_id: str, platform: str) -> Optional[dict]:
             "expires_at": account.get("expires_at"),
             "platform_user_id": account.get("platform_user_id"),
             "username": account.get("username"),
+            "profile_url": account.get("profile_url"),
             "is_active": account.get("is_active", True),
         }
     except InvalidToken:
@@ -157,6 +160,7 @@ async def get_all_tokens(workspace_id: str) -> list[dict]:
             "platform": a["platform"],
             "username": a.get("username"),
             "platform_user_id": a.get("platform_user_id"),
+            "profile_url": a.get("profile_url"),
             "is_active": a.get("is_active", True),
             "connected_at": a.get("connected_at"),
             "expires_at": a.get("expires_at"),

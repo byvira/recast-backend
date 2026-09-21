@@ -225,6 +225,16 @@ async def get_calendar(
         sort=[("created_at", -1)],
     ).to_list(length=500)
 
+    # One lookup for every campaign referenced this month, not one per piece.
+    campaign_ids = {piece["campaign_id"] for piece in pieces if piece.get("campaign_id")}
+    campaign_names: dict[str, str] = {}
+    if campaign_ids:
+        from app.db.mongo import get_campaigns_collection
+        campaign_docs = await get_campaigns_collection().find(
+            {"id": {"$in": list(campaign_ids)}}, {"id": 1, "name": 1}
+        ).to_list(length=len(campaign_ids))
+        campaign_names = {c["id"]: c["name"] for c in campaign_docs}
+
     days: dict[str, list] = {}
     summary = {"total": 0, "published": 0, "queued": 0, "pending": 0, "failed": 0}
 
@@ -258,6 +268,8 @@ async def get_calendar(
             "post_url":     piece.get("platform_post_url"),
         }
 
+        campaign_id = piece.get("campaign_id")
+
         days[date_key].append({
             "id":               piece.get("piece_id", ""),
             "content_preview":  piece.get("content", "")[:120],
@@ -272,6 +284,8 @@ async def get_calendar(
             "scheduled_at":     piece.get("publish_scheduled_at"),
             "created_at":       piece.get("created_at"),
             "platform_results": [platform_result],
+            "campaign_id":      campaign_id,
+            "campaign_name":    campaign_names.get(campaign_id) if campaign_id else None,
         })
 
         summary["total"] += 1

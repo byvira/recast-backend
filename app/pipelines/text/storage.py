@@ -121,6 +121,7 @@ async def save_live_piece(
     publish_scheduled_at=None,
     publish_target: Optional[str] = None,
     sections: Optional[list[dict]] = None,
+    source_platform: Optional[str] = None,
 ) -> str:
     """Persist one freshly-generated piece the moment its own graph run
     finishes. Mirrors save_pipeline_result's piece/version-1 document shape
@@ -139,6 +140,7 @@ async def save_live_piece(
         "user_id": user_id,
         "brand_id": brand_id,
         "platform": platform,
+        "source_platform": source_platform,
         "content": content,
         "sections": sections,
         "word_count": word_count,
@@ -259,6 +261,7 @@ async def save_pipeline_result(
             "batch_day_index": result.batch_day_index,
             "angle": result.angle,
             "platform": platform_value,
+            "source_platform": result.source_platform,
             "content": piece.content,
             "word_count": piece.word_count,
             "char_count": piece.char_count,

@@ -61,6 +61,10 @@ class WorkspaceConnection(BaseModel):
     platform: str                              # linkedin, instagram, threads, facebook, bluesky, google
     platform_user_id: str = ""
     username: str = ""
+    # Best-effort, derived from platform + username/id at connect time —
+    # not every platform's public profile URL is derivable from OAuth data
+    # (e.g. LinkedIn, Google), so this is None for those.
+    profile_url: Optional[str] = None
     is_active: bool = True
     connected_by: str = ""                     # user_id of the member who connected it (audit)
     connected_at: Optional[datetime] = None

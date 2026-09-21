@@ -72,31 +72,38 @@ async def _refresh_workspace_analytics(db, workspace_id: str):
     # ── Post metrics ──────────────────────────────────────────────────────
     cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
 
+    # Each content_pieces document is already exactly one platform's content
+    # (piece["platform"] + piece["platform_post_id"]) — see the identical
+    # fix and comment in app/agents/analytics/nodes.py::fetch_metrics_node.
+    # This used to read "platform_results", a field nothing ever wrote,
+    # so posts_to_fetch was always empty and this job never actually
+    # refreshed post metrics.
     published_posts = await db["content_pieces"].find(
         {
-            "workspace_id":   workspace_id,
-            "publish_status": "published",
+            "workspace_id":     workspace_id,
+            "publish_status":   "published",
+            "platform_post_id": {"$exists": True, "$ne": None},
             "$or": [
                 {"metrics_fetched_at": {"$lt": cutoff}},
                 {"metrics_fetched_at": {"$exists": False}},
             ],
         },
         {
-            "platform_results": 1,
+            "platform": 1,
+            "platform_post_id": 1,
             "_id": 1,
         }
     ).to_list(length=200)
 
-    posts_to_fetch = []
-    for piece in published_posts:
-        for result in piece.get("platform_results", []):
-            if result.get("platform_post_id"):
-                posts_to_fetch.append({
-                    "piece_id":          str(piece["_id"]),
-                    "platform":          result["platform"],
-                    "platform_post_id":  result["platform_post_id"],
-                    "platform_user_id":  result.get("platform_user_id", ""),
-                })
+    posts_to_fetch = [
+        {
+            "piece_id":         str(piece["_id"]),
+            "platform":         piece.get("platform", "").lower(),
+            "platform_post_id": piece["platform_post_id"],
+            "platform_user_id": "",
+        }
+        for piece in published_posts
+    ]
 
     if not posts_to_fetch:
         logger.info("No posts to refresh for workspace %s", workspace_id)

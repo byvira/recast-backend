@@ -419,6 +419,11 @@ class TextPipelineResult(BaseModel):
     batch_mode: bool = False
     batch_day_index: Optional[int] = None
     angle: Optional[str] = None
+    # Set only for repurpose runs — the Platform this content originated
+    # from, so it survives the round-trip into content_pieces instead of
+    # being dropped after the prompt is built (see save_pipeline_result /
+    # save_live_piece).
+    source_platform: Optional[str] = None
     created_at: datetime
     pdf_export_url: Optional[str] = None
     batch_job_id: Optional[str] = None
@@ -492,6 +497,9 @@ class ContentPiece(BaseModel):
     user_id: str
     brand_id: str
     platform: str
+    # Set only when this piece was created via /repurpose — the Platform
+    # the source content came from.
+    source_platform: Optional[str] = None
     content: str
     sections: Optional[list[GeneratedSection]] = None
     word_count: int = 0

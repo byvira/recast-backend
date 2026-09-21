@@ -5,7 +5,7 @@ Runs every minute — finds queued posts and fires publish pipeline.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
 from app.core.notifications import send_templated_email
@@ -14,6 +14,8 @@ from app.db.mongo import content_pieces, users, workspaces
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
 from app.pipelines.publish.supervisor.alerts import alert_fatal
+from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
+from app.pipelines.publish.supervisor.retry import get_retry_delay, should_retry
 from app.pipelines.publish.token_store import get_token
 
 logger = logging.getLogger(__name__)
@@ -192,6 +194,37 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             logger.error("emit content.published failed for %s: %s", piece_id, exc)
         logger.info("Scheduled piece %s published to %s", piece_id, platform)
     else:
+        error_type = classify_error(result.error_code or 500, result.error_message or "")
+        attempt = piece.get("publish_attempts", 0)
+
+        # AUTH errors can't be retried without the user reconnecting the
+        # platform — same as /publish/now's own AUTH branch — so those (and
+        # anything past MAX_RETRIES) fail immediately below. Everything else
+        # (TRANSIENT/FIXABLE/FATAL-but-retryable per should_retry) gets
+        # requeued instead of permanently failing on the first error — this
+        # worker previously had no retry or requeue logic at all, unlike
+        # /publish/now's synchronous retry loop.
+        if error_type != ErrorType.AUTH and should_retry(error_type, attempt):
+            delay = get_retry_delay(error_type, attempt) or 60
+            next_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+            await content_pieces.update_one(
+                {"piece_id": piece_id},
+                {
+                    "$set": {
+                        "publish_status": "queued",
+                        "publish_scheduled_at": next_at.isoformat(),
+                        "last_error": result.error_message,
+                        "updated_at": datetime.now(timezone.utc),
+                    },
+                    "$inc": {"publish_attempts": 1},
+                },
+            )
+            logger.info(
+                "Scheduled piece %s failed on %s (attempt %d, %s) — requeued for retry at %s",
+                piece_id, platform, attempt + 1, error_type.value, next_at.isoformat(),
+            )
+            return
+
         await content_pieces.update_one(
             {"piece_id": piece_id},
             {"$set": {

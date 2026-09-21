@@ -92,26 +92,38 @@ async def fetch_metrics_node(state: AnalyticsAgentState) -> dict:
             until=until,
         )
 
-        # Post metrics — recent published posts from MongoDB
+        # Post metrics — recent published posts from MongoDB.
+        # Each content_pieces document is already exactly one platform's
+        # content (piece["platform"] + piece["platform_post_id"], set by
+        # _update_piece_status in app/api/v1/publish.py) — there's no real
+        # multi-platform bundle per piece, so this used to read
+        # "platform_results", an array field nothing ever wrote (only
+        # synthesized on the fly for the calendar API response, see
+        # app/api/v1/analytics.py's get_calendar). That meant posts_to_fetch
+        # was always empty and post_metrics never populated regardless of
+        # how many pieces were actually published.
         db = get_db()
         published_posts = await db["content_pieces"].find(
             {
-                "workspace_id":   state["workspace_id"],
-                "publish_status": "published",
+                "workspace_id":     state["workspace_id"],
+                "publish_status":   "published",
+                "platform_post_id": {"$exists": True, "$ne": None},
             },
-            {"platform_results": 1, "_id": 1},
+            {"platform": 1, "platform_post_id": 1, "_id": 1},
         ).sort("created_at", -1).to_list(length=20)
 
-        posts_to_fetch = []
-        for piece in published_posts:
-            for result in piece.get("platform_results", []):
-                if result.get("platform_post_id"):
-                    posts_to_fetch.append({
-                        "piece_id":         str(piece["_id"]),
-                        "platform":         result["platform"],
-                        "platform_post_id": result["platform_post_id"],
-                        "platform_user_id": result.get("platform_user_id", ""),
-                    })
+        posts_to_fetch = [
+            {
+                "piece_id":         str(piece["_id"]),
+                # Lowercase slug — matches token_store's platform key and
+                # the aggregator's _FETCHERS dict, not the display-cased
+                # content Platform value ("LinkedIn") piece["platform"] holds.
+                "platform":         piece.get("platform", "").lower(),
+                "platform_post_id": piece["platform_post_id"],
+                "platform_user_id": "",
+            }
+            for piece in published_posts
+        ]
 
         post_metrics = await fetch_post_metrics_all(
             workspace_id=state["workspace_id"],
