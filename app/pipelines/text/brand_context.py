@@ -6,6 +6,7 @@ This is what makes every piece of content sound like the user, not like a generi
 from typing import Optional
 
 from app.prompts.registry import load_prompt
+from app.pipelines.text.generator import resolve_language_name
 
 
 def build_brand_context(brand_profile: dict) -> str:
@@ -40,14 +41,32 @@ def build_goal_context(goal: Optional[str]) -> str:
     return f"{instruction}\n\n" if instruction else ""
 
 
-def build_tone_override(tone: Optional[str]) -> str:
+
+# Tones that read as informal/conversational — for a non-English output
+# language, real bilingual speakers naturally code-switch in registers like
+# this (loanwords for modern/technical/business terms), so the model is
+# explicitly told that's expected rather than defaulting to zero mixing.
+_INFORMAL_TONES = {"casual", "punchy", "storytelling"}
+# Tones that read as composed/considered — lean toward native vocabulary
+# instead, the way a real bilingual speaker would when writing carefully.
+_FORMAL_TONES = {"formal", "professional", "direct"}
+
+
+def build_tone_override(tone: Optional[str], language_code: str = "en") -> str:
     """
     Maps to ConfigPanel ToneSelector.
     Only active when tone is not 'brand'. Overrides brand voice tone for this run.
+
+    `language_code` additionally steers HOW that tone should code-switch for
+    a non-English output language — e.g. Casual+Tamil should read like real
+    bilingual conversation (Tanglish), Professional+Tamil should lean toward
+    composed native vocabulary instead. Without this, tone and language were
+    two fully independent instruction blocks with zero interaction, so every
+    non-English tone read the same regardless of which one was picked.
     """
     TONE_INSTRUCTIONS = {
-        "formal": "TONE OVERRIDE (this run only): Write in a formal, professional tone. Complete sentences. No contractions. Structured and authoritative.",
-        "casual": "TONE OVERRIDE (this run only): Write in a casual, conversational tone. Contractions welcome. Like a knowledgeable friend talking, not presenting.",
+        "formal": "TONE OVERRIDE (this run only): Write in a formal, composed register. Structured, precise, authoritative phrasing.",
+        "casual": "TONE OVERRIDE (this run only): Write in a casual, conversational tone. Like a knowledgeable friend talking, not presenting.",
         "punchy": "TONE OVERRIDE (this run only): Write punchy. Short sentences. Bold statements. Cut every word that doesn't pull its weight. High energy.",
         "storytelling": "TONE OVERRIDE (this run only): Use narrative storytelling. Open with a scene or moment. Build through the piece. Make it personal and specific.",
         "professional": "TONE OVERRIDE (this run only): Write with a professional, polished register — credible and composed, like a skilled practitioner speaking plainly to a peer. Avoid corporate jargon, buzzwords, and empty formal filler. Confident and clear, not stiff.",
@@ -56,4 +75,26 @@ def build_tone_override(tone: Optional[str]) -> str:
     if not tone or tone == "brand":
         return ""
     instruction = TONE_INSTRUCTIONS.get(tone, "")
-    return f"{instruction}\n\n" if instruction else ""
+    if not instruction:
+        return ""
+
+    normalised_lang = (language_code or "en").strip().lower().split("-")[0]
+    if normalised_lang and normalised_lang != "en":
+        name = resolve_language_name(language_code)
+        if tone in _INFORMAL_TONES:
+            instruction += (
+                f" Natural code-switching is expected and welcome here — mix "
+                f"in common English words for modern/technical/business ideas "
+                f"the way a real bilingual {name} speaker actually talks "
+                f"casually. Still express full ideas and sentences in {name} "
+                f"though — don't paste whole English phrases or sentences, "
+                f"just individual loanwords the way people naturally do."
+            )
+        elif tone in _FORMAL_TONES:
+            instruction += (
+                f" Lean toward composed, native {name} vocabulary — keep "
+                f"English only for genuinely untranslatable technical or "
+                f"product terms, not casual filler words."
+            )
+
+    return f"{instruction}\n\n"

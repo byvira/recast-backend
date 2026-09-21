@@ -40,7 +40,7 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
         instruction = load_prompt("text/repurpose/fallback", target=task.platform.value)
 
     goal_context = build_goal_context(task.metadata.get("goal"))
-    tone_override = build_tone_override(task.metadata.get("tone"))
+    tone_override = build_tone_override(task.metadata.get("tone"), task.metadata.get("language", "en"))
     platform_rules = PLATFORM_RULES.get(task.platform, "")
     language_instruction = build_language_instruction(task.metadata.get("language", "en"))
 
@@ -114,7 +114,7 @@ async def run_structured_repurpose_agent(task: AgentTask, source_platform: Platf
         instruction = load_prompt("text/repurpose/fallback", target=task.platform.value)
 
     goal_context = build_goal_context(task.metadata.get("goal"))
-    tone_override = build_tone_override(task.metadata.get("tone"))
+    tone_override = build_tone_override(task.metadata.get("tone"), task.metadata.get("language", "en"))
     platform_rules = PLATFORM_RULES.get(task.platform, "")
     language_instruction = build_language_instruction(task.metadata.get("language", "en"))
 

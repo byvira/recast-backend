@@ -159,7 +159,7 @@ async def build_context_node(state: TextAgentState) -> dict:
     goal = state["goal"]
     tone = state["tone"]
     goal_context = build_goal_context(goal.value if goal else None)
-    tone_override_text = build_tone_override(tone.value if tone else "brand")
+    tone_override_text = build_tone_override(tone.value if tone else "brand", state["language"])
 
     # ── Extract all enforcement data ──────────────────────────────────────
     enforcement = _extract_enforcement_data(brand_profile)

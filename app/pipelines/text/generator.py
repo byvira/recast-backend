@@ -42,10 +42,12 @@ logger = logging.getLogger(__name__)
 # resolve_language_name() uses, so "ta", "ta-IN", "Tamil" all match.
 CONVERSATIONAL_REGISTER_NOTES: dict[str, str] = {
     "ta": (
-        "Use everyday spoken Tamil (பேச்சு தமிழ்) — the way people actually "
-        "talk and post on social media — not formal literary Tamil (செந்தமிழ்). "
-        "Natural, colloquial words and phrasing, not textbook or ceremonial "
-        "vocabulary."
+        "Default to everyday spoken Tamil (பேச்சு தமிழ்) — the way people "
+        "actually talk and post on social media — not formal literary Tamil "
+        "(செந்தமிழ்). Natural, colloquial words and phrasing, not textbook or "
+        "ceremonial vocabulary. If a TONE OVERRIDE appears later in this "
+        "prompt asking for a formal, professional, or direct register, follow "
+        "that instead — it takes precedence over this default."
     ),
 }
 
