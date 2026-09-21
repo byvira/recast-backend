@@ -8,7 +8,8 @@ import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
+from html import escape
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -57,6 +58,29 @@ def _consume_state(state: str) -> dict | None:
             [k[:10] for k in _oauth_states.keys()]
         )
     return data
+
+
+def _oauth_popup_response(success: bool, message: str) -> HTMLResponse:
+    """The OAuth callback runs inside the small popup window
+    openOAuthPopup() (Frontend/Recast/lib/api/social.connect.ts) opened —
+    that helper never reads the callback's response body, it only polls
+    popup.closed and then re-fetches the real connected-accounts list. A
+    bare JSON dict left the popup permanently showing raw JSON with
+    nothing to close it. This renders a minimal self-closing page instead,
+    for both the success and every error path in the four OAuth callback
+    routes (meta/threads/google/generic-LinkedIn)."""
+    title = "Connected" if success else "Connection failed"
+    color = "#16a34a" if success else "#dc2626"
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>{title}</title></head>
+<body style="font-family: system-ui, sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; background:#0D0D12; color:#e5e7eb;">
+  <div style="text-align:center; max-width:420px; padding:0 24px;">
+    <p style="color:{color}; font-size:16px; font-weight:600;">{escape(message)}</p>
+    <p style="color:#6b7280; font-size:13px;">This window will close automatically.</p>
+  </div>
+  <script>setTimeout(function() {{ window.close(); }}, 1500);</script>
+</body></html>"""
+    return HTMLResponse(content=html, status_code=200 if success else 400)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SPECIFIC ROUTES FIRST — before any /{platform} wildcards
@@ -164,7 +188,7 @@ async def meta_callback(
     error: str = Query(None),
     error_code: str = Query(None),
     error_message: str = Query(None),
-) -> dict:
+) -> HTMLResponse:
     """
     Handle Meta OAuth callback.
     Saves tokens for Instagram and Facebook only.
@@ -172,16 +196,10 @@ async def meta_callback(
     """
     # Handle Meta error response
     if error_code or error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Meta OAuth error {error_code}: {error_message or error}",
-        )
+        return _oauth_popup_response(False, f"Meta OAuth error {error_code}: {error_message or error}")
 
     if not code or not state:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing code or state from Meta callback.",
-        )
+        return _oauth_popup_response(False, "Missing code or state from Meta callback.")
 
     # State format is "token|platform" — extract token only
     state_parts = state.split("|", 1)
@@ -189,10 +207,7 @@ async def meta_callback(
 
     state_data = _consume_state(state_token)
     if not state_data:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired OAuth state. Please try connecting again.",
-        )
+        return _oauth_popup_response(False, "Invalid or expired OAuth state. Please try connecting again.")
 
     user_id = state_data["user_id"]
     workspace_id = state_data.get("workspace_id", "")
@@ -202,10 +217,7 @@ async def meta_callback(
         token_data = await exchange_code(code, platform="meta")
     except Exception as exc:
         logger.error("Meta token exchange failed for user %s: %s", user_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to connect Meta. Please try again.",
-        )
+        return _oauth_popup_response(False, "Failed to connect Meta. Please try again.")
 
     connected = []
 
@@ -260,41 +272,18 @@ async def meta_callback(
 
     logger.info("Meta callback complete for user %s — connected: %s", user_id, connected)
 
-    return {
-        "connected":  len(connected) > 0,
-        "platforms":  connected,
-        "username":   token_data.get("username", ""),
-        "pages":      [{"id": p["id"], "name": p["name"]} for p in pages],
-        "instagram_connected": "instagram" in connected,
-        "instagram_note": (
-            ""
-            if "instagram" in connected
-            else
-            "Instagram not connected. To connect Instagram: "
-            "switch to a Business/Creator account in the Instagram app, "
-            "then link it to your Facebook Page under "
-            "Instagram Settings → Account → Linked Accounts → Facebook. "
-            "Then reconnect Meta."
-        ),
-        "facebook_connected": "facebook" in connected,
-        "facebook_note": (
-            ""
-            if "facebook" in connected
-            else
-            "Facebook not connected. No Facebook Pages found. "
-            "Create a Facebook Page at facebook.com/pages/create "
-            "then reconnect Meta."
-        ),
-        "threads_note": (
-            "Threads uses a separate OAuth flow. "
-            "Connect at GET /api/v1/oauth/threads/connect"
-        ),
-        "message": (
-            f"Connected: {', '.join(connected)}"
-            if connected
-            else "No platforms connected. See notes above."
-        ),
-    }
+    if connected:
+        return _oauth_popup_response(True, f"Connected: {', '.join(connected)}")
+
+    notes = []
+    if "instagram" not in connected:
+        notes.append(
+            "Instagram: switch to a Business/Creator account and link it to your "
+            "Facebook Page under Instagram Settings → Account → Linked Accounts."
+        )
+    if "facebook" not in connected:
+        notes.append("Facebook: no Facebook Pages found — create one at facebook.com/pages/create.")
+    return _oauth_popup_response(False, "No platforms connected. " + " ".join(notes))
 
 @router.get("/threads/connect")
 @limiter.limit("10/minute")
@@ -330,17 +319,17 @@ async def threads_callback(
     code: str = Query(None),
     state: str = Query(None),
     error: str = Query(None),
-) -> dict:
+) -> HTMLResponse:
     """Handle Threads OAuth callback."""
     if error:
-        raise HTTPException(status_code=400, detail=f"Threads OAuth denied: {error}")
+        return _oauth_popup_response(False, f"Threads OAuth denied: {error}")
 
     if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code or state.")
+        return _oauth_popup_response(False, "Missing code or state.")
 
     state_data = _consume_state(state)
     if not state_data:
-        raise HTTPException(status_code=400, detail="Invalid or expired state.")
+        return _oauth_popup_response(False, "Invalid or expired state.")
 
     user_id = state_data["user_id"]
     workspace_id = state_data.get("workspace_id", "")
@@ -393,10 +382,10 @@ async def threads_callback(
 
     except httpx.HTTPStatusError as exc:
         logger.error("Threads HTTP error: %s — %s", exc.response.status_code, exc.response.text)
-        raise HTTPException(status_code=500, detail="Failed to connect Threads.")
+        return _oauth_popup_response(False, "Failed to connect Threads.")
     except Exception as exc:
         logger.error("Threads token exchange failed: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to connect Threads.")
+        return _oauth_popup_response(False, "Failed to connect Threads.")
 
     await save_token(
         workspace_id=workspace_id,
@@ -409,12 +398,7 @@ async def threads_callback(
         connected_by=user_id,
     )
 
-    return {
-        "platform":  "threads",
-        "connected": True,
-        "username":  username,
-        "message":   "Threads connected successfully.",
-    }
+    return _oauth_popup_response(True, "Threads connected successfully.")
 
 
 # ── Add these two routes to oauth.py, before the /{platform} wildcards ──────
@@ -449,13 +433,13 @@ async def google_callback(
     code: str = Query(None),
     state: str = Query(None),
     error: str = Query(None),
-) -> dict:
+) -> HTMLResponse:
     """Handle Google OAuth callback."""
     if error:
-        raise HTTPException(status_code=400, detail=f"Google OAuth denied: {error}")
+        return _oauth_popup_response(False, f"Google OAuth denied: {error}")
 
     if not code or not state:
-        raise HTTPException(status_code=400, detail="Missing code or state from Google callback.")
+        return _oauth_popup_response(False, "Missing code or state from Google callback.")
 
     # State format is "token|platform" — extract token only
     state_parts = state.split("|", 1)
@@ -463,10 +447,7 @@ async def google_callback(
 
     state_data = _consume_state(state_token)
     if not state_data:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired OAuth state. Please try connecting again.",
-        )
+        return _oauth_popup_response(False, "Invalid or expired OAuth state. Please try connecting again.")
 
     user_id = state_data["user_id"]
     workspace_id = state_data.get("workspace_id", "")
@@ -476,10 +457,7 @@ async def google_callback(
         token_data = await exchange_code(code, platform="google")
     except Exception as exc:
         logger.error("Google token exchange failed for user %s: %s", user_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to connect Google. Please try again.",
-        )
+        return _oauth_popup_response(False, "Failed to connect Google. Please try again.")
 
     connected = []
 
@@ -521,26 +499,13 @@ async def google_callback(
 
     logger.info("Google callback complete for user %s — connected: %s", user_id, connected)
 
-    return {
-        "connected":         len(connected) > 0,
-        "platforms":         connected,
-        "username":          token_data.get("username", ""),
-        "email":             token_data.get("email", ""),
-        "google_connected":  "google" in connected,
-        "youtube_connected": "youtube" in connected,
-        "youtube_note": (
-            ""
-            if "youtube" in connected
-            else
-            "YouTube not connected. No YouTube channel found on this Google account. "
-            "Create a channel at youtube.com and reconnect Google."
-        ),
-        "message": (
-            f"Connected: {', '.join(connected)}"
-            if connected
-            else "No platforms connected. See notes above."
-        ),
-    }
+    if connected:
+        return _oauth_popup_response(True, f"Connected: {', '.join(connected)}")
+    return _oauth_popup_response(
+        False,
+        "No platforms connected. YouTube: no channel found on this Google account — "
+        "create one at youtube.com and reconnect.",
+    )
 # ─────────────────────────────────────────────────────────────────────────────
 # GENERIC ROUTES LAST — wildcard /{platform} catches everything else
 # ─────────────────────────────────────────────────────────────────────────────
@@ -579,20 +544,17 @@ async def oauth_callback(
     code: str = Query(...),
     state: str = Query(...),
     error: str = Query(None),
-) -> dict:
+) -> HTMLResponse:
     """Handle OAuth callback from platform."""
     if error:
-        raise HTTPException(status_code=400, detail=f"OAuth denied: {error}")
+        return _oauth_popup_response(False, f"OAuth denied: {error}")
 
     state_data = _consume_state(state)
     if not state_data:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid or expired OAuth state. Please try connecting again.",
-        )
+        return _oauth_popup_response(False, "Invalid or expired OAuth state. Please try connecting again.")
 
     if state_data["platform"] != platform:
-        raise HTTPException(status_code=400, detail="Platform mismatch in OAuth state.")
+        return _oauth_popup_response(False, "Platform mismatch in OAuth state.")
 
     user_id = state_data["user_id"]
     workspace_id = state_data.get("workspace_id", "")
@@ -602,10 +564,7 @@ async def oauth_callback(
         token_data = await publisher.exchange_token(code)
     except Exception as exc:
         logger.error("Token exchange failed for %s user %s: %s", platform, user_id, exc)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to connect {platform}. Please try again.",
-        )
+        return _oauth_popup_response(False, f"Failed to connect {platform}. Please try again.")
 
     await save_token(
         workspace_id=workspace_id,
@@ -618,12 +577,7 @@ async def oauth_callback(
         connected_by=user_id,
     )
 
-    return {
-        "platform":  platform,
-        "connected": True,
-        "username":  token_data.get("username", ""),
-        "message":   f"{platform} connected successfully.",
-    }
+    return _oauth_popup_response(True, f"{platform} connected successfully.")
 
 
 @router.delete("/{platform}/disconnect")
