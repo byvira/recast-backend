@@ -202,13 +202,18 @@ async def get_dashboard_report(
         user_id=ctx.user_id,
     )
     return {
-        "report":          result["report"],
-        "analysis":        result["analysis"],
-        "recommendations": result["recommendations"],
-        "platforms":       result["connected_platforms"],
-        "account_metrics": result["account_metrics"],
-        "post_metrics":    result["post_metrics"],
-        "errors":          result["errors"],
+        "report":            result["report"],
+        "analysis":          result["analysis"],
+        "recommendations":   result["recommendations"],
+        # Matches POST /ask's key name (previously "platforms" here vs
+        # "platforms_checked" there for the exact same value) — the
+        # frontend's AnalyticsReport type already only ever declared
+        # platforms_checked, so this endpoint's key never actually matched
+        # what the type (and now the UI) expects.
+        "platforms_checked": result["connected_platforms"],
+        "account_metrics":   result["account_metrics"],
+        "post_metrics":      result["post_metrics"],
+        "errors":            result["errors"],
     }
 
 @router.get("/calendar")
