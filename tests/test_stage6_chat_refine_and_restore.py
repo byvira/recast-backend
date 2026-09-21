@@ -11,6 +11,8 @@ LLM mocked — never a real Groq call.
 
 from uuid import uuid4
 
+from app.db.mongo import workspaces
+from app.pipelines.text import refiner as refiner_module
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 from tests.conftest import create_workspace
 
@@ -58,6 +60,40 @@ async def test_refine_chat_saves_a_real_version_for_a_real_piece(signup_user, mo
     body = res.json()
     assert body["refined"] == "Refined via chat turn 1."
     assert body["version_saved"] is True
+
+
+async def test_refine_chat_preserves_workspace_language(signup_user, monkeypatch):
+    """/refine-chat had no language awareness at all — same gap as /refine.
+    Sets the workspace's language explicitly (English content, so a pass
+    can only mean the workspace setting was actually read) and captures
+    the real system prompt sent to the LLM (not the shared mock_llm
+    fixture, which doesn't expose it) to confirm the fix."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Chat Refine Language WS")
+    await workspaces.update_one({"id": ws_id}, {"$set": {"language": "ta"}})
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm_chat(messages, *args, system: str = "", **kwargs):
+        captured["system"] = system
+        return "Refined via chat turn 1."
+
+    monkeypatch.setattr(refiner_module, "call_llm_chat", _fake_call_llm_chat)
+
+    res = await client.post(
+        "/api/v1/text/refine-chat",
+        json={
+            "messages": [{"role": "user", "content": "Make it punchier"}],
+            "platform": "LinkedIn",
+            "brand_id": brand_id,
+            "piece_id": piece_id,
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    assert "Tamil" in captured["system"]
 
     piece = await client.get(
         f"/api/v1/content/pieces/{piece_id}", headers={"X-Workspace-Id": ws_id},

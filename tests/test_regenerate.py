@@ -18,7 +18,8 @@ Groq call.
 
 from uuid import uuid4
 
-from app.db.mongo import brand_profiles
+from app.db.mongo import brand_profiles, workspaces
+from app.pipelines.text import generator as generator_module
 from app.pipelines.text.storage import ensure_session_exists, get_piece, save_live_piece
 from tests.conftest import create_workspace
 
@@ -121,3 +122,35 @@ async def test_regenerate_with_piece_id_creates_a_new_version_of_the_same_piece(
     assert version_list[-1]["content"] == "Freshly regenerated content for the same piece."
     # v1 is still there, untouched.
     assert version_list[0]["content"] == "Original content before regenerate."
+
+
+async def test_regenerate_preserves_source_language(signup_user, monkeypatch):
+    """Regenerate used to never resolve a language at all, silently falling
+    through to run_text_pipeline's own "en" default regardless of any
+    workspace/user language setting — e.g. a workspace configured for
+    Tamil would still get English back on Retry. Sets the workspace's
+    language explicitly (English source content, so this can only be
+    passing because the workspace setting was actually read — not because
+    detect_language happened to guess Tamil from the input). Captures the
+    real prompt sent to the LLM (not the shared mock_llm fixture, which
+    doesn't expose it) to confirm the fix."""
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Regenerate WS")
+    await workspaces.update_one({"id": ws_id}, {"$set": {"language": "ta"}})
+    brand_id = await _create_brand(client, ws_id)
+
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm_structured(prompt: str, *args, **kwargs):
+        captured["prompt"] = prompt
+        return {"content": "Regenerated content.", "platform": "LinkedIn"}
+
+    monkeypatch.setattr(generator_module, "call_llm_structured", _fake_call_llm_structured)
+
+    res = await client.post(
+        "/api/v1/text/regenerate",
+        json={"platform": "LinkedIn", "brand_id": brand_id, "content": "Plain English source content."},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    assert "Tamil" in captured["prompt"]

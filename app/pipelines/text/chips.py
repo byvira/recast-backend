@@ -14,6 +14,7 @@ Usage:
 import logging
 from typing import Optional
 from app.prompts.registry import load_prompt
+from app.pipelines.text.generator import build_language_instruction
 from app.shared.llm import call_llm, GroqModel
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,7 @@ async def apply_chip(
     brand_context: str,
     banned_words: list[str] = [],
     custom_instruction: Optional[str] = None,
+    language: str = "en",
 ) -> dict:
     """
     Apply a quick action chip to existing content.
@@ -132,6 +134,11 @@ async def apply_chip(
         custom_instruction: a user-authored instruction (Feature 5) — used
                              as-is instead of looking chip_name up in the
                              fixed CHIP_PROMPTS set
+        language:           resolved via _resolve_request_language() by the
+                             caller — refine used to have no language
+                             awareness at all, silently defaulting to
+                             whatever language the LLM felt like regardless
+                             of the piece's/workspace's real language
 
     Returns:
         {
@@ -165,6 +172,7 @@ async def apply_chip(
         platform=platform,
         instruction=instruction,
         content=content,
+        language_instruction=build_language_instruction(language),
     )
 
     refined = await call_llm(prompt, model=GroqModel.BALANCED)

@@ -11,6 +11,7 @@ is always the most recent context the model reads before generating.
 
 import logging
 from app.prompts.registry import load_prompt
+from app.pipelines.text.generator import build_language_instruction
 from app.shared.llm import call_llm_chat, GroqModel
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ def build_refinement_system(
     brand_context: str,
     platform: str,
     banned_words: list[str] = [],
+    language: str = "en",
 ) -> str:
     """
     Build the system prompt for refinement chat.
@@ -31,11 +33,15 @@ def build_refinement_system(
 
     Renders app/prompts/text/refine/system.jinja, which embeds
     app/prompts/text/refine/system_prefix.jinja.
+
+    language: resolved via _resolve_request_language() by the caller —
+    refine-chat used to have no language awareness at all.
     """
     prefix = load_prompt("text/refine/system_prefix")
     return load_prompt(
         "text/refine/system", prefix=prefix, brand_context=brand_context,
         banned_words=banned_words, platform=platform,
+        language_instruction=build_language_instruction(language),
     )
 
 
@@ -46,6 +52,7 @@ async def run_refinement_turn(
     brand_context: str,
     platform: str,
     banned_words: list[str] = [],
+    language: str = "en",
 ) -> str:
     """
     Execute one refinement turn with full conversation history.
@@ -56,9 +63,10 @@ async def run_refinement_turn(
         brand_context: full brand voice context string from build_brand_context()
         platform:      target platform — LinkedIn, Instagram etc
         banned_words:  brand banned words list
+        language:      resolved via _resolve_request_language() by the caller
 
     Returns:
         refined content string — the assistant's response
     """
-    system = build_refinement_system(brand_context, platform, banned_words)
+    system = build_refinement_system(brand_context, platform, banned_words, language)
     return await call_llm_chat(messages, system=system, model=GroqModel.BALANCED)

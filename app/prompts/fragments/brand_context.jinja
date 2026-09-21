@@ -157,6 +157,13 @@ Style directives: {{ voice_tone["style"] }}
 {% endif %}
 
 {% endif -%}
+{%- if not (voice_tone and (voice_tone.get("tones") or voice_tone.get("style"))) %}
+No tone/style has been explicitly configured for this brand yet — default to
+natural, direct, conversational phrasing, like a real person writing to
+someone they know. Not corporate, not overly formal, not a generic "helpful
+assistant" register.
+
+{% endif -%}
 {% if manual_data %}
 {%- set openers = manual_data.get("openers", []) %}
 {%- set closers = manual_data.get("closers", []) %}
@@ -346,6 +353,12 @@ Emoji: {{ emoji }}
 {% endif %}
 {%- if style %}
 Style directives: {{ style }}
+{% endif %}
+{%- if not (tones or style) %}
+No tone/style has been explicitly configured for this brand yet — default to
+natural, direct, conversational phrasing, like a real person writing to
+someone they know. Not corporate, not overly formal, not a generic "helpful
+assistant" register.
 {% endif %}
 
 {%- set openers = manual_data.get("openers") or [] %}

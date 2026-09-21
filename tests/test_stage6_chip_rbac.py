@@ -13,6 +13,8 @@ Runs with the LLM mocked — never a real Groq call.
 
 from uuid import uuid4
 
+from app.db.mongo import workspaces
+from app.pipelines.text import chips as chips_module
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 from tests.conftest import create_workspace, invite_and_accept
 
@@ -187,6 +189,41 @@ async def test_apply_custom_chip_bypasses_the_fixed_chip_set(signup_user, mock_l
     version_list = versions.json()["versions"]
     assert version_list[-1]["action"] == "Sound like a scrappy founder"
     assert version_list[-1]["instruction"] == "Sound like a scrappy founder writing at 2am."
+
+
+async def test_refine_preserves_workspace_language(signup_user, monkeypatch):
+    """/refine had no language awareness at all — apply_chip() couldn't
+    even accept one. Sets the workspace's language explicitly (English
+    content, so a pass can only mean the workspace setting was actually
+    read) and captures the real prompt sent to the LLM (not the shared
+    mock_llm fixture, which doesn't expose it) to confirm the fix."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Chip Language WS")
+    await workspaces.update_one({"id": ws_id}, {"$set": {"language": "ta"}})
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+
+    captured: dict[str, str] = {}
+
+    async def _fake_call_llm(prompt: str, *args, **kwargs):
+        captured["prompt"] = prompt
+        return "Refined content."
+
+    monkeypatch.setattr(chips_module, "call_llm", _fake_call_llm)
+
+    res = await client.post(
+        "/api/v1/text/refine",
+        json={
+            "content": "Original content before any chip is applied.",
+            "chip": "shorten",
+            "platform": "LinkedIn",
+            "brand_id": brand_id,
+            "piece_id": piece_id,
+        },
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    assert "Tamil" in captured["prompt"]
 
 
 async def test_refine_without_custom_instruction_still_rejects_unknown_chip(signup_user, mock_llm):

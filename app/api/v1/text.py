@@ -494,6 +494,7 @@ async def refine_content(
 
     brand_context = build_brand_context(brand_profile)
     enforcement = _extract_enforcement_data(brand_profile)
+    language = await _resolve_request_language(None, ctx, content_for_detection=body.content)
 
     result = await apply_chip(
         content=body.content,
@@ -502,6 +503,7 @@ async def refine_content(
         brand_context=brand_context,
         banned_words=enforcement.get("banned_words", []),
         custom_instruction=body.custom_instruction,
+        language=language,
     )
 
     # Save version if piece_id provided and content changed
@@ -609,11 +611,14 @@ async def refine_chat(
             detail="Last message must be from the user.",
         )
 
+    language = await _resolve_request_language(None, ctx, content_for_detection=messages[-1]["content"])
+
     refined = await run_refinement_turn(
         messages=messages,
         brand_context=brand_context,
         platform=body.platform,
         banned_words=enforcement.get("banned_words", []),
+        language=language,
     )
 
     refined = refined.strip()
@@ -749,7 +754,14 @@ async def regenerate_content(
         avoid_blacklist  = True
         pdf_export       = False
 
-    # 5. Run pipeline for the single platform
+    # 5. Resolve language — same precedence chain /generate, /repurpose, and
+    # /batch already use (request override > workspace > user > detected
+    # from source content > "en"). Regenerate never called this before, so
+    # it silently fell through to run_text_pipeline's own "en" default
+    # regardless of the workspace/brand's real language.
+    language = await _resolve_request_language(None, ctx, content_for_detection=source_content)
+
+    # 6. Run pipeline for the single platform
     try:
         result = await run_text_pipeline(
             source_type=InputSourceType.TEXT,
@@ -761,6 +773,7 @@ async def regenerate_content(
             extras=_MinimalExtras(),
             goal=goal_enum,
             tone=tone_enum,
+            language=language,
             session_id=str(uuid4()),
         )
     except Exception as e:
