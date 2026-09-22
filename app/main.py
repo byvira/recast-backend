@@ -156,6 +156,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     scheduler.add_job(run_due_campaign_batches, "interval", minutes=1, id="campaign_batches")
     scheduler.add_job(refresh_expiring_tokens,  "interval", hours=24, id="token_refresh")
     scheduler.add_job(refresh_analytics,        "interval", hours=6,    id="analytics_refresh")
+
+    # Remy/Odette's agent jobs — normally a separate arq worker process (see
+    # app/workers/agent_worker.py), run in-process here instead since no
+    # deployed plan includes a spare background-worker instance.
+    from app.workers import inprocess as agent_workers
+    await agent_workers.start(scheduler)
+
     scheduler.start()
     logger.info("Background workers started")
 
@@ -163,8 +170,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Shutting down application...")
     scheduler.shutdown()
-    from app.agents.supervisor.service import close_arq_pool
-    await close_arq_pool()
+    await agent_workers.stop()
     get_mongo_client().close()
     await close_redis()
     logger.info("Connections closed successfully")

@@ -1,9 +1,15 @@
-"""The agent worker — a SECOND process, separate from the API.
-
-Run it alongside uvicorn:
+"""The agent worker — the arq entrypoint for running this as a SEPARATE
+process, alongside uvicorn:
 
     uvicorn app.main:app                       # API process
     arq app.workers.agent_worker.WorkerSettings   # this process
+
+**Currently not deployed this way** — no Render plan in use here includes a
+free/cheap background-worker instance, so `app/workers/inprocess.py` runs
+these same functions (imported from here and from `app.agents.supervisor.ticks`)
+on the web service's own event loop instead. This module is kept so the
+separate-process deployment is a config change, not a rewrite, if/when that
+becomes worth the extra host.
 
 It shares only MongoDB + Redis with the API. Nothing here is on any request's
 latency path.
@@ -199,7 +205,13 @@ async def _on_startup(ctx: dict) -> None:
     await personal_consumer_guard(ctx)
 
 
-async def _on_shutdown(ctx: dict) -> None:
+async def stop_consumer(ctx: dict) -> None:
+    """Stop the consume loop started by :func:`personal_consumer_guard`.
+
+    Shared by the standalone arq worker's shutdown hook and by
+    ``app.workers.inprocess`` (which runs this same loop on the web
+    service's own event loop instead of a separate process).
+    """
     stop: asyncio.Event | None = ctx.get("personal_consumer_stop")
     if stop:
         stop.set()
@@ -210,6 +222,10 @@ async def _on_shutdown(ctx: dict) -> None:
             await task
         except (asyncio.CancelledError, Exception):  # noqa: BLE001
             pass
+
+
+async def _on_shutdown(ctx: dict) -> None:
+    await stop_consumer(ctx)
     logger.info("agent worker stopped")
 
 

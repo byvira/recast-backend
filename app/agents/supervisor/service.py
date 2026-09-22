@@ -14,7 +14,6 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 
 from app.agents.supervisor.notify import resolve_admin_user_ids
-from app.core.config import settings
 from app.db.mongo import (
     admin_notifications,
     personal_signals,
@@ -28,8 +27,6 @@ logger = logging.getLogger(__name__)
 
 _INSIGHT_STATUSES = {"new", "seen", "dismissed", "actioned"}
 _FLAG_STATUSES = {"resolved", "muted", "open"}
-
-_arq_pool = None
 
 
 # ── insights ────────────────────────────────────────────────────────────────
@@ -168,29 +165,12 @@ async def mark_notification_read(workspace_id: str, user_id: str, notif_id: str)
 # ── on-demand run ──────────────────────────────────────────────────────────
 
 async def trigger_run(workspace_id: str) -> dict:
-    """Enqueue a supervisor reasoning pass on the arq worker. Falls back to an
-    in-process background task if the queue is unreachable."""
-    global _arq_pool
-    try:
-        if _arq_pool is None:
-            from arq import create_pool
-            from arq.connections import RedisSettings
-            _arq_pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
-        job = await _arq_pool.enqueue_job("run_supervisor_now", workspace_id)
-        return {"status": "enqueued", "job_id": getattr(job, "job_id", None)}
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("trigger_run: arq enqueue failed (%s) — running in-process", exc)
-        from app.agents.supervisor.ticks import run_supervisor_now
-        asyncio.create_task(run_supervisor_now({}, workspace_id))
-        return {"status": "started_inline"}
+    """Run a supervisor reasoning pass in-process.
 
-
-async def close_arq_pool() -> None:
-    """Release the enqueue pool (app shutdown / tests)."""
-    global _arq_pool
-    if _arq_pool is not None:
-        try:
-            await _arq_pool.aclose()
-        except Exception:  # noqa: BLE001
-            pass
-        _arq_pool = None
+    Used to enqueue onto a separate arq worker process, but no such process
+    is deployed (see app/workers/inprocess.py) — the reasoning pass now runs
+    directly on this event loop, same as the scheduled ticks.
+    """
+    from app.agents.supervisor.ticks import run_supervisor_now
+    asyncio.create_task(run_supervisor_now({}, workspace_id))
+    return {"status": "started_inline"}
