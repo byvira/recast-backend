@@ -118,6 +118,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Starting application...")
 
+    # Loud, fail-fast-adjacent check for the exact misconfiguration that has
+    # already caused a real incident here (see app/core/auth.py::set_auth_cookies'
+    # docstring and this file's CORS setup below): ENVIRONMENT=production with
+    # no PRODUCTION_DOMAIN/FRONTEND_URL set silently degrades cookie auth to
+    # SameSite=Lax across a genuinely cross-site deployment (Vercel frontend,
+    # Render backend) — login appears to succeed (Set-Cookie is present) but
+    # the cookie is never attached to the next request, so the user is
+    # bounced back to login in an infinite loop. This used to fail silently;
+    # now it's impossible to miss in the Render deploy logs.
+    if settings.ENVIRONMENT == "production" and not (settings.PRODUCTION_DOMAIN or settings.FRONTEND_URL):
+        logger.error(
+            "STARTUP MISCONFIGURATION: ENVIRONMENT=production but neither "
+            "PRODUCTION_DOMAIN nor FRONTEND_URL is set. Auth cookies will use "
+            "SameSite=None (correct), but CORS will have no allowed origin "
+            "beyond ALLOWED_ORIGINS, and the deployed frontend's login will "
+            "loop indefinitely (Set-Cookie appears to work, then every "
+            "following request silently has no cookie). Set PRODUCTION_DOMAIN "
+            "or FRONTEND_URL in Render → Environment to the exact frontend "
+            "origin (e.g. https://your-app.vercel.app) before this is usable."
+        )
+
     from app.core.tracing import init_tracing
     init_tracing()
 
