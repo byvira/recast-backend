@@ -22,6 +22,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import settings
 from app.db.mongo import workspace_connections
+from app.platforms.base import get_platform, import_all
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,18 @@ async def save_token(
     """
     Save or update OAuth tokens for a workspace + platform.
     Tokens encrypted before storage. Upserts — safe to call on reconnect.
+
+    Raises ValueError if `platform` isn't a registered key in the platform
+    registry (app/platforms/) — application-layer check, not a schema
+    migration, per docs/PLATFORM_REGISTRY_PLAN.md Stage 1 item 6.
     """
+    import_all()
+    if get_platform(platform) is None:
+        raise ValueError(
+            f"Unknown platform '{platform}' — not registered in app.platforms. "
+            f"Add a PlatformDefinition for it before connecting."
+        )
+
     now = datetime.now(timezone.utc)
 
     await workspace_connections.update_one(

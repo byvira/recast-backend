@@ -64,17 +64,15 @@ def validate_bluesky(content: str) -> Tuple[bool, list[str]]:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLATFORM VALIDATOR REGISTRY
+#
+# Sourced from app.platforms.PLATFORM_REGISTRY (see app/platforms/base.py) —
+# each PlatformDefinition's validator_fn is a dotted path back to one of the
+# validate_X functions above. The individual functions stay here and are
+# still imported directly by the publisher modules (linkedin/publisher.py
+# etc.) — only the platform → function lookup used by validate_for_platform()
+# moved to the registry, so a new platform's validator is declared once,
+# in its PlatformDefinition, not duplicated in a second dict here.
 # ─────────────────────────────────────────────────────────────────────────────
-
-VALIDATORS = {
-    "linkedin":  validate_linkedin,
-    "instagram": validate_instagram,
-    "threads":   validate_threads,
-    "facebook":  validate_facebook,
-    "reddit":    validate_reddit,
-    "bluesky":   validate_bluesky,
-}
-
 
 def validate_for_platform(
     platform: str,
@@ -85,7 +83,11 @@ def validate_for_platform(
     Returns (is_valid, issues).
     Falls back to no-op validation for unknown platforms.
     """
-    validator = VALIDATORS.get(platform.lower())
+    from app.platforms.base import get_platform, import_all
+
+    import_all()
+    definition = get_platform(platform)
+    validator = definition.resolve_validator_fn() if definition else None
     if not validator:
         return True, []
     return validator(content)

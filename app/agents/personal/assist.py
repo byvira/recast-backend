@@ -18,6 +18,7 @@ from app.agents.personal import thresholds as T
 from app.core.tracing import traced_agent
 from app.db.mongo import personal_signals
 from app.pipelines.text.generator import resolve_language_name
+from app.platforms.base import import_all as import_all_platforms, resolve_platform_by_display_value
 from app.prompts.registry import load_localized, load_prompt
 from app.shared.language import first_present, user_language, workspace_language
 from app.shared.llm import GroqModel, call_llm_structured, cosine_similarity, embed_text
@@ -144,6 +145,16 @@ async def _align_draft_impl(
     deltas = style_mod.style_deltas(draft_fingerprint, baseline_fingerprint)
     delta_components = style_mod.style_delta_components(draft_fingerprint, baseline_fingerprint)
 
+    # target_platform: `target` is the member-supplied platform/route label
+    # (opaque per AssistRequest's docstring) — when it resolves to a real
+    # registry entry, the platform's own tone_profile + policy_constraints go
+    # into the prompt alongside the member's baseline, per
+    # docs/PLATFORM_REGISTRY_PLAN.md Stage 3 item 15. Unresolved values (a
+    # pipeline label like "general", or a platform not yet in the registry)
+    # fall through to today's behavior — target shown as a bare label.
+    import_all_platforms()
+    target_platform = resolve_platform_by_display_value(target)
+
     suggested_openers: list[str] = []
     rewrite_hint = ""
     try:
@@ -158,6 +169,8 @@ async def _align_draft_impl(
             question_rate=persona["style_fingerprint"].get("question_rate"),
             deltas=deltas,
             target=target,
+            platform_tone_profile=target_platform.tone_profile if target_platform else None,
+            platform_policy_constraints=target_platform.policy_constraints if target_platform else [],
             draft_text=draft_text[:1800],
             language_name=resolve_language_name(language),
         )

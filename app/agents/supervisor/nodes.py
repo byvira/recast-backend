@@ -40,6 +40,7 @@ def build_digest_node(state: SupervisorState) -> dict:
         workspace=state["workspace"],
         active_members=state["active_members"],
         open_flags=state["open_flags"],
+        platform_snapshot=state.get("platform_snapshot"),
     )
     return {"digest": digest}
 

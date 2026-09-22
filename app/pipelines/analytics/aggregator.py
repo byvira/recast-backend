@@ -8,26 +8,38 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.pipelines.analytics.base import PostMetrics, AccountMetrics
-from app.pipelines.analytics.instagram import InstagramAnalyticsFetcher
-from app.pipelines.analytics.threads import ThreadsAnalyticsFetcher
-from app.pipelines.analytics.linkedin import LinkedInAnalyticsFetcher
-from app.pipelines.analytics.youtube import YouTubeAnalyticsFetcher
-from app.pipelines.analytics.bluesky import BlueskyAnalyticsFetcher
-from app.pipelines.analytics.facebook import FacebookAnalyticsFetcher
+from app.pipelines.analytics.base import PostMetrics, AccountMetrics, AnalyticsFetcher
 from app.pipelines.publish.token_store import get_token
+from app.platforms.base import get_platform, import_all, list_platforms
 from app.db.mongo import get_db
 
 logger = logging.getLogger(__name__)
 
-_FETCHERS = {
-    "instagram": InstagramAnalyticsFetcher(),
-    "facebook":  FacebookAnalyticsFetcher(),
-    "threads":   ThreadsAnalyticsFetcher(),
-    "linkedin":  LinkedInAnalyticsFetcher(),
-    "youtube":   YouTubeAnalyticsFetcher(),
-    "bluesky":   BlueskyAnalyticsFetcher(),
-}
+# Sourced from app.platforms.PLATFORM_REGISTRY — each PlatformDefinition's
+# analytics_fetcher_cls is a dotted path to one of the fetcher classes
+# (instagram.py, facebook.py, etc). Instances are cached here per platform
+# (same singleton-per-platform behavior the old hardcoded _FETCHERS dict
+# had) so a new platform's fetcher is declared once, in its
+# PlatformDefinition, not duplicated in a second dict here.
+_fetcher_instances: dict[str, AnalyticsFetcher] = {}
+
+
+def _get_fetcher(platform: str) -> AnalyticsFetcher | None:
+    if platform in _fetcher_instances:
+        return _fetcher_instances[platform]
+    import_all()
+    definition = get_platform(platform)
+    fetcher_cls = definition.resolve_analytics_fetcher_cls() if definition else None
+    if fetcher_cls is None:
+        return None
+    instance = fetcher_cls()
+    _fetcher_instances[platform] = instance
+    return instance
+
+
+def _default_analytics_platforms() -> list[str]:
+    import_all()
+    return [p.key for p in list_platforms() if p.analytics_fetcher_cls]
 
 
 async def fetch_account_metrics_all(
@@ -41,13 +53,13 @@ async def fetch_account_metrics_all(
     Always persists results to MongoDB account_metrics collection, scoped by workspace.
     """
     if platforms is None:
-        platforms = list(_FETCHERS.keys())
+        platforms = _default_analytics_platforms()
 
     db      = get_db()
     results = []
 
     for platform in platforms:
-        fetcher = _FETCHERS.get(platform)
+        fetcher = _get_fetcher(platform)
         if not fetcher:
             continue
 
@@ -99,7 +111,7 @@ async def fetch_post_metrics_all(
 
     for post in posts:
         platform = post.get("platform", "")
-        fetcher  = _FETCHERS.get(platform)
+        fetcher  = _get_fetcher(platform)
 
         if not fetcher:
             logger.warning("No analytics fetcher for platform: %s", platform)

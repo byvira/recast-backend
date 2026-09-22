@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     OTP_MAX_SENDS_PER_DAY: int = 10
     OTP_COOLDOWN_SECONDS: int = 60
     OTP_LOCK_MINUTES: int = 15
+
+    # Dev/test-only OTP backdoor for automated (Playwright) testing — see
+    # docs/PLAYWRIGHT_TESTING_GUIDE.md. Comma-separated allowlist of
+    # identifiers GET /api/v1/auth/dev/last-otp will serve. Only ever
+    # consulted when ENVIRONMENT != "production" (enforced in auth.py,
+    # not here) — this setting alone does not grant access in production.
+    DEV_OTP_TEST_IDENTIFIERS: str = "virastudio.hello@gmail.com"
     JWT_EXPIRE_HOURS: int = 24
     JWT_REFRESH_EXPIRE_DAYS: int = 30
     JWT_ISSUER: str = "saas-backend"

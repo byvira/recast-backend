@@ -145,6 +145,11 @@ def supervisor_note(signal_type: str, *, ctx: dict) -> str:
         return f"volume spike: {ctx.get('today')} today vs mean {ctx.get('mean')} (+{ctx.get('sigma')}σ)"
     if signal_type == "volume_drop":
         return f"volume drop: 0 pieces for {ctx.get('zero_days')}d after ~{ctx.get('baseline_per_day')}/day"
+    if signal_type == "platform_volume_drop":
+        return (
+            f"platform volume drop: {ctx.get('platform')} 0 pieces for {ctx.get('zero_days')}d "
+            f"after ~{ctx.get('baseline_per_day')}/day, member still active on other platforms"
+        )
     if signal_type == "topic_shift":
         return f"topic shift: keyword Jaccard {ctx.get('jaccard'):.2f} (floor {ctx.get('floor')})"
     if signal_type == "quality_regression":

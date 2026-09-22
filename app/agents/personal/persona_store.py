@@ -51,7 +51,15 @@ def new_persona(workspace_id: str, user_id: str, now: datetime) -> dict:
             "reading_grade": 0.0,
         },
         "topics": {"keyword_histogram": {}, "top_30_window_ids": []},
-        "volume_stats": {"daily_counts": {}, "mean": 0.0, "stddev": 0.0},
+        "volume_stats": {
+            "daily_counts": {}, "mean": 0.0, "stddev": 0.0,
+            # Per-platform breakdown of the same daily_counts/mean shape, keyed
+            # by the raw target string content pieces are stored under (e.g.
+            # "LinkedIn", "Twitter/X" — see app.pipelines.text.events' target=
+            # field). Lets personal_volume_sweep notice "quiet on LinkedIn for
+            # 12 days" even while the member is still active elsewhere.
+            "daily_counts_by_platform": {},
+        },
         "quality_stats": {"trailing_10_flag_rate": 0.0, "baseline_flag_rate": 0.0},
         "drift_history": [],
         "schema_version": 1,
@@ -109,6 +117,7 @@ def apply_piece(
     similarity: Optional[float],
     recent_history_rows: list[dict],
     now: datetime,
+    platform: Optional[str] = None,
 ) -> dict:
     """Return ``persona`` mutated in place with this piece folded in.
 
@@ -174,6 +183,16 @@ def apply_piece(
     daily[today] = daily.get(today, 0) + 1
     daily, mean, stdev = _recompute_volume(daily)
     vs["daily_counts"], vs["mean"], vs["stddev"] = daily, mean, stdev
+
+    if platform:
+        by_platform = vs.setdefault("daily_counts_by_platform", {})
+        platform_stats = by_platform.setdefault(platform, {"daily_counts": {}, "mean": 0.0, "stddev": 0.0})
+        platform_daily = platform_stats["daily_counts"]
+        platform_daily[today] = platform_daily.get(today, 0) + 1
+        platform_daily, platform_mean, platform_stdev = _recompute_volume(platform_daily)
+        platform_stats["daily_counts"] = platform_daily
+        platform_stats["mean"] = platform_mean
+        platform_stats["stddev"] = platform_stdev
 
     # ── quality stats ───────────────────────────────────────────────
     qs = persona["quality_stats"]

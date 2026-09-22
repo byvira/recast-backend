@@ -1,0 +1,108 @@
+from app.platforms.base import PlatformDefinition, register_platform
+
+CATEGORY = "Blogs and CMS"
+
+ROWS = [
+    dict(
+        key="wordpress", label="WordPress (self-hosted)",
+        pipelines=frozenset({"text", "image", "video", "audio"}),
+        native_formats={"text": "native", "image": "embedded", "video": "embedded", "audio": "embedded"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Free REST API with an application password (verify).",
+        policy_constraints=["Self-hosted — the user owns the site; REST API plus plugin ecosystem."],
+        confidence="unverified",
+    ),
+    dict(
+        key="wordpress_com", label="WordPress.com",
+        pipelines=frozenset({"text", "image", "video", "audio"}),
+        native_formats={"text": "native", "image": "embedded", "video": "embedded", "audio": "embedded"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Free REST API with an application password (verify) — same API family as self-hosted WordPress, hosted/managed instead.",
+        policy_constraints=["Hosted counterpart to self-hosted WordPress — same REST API family, different ownership model."],
+        confidence="unverified",
+    ),
+    dict(
+        key="ghost", label="Ghost",
+        pipelines=frozenset({"text", "image"}),
+        native_formats={"text": "native", "image": "native"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Free Admin API (verify).",
+        policy_constraints=["Open-source publishing with built-in newsletters and paid memberships."],
+        confidence="unverified",
+    ),
+    dict(
+        key="medium", label="Medium",
+        pipelines=frozenset({"text"}),
+        native_formats={"text": "native"},
+        mode="config_driven", integration_pattern="manual_handoff",
+        policy_constraints=["Built-in audience, but new API tokens are reportedly no longer issued — treat as manual until confirmed otherwise."],
+        access_notes="Manual — formatted text ready to paste.",
+        confidence="unverified",
+    ),
+    dict(
+        key="substack", label="Substack",
+        pipelines=frozenset({"text"}),
+        native_formats={"text": "native"},
+        mode="config_driven", integration_pattern="manual_handoff",
+        policy_constraints=["No public publishing API — Newsletter and Notes platform, manual only."],
+        access_notes="Manual only — formatted text ready to paste.",
+        confidence="unverified",
+    ),
+    dict(
+        key="devto", label="Dev.to",
+        pipelines=frozenset({"text", "image"}),
+        native_formats={"text": "native", "image": "native"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Free API key.",
+        policy_constraints=["Developer audience; markdown-based technical posts and tutorials."],
+        confidence="unverified",
+    ),
+    dict(
+        key="hashnode", label="Hashnode",
+        pipelines=frozenset({"text", "image"}),
+        native_formats={"text": "native", "image": "native"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Free API (verify) — GraphQL.",
+        policy_constraints=["Developer blogging with custom domains."],
+        confidence="unverified",
+    ),
+    dict(
+        key="blogger", label="Blogger",
+        pipelines=frozenset({"text", "image"}),
+        native_formats={"text": "native", "image": "native"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Free API with OAuth (verify).",
+        policy_constraints=["Google's blogging platform — older, lower reach, still has a working API."],
+        confidence="unverified",
+    ),
+    dict(
+        key="webflow", label="Webflow CMS",
+        pipelines=frozenset({"text", "image"}),
+        native_formats={"text": "native", "image": "native"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="CMS API available on paid plans only (verify).",
+        policy_constraints=["Visual site builder — common for agency/client sites."],
+        confidence="unverified",
+    ),
+    dict(
+        key="shopify_blog", label="Shopify Blog",
+        pipelines=frozenset({"text", "image"}),
+        native_formats={"text": "native", "image": "native"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Admin API through a custom app (verify).",
+        policy_constraints=["Ties content to a Shopify store — e-commerce content marketing."],
+        confidence="unverified",
+    ),
+    dict(
+        key="notion", label="Notion",
+        pipelines=frozenset({"text", "image"}),
+        native_formats={"text": "native", "image": "native"},
+        mode="code_driven", integration_pattern="api_publish",
+        rate_limits="Free API with an integration token.",
+        policy_constraints=["Works as a content hub/calendar rather than a public-facing publish target."],
+        confidence="unverified",
+    ),
+]
+
+for _row in ROWS:
+    register_platform(PlatformDefinition(category=CATEGORY, status="planned", **_row))

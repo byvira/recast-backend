@@ -82,15 +82,16 @@ LANGUAGE_NAMES: dict[str, str] = {
 }
 
 
-class Platform(str, Enum):
-    LINKEDIN = "LinkedIn"
-    TWITTER = "Twitter/X"
-    TWITTER_THREAD = "Twitter/X Thread"
-    INSTAGRAM = "Instagram"
-    FACEBOOK = "Facebook"
-    BLOG = "Blog"
-    NEWSLETTER = "Newsletter"
-    YOUTUBE = "YouTube"
+# Derived from the platform registry (app/platforms/) instead of hardcoded here —
+# see PlatformDefinition.has_text_prompt_rules's docstring in app/platforms/base.py
+# for exactly which platforms qualify and why. Reproduces the previous hardcoded
+# enum's members and string values exactly (verified: LINKEDIN="LinkedIn",
+# TWITTER="Twitter/X", TWITTER_THREAD="Twitter/X Thread", INSTAGRAM="Instagram",
+# FACEBOOK="Facebook", BLOG="Blog", NEWSLETTER="Newsletter", YOUTUBE="YouTube") —
+# zero behavior change, registry is now the single source of truth going forward.
+from app.platforms.base import build_text_platform_enum  # noqa: E402
+
+Platform = build_text_platform_enum("Platform")
 
 class InputSourceType(str, Enum):
     TEXT = "text"          # write mode

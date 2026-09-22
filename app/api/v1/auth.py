@@ -595,3 +595,44 @@ async def check_username(
             suggestion = f"{base}_{uuid4().hex[:6]}"
 
     return {"available": available, "suggestion": suggestion}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DEV/TEST-ONLY — not part of the public API surface. See
+# docs/PLAYWRIGHT_TESTING_GUIDE.md. Lets an automated test client (Playwright)
+# complete the real OTP flow (F-001/F-002) without a real inbox, by reading
+# back the same Redis-stored code notifications.py already prints to the
+# console in dev mode — this route is the only thing that changes; OTP
+# generation, storage, and verification are 100% unmodified from the real
+# path a production user goes through.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/dev/last-otp")
+@limiter.limit("30/minute")
+async def get_dev_last_otp(request: Request, identifier: str) -> dict[str, str]:
+    """Return the current OTP for a designated test identifier.
+
+    Triple-gated: (1) 404s outright in production, regardless of the
+    identifier — checked first, before the identifier is even normalized;
+    (2) 404s for any identifier not on the DEV_OTP_TEST_IDENTIFIERS
+    allowlist; (3) 404s if no OTP is currently stored (none requested yet,
+    or already consumed/expired) — same code path in every "not allowed"
+    case so this route can't be used to probe which identifiers are
+    allowlisted or whether an OTP exists for one that isn't.
+    """
+    if settings.ENVIRONMENT == "production":
+        raise HTTPException(status_code=404)
+
+    allowlist = {
+        e.strip().lower() for e in settings.DEV_OTP_TEST_IDENTIFIERS.split(",") if e.strip()
+    }
+    normalized = normalize_identifier(identifier)
+    if normalized not in allowlist:
+        raise HTTPException(status_code=404)
+
+    redis = await get_redis()
+    code = await redis.get(f"otp:{normalized}:code")
+    if not code:
+        raise HTTPException(status_code=404, detail="No OTP on file — request one first.")
+
+    return {"identifier": normalized, "otp": code}

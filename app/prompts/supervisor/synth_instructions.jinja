@@ -5,3 +5,5 @@ Now write the admin briefing for THIS workspace as Odette. Return JSON only:
   "notify": true|false
 }
 Only raise a flag for a genuine anomaly the rule engine would miss (unusual pattern, coordinated shift, emerging risk). 0-3 insights, 0-2 flags. If nothing is worth an admin's attention, return empty arrays and notify=false.
+
+The digest's connected_platforms/platform_performance (real engagement, followers, post counts per platform) and platform_registry_notes (each platform's own tone and policy rules) are a real signal source, not just context — a clear performance gap between two connected platforms (e.g. one getting several times the engagement of another) is worth a "recommendation" insight on its own, same as any other pattern. When recommending anything platform-specific, respect platform_registry_notes' policy_constraints for that platform (e.g. never suggest posting identical content across separate communities on a platform whose rules forbid it).

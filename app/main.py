@@ -40,6 +40,10 @@ from app.workers.campaign_scheduler import run_due_campaign_batches
 from app.workers.token_refresh import refresh_expiring_tokens
 from app.pipelines.analytics.scheduler import refresh_analytics
 from app.api.v1 import analytics as analytics_router
+from app.api.v1 import platforms as platforms_router
+from app.api.v1 import ops_platforms as ops_platforms_router
+from app.api.v1 import ops_cohorts as ops_cohorts_router
+from app.api.v1 import ops_ai_budget as ops_ai_budget_router
 
 setup_logging()
 
@@ -121,6 +125,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await create_indexes()
     await run_startup_migrations()
     logger.info("MongoDB connected, indexes created, migrations applied")
+
+    from app.platforms.base import import_all as import_all_platforms
+    import_all_platforms()
+    logger.info("Platform registry loaded")
 
     # Start scheduler
     scheduler.add_job(process_scheduled_posts,  "interval", minutes=1, id="scheduled_posts")
@@ -284,6 +292,10 @@ app.include_router(image.router,          prefix="/api/v1/image",      tags=["Im
 app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["Analytics"])
 app.include_router(assistant_router.router, prefix="/api/v1/assistant", tags=["Assistant"])
 app.include_router(supervisor_router.router, prefix="/api/v1/supervisor", tags=["Supervisor"])
+app.include_router(platforms_router.router, prefix="/api/v1/platforms", tags=["Platforms"])
+app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
+app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
+app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
 app.include_router(
     text_stream.router,
     prefix="/api/v1/pipeline",

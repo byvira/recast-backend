@@ -6,7 +6,9 @@ to; no other member — and no workspace admin — can read them here.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
@@ -14,6 +16,9 @@ from pydantic import BaseModel, Field
 from app.agents.personal import service
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
+from app.db.mongo import member_lexicon, member_voice_settings
+from app.models.lexicon import MemberLexicon, MemberLexiconWrite
+from app.models.voice_settings import MemberVoiceSettings, MemberVoiceSettingsWrite
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -76,6 +81,119 @@ async def assist_with_draft(
         draft_text=body.draft_text,
         target=body.target,
     )
+
+
+def _voice_settings_id(workspace_id: str, user_id: str) -> str:
+    return f"{workspace_id}:{user_id}"
+
+
+@router.get("/voice-settings")
+@limiter.limit("60/minute")
+async def get_voice_settings(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> MemberVoiceSettings:
+    """Scaffolding — real settings, persisted, but nothing synthesizes audio
+    from them yet (no TTS engine wired in). Returns defaults on first call,
+    same as a piece of user preference state with no explicit save yet."""
+    doc = await member_voice_settings.find_one(
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
+    )
+    if doc:
+        return MemberVoiceSettings(**doc)
+    return MemberVoiceSettings(
+        id=_voice_settings_id(ctx.workspace_id, ctx.user_id),
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+    )
+
+
+@router.put("/voice-settings")
+@limiter.limit("30/minute")
+async def update_voice_settings(
+    request: Request,
+    body: MemberVoiceSettingsWrite,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> MemberVoiceSettings:
+    now = datetime.now(timezone.utc)
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    await member_voice_settings.update_one(
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id},
+        {
+            "$set": {**updates, "updated_at": now},
+            "$setOnInsert": {
+                "id": _voice_settings_id(ctx.workspace_id, ctx.user_id),
+                "workspace_id": ctx.workspace_id,
+                "user_id": ctx.user_id,
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    doc = await member_voice_settings.find_one(
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
+    )
+    return MemberVoiceSettings(**doc)
+
+
+@router.get("/lexicon")
+@limiter.limit("60/minute")
+async def get_lexicon(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> MemberLexicon:
+    """Scaffolding — real pronunciation/jargon/writing-blueprint data,
+    persisted, but nothing enforces it during generation yet."""
+    doc = await member_lexicon.find_one(
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
+    )
+    if doc:
+        return MemberLexicon(**doc)
+    return MemberLexicon(
+        id=_voice_settings_id(ctx.workspace_id, ctx.user_id),
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+    )
+
+
+@router.put("/lexicon")
+@limiter.limit("30/minute")
+async def update_lexicon(
+    request: Request,
+    body: MemberLexiconWrite,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> MemberLexicon:
+    """Full-document replace — see MemberLexiconWrite's docstring for why."""
+    now = datetime.now(timezone.utc)
+    # Pronunciation entries arrive without ids from a fresh "add" on the
+    # frontend (client-side array push) — assign one server-side rather than
+    # trusting the client to generate a collision-free id.
+    pronunciations = [
+        {**p.model_dump(), "id": p.id or str(uuid4())} for p in body.pronunciations
+    ]
+    await member_lexicon.update_one(
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id},
+        {
+            "$set": {
+                "pronunciations": pronunciations,
+                "whitelist": body.whitelist,
+                "blacklist": body.blacklist,
+                "writing_blueprint": body.writing_blueprint.model_dump(),
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "id": _voice_settings_id(ctx.workspace_id, ctx.user_id),
+                "workspace_id": ctx.workspace_id,
+                "user_id": ctx.user_id,
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    doc = await member_lexicon.find_one(
+        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
+    )
+    return MemberLexicon(**doc)
 
 
 @router.get("/nudge")

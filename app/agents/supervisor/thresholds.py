@@ -23,6 +23,8 @@ SIGNAL_STORM_PER_MEMBER_24H = 5  # provisional: >= this many personal signals fr
 SIGNAL_STORM_SHARED_TYPE_MEMBERS = 3   # provisional: same signal_type from >= this many members...
 SIGNAL_STORM_SHARED_TYPE_HOURS = 6     # provisional: ...within this window → storm
 ELEVATED_ROLES = ("owner", "admin")    # role.changed into one of these → churn/govern flag
+PLATFORM_DELIVERY_FAILURES = 3         # provisional: >= this many publish_incidents for one
+                                        # platform in the lookback window → delivery failing
 
 # ── LLM reasoning-pass debounce / batch trigger (reason_tick) ─────────────
 REASON_TICK_SECONDS = 300        # provisional: cron cadence for the reasoning pass

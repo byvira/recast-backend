@@ -22,6 +22,7 @@ class SupervisorState(TypedDict, total=False):
     open_flags: list[dict]
     trigger: str                 # why this pass fired (provenance)
     language: str                 # workspace's resolved language — see ticks.py::_resolve_workspace_language
+    platform_snapshot: dict       # app.agents.supervisor.platform_snapshot.gather_platform_snapshot()
 
     # ── working ─────────────────────────────────────────────────────
     digest: dict
@@ -46,6 +47,7 @@ def build_initial_state(
     open_flags: list[dict],
     trigger: str = "scheduled",
     language: str = "en",
+    platform_snapshot: dict | None = None,
 ) -> SupervisorState:
     return SupervisorState(
         workspace_id=workspace_id,
@@ -56,6 +58,7 @@ def build_initial_state(
         open_flags=open_flags or [],
         trigger=trigger,
         language=language,
+        platform_snapshot=platform_snapshot or {},
         digest={},
         scratchpad=[],
         tool_calls_made=0,

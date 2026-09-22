@@ -17,7 +17,15 @@ from datetime import datetime, timedelta, timezone
 from app.agents.supervisor import thresholds as T
 from app.agents.supervisor.personas import odette_flag_summary
 from app.core.rbac import ROLE_PERMISSIONS
-from app.db.mongo import personal_signals, workspace_events, workspace_members, workspaces
+from app.db.mongo import (
+    personal_signals,
+    publish_incidents,
+    workspace_connections,
+    workspace_events,
+    workspace_members,
+    workspaces,
+)
+from app.platforms.base import get_platform, import_all
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +158,47 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
     storm = await _signal_storm(workspace_id, now, language=language)
     if storm:
         flags.append(storm)
+
+    # ── 7. platform_capability_drift (warning) — connected but the registry
+    # no longer backs it the way it did when connected: either the platform
+    # key isn't registered at all (pre-registry connection, or a registry
+    # regression), or its status has dropped below "active". Cheap: one
+    # registry lookup per connection, no extra Mongo query beyond the
+    # connections themselves. ─────────────────────────────────────────
+    import_all()
+    connections = await workspace_connections.find(
+        {"workspace_id": workspace_id, "is_active": True}, {"platform": 1}
+    ).to_list(length=100)
+    drifted = []
+    for conn in connections:
+        key = conn.get("platform", "")
+        definition = get_platform(key)
+        if definition is None:
+            drifted.append({"platform": key, "issue": "unregistered"})
+        elif definition.status != "active":
+            drifted.append({"platform": key, "issue": "capability_reduced", "registry_status": definition.status})
+    if drifted:
+        flags.append(await flag(
+            "platform_capability_drift", "warning",
+            {"platforms": drifted},
+            {"name": "drifted_platforms", "value": float(len(drifted)), "limit": 0.0},
+        ))
+
+    # ── 8. platform_delivery_failing (warning) — a connected platform whose
+    # recent publish attempts keep failing, per publish_incidents (already
+    # written by the publish-retry supervisor on every FATAL/exhausted-retry
+    # failure — see app/pipelines/publish/supervisor/alerts.py). ──────────
+    incidents = await publish_incidents.find(
+        {"workspace_id": workspace_id, "created_at": {"$gte": since}}, {"platform": 1}
+    ).to_list(length=1000)
+    incident_counts: Counter = Counter(i.get("platform", "") for i in incidents)
+    for platform, count in incident_counts.items():
+        if count >= T.PLATFORM_DELIVERY_FAILURES:
+            flags.append(await flag(
+                "platform_delivery_failing", "warning",
+                {"platform": platform, "failures": count, "window_hours": T.RULE_LOOKBACK_HOURS},
+                {"name": "publish_failures", "value": float(count), "limit": float(T.PLATFORM_DELIVERY_FAILURES)},
+            ))
 
     return flags
 

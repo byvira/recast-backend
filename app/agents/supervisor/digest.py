@@ -21,6 +21,7 @@ def build_digest(
     workspace: dict,
     active_members: int,
     open_flags: list[dict],
+    platform_snapshot: dict | None = None,
 ) -> dict:
     by_type: Counter = Counter(e.get("event_type") for e in events)
     by_pipeline: Counter = Counter((e.get("pipeline_type") or "none") for e in events)
@@ -74,6 +75,15 @@ def build_digest(
         "member_supervisor_notes": [
             s.get("supervisor_note") for s in signals if s.get("supervisor_note")
         ][:20],
+        # Two distinct fact layers per docs/PLATFORM_REGISTRY_PLAN.md's second
+        # hard rule — kept as separate keys, not merged, so the reasoning
+        # pass can tell "the platform's own rules" from "what we've observed":
+        # connected_platforms/platform_performance = our usage (post_metrics/
+        # account_metrics), platform_registry_notes = the platform's own
+        # behavior (tone_profile, policy_constraints) — see platform_snapshot.py.
+        "connected_platforms": (platform_snapshot or {}).get("connected_platforms", []),
+        "platform_performance": (platform_snapshot or {}).get("platform_performance", {}),
+        "platform_registry_notes": (platform_snapshot or {}).get("platform_registry_notes", {}),
     }
 
 

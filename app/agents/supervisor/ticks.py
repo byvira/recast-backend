@@ -20,6 +20,7 @@ from app.agents.personal.signals import emit_signal, remy_message, supervisor_no
 from app.agents.supervisor import notify as notify_mod
 from app.agents.supervisor import thresholds as T
 from app.agents.supervisor.graph import run_supervisor
+from app.agents.supervisor.platform_snapshot import gather_platform_snapshot
 from app.agents.supervisor.rules import evaluate_rules
 from app.shared.language import first_present, user_language, workspace_language
 from app.db.mongo import (
@@ -223,9 +224,10 @@ async def _gather_inputs(workspace_id: str) -> dict:
         {"workspace_id": workspace_id, "status": "open"}
     ).to_list(length=100)
     language = await _resolve_workspace_language(workspace)
+    platform_snapshot = await gather_platform_snapshot(workspace_id)
     return {"events": events, "signals": signals, "workspace": workspace,
             "active_members": active_members, "open_flags": open_flags,
-            "language": language}
+            "language": language, "platform_snapshot": platform_snapshot}
 
 
 async def _run_reasoning_pass(workspace_id: str, trigger: str) -> dict:
@@ -347,6 +349,63 @@ async def personal_volume_sweep(ctx: dict) -> dict:
             supervisor_note=supervisor_note("volume_drop", ctx=ctx_),
         )
         raised += 1
+    raised += await _platform_volume_sweep(now)
     if raised:
         logger.info("personal_volume_sweep: raised %d volume_drop signals", raised)
     return {"volume_drop_signals": raised}
+
+
+async def _platform_volume_sweep(now: datetime) -> int:
+    """Per-platform half of personal_volume_sweep — same "used to post regularly,
+    now quiet" logic as the overall sweep above, but scoped to one platform at a
+    time (member_personas.volume_stats.daily_counts_by_platform, see
+    app.agents.personal.persona_store.apply_piece), so a member who's still
+    active on LinkedIn but has gone quiet on Instagram specifically still gets
+    a signal — the overall sweep's combined daily_counts would mask that."""
+    raised = 0
+    cursor = member_personas.find(
+        {}, {"workspace_id": 1, "user_id": 1, "volume_stats.daily_counts_by_platform": 1}
+    )
+    async for p in cursor:
+        by_platform = (p.get("volume_stats", {}) or {}).get("daily_counts_by_platform", {}) or {}
+        for platform, vs in by_platform.items():
+            mean_v = float(vs.get("mean", 0.0) or 0.0)
+            if mean_v < P_T.VOLUME_DROP_BASELINE_PER_DAY:
+                continue
+            daily = vs.get("daily_counts", {}) or {}
+            quiet = all(
+                daily.get((now - timedelta(days=i)).strftime("%Y-%m-%d"), 0) == 0
+                for i in range(0, P_T.VOLUME_DROP_ZERO_DAYS)
+            )
+            if not quiet:
+                continue
+            dup = await personal_signals.find_one({
+                "workspace_id": p["workspace_id"], "user_id": p["user_id"],
+                "signal_type": "platform_volume_drop",
+                "metric.platform": platform,
+                "created_at": {"$gte": now - timedelta(hours=T.VOLUME_DROP_DEDUP_HOURS)},
+            })
+            if dup:
+                continue
+            ctx_ = {
+                "platform": platform,
+                "zero_days": P_T.VOLUME_DROP_ZERO_DAYS,
+                "baseline_per_day": round(mean_v, 1),
+            }
+            member_language = first_present(
+                await user_language(p["user_id"]),
+                await workspace_language(p["workspace_id"]),
+            )
+            await emit_signal(
+                workspace_id=p["workspace_id"], user_id=p["user_id"], pipeline_type=None,
+                signal_type="platform_volume_drop", severity="low",
+                metric={"name": "zero_days", "value": float(P_T.VOLUME_DROP_ZERO_DAYS),
+                        "baseline": round(mean_v, 3), "threshold": float(P_T.VOLUME_DROP_ZERO_DAYS),
+                        "platform": platform},
+                window={"kind": "rolling", "n": P_T.VOLUME_WINDOW_DAYS},
+                evidence_refs=[],
+                member_message=await remy_message("platform_volume_drop", ctx=ctx_, language=member_language),
+                supervisor_note=supervisor_note("platform_volume_drop", ctx=ctx_),
+            )
+            raised += 1
+    return raised

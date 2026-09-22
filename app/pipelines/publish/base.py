@@ -37,6 +37,13 @@ class PublishResult:
     error_code: Optional[int] = None
     error_message: Optional[str] = None
     retry_after: Optional[int] = None        # seconds to wait before retry
+    # Set only by ManualHandoffPublisher — a prefilled compose link for the
+    # user to open and click "Post" themselves. success=False whenever this is
+    # set: no publish tracking is possible for a manual-handoff platform, so
+    # returning success=True would be a lie. Callers that know how to handle
+    # a manual action (surface the link, let the user confirm) check this
+    # field explicitly rather than treating success=False as a plain failure.
+    manual_action_url: Optional[str] = None
 
 
 class PlatformPublisher(ABC):

@@ -5,6 +5,8 @@ THEIR STYLE: avg sentence {{ avg_sentence_len }} words, emoji/word {{ emoji_rate
 OBSERVED DIFFERENCES IN THIS DRAFT: {{ deltas or "none detected" }}
 
 DRAFT ({{ target or "general" }}):
+{% if platform_tone_profile %}This platform's typical register: {{ platform_tone_profile }}.{% endif %}
+{% if platform_policy_constraints %}Platform rules to respect: {{ platform_policy_constraints | join("; ") }}.{% endif %}
 {{ draft_text }}
 
 Write suggested_openers and rewrite_hint in {{ language_name }} — that is the language the author reads.

@@ -417,6 +417,7 @@ async def persist_persona_node(state: PersonaState) -> dict:
         similarity=state["similarity"] if state["baseline_present"] else None,
         recent_history_rows=state["history"],
         now=now,
+        platform=state.get("target") or None,
     )
 
     for sig in state["pending_signals"]:

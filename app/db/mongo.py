@@ -37,6 +37,23 @@ workspace_members: AsyncIOMotorCollection = get_client().get_default_database()[
 invites: AsyncIOMotorCollection = get_client().get_default_database()["invites"]
 # Third-party platform tokens, scoped per workspace (replaces users.social_accounts[])
 workspace_connections: AsyncIOMotorCollection = get_client().get_default_database()["workspace_connections"]
+# Ops Dashboard — admin-entered config for config-driven platforms (webhook /
+# manual-handoff / rss_pull), see app/pipelines/publish/platform_config_store.py
+platform_configs: AsyncIOMotorCollection = get_client().get_default_database()["platform_configs"]
+# Publish failure audit trail, written by app/pipelines/publish/supervisor/alerts.py
+# (previously only ever accessed there via db["publish_incidents"] ad hoc —
+# named here too so app/agents/supervisor/rules.py's platform_delivery_failing
+# rule can query it the same way every other collection here is queried).
+publish_incidents: AsyncIOMotorCollection = get_client().get_default_database()["publish_incidents"]
+
+# ── Remy/Odette scaffolding — real data layer, not yet fed by any real
+# pipeline logic (TTS synthesis, cohort scoring, LLM usage metering). See
+# app/models/voice_settings.py, lexicon.py, cohort.py, ai_usage.py.
+member_voice_settings: AsyncIOMotorCollection = get_client().get_default_database()["member_voice_settings"]
+member_lexicon: AsyncIOMotorCollection        = get_client().get_default_database()["member_lexicon"]
+workspace_cohorts: AsyncIOMotorCollection     = get_client().get_default_database()["workspace_cohorts"]
+workspace_ai_budgets: AsyncIOMotorCollection  = get_client().get_default_database()["workspace_ai_budgets"]
+workspace_ai_usage_daily: AsyncIOMotorCollection = get_client().get_default_database()["workspace_ai_usage_daily"]
 
 # ── Sprint 4 — Content storage collections ───────────────────────────────────
 content_sessions: AsyncIOMotorCollection = get_client().get_default_database()["content_sessions"]
@@ -121,6 +138,14 @@ async def create_indexes() -> None:
     await invites.create_index("token", unique=True)
     await invites.create_index([("workspace_id", 1), ("status", 1)])
     await workspace_connections.create_index([("workspace_id", 1), ("platform", 1)], unique=True)
+    await platform_configs.create_index([("workspace_id", 1), ("platform", 1)], unique=True)
+
+    # ── Remy/Odette scaffolding ──────────────────────────────────────────
+    await member_voice_settings.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)
+    await member_lexicon.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)
+    await workspace_cohorts.create_index("workspace_id")
+    await workspace_ai_budgets.create_index("workspace_id", unique=True)
+    await workspace_ai_usage_daily.create_index([("workspace_id", 1), ("date", 1)], unique=True)
 
     # ── Metrics ──────────────────────────────────────────────────────────
     await account_metrics.create_index([("workspace_id", 1), ("platform", 1)], unique=True)
