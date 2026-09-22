@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from app.db.mongo import content_pieces, get_db
+from app.db.mongo import content_pieces, get_db, workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +53,51 @@ async def _backfill_content_pieces_pipeline_type(db) -> None:
     )
 
 
+async def _backfill_workspace_is_personal_and_language(db) -> None:
+    """Stamp ``is_personal=False`` and ``language=None`` onto every workspace
+    document that predates those fields.
+
+    ``POST /api/v1/workspaces/`` (app/api/v1/workspace.py::create_workspace)
+    never wrote either field — only ``create_personal_workspace()`` did, and
+    only ``is_personal`` (always ``True`` there). So every workspace missing
+    ``is_personal`` was, unambiguously, created via the general route and is
+    not personal. Frontend schema validation on GET /workspaces/:id was
+    failing outright on these documents (both fields entirely absent, not
+    just null) — this is the real fix; both write paths are also fixed
+    going forward (see create_workspace/create_personal_workspace).
+    """
+    migration_id = "2026-09-23_workspace_is_personal_and_language_backfill"
+    if await _already_applied(db, migration_id):
+        return
+
+    res = await workspaces.update_many(
+        {"is_personal": {"$exists": False}},
+        {"$set": {"is_personal": False}},
+    )
+    res_lang = await workspaces.update_many(
+        {"language": {"$exists": False}},
+        {"$set": {"language": None}},
+    )
+    logger.info(
+        "migration %s: is_personal backfilled on %d/%d, language backfilled on %d/%d",
+        migration_id, res.modified_count, res.matched_count,
+        res_lang.modified_count, res_lang.matched_count,
+    )
+    await _mark_applied(
+        db, migration_id,
+        {
+            "is_personal_matched": res.matched_count, "is_personal_modified": res.modified_count,
+            "language_matched": res_lang.matched_count, "language_modified": res_lang.modified_count,
+        },
+    )
+
+
 async def run_startup_migrations() -> None:
     db = get_db()
-    for migration in (_backfill_content_pieces_pipeline_type,):
+    for migration in (
+        _backfill_content_pieces_pipeline_type,
+        _backfill_workspace_is_personal_and_language,
+    ):
         try:
             await migration(db)
         except Exception as exc:  # noqa: BLE001 — never block startup

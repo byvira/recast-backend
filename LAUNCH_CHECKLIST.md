@@ -2,7 +2,8 @@
 
 ### 🔴 Blockers (deploy works without these, but these specific things break)
 - [ ] EMAIL_FROM — verify a real domain in Resend, set EMAIL_FROM=noreply@yourdomain.com (currently gmail.com — production OTP email will fail without this)
-- [ ] PRODUCTION_DOMAIN — set to the real frontend origin once one exists (currently the backend's own URL — CORS will block the frontend otherwise)
+- [ ] PRODUCTION_DOMAIN — set to the real frontend origin once one exists (currently the backend's own URL — CORS will block the frontend otherwise). **If this is still unset, it also explains a login loop**: ENVIRONMENT=production with no PRODUCTION_DOMAIN/FRONTEND_URL set silently degrades auth cookies to SameSite=Lax across what's actually a cross-site deployment — login appears to work, then every next request has no cookie. main.py now logs this loudly on startup if it's misconfigured — check the Render deploy log.
+- [ ] Background worker service — confirmed NOT deployed (queried the live DB directly, 2026-09-22: `agent_worker_state` has zero documents anywhere). Remy and Odette are both entirely non-functional without it — no persona ever builds, no signals/insights/flags ever fire on a schedule. See DEPLOY.md's new "Background worker" section for the exact Render service to create (`arq app.workers.agent_worker.WorkerSettings`).
 
 ### Render dashboard
 - [ ] Enter every env var from .env into Render → Environment (full reference in DEPLOY.md)

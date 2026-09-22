@@ -21,6 +21,36 @@ proxy — without it, `slowapi`'s `get_remote_address()` sees Render's proxy IP
 for every request, and per-IP rate limits (signup, OTP, login) collapse into a
 single global bucket.
 
+## Background worker (required for Remy/Odette — currently NOT deployed)
+
+**Confirmed missing as of 2026-09-22**: queried the live database directly —
+`agent_worker_state` (written on every supervisor reasoning pass) has **zero
+documents across the entire database**. The supervisor's reasoning tick has
+never run, for any workspace, ever. Remy (personal assistant) and Odette
+(workspace supervisor) both depend entirely on a **second, separate Render
+service** that has apparently never been created — the web service alone
+cannot run this; see `app/workers/agent_worker.py`'s own docstring ("a SECOND
+process, separate from the API. Run it alongside uvicorn").
+
+Create a second Render service:
+
+- **Type:** Background Worker (not Web Service — it has no HTTP port to bind)
+- **Repo/branch:** same as the web service
+- **Start command:** `arq app.workers.agent_worker.WorkerSettings`
+- **Environment variables:** same as the web service (it shares MongoDB +
+  Redis, and needs `GROQ_API_KEY` etc. for the reasoning pass) — copy every
+  variable from the web service's Environment tab.
+- **Plan:** does not need to match the web service's plan; this process is
+  not on any request's latency path, but does hold a live Redis Stream
+  consumer connection continuously.
+
+Until this exists: content pieces get created and published normally, but
+Remy never observes them (no persona ever builds, no drift/volume signals
+ever fire), and Odette's automatic rules/reasoning passes never run (manual
+`POST /supervisor/run` — the "Run Odette Audit" button — still works, since
+it falls back to an in-process task when the arq queue is unreachable, but
+every *scheduled* pass is silently skipped).
+
 ## Health check
 
 - Path: `/health`

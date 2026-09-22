@@ -121,6 +121,7 @@ async def create_personal_workspace(user_id: str, name: str) -> str:
             "tier_config": tier_config.model_dump(),
             "owner_id": user_id,
             "is_personal": True,
+            "language": None,
             "created_at": now,
             "updated_at": now,
         }

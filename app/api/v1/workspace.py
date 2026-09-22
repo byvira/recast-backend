@@ -49,6 +49,8 @@ async def create_workspace(
         "tier": body.tier.value,
         "tier_config": tier_config.model_dump(),
         "owner_id": current_user["id"],
+        "is_personal": False,
+        "language": None,
         "created_at": now,
         "updated_at": now,
     }
