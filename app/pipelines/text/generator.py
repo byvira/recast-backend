@@ -291,6 +291,13 @@ def validate_content(
         "i am excited to share",
         "thrilled to announce",
         "as someone who",
+        # ENGAGEMENT_PATTERNS' pattern 5 used to be a literal, copy-pasteable
+        # "Uncomfortable truth: ..." template — the model reused it verbatim
+        # on nearly every generation regardless of brand/topic. The template
+        # itself has been rewritten to require paraphrasing, but this stays
+        # as a backstop in case the model still reaches for the bare phrase.
+        "the uncomfortable truth",
+        "an uncomfortable truth",
     ]
     first_200 = content_lower[:200]
     for generic in generic_openings:
