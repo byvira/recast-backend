@@ -25,7 +25,7 @@ from typing import Optional
 from app.agents.text.state import TextAgentState
 from app.models.text import AgentTask, GeneratedPiece, Platform
 from app.pipelines.text.brand_context import build_goal_context, build_tone_override
-from app.pipelines.text.generator import generate_for_platform
+from app.pipelines.text.generator import GENERIC_OPENINGS, generate_for_platform
 from app.pipelines.text.hook_agent import apply_recommended_hook, run_hook_agent
 from app.pipelines.text.normalizer import clean_raw_content, extract_content_brief
 from app.pipelines.text.quality import run_quality_gate
@@ -291,17 +291,11 @@ async def hooks_node(state: TextAgentState) -> dict:
         **state["extras"],
         "tone_override_text": state["tone_override_text"],
         "goal_context": state["goal_context"],
-        "banned_openings": [
-            "are you tired of",
-            "have you ever wondered",
-            "what if you could",
-            "in today's world",
-            "we all know",
-            "it's no secret",
-            "i am excited to share",
-            "as someone who",
-            "as a [profession]",
-        ],
+        # Was its own hand-maintained list, out of sync with generator.py's
+        # GENERIC_OPENINGS — missing "the uncomfortable truth" here is how a
+        # phrase already banned elsewhere kept reaching real output via this
+        # node's hook generation. Now one source of truth.
+        "banned_openings": GENERIC_OPENINGS,
     },
 )
     

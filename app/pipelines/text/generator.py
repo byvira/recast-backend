@@ -130,6 +130,35 @@ ENGAGEMENT_PATTERNS = load_prompt("text/generate/engagement_patterns")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GENERIC OPENINGS — single source of truth, also imported by hook_agent.py.
+# Previously duplicated (and drifted out of sync) across this file, nodes.py's
+# hooks_node banned_openings metadata, and specificity.jinja — "the
+# uncomfortable truth" was added here and to specificity.jinja but missed in
+# nodes.py, which is how a since-banned opener kept reaching real output:
+# hooks_node runs by default (hookVariations extra defaults on) AFTER this
+# validator, silently overwriting generated_content's opening line with
+# whichever of 3 auto-generated hook alternatives scored highest — one of
+# which is always labeled "Uncomfortable truth" in text/hooks/generate.jinja.
+# hook_agent.apply_recommended_hook now checks candidates against this same
+# list before applying one, closing that loophole at its actual source.
+# ─────────────────────────────────────────────────────────────────────────────
+GENERIC_OPENINGS = [
+    "in today's world",
+    "in today's fast-paced world",
+    "are you tired of",
+    "have you ever wondered",
+    "we all know",
+    "it's no secret",
+    "i am excited to share",
+    "thrilled to announce",
+    "as someone who",
+    "the uncomfortable truth",
+    "an uncomfortable truth",
+    "the truth is",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PLATFORM RULES
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -281,26 +310,8 @@ def validate_content(
         hard_issues.append(f"Twitter character limit exceeded: {char_count}/280")
 
     # ── Hard gate 4 — generic openings ────────────────────────────────────
-    generic_openings = [
-        "in today's world",
-        "in today's fast-paced world",
-        "are you tired of",
-        "have you ever wondered",
-        "we all know",
-        "it's no secret",
-        "i am excited to share",
-        "thrilled to announce",
-        "as someone who",
-        # ENGAGEMENT_PATTERNS' pattern 5 used to be a literal, copy-pasteable
-        # "Uncomfortable truth: ..." template — the model reused it verbatim
-        # on nearly every generation regardless of brand/topic. The template
-        # itself has been rewritten to require paraphrasing, but this stays
-        # as a backstop in case the model still reaches for the bare phrase.
-        "the uncomfortable truth",
-        "an uncomfortable truth",
-    ]
     first_200 = content_lower[:200]
-    for generic in generic_openings:
+    for generic in GENERIC_OPENINGS:
         if first_200.startswith(generic) or first_200.startswith(f"\n{generic}"):
             hard_issues.append(f"Generic opening detected: '{generic}'")
             break

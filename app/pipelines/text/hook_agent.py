@@ -6,6 +6,7 @@ Only runs when hookVariations is True.
 
 import logging
 from app.models.text import AgentTask, AgentResult
+from app.pipelines.text.generator import GENERIC_OPENINGS
 from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_structured
 
@@ -51,16 +52,46 @@ async def run_hook_agent(task: AgentTask) -> AgentResult:
     )
 
 
+def _starts_with_generic_opening(text: str) -> bool:
+    lowered = text.strip().lower()
+    return any(lowered.startswith(g) for g in GENERIC_OPENINGS)
+
+
 def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: int) -> str:
     """
-    Replace the opening line of generated content with the recommended hook.
-    Finds the first non-empty line and replaces it.
+    Replace the opening line of generated content with the best hook that
+    ISN'T a banned generic opener — not blindly whichever the model scored
+    highest. The model's own self-scoring has no visibility into
+    GENERIC_OPENINGS and will happily rate a banned-phrase hook a 9/10, so
+    trusting recommended_index alone let already-banned openers (e.g. "the
+    uncomfortable truth", one of exactly 3 hook styles text/hooks/generate.jinja
+    always offers) back into real output after generate_node's own validated
+    content had already avoided them. Falls back to the original content if
+    every candidate hook is generic, rather than forcing a bad swap.
     """
-    if not hooks or recommended_index >= len(hooks):
+    if not hooks:
         return content
 
-    recommended = hooks[recommended_index].get("text", "")
+    ranked = sorted(
+        range(len(hooks)),
+        key=lambda i: hooks[i].get("score", 0) if isinstance(hooks[i], dict) else 0,
+        reverse=True,
+    )
+    # Try the model's actual recommendation first, then fall back through the
+    # rest by score — only skipping a candidate if it's a banned generic opener.
+    candidate_order = [recommended_index] + [i for i in ranked if i != recommended_index]
+
+    recommended = ""
+    for i in candidate_order:
+        if i < 0 or i >= len(hooks):
+            continue
+        text = hooks[i].get("text", "") if isinstance(hooks[i], dict) else ""
+        if text and not _starts_with_generic_opening(text):
+            recommended = text
+            break
+
     if not recommended:
+        logger.warning("All hook candidates were generic openers — keeping original opening line")
         return content
 
     lines = content.strip().split("\n")
