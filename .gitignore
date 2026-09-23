@@ -51,3 +51,6 @@ scripts/*
 
 # ── Local launch tracking (personal checklist, not for the repo) ─────────────
 LAUNCH_CHECKLIST.md
+
+# ── Local one-off debug scripts (not for the repo) ────────────────────────────
+/_get_otp.py

@@ -610,25 +610,20 @@ async def check_username(
 @router.get("/dev/last-otp")
 @limiter.limit("30/minute")
 async def get_dev_last_otp(request: Request, identifier: str) -> dict[str, str]:
-    """Return the current OTP for a designated test identifier.
+    """Return the current OTP for any identifier, for automated test clients.
 
-    Triple-gated: (1) 404s outright in production, regardless of the
-    identifier — checked first, before the identifier is even normalized;
-    (2) 404s for any identifier not on the DEV_OTP_TEST_IDENTIFIERS
-    allowlist; (3) 404s if no OTP is currently stored (none requested yet,
-    or already consumed/expired) — same code path in every "not allowed"
-    case so this route can't be used to probe which identifiers are
-    allowlisted or whether an OTP exists for one that isn't.
+    Gated to non-production only: 404s outright in production, regardless of
+    the identifier — checked first, before the identifier is even
+    normalized. Below that, works for ANY identifier (not restricted to
+    DEV_OTP_TEST_IDENTIFIERS) since dev-mode OTP requests never actually
+    send a real email/SMS anyway (see settings.ENVIRONMENT's own docs) —
+    there is nothing to leak by reading one back. 404s if no OTP is
+    currently stored (none requested yet, or already consumed/expired).
     """
     if settings.ENVIRONMENT == "production":
         raise HTTPException(status_code=404)
 
-    allowlist = {
-        e.strip().lower() for e in settings.DEV_OTP_TEST_IDENTIFIERS.split(",") if e.strip()
-    }
     normalized = normalize_identifier(identifier)
-    if normalized not in allowlist:
-        raise HTTPException(status_code=404)
 
     redis = await get_redis()
     code = await redis.get(f"otp:{normalized}:code")

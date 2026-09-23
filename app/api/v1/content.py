@@ -88,6 +88,7 @@ class ArchivePieceRequest(BaseModel):
 async def list_sessions(
     request: Request,
     brand_id: Optional[str] = Query(None),
+    is_repurpose: Optional[bool] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     ctx: WorkspaceContext = Depends(get_current_workspace),
@@ -96,6 +97,7 @@ async def list_sessions(
     return await get_workspace_sessions(
         workspace_id=ctx.workspace_id,
         brand_id=brand_id,
+        is_repurpose=is_repurpose,
         page=page,
         limit=limit,
     )

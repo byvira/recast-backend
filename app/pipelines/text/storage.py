@@ -348,17 +348,20 @@ async def get_session(session_id: str, workspace_id: str) -> Optional[dict]:
 async def get_workspace_sessions(
     workspace_id: str,
     brand_id: Optional[str] = None,
+    is_repurpose: Optional[bool] = None,
     page: int = 1,
     limit: int = 20,
 ) -> dict:
     """
     Paginated list of sessions for a workspace.
-    Optionally filter by brand_id.
+    Optionally filter by brand_id and/or is_repurpose.
     Returns sessions without pieces — use get_session() for full detail.
     """
     query: dict = {"workspace_id": workspace_id}
     if brand_id:
         query["brand_id"] = brand_id
+    if is_repurpose is not None:
+        query["is_repurpose"] = is_repurpose
 
     skip = (page - 1) * limit
     total = await content_sessions.count_documents(query)

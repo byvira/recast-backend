@@ -42,6 +42,20 @@ def parse_llm_json(raw: str) -> dict[str, Any] | list[Any]:
         logger.warning("parse_llm_json: empty input")
         return {}
 
+    # --- pass 0: normalize smart/typographic punctuation ------------------
+    # Models frequently emit curly quotes/dashes even when asked for strict
+    # JSON. A smart double-quote (" or ") in place of a straight " doesn't
+    # just fail json.loads — it breaks extract_first_json's character-walk
+    # string-tracking (which only toggles in_string on a literal "), so one
+    # stray curly quote mid-string permanently desyncs the walker and
+    # silently swallows everything after it as "still inside a string",
+    # corrupting bracket-matching for the rest of the payload. Smart single
+    # quotes/apostrophes are always safe to normalize (never a JSON
+    # delimiter); smart double quotes are normalized too since a stray one
+    # substituted for a real delimiter is far more common in practice than
+    # a legitimate nested smart-quoted phrase inside content.
+    raw = _normalize_smart_punctuation(raw)
+
     # --- pass 1: strip fences, try direct parse --------------------------
     cleaned = _strip_fences(raw)
     result = _try_loads(cleaned, label="direct")
@@ -129,6 +143,30 @@ def extract_first_json(text: str) -> str | None:
 # ─────────────────────────────────────────────────────────────
 # Private helpers
 # ─────────────────────────────────────────────────────────────
+
+_SMART_PUNCTUATION_MAP = {
+    "‘": "'",   # left single quotation mark
+    "’": "'",   # right single quotation mark / apostrophe
+    "‚": "'",   # single low-9 quotation mark
+    "‛": "'",   # single high-reversed-9 quotation mark
+    "“": '"',   # left double quotation mark
+    "”": '"',   # right double quotation mark
+    "„": '"',   # double low-9 quotation mark
+    "‟": '"',   # double high-reversed-9 quotation mark
+    "–": "-",   # en dash
+    "—": "-",   # em dash
+    "‑": "-",   # non-breaking hyphen
+    "…": "...", # horizontal ellipsis
+    " ": " ",   # non-breaking space
+    " ": " ",   # narrow no-break space
+}
+_SMART_PUNCTUATION_RE = re.compile("|".join(re.escape(k) for k in _SMART_PUNCTUATION_MAP))
+
+
+def _normalize_smart_punctuation(text: str) -> str:
+    """Replace typographic quotes/dashes/spaces with their ASCII equivalents."""
+    return _SMART_PUNCTUATION_RE.sub(lambda m: _SMART_PUNCTUATION_MAP[m.group()], text)
+
 
 def _strip_fences(text: str) -> str:
     """Remove ```json ... ``` or ``` ... ``` markdown fences."""
