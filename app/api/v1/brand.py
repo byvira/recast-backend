@@ -24,6 +24,7 @@ from app.models.brand_profile import (
     SaveStepBody,
     SetActiveBrandBody,
     TrainingSample,
+    UpdateBrandTypeBody,
     UpdateCalibrationBody,
     UpdateVoiceBody,
 )
@@ -353,6 +354,42 @@ async def save_brand_step(
         "step": body.step,
         "next_step": body.step + 1,
     }
+
+
+@router.patch("/{brand_id}/type")
+@limiter.limit("20/minute")
+async def update_brand_type(
+    request: Request,
+    brand_id: str,
+    body: UpdateBrandTypeBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, Any]:
+    """
+    Corrects brand_type on a profile still mid-onboarding.
+
+    The wizard's type-selection screen can be revisited before a profile is
+    complete, and reuses the already-created brand_id rather than creating a
+    second orphaned draft (see handleSelectBrandType's "existing brand"
+    guard in app/(dashboard)/onboarding/brand-voice/page.tsx). Every
+    downstream step keys off brand_type — _build_step_update's
+    type-specific field routing (pillars_data/icp_data/positioning_data) and
+    the frontend's display-name lookup (identity.company_name vs
+    identity.product_name) — so re-picking a type without updating it here
+    left profiles with e.g. brand_type "Product" but Business-shaped
+    identity/icp data, showing as "Untitled Product" everywhere. Blocked
+    once a profile is complete to avoid reshaping a real, in-use brand.
+    """
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    if doc.get("is_complete"):
+        raise HTTPException(status_code=400, detail="Can't change brand type on a completed profile.")
+
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"brand_type": body.brand_type.value, "updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"brand_id": brand_id, "brand_type": body.brand_type.value}
 
 
 @router.patch("/{brand_id}/voice")

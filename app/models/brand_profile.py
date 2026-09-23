@@ -249,6 +249,13 @@ class SetActiveBrandBody(BaseModel):
     is_active: bool
 
 
+class UpdateBrandTypeBody(BaseModel):
+    """Corrects brand_type on a profile still mid-onboarding — see
+    PATCH /{brand_id}/type in app/api/v1/brand.py for why this exists."""
+
+    brand_type: BrandType
+
+
 class PreviewRewriteBody(BaseModel):
     """My Voices' Playground tab — rewrite arbitrary sample text in this
     brand's real voice. Read-only: never persists anything."""
