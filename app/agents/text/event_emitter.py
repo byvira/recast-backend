@@ -189,6 +189,13 @@ class EventEmitter:
 
     # ─────────────────────────────────────────────────────────────────────────
     # Human-in-the-loop pause/resume
+    #
+    # READY, NOT YET TRIGGERED (2026-09-24): no pipeline node calls
+    # emit_paused()/wait_for_resume() today, so runs never pause. The rest is
+    # live end to end — the resume endpoint (/pipeline/session/{id}/resume),
+    # cross-instance relay (app.agents.text.session_relay) and the frontend's
+    # agent_paused card — so a future "pick an angle" step only has to call
+    # emit_paused() then wait_for_resume() from its node.
     # ─────────────────────────────────────────────────────────────────────────
 
     async def wait_for_resume(self, timeout: float = 30.0) -> str:
