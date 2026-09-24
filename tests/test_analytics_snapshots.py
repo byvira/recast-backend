@@ -144,3 +144,40 @@ async def test_summary_endpoint_includes_real_delta_when_week_old_snapshot_exist
     body = res.json()
     assert body["previous_totals"]["reach"] == 500
     assert body["deltas"]["reach"] == 50.0  # (750 - 500) / 500 * 100
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Top performers (Library "Top Performers (Top 5%)" tab, PAR-013)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_top_performers_ranks_top_five_percent_at_24h(api_client):
+    from uuid import uuid4 as _uuid4
+
+    from app.db.mongo import post_metric_checkpoints
+    from tests.conftest import create_workspace, signup_new_user
+
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Top Performers", tier="large")
+    h = {"X-Workspace-Id": ws_id}
+
+    empty = (await api_client.get("/api/v1/analytics/top-performers", headers=h)).json()
+    assert empty["measured"] == 0 and empty["items"] == []
+
+    ids = []
+    for rate in [1.0, 2.0, 9.5, 3.0] + [0.5] * 17:          # 21 measured → ceil(5%) = 2
+        pid = str(_uuid4())
+        ids.append((pid, rate))
+        await post_metric_checkpoints.insert_one({
+            "_id": f"{pid}:24h", "workspace_id": ws_id, "piece_id": pid,
+            "checkpoint": "24h", "metrics": {"engagement_rate": rate},
+        })
+    # A 7d checkpoint must not be mixed into the 24h ranking.
+    await post_metric_checkpoints.insert_one({
+        "_id": "other:7d", "workspace_id": ws_id, "piece_id": "other",
+        "checkpoint": "7d", "metrics": {"engagement_rate": 99.0},
+    })
+
+    res = (await api_client.get("/api/v1/analytics/top-performers", headers=h)).json()
+    assert res["measured"] == 21
+    by_rate = {pid: rate for pid, rate in ids}
+    assert [by_rate[i["piece_id"]] for i in res["items"]] == [9.5, 3.0]
