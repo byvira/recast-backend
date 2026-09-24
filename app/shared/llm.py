@@ -24,9 +24,10 @@ No inline parsing logic exists in this file.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from enum import Enum
 from typing import Any, AsyncIterator
 
@@ -78,23 +79,188 @@ EMBED_DIM = 768  # provisional — 768 keeps persona docs small; revisit if drif
 # ─────────────────────────────────────────────────────────────
 
 _usage: dict[str, int] = defaultdict(int)
-# keys: "{model_name}.prompt_tokens"
-#       "{model_name}.completion_tokens"
-#       "{model_name}.calls"
+# keys: "{provider}:{model_name}.prompt_tokens"
+#       "{provider}:{model_name}.completion_tokens"
+#       "{provider}:{model_name}.cached_tokens"
+#       "{provider}:{model_name}.calls"
+# Process-lifetime counters, not a durable history — see get_usage_stats().
+
+# Which workspace to attribute the *next* recorded call to, for the Ops
+# Dashboard's per-workspace AI usage (app/models/ai_usage.py's
+# workspace_ai_usage_daily — previously scaffolded but nothing wrote to it;
+# see that module's docstring). A ContextVar rather than a function
+# parameter threaded through every call_llm()/call_llm_structured() call
+# site (a dozen+ pipelines) — set it once per request/agent-run via
+# usage_workspace() and every LLM call inside that scope is attributed
+# automatically, task-isolated so concurrent requests from different
+# workspaces never cross-contaminate.
+_current_workspace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_current_workspace_id", default=None
+)
 
 
-def _record_usage(model_name: str, usage: Any) -> None:
-    """Accumulate token counts from a Groq completion usage object."""
+class usage_workspace:
+    """Context manager: attribute every LLM call made inside the block to
+    *workspace_id* in workspace_ai_usage_daily. Usage:
+
+        async with usage_workspace(workspace_id):
+            await call_llm_structured(...)
+
+    Safe to nest/omit — calls outside any usage_workspace() block still
+    count toward the process-lifetime totals in _usage, just not toward any
+    workspace's daily rollup.
+    """
+
+    def __init__(self, workspace_id: str | None) -> None:
+        self._workspace_id = workspace_id
+        self._token: contextvars.Token | None = None
+
+    def __enter__(self) -> None:
+        self._token = _current_workspace_id.set(self._workspace_id)
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._token is not None:
+            _current_workspace_id.reset(self._token)
+
+    async def __aenter__(self) -> None:
+        self.__enter__()
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self.__exit__(*exc_info)
+
+
+def _record_workspace_usage(total_tokens: int, calls: int = 1) -> None:
+    """Fire-and-forget increment of today's workspace_ai_usage_daily row, if
+    usage_workspace() set a workspace for the current task. Never awaited by
+    the caller — a Mongo write must not add latency to an LLM response, same
+    principle as assist.py's cached_nudge 150ms-timeout comment."""
+    workspace_id = _current_workspace_id.get()
+    if not workspace_id or total_tokens <= 0:
+        return
+
+    async def _write() -> None:
+        try:
+            from datetime import date as _date
+
+            from app.db.mongo import workspace_ai_usage_daily
+
+            today = _date.today().isoformat()
+            await workspace_ai_usage_daily.update_one(
+                {"_id": f"{workspace_id}:{today}"},
+                {
+                    "$inc": {"tokens_used": total_tokens, "calls": calls},
+                    "$setOnInsert": {"id": f"{workspace_id}:{today}", "workspace_id": workspace_id, "date": today},
+                },
+                upsert=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — usage tracking must never break generation
+            logger.debug("workspace usage write skipped: %s", exc)
+
+    try:
+        asyncio.get_running_loop().create_task(_write())
+    except RuntimeError:
+        pass  # no running loop (e.g. a script/test context) — skip silently
+
+
+def _record_usage(model_name: str, usage: Any, *, provider: str = "groq") -> None:
+    """Accumulate token counts from a Groq- or Gemini-shaped usage object.
+
+    cached_tokens (Groq: usage.prompt_tokens_details.cached_tokens; Gemini:
+    usage_metadata.cached_content_token_count) is the only ground truth that
+    each provider's automatic prompt caching — a repeated prefix is cached
+    server-side with no cache_control markers to set on either provider —
+    is actually hitting. Without this, "is caching working" was
+    unanswerable from this codebase; nothing surfaced it before.
+    """
     if usage is None:
         return
-    _usage[f"{model_name}.calls"]             += 1
-    _usage[f"{model_name}.prompt_tokens"]     += getattr(usage, "prompt_tokens", 0)
-    _usage[f"{model_name}.completion_tokens"] += getattr(usage, "completion_tokens", 0)
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    cached_tokens = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+    if prompt_tokens is None:  # Gemini's GenerateContentResponseUsageMetadata shape
+        prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        completion_tokens = getattr(usage, "candidates_token_count", 0) or 0
+        cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
+    completion_tokens = completion_tokens or 0
+
+    key = f"{provider}:{model_name}"
+    _usage[f"{key}.calls"]             += 1
+    _usage[f"{key}.prompt_tokens"]     += prompt_tokens
+    _usage[f"{key}.completion_tokens"] += completion_tokens
+    _usage[f"{key}.cached_tokens"]     += cached_tokens
+
+    _record_workspace_usage(prompt_tokens + completion_tokens)
 
 
 def get_usage_stats() -> dict[str, int]:
-    """Return a snapshot of accumulated token / call counters."""
+    """Return a snapshot of accumulated token / call counters.
+
+    Divide ``{provider}:{model}.cached_tokens`` by ``.prompt_tokens`` for a
+    per-model cache hit rate — near-zero on a model with a large, mostly-
+    static prompt (e.g. Odette's supervisor reasoning) means something
+    upstream is breaking the shared prefix (build_odette_system / TOOL_SPECS
+    must stay byte-identical across calls for the same language to keep
+    hitting cache).
+    """
     return dict(_usage)
+
+
+# ─────────────────────────────────────────────────────────────
+# Latency + recent-error tracking — process-lifetime, for the Ops
+# Dashboard's LLM health page. Bounded (deque maxlen) so this never grows
+# unbounded on a long-running process.
+# ─────────────────────────────────────────────────────────────
+
+_LATENCY_WINDOW = 200
+_latency: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=_LATENCY_WINDOW))
+
+_ERROR_LOG_SIZE = 50
+_recent_errors: deque[dict[str, Any]] = deque(maxlen=_ERROR_LOG_SIZE)
+
+
+def _record_latency(provider: str, model_name: str, elapsed_ms: float) -> None:
+    _latency[f"{provider}:{model_name}"].append(elapsed_ms)
+
+
+def _record_error(provider: str, model_name: str, kind: str, message: str) -> None:
+    _recent_errors.appendleft({
+        "at": time.time(),
+        "provider": provider,
+        "model": model_name,
+        "kind": kind,
+        "message": message[:300],
+    })
+
+
+def get_latency_stats() -> dict[str, dict[str, float]]:
+    """Per-{provider}:{model} count/avg/p95 latency (ms), over the last
+    _LATENCY_WINDOW calls. p95 is a simple sorted-index estimate — fine at
+    this sample size, not a claim of statistical rigor."""
+    stats: dict[str, dict[str, float]] = {}
+    for key, samples in _latency.items():
+        if not samples:
+            continue
+        ordered = sorted(samples)
+        p95_idx = min(len(ordered) - 1, int(len(ordered) * 0.95))
+        stats[key] = {
+            "count": len(ordered),
+            "avg_ms": round(sum(ordered) / len(ordered), 1),
+            "p95_ms": round(ordered[p95_idx], 1),
+        }
+    return stats
+
+
+def get_recent_errors() -> list[dict[str, Any]]:
+    """Most-recent-first, up to _ERROR_LOG_SIZE entries."""
+    return list(_recent_errors)
+
+
+def get_circuit_breaker_status() -> dict[str, Any]:
+    return {
+        "provider": "groq",
+        "open": _groq_breaker._opened_at is not None,
+        "consecutive_failures": _groq_breaker._consecutive_failures,
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -318,17 +484,27 @@ async def _groq_create(client: AsyncGroq, *, reasoning_effort: str | None, **kwa
     that name's docstring for why every Groq call funnels through one
     bounded gate rather than firing unbounded.
     """
-    async with _groq_semaphore:
-        if reasoning_effort is None:
-            return await client.chat.completions.create(**kwargs)
-        try:
-            return await client.chat.completions.create(reasoning_effort=reasoning_effort, **kwargs)
-        except TypeError:
-            return await client.chat.completions.create(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - some Groq builds 400 instead of TypeError
-            if "reasoning_effort" in str(exc):
-                return await client.chat.completions.create(**kwargs)
-            raise
+    model_name = kwargs.get("model", "unknown")
+    t0 = time.perf_counter()
+    try:
+        async with _groq_semaphore:
+            if reasoning_effort is None:
+                result = await client.chat.completions.create(**kwargs)
+            else:
+                try:
+                    result = await client.chat.completions.create(reasoning_effort=reasoning_effort, **kwargs)
+                except TypeError:
+                    result = await client.chat.completions.create(**kwargs)
+                except Exception as exc:  # noqa: BLE001 - some Groq builds 400 instead of TypeError
+                    if "reasoning_effort" in str(exc):
+                        result = await client.chat.completions.create(**kwargs)
+                    else:
+                        raise
+    except Exception as exc:
+        _record_error("groq", str(model_name), exc.__class__.__name__, str(exc))
+        raise
+    _record_latency("groq", str(model_name), (time.perf_counter() - t0) * 1000)
+    return result
 
 
 # ─────────────────────────────────────────────────────────────
@@ -743,8 +919,11 @@ async def _chat_complete(
 # 4. Vision / image analysis — Gemini only
 # ─────────────────────────────────────────────────────────────
 
-def _record_gemini_usage(response: Any) -> None:
-    """Attach Gemini token counts to the current LangSmith run, if any."""
+def _record_gemini_usage(response: Any, model_name: str = "unknown") -> None:
+    """Attach Gemini token counts to the current LangSmith run, if any, and
+    to the same process-lifetime _usage counters Groq calls feed (provider
+    "gemini") — previously Gemini calls (vision, embeddings, fallback) were
+    entirely invisible to get_usage_stats()."""
     um = getattr(response, "usage_metadata", None)
     if um is None:
         return
@@ -753,6 +932,22 @@ def _record_gemini_usage(response: Any) -> None:
         completion_tokens=getattr(um, "candidates_token_count", None),
         total_tokens=getattr(um, "total_token_count", None),
     )
+    _record_usage(model_name, um, provider="gemini")
+
+
+async def _gemini_generate(model_name: str, fn) -> Any:
+    """Latency + error tracking around a Gemini call, mirroring _groq_create's
+    treatment of the Groq side — the single place every call_vision /
+    call_llm_fallback / embed_text call funnels through."""
+    t0 = time.perf_counter()
+    try:
+        result = await fn()
+    except Exception as exc:
+        _record_error("gemini", model_name, exc.__class__.__name__, str(exc))
+        raise
+    _record_latency("gemini", model_name, (time.perf_counter() - t0) * 1000)
+    return result
+
 
 @traceable(run_type="llm", name="gemini.vision")
 async def call_vision(
@@ -770,7 +965,7 @@ async def call_vision(
     loop   = asyncio.get_running_loop()
     add_run_metadata(gemini_model=model.value, mime_type=mime_type, image_bytes=len(image_bytes or b""))
     try:
-        response = await loop.run_in_executor(
+        response = await _gemini_generate(model.value, lambda: loop.run_in_executor(
             None,
             lambda: client.models.generate_content(
                 model=model.value,
@@ -779,8 +974,8 @@ async def call_vision(
                     prompt,
                 ],
             ),
-        )
-        _record_gemini_usage(response)
+        ))
+        _record_gemini_usage(response, model.value)
         return response.text or ""
 
     except Exception as exc:
@@ -816,7 +1011,7 @@ async def embed_text(
     loop = asyncio.get_running_loop()
     add_run_metadata(embed_model=EMBED_MODEL, embed_dim=dim, task_type=task_type, chars=len(snippet))
     try:
-        resp = await loop.run_in_executor(
+        resp = await _gemini_generate(EMBED_MODEL, lambda: loop.run_in_executor(
             None,
             lambda: client.models.embed_content(
                 model=EMBED_MODEL,
@@ -826,9 +1021,9 @@ async def embed_text(
                     task_type=task_type,
                 ),
             ),
-        )
+        ))
         values = list(resp.embeddings[0].values)
-        _record_gemini_usage(resp)
+        _record_gemini_usage(resp, EMBED_MODEL)
     except Exception as exc:
         logger.error("embed_text failed: %s", exc)
         return []
@@ -916,14 +1111,14 @@ async def call_llm_fallback(
     add_run_metadata(gemini_model=model.value)
 
     try:
-        response = await loop.run_in_executor(
+        response = await _gemini_generate(model.value, lambda: loop.run_in_executor(
             None,
             lambda: client.models.generate_content(
                 model=model.value,
                 contents=full_prompt,
             ),
-        )
-        _record_gemini_usage(response)
+        ))
+        _record_gemini_usage(response, model.value)
         return response.text or ""
 
     except Exception as exc:

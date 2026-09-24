@@ -21,7 +21,7 @@ from app.pipelines.text.generator import resolve_language_name
 from app.platforms.base import import_all as import_all_platforms, resolve_platform_by_display_value
 from app.prompts.registry import load_localized, load_prompt
 from app.shared.language import first_present, user_language, workspace_language
-from app.shared.llm import GroqModel, call_llm_structured, cosine_similarity, embed_text
+from app.shared.llm import GroqModel, call_llm_structured, cosine_similarity, embed_text, usage_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
 # `language` is a fully opaque string, never validated against a fixed set.
 # Source-of-truth text lives in app/prompts/localized/remy_align_states.yaml.
 _ALIGN_ENGLISH_TEMPLATES = load_localized("remy_align_states")
+
+# Isolated into its own system message (rather than the first line of the
+# align_draft.jinja template) so it's a stable, byte-identical prefix across
+# every align_draft call regardless of user/draft — the only part of this
+# prompt Groq's automatic caching (2h TTL, no cache_control marker needed)
+# can actually reuse, since the rest is per-user persona stats + draft text.
+# call_llm_structured always runs json_mode=True, which already appends its
+# own "respond only with JSON" system fragment — no need to repeat that here.
+_ALIGN_SYSTEM = "You help an author keep a draft in their own established voice."
 
 
 async def _align_messages(language: str) -> dict[str, str]:
@@ -176,7 +185,10 @@ async def _align_draft_impl(
         )
         # max_tokens raised — same reasoning-token-exhaustion risk as generator.py's
         # GENERATION_MAX_TOKENS for non-English requests.
-        res = await call_llm_structured(prompt=prompt, model=GroqModel.BALANCED, max_tokens=1500)
+        with usage_workspace(workspace_id):
+            res = await call_llm_structured(
+                prompt=prompt, system=_ALIGN_SYSTEM, model=GroqModel.BALANCED, max_tokens=1500,
+            )
         if isinstance(res, dict):
             suggested_openers = [str(s) for s in (res.get("suggested_openers") or [])][:3]
             rewrite_hint = str(res.get("rewrite_hint", ""))[:400]

@@ -22,7 +22,7 @@ from app.agents.supervisor.state import SupervisorState
 from app.agents.supervisor.tools import make_tools
 from app.db.mongo import agent_worker_state, workspace_flags, workspace_insights
 from app.prompts.registry import load_prompt
-from app.shared.llm import GroqModel, get_groq_client
+from app.shared.llm import GroqModel, _record_usage, get_groq_client, usage_workspace
 from app.utils.jsonparser import parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -64,6 +64,11 @@ async def reason_node(state: SupervisorState) -> dict:
         )},
     ]
     calls = 0
+    # Plain enter/exit rather than `with` — keeps the existing while-loop's
+    # indentation untouched; _groq_chat()'s usage recording picks up the
+    # workspace from this contextvar for the whole reasoning loop below.
+    _ws_scope = usage_workspace(state["workspace_id"])
+    _ws_scope.__enter__()
     try:
         while calls < T.MAX_TOOL_CALLS:
             resp = await _groq_chat(client, messages, tools=specs, tool_choice="auto",
@@ -98,6 +103,8 @@ async def reason_node(state: SupervisorState) -> dict:
         logger.error("supervisor reason loop failed (continuing to synthesis): %s", exc)
         return {"scratchpad": messages, "tool_calls_made": calls,
                 "errors": state["errors"] + [f"reason: {exc}"]}
+    finally:
+        _ws_scope.__exit__()
 
     logger.info("supervisor reason: ws=%s tool_calls=%d", state["workspace_id"], calls)
     return {"scratchpad": messages, "tool_calls_made": calls}
@@ -164,7 +171,8 @@ async def synthesize_node(state: SupervisorState) -> dict:
 
     findings = {"insights": [], "flags": [], "notify": False}
     try:
-        resp = await _groq_chat(client, messages, max_tokens=T.SYNTH_MAX_TOKENS, temperature=0.4)
+        with usage_workspace(state["workspace_id"]):
+            resp = await _groq_chat(client, messages, max_tokens=T.SYNTH_MAX_TOKENS, temperature=0.4)
         parsed = parse_llm_json(resp.choices[0].message.content or "")
         if isinstance(parsed, dict):
             findings["insights"] = parsed.get("insights") or []
@@ -309,11 +317,19 @@ async def _groq_chat(client, messages, *, tools=None, tool_choice=None,
         kwargs["tools"] = tools
         kwargs["tool_choice"] = tool_choice or "auto"
     try:
-        return await client.chat.completions.create(reasoning_effort="high", **kwargs)
+        resp = await client.chat.completions.create(reasoning_effort="high", **kwargs)
     except TypeError:
-        return await client.chat.completions.create(**kwargs)
+        resp = await client.chat.completions.create(**kwargs)
     except Exception as exc:  # noqa: BLE001
         # Some Groq builds reject reasoning_effort with a 400 rather than TypeError.
         if "reasoning_effort" in str(exc):
-            return await client.chat.completions.create(**kwargs)
-        raise
+            resp = await client.chat.completions.create(**kwargs)
+        else:
+            raise
+    # This loop calls the raw SDK directly, not _groq_create() — the one
+    # Groq call path that had zero usage tracking, cached_tokens included.
+    # This is also the highest-value call to cache (large static system
+    # persona + tool list, called repeatedly across ticks), so seeing
+    # whether cache reads are actually happening here matters most.
+    _record_usage(GroqModel.POWERFUL.value, getattr(resp, "usage", None))
+    return resp

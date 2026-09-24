@@ -410,3 +410,34 @@ async def get_current_user(request: Request) -> dict:
 
     structlog.contextvars.bind_contextvars(user_id=user_id)
     return user
+
+
+async def require_platform_staff(user: dict = Depends(get_current_user)) -> dict:
+    """FastAPI dependency: the authenticated user must be Recast staff.
+
+    Distinct from app.core.workspace.require(permission), which gates on a
+    *workspace* role (owner/admin of the one workspace in the request
+    context). This gates on the *platform* — for routes that return
+    cross-tenant data (e.g. the Ops LLM Health page's aggregate Groq/Gemini
+    usage, latency and error messages spanning every workspace on this
+    server, not just the caller's own). A paying customer who owns a
+    workspace is not Recast staff, and must never reach those routes just
+    by being a workspace owner.
+
+    No bootstrap UI exists yet — flip the flag directly in Mongo for the
+    first account:
+        db.users.update_one({"email": "you@example.com"},
+                             {"$set": {"is_platform_staff": True}})
+
+    Args:
+        user: Authenticated user document, from get_current_user.
+
+    Returns:
+        The same user document, once confirmed to be platform staff.
+
+    Raises:
+        HTTPException 403: is_platform_staff is not set on this user.
+    """
+    if not user.get("is_platform_staff"):
+        raise HTTPException(status_code=403, detail="Platform staff access required.")
+    return user

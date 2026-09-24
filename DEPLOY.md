@@ -51,14 +51,16 @@ to a separate process is a deploy config change, not a rewrite. See a
 low-cost separate-host option (Fly.io, ~$2/mo) if isolation becomes worth it
 before Render's own worker pricing does.
 
-**Job list (2026-09-24):** the agent/autonomy jobs now live in one list,
-`app/workers/jobs.py::JOBS`, which both `inprocess.py` (today) and
-`agent_worker.WorkerSettings` (if deployed separately) schedule from:
-`supervisor_rules_tick` (1 min), `supervisor_reason_tick` (5 min),
-`personal_volume_sweep` (6h), `capture_metric_checkpoints` (15 min),
-`performance_feedback_sweep` (daily 02:23 UTC), `autonomy_trust_refresh`
-(daily 02:41 UTC, shadow mode — never publishes), `cadence_monitor` (hourly).
-Add new background jobs there, not directly to either runner.
+**Job list (2026-09-24):** every background job lives in one list,
+`app/workers/jobs.py::JOBS`, which both `inprocess.py` (today, on the web
+service) and `agent_worker.WorkerSettings` (if ever deployed separately)
+schedule from: `scheduled_posts` (1 min), `campaign_batches` (1 min),
+`token_refresh` (hourly :11), `analytics_refresh` (6h), `supervisor_rules_tick`
+(1 min), `supervisor_reason_tick` (5 min), `personal_volume_sweep` (6h),
+`capture_metric_checkpoints` (15 min), `performance_feedback_sweep` (daily
+02:23 UTC), `autonomy_trust_refresh` (daily 02:41 UTC, shadow mode — never
+publishes), `cadence_monitor` (hourly). Add new background jobs there, not
+directly to either runner.
 
 ## Health check
 
