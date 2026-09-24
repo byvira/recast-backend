@@ -2,9 +2,10 @@
 of a separate arq worker process (see ``app.workers.agent_worker`` for that
 deployment path and why it isn't used right now).
 
-Wired into ``app.main``'s lifespan, reusing the same ``AsyncIOScheduler``
-already running ``process_scheduled_posts`` etc. All jobs are the exact
-functions arq would have run — nothing here reimplements their logic.
+Wired into ``app.main``'s lifespan on its ``AsyncIOScheduler``. Schedules
+every job in ``app.workers.jobs.JOBS`` (publishing, campaigns, token renewal,
+analytics, Remy/Odette, autonomy) — the exact functions arq would run;
+nothing here reimplements their logic.
 """
 
 from __future__ import annotations

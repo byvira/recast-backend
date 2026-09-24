@@ -57,6 +57,8 @@ _FLAG_TITLES = {
     "llm_anomaly": "Unusual workspace activity",
     "connection_broken": "A connected channel needs reconnecting",
     "campaign_stalled": "A campaign has stopped generating",
+    "platform_capability_drift": "A connected platform is no longer fully supported",
+    "platform_delivery_failing": "Posts to a platform keep failing",
 }
 
 _REMY_DECIDED = {"acknowledged": "accepted", "dismissed": "dismissed"}
@@ -76,6 +78,33 @@ def _as_dt(value: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
+_PIECE_TARGETS = {"Draft Post", "Live Post", "Scheduled Post"}
+
+
+async def piece_label(piece_id: Optional[str]) -> Optional[str]:
+    """First line of a piece's content, trimmed — how people recognise a post."""
+    if not piece_id:
+        return None
+    from app.db.mongo import content_pieces
+    piece = await content_pieces.find_one({"piece_id": piece_id}, {"content": 1})
+    text = ((piece or {}).get("content") or "").strip()
+    if not text:
+        return None
+    first = text.splitlines()[0].strip()
+    return first if len(first) <= 70 else first[:67].rstrip() + "…"
+
+
+def platform_name(key: Optional[str]) -> str:
+    """Registry display name ("LinkedIn") for a publish slug ("linkedin");
+    falls back to the key itself for anything unregistered."""
+    if not key:
+        return ""
+    from app.platforms.base import get_platform, import_all
+    import_all()
+    definition = get_platform(key.lower())
+    return definition.label if definition else key
+
+
 def _humanize(slug: str) -> str:
     return (slug or "").replace("_", " ").strip().capitalize()
 
@@ -84,15 +113,17 @@ def _humanize(slug: str) -> str:
 # workspace_events → Passive
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def project_event(event: dict) -> None:
+async def project_event(event: dict, *, suggest: bool = True) -> None:
     """Project one persisted ``workspace_events`` document. Event types with no
     Activity Log meaning (``content.created`` — covered by the run summary —
-    and ``assistant.signal`` — covered by the signal row) are skipped."""
+    and ``assistant.signal`` — covered by the signal row) are skipped.
+    ``suggest=False`` (backfills) skips next-step suggestions, which only
+    make sense right after a run."""
     try:
         entry = await _event_entry(event)
         if entry:
             await upsert_entry(entry)
-        if event.get("event_type") == "pipeline.run_completed":
+        if suggest and event.get("event_type") == "pipeline.run_completed":
             # Chaining as a suggestion — see app.agents.feedback.next_steps.
             from app.agents.feedback.next_steps import suggest_after_run
             await suggest_after_run(event)
@@ -157,7 +188,7 @@ async def _event_entry(event: dict) -> Optional[dict]:
         }
 
     if et == "content.published":
-        target = p.get("target") or ""
+        target = platform_name(p.get("target"))
         scheduled = p.get("via") == "scheduled"
         actor = actors.system_actor("Publishing scheduler") if scheduled else await member()
         metadata = {}
@@ -168,12 +199,16 @@ async def _event_entry(event: dict) -> Optional[dict]:
             "actor": actor,
             "category": "post_published",
             "title": f"Published to {target or 'platform'}",
+            # The link lives in href / metadata.publishedUrl (rendered as a
+            # real link), not pasted into the sentence.
             "description": (
-                "Scheduled post went live." if scheduled else "Post published."
-            ) + (f" {p['external_url']}" if p.get("external_url") else ""),
-            "channel": target.lower() or None,
+                f"Scheduled post went live on {target or 'the platform'}."
+                if scheduled else f"Post went live on {target or 'the platform'}."
+            ),
+            "channel": (p.get("target") or "").lower() or None,
             "target_id": p.get("content_id"),
             "target_type": "Live Post",
+            "target_label": await piece_label(p.get("content_id")),
             "href": p.get("external_url") or None,
             "metadata": metadata or None,
         }
@@ -274,6 +309,7 @@ async def project_remy_signal(signal: dict) -> None:
             "description": signal.get("member_message") or "",
             "target_id": target_id,
             "target_type": "Draft Post" if target_id else None,
+            "target_label": await piece_label(target_id),
             "href": "/dashboard/remy",
             "status": "success" if outcome else "warning",
             "metadata": metadata,
@@ -388,6 +424,7 @@ async def record_system(
     actor_user_id: Optional[str] = None,
     diff: Optional[dict] = None,
     restore: Optional[dict] = None,
+    target_label: Optional[str] = None,
 ) -> None:
     """Record one piece of work that isn't a bus event — autonomous jobs
     (scheduler, retries, token refreshes) or an outcome with no event of its
@@ -414,6 +451,9 @@ async def record_system(
         "channel": channel,
         "target_id": target_id,
         "target_type": target_type,
+        "target_label": target_label or (
+            await piece_label(target_id) if target_type in _PIECE_TARGETS else None
+        ),
         "href": href,
         "metadata": metadata or None,
         "diff": diff,

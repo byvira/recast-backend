@@ -355,3 +355,176 @@ async def test_control_tower_completed_lists_successful_work_only(api_client):
     assert card["title"] == "Hiring update"
     assert card["project"] == "LinkedIn, Instagram"
     assert card["subtitle"] == "Generated 2 outputs"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Inbox
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _inbox(client, ws_id):
+    res = await client.get("/api/v1/activity/inbox", headers=_ws_headers(ws_id))
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+async def test_inbox_shows_what_needs_noticing_not_your_own_clicks(api_client, make_client):
+    owner = await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Inbox", tier="large")
+    editor_client, editor = await invite_and_accept(api_client, make_client, ws_id, "editor")
+
+    await _odette_flag(ws_id)                                            # admin decision → owner only
+    await _remy_signal(ws_id, editor["id"])                             # editor's own feedback
+    await record_system(workspace_id=ws_id, key="pub:ok", actor_name="Publishing scheduler",
+                        category="post_published", title="Scheduled post went live", description="")
+    await record_system(workspace_id=ws_id, key="edit:mine", actor_name="", actor_user_id=owner["id"],
+                        category="content_edited", title="Edited LinkedIn draft", description="")
+
+    owner_titles = {i["title"] for i in (await _inbox(api_client, ws_id))["items"]}
+    assert "Daily publishing cap reached" in owner_titles
+    assert "Scheduled post went live" in owner_titles
+    assert "Edited LinkedIn draft" not in owner_titles                   # their own click
+    assert "This piece drifts from your usual voice" not in owner_titles  # editor's private Remy item
+
+    editor_titles = {i["title"] for i in (await _inbox(editor_client, ws_id))["items"]}
+    assert "This piece drifts from your usual voice" in editor_titles
+    assert "Daily publishing cap reached" not in editor_titles
+
+
+async def test_mark_read_keeps_pending_decisions_unread(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Inbox Read", tier="large")
+    await _odette_flag(ws_id)
+    await record_system(workspace_id=ws_id, key="pub:ok2", actor_name="Publishing scheduler",
+                        category="post_published", title="Went live", description="")
+
+    before = await _inbox(api_client, ws_id)
+    assert before["unread"] == 2
+
+    res = await api_client.post("/api/v1/activity/inbox/read", json={}, headers=_ws_headers(ws_id))
+    assert res.status_code == 200
+    after = await _inbox(api_client, ws_id)
+    assert after["unread"] == 1                                          # the undecided flag
+    assert [i["type"] for i in after["items"] if i["unread"]] == ["failed"]
+
+    flag_item = next(i for i in after["items"] if i["unread"])
+    await api_client.post("/api/v1/activity/inbox/read", json={"ids": [flag_item["id"]]},
+                          headers=_ws_headers(ws_id))
+    assert (await _inbox(api_client, ws_id))["unread"] == 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Read / unread / delete + sidebar count + Control Tower "up next"
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_read_unread_and_sidebar_count(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Read State", tier="large")
+    h = _ws_headers(ws_id)
+    await record_system(workspace_id=ws_id, key="pub:a", actor_name="Publishing scheduler",
+                        category="post_published", title="Went live A", description="")
+    row_id = "system:pub:a"
+
+    count = (await api_client.get("/api/v1/activity/unread-count", headers=h)).json()["unread"]
+    assert count == 1
+    [row] = [i for i in (await _list(api_client, ws_id, lane="passive"))["items"] if i["id"] == row_id]
+    assert row["unread"] is True
+
+    await api_client.post("/api/v1/activity/read", json={"ids": [row_id]}, headers=h)
+    [row] = [i for i in (await _list(api_client, ws_id, lane="passive"))["items"] if i["id"] == row_id]
+    assert row["unread"] is False
+    assert (await api_client.get("/api/v1/activity/unread-count", headers=h)).json()["unread"] == 0
+
+    res = await api_client.post("/api/v1/activity/read", json={"ids": [row_id], "unread": True}, headers=h)
+    assert res.json()["unread"] == 1
+
+    # Mark all read clears explicit "unread" flags too.
+    await api_client.post("/api/v1/activity/read", json={}, headers=h)
+    assert (await api_client.get("/api/v1/activity/unread-count", headers=h)).json()["unread"] == 0
+
+
+async def test_own_actions_are_never_unread(api_client):
+    me = await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Own", tier="large")
+    await record_system(workspace_id=ws_id, key="edit:own", actor_name="", actor_user_id=me["id"],
+                        category="content_edited", title="Edited", description="")
+    [row] = [i for i in (await _list(api_client, ws_id, lane="passive"))["items"] if i["id"] == "system:edit:own"]
+    assert row["unread"] is False
+
+
+async def test_delete_hides_for_me_only_and_never_pending_decisions(api_client, make_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Delete", tier="large")
+    editor_client, _ = await invite_and_accept(api_client, make_client, ws_id, "editor")
+    h = _ws_headers(ws_id)
+    await record_system(workspace_id=ws_id, key="pub:del", actor_name="Publishing scheduler",
+                        category="post_published", title="Went live", description="")
+    flag_id = await _odette_flag(ws_id)
+
+    res = await api_client.post("/api/v1/activity/hide",
+                                json={"ids": ["system:pub:del", f"odette_flag:{flag_id}"]}, headers=h)
+    assert res.json() == {"removed": 1, "skipped": 1}
+
+    mine = {i["id"] for i in (await _list(api_client, ws_id, lane="passive"))["items"]}
+    assert "system:pub:del" not in mine
+    theirs = {i["id"] for i in (await _list(editor_client, ws_id, lane="passive"))["items"]}
+    assert "system:pub:del" in theirs                                  # audit trail intact for others
+    active = {i["id"] for i in (await _list(api_client, ws_id, lane="active"))["items"]}
+    assert f"odette_flag:{flag_id}" in active                          # pending decision stays
+
+
+async def test_control_tower_lists_what_runs_next(api_client):
+    from app.db.mongo import content_pieces, get_campaigns_collection
+
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Up Next", tier="large")
+    now = datetime.now(timezone.utc)
+    await content_pieces.insert_one({
+        "piece_id": str(uuid4()), "workspace_id": ws_id, "publish_status": "queued",
+        "publish_scheduled_at": (now + timedelta(hours=3)).isoformat(), "publish_target": "linkedin",
+        "content": "Hiring update\nbody", "deleted": False,
+    })
+    await content_pieces.insert_one({
+        "piece_id": str(uuid4()), "workspace_id": ws_id, "publish_status": "queued",
+        "publish_scheduled_at": (now + timedelta(days=3)).isoformat(), "content": "Too far out",
+        "deleted": False,
+    })
+    await get_campaigns_collection().insert_one({
+        "id": str(uuid4()), "workspace_id": ws_id, "name": "Launch week", "status": "active",
+        "cadence": {"frequency": "daily", "next_run_at": now + timedelta(hours=1)}, "deleted": False,
+    })
+
+    upcoming = (await api_client.get("/api/v1/activity/control-tower", headers=_ws_headers(ws_id))).json()["upcoming"]
+    assert [(u["kind"], u["title"]) for u in upcoming] == [
+        ("campaign_run", "Launch week"), ("scheduled_post", "Hiring update"),
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backfill (scripts/backfill_activity.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_backfill_projects_history_idempotently_without_suggestions(api_client):
+    from app.db.mongo import workspace_events
+    from scripts.backfill_activity import backfill
+
+    owner = await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Backfill", tier="large")
+    event_id = str(uuid4())
+    # Written straight to the store, as pre-Activity-Log history would be.
+    await workspace_events.insert_one({
+        "_id": event_id, "event_id": event_id, "event_type": "pipeline.run_completed",
+        "pipeline_type": "text", "workspace_id": ws_id, "actor_user_id": owner["id"],
+        "actor_role": "owner", "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "idempotency_key": f"bf:{event_id}",
+        "payload": {"session_id": "old-run", "pieces": 1, "platforms": ["LinkedIn"],
+                    "title": "Old run", "trigger": "manual"},
+    })
+
+    dry = await backfill(execute=False, workspace_id=ws_id)
+    assert dry["events"] == 1
+    assert await activity_entries.count_documents({"workspace_id": ws_id}) == 0   # dry run wrote nothing
+
+    await backfill(execute=True, workspace_id=ws_id)
+    await backfill(execute=True, workspace_id=ws_id)                              # re-run is safe
+    rows = await activity_entries.find({"workspace_id": ws_id}).to_list(10)
+    assert [r["_id"] for r in rows] == [f"event:{event_id}"]                      # no next-step row

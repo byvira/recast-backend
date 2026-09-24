@@ -10,4 +10,6 @@ brand_voice_instability: "The brand voice was edited {count} times in 24h. Rapid
 member_churn: "{summary}. Confirm this was intended and that access was cleaned up."
 assistant_signal_storm: "{summary}. Worth a look — it usually means a shared cause (a brief change, a bad template, an automation loop)."
 connection_broken: "{platform} ({account}) stopped accepting Recast's access and automatic renewal failed {failures} times. Reconnect it in Settings — scheduled posts to it will fail until then."
+platform_capability_drift: "{platforms} {verb} connected, but Recast no longer fully supports {pronoun} — publishing and analytics there may stop working. Review the connection in Settings."
+platform_delivery_failing: "Posts to {platform} failed {failures} times in the last {window_hours}h. Check the connection in Settings before more scheduled posts go out."
 __fallback__: "{flag_type_label}: {detail}"

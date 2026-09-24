@@ -105,13 +105,14 @@ async def _update_piece_status(
 async def _record_publish_failure(ws: str, user_id: str, piece_id: str, platform: str, reason: str) -> None:
     """Activity Log row for a publish that didn't go out (Passive lane)."""
     from app.shared.activity import record_system
+    from app.shared.activity.projector import platform_name
     await record_system(
         workspace_id=ws,
         key=f"publish:{piece_id}",
         actor_name="",
         actor_user_id=user_id,
         category="post_published",
-        title=f"Publishing to {platform} failed",
+        title=f"Publishing to {platform_name(platform)} failed",
         description=reason or "The platform rejected the post.",
         status="failed",
         channel=platform,

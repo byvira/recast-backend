@@ -83,6 +83,16 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
         format_ctx = {"summary": d.get("summary", _MEMBER_CHURN_DEFAULT)}
     elif flag_type == "assistant_signal_storm":
         format_ctx = {"summary": d.get("summary", _SIGNAL_STORM_DEFAULT)}
+    elif flag_type == "platform_capability_drift":
+        from app.shared.activity.projector import platform_name
+        names = [platform_name(p.get("platform")) for p in (d.get("platforms") or []) if p.get("platform")]
+        joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}" if names else "A platform"
+        format_ctx = {"platforms": joined, "verb": "is" if len(names) <= 1 else "are",
+                      "pronoun": "it" if len(names) <= 1 else "them"}
+    elif flag_type == "platform_delivery_failing":
+        from app.shared.activity.projector import platform_name
+        format_ctx = {"platform": platform_name(d.get("platform")), "failures": d.get("failures"),
+                      "window_hours": d.get("window_hours")}
     elif flag_type == "connection_broken":
         format_ctx = {"platform": d.get("platform"), "account": d.get("account"), "failures": d.get("failures")}
     else:

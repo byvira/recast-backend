@@ -61,13 +61,51 @@ def can_see_admin_rows(role: str) -> bool:
 
 
 def visibility_filter(workspace_id: str, user_id: str, role: str) -> dict:
+    """Rows this member may see — minus the ones they deleted from their own
+    log (``hidden_by``; per-member, the audit trail itself is untouched)."""
     clauses: list[dict] = [
         {"visibility": "workspace"},
         {"visibility": "member", "member_user_id": user_id},
     ]
     if can_see_admin_rows(role):
         clauses.append({"visibility": "admins"})
-    return {"workspace_id": workspace_id, "$or": clauses}
+    return {"workspace_id": workspace_id, "$or": clauses, "hidden_by": {"$ne": user_id}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-member read state — stored on the row (read_by / unread_by) plus one
+# "read everything before" cursor per member (app.db.mongo.inbox_state).
+#
+# A row is unread for a member when it isn't their own action and either
+#   * they explicitly marked it unread, or
+#   * they haven't opened it and it's newer than their cursor — Active items
+#     (waiting on a decision) ignore the cursor: "mark all read" doesn't make
+#     a pending decision go away.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def unread_filter(user_id: str, read_before: Optional[datetime]) -> dict:
+    fresh: dict = {"read_by": {"$ne": user_id}}
+    if read_before is not None:
+        fresh["$or"] = [{"lane": LANE_ACTIVE}, {"occurred_at": {"$gt": read_before}}]
+    return {"$and": [
+        {"actor.user_id": {"$ne": user_id}},
+        {"$or": [{"unread_by": user_id}, fresh]},
+    ]}
+
+
+def is_unread(doc: dict, user_id: str, read_before: Optional[datetime]) -> bool:
+    if (doc.get("actor") or {}).get("user_id") == user_id:
+        return False
+    if user_id in (doc.get("unread_by") or []):
+        return True
+    if user_id in (doc.get("read_by") or []):
+        return False
+    if doc.get("lane") == LANE_ACTIVE or read_before is None:
+        return True
+    occurred = doc.get("occurred_at")
+    if isinstance(occurred, datetime) and occurred.tzinfo is None:
+        occurred = occurred.replace(tzinfo=timezone.utc)
+    return occurred is not None and occurred > read_before
 
 
 def is_visible_to(entry: dict, user_id: str, role: str) -> bool:

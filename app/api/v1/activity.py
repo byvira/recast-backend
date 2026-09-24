@@ -27,8 +27,15 @@ from app.agents.supervisor import service as odette_service
 from app.core.auth import get_current_user
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import autonomy_trust, workspace_members, workspaces
+from app.db.mongo import (
+    autonomy_trust,
+    content_pieces,
+    get_campaigns_collection,
+    workspace_members,
+    workspaces,
+)
 from app.shared.activity import live
+from app.shared.activity import inbox as inbox_mod
 from app.shared.activity.runs import list_runs
 from app.shared.activity.store import (
     patch_entry,
@@ -38,6 +45,7 @@ from app.shared.activity.store import (
     can_see_admin_rows,
     count_entries,
     get_entry,
+    is_unread,
     is_visible_to,
     list_entries,
     visibility_filter,
@@ -56,11 +64,22 @@ def _iso(value) -> Optional[str]:
     return value
 
 
-def present(doc: dict) -> dict:
+def _clean_description(doc: dict) -> str:
+    """Rows projected before a post link moved out of the sentence carried it
+    as a trailing raw URL — strip it; the link is rendered from href."""
+    description = doc.get("description", "")
+    href = doc.get("href")
+    if href and description.endswith(" " + href):
+        description = description[: -len(href) - 1]
+    return description
+
+
+def present(doc: dict, *, user_id: Optional[str] = None, read_before=None) -> dict:
     """Row → the frontend's ``ActivityLogEntry`` shape (plus lane/decision).
     ``timestamp`` / ``relativeTime`` are formatted client-side from
     ``occurredAt`` so they stay correct in the viewer's own timezone."""
     actor = doc.get("actor") or {}
+    description = _clean_description(doc)
     out = {
         "id": doc["_id"],
         "occurredAt": _iso(doc.get("occurred_at")),
@@ -68,13 +87,15 @@ def present(doc: dict) -> dict:
         "actor": {k: actor[k] for k in ("name", "avatar", "type", "role", "agent") if actor.get(k)},
         "category": doc.get("category"),
         "title": doc.get("title", ""),
-        "description": doc.get("description", ""),
+        "description": description,
         "status": doc.get("status", "success"),
     }
     optional = {
         "channel": doc.get("channel"),
         "targetId": doc.get("target_id"),
         "targetType": doc.get("target_type"),
+        # Human label for the related item — never the raw id.
+        "targetLabel": doc.get("target_label") or doc.get("subject"),
         "href": doc.get("href"),
         "diff": doc.get("diff"),
         "metadata": doc.get("metadata"),
@@ -87,6 +108,8 @@ def present(doc: dict) -> dict:
         ),
     }
     out.update({k: v for k, v in optional.items() if v})
+    if user_id:
+        out["unread"] = is_unread(doc, user_id, read_before)
     return out
 
 
@@ -120,8 +143,9 @@ async def list_activity(
                 workspace_id=ctx.workspace_id, user_id=ctx.user_id, role=ctx.role, lane=LANE_ACTIVE,
             ))
         )
+    cursor_read = await inbox_mod.read_before(ctx.workspace_id, ctx.user_id)
     return {
-        "items": [present(d) for d in page["docs"]],
+        "items": [present(d, user_id=ctx.user_id, read_before=cursor_read) for d in page["docs"]],
         "next_cursor": page["next_cursor"],
         "total": total,
         "active_total": active_total,
@@ -178,8 +202,172 @@ async def control_tower(
     ).limit(_COMPLETED_LIMIT).to_list(length=_COMPLETED_LIMIT)
     return {
         "live": await list_runs(ctx.workspace_id),
+        "upcoming": await _upcoming(ctx.workspace_id),
         "completed": [_completed_card(d) for d in completed],
     }
+
+
+_UPCOMING_WINDOW = timedelta(hours=24)
+_UPCOMING_LIMIT = 5
+
+
+async def _upcoming(workspace_id: str) -> list[dict]:
+    """What's queued to happen on its own in the next 24h: scheduled posts
+    (publish_scheduled_at is stored as an ISO string — the same comparison
+    app.workers.scheduled_posts uses) and automated campaign runs."""
+    now = datetime.now(timezone.utc)
+    items: list[dict] = []
+    async for piece in content_pieces.find(
+        {
+            "workspace_id": workspace_id,
+            "publish_status": "queued",
+            "deleted": {"$ne": True},
+            "publish_scheduled_at": {"$lte": (now + _UPCOMING_WINDOW).isoformat()},
+        },
+        {"piece_id": 1, "content": 1, "platform": 1, "publish_target": 1, "publish_scheduled_at": 1},
+    ).sort("publish_scheduled_at", 1).limit(_UPCOMING_LIMIT):
+        first = ((piece.get("content") or "").strip().splitlines() or [""])[0]
+        items.append({
+            "id": f"post:{piece['piece_id']}",
+            "kind": "scheduled_post",
+            "title": first if len(first) <= 60 else first[:57].rstrip() + "…",
+            "project": (piece.get("publish_target") or piece.get("platform") or "").capitalize(),
+            "subtitle": "Scheduled post",
+            "at": piece.get("publish_scheduled_at"),
+            "href": "/dashboard/calendar",
+        })
+    async for campaign in get_campaigns_collection().find(
+        {
+            "workspace_id": workspace_id,
+            "deleted": {"$ne": True},
+            "status": {"$nin": ["paused", "completed"]},
+            "cadence.frequency": {"$ne": "manual"},
+            "cadence.next_run_at": {"$lte": now + _UPCOMING_WINDOW},
+        },
+        {"id": 1, "name": 1, "cadence": 1},
+    ).sort("cadence.next_run_at", 1).limit(_UPCOMING_LIMIT):
+        items.append({
+            "id": f"campaign:{campaign['id']}",
+            "kind": "campaign_run",
+            "title": campaign.get("name") or "Campaign",
+            "project": f"{(campaign.get('cadence') or {}).get('frequency', '').capitalize()} campaign",
+            "subtitle": "Next batch",
+            "at": _iso((campaign.get("cadence") or {}).get("next_run_at")),
+            "href": "/dashboard/campaigns",
+        })
+    items.sort(key=lambda i: i["at"] or "")
+    return items[:_UPCOMING_LIMIT]
+
+
+# ── Inbox ───────────────────────────────────────────────────────────────────
+
+def _inbox_item(doc: dict, unread: bool) -> dict:
+    """Row → the Inbox popover's card. ``type`` drives its icon colour:
+    success (done), info (needs a decision), sync (routine automation),
+    failed (something broke)."""
+    status = doc.get("status")
+    if status == "failed":
+        kind = "failed"
+    elif doc.get("lane") == "active":
+        kind = "info"
+    elif (doc.get("actor") or {}).get("type") in ("system_cron", "webhook"):
+        kind = "sync"
+    else:
+        kind = "success"
+    return {
+        "id": doc["_id"],
+        "title": doc.get("title", ""),
+        "desc": _clean_description(doc),
+        "occurredAt": _iso(doc.get("occurred_at")),
+        "type": kind,
+        "category": doc.get("category"),
+        "lane": doc.get("lane"),
+        "href": doc.get("href"),
+        "unread": unread,
+    }
+
+
+@router.get("/inbox")
+@limiter.limit("60/minute")
+async def get_inbox(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    page = await inbox_mod.list_inbox(ctx.workspace_id, ctx.user_id, ctx.role)
+    return {
+        "items": [_inbox_item(d, d["_id"] in page["unread_ids"]) for d in page["docs"]],
+        "unread": page["unread"],
+    }
+
+
+class InboxReadBody(BaseModel):
+    ids: Optional[list[str]] = Field(None, max_length=100)
+
+
+@router.post("/inbox/read")
+@limiter.limit("60/minute")
+async def read_inbox(
+    request: Request,
+    body: InboxReadBody,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Mark the given items read, or everything when ``ids`` is omitted."""
+    if body.ids:
+        await inbox_mod.set_read(ctx.workspace_id, ctx.user_id, body.ids)
+    else:
+        await inbox_mod.mark_all_read(ctx.workspace_id, ctx.user_id)
+    return {"ok": True}
+
+
+# ── Read / unread / delete (Activity Log rows) ──────────────────────────────
+
+class ReadBody(BaseModel):
+    #: Omitted → mark everything read.
+    ids: Optional[list[str]] = Field(None, max_length=100)
+    unread: bool = False
+
+
+@router.post("/read")
+@limiter.limit("120/minute")
+async def mark_read(
+    request: Request,
+    body: ReadBody,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    if body.ids:
+        await inbox_mod.set_read(ctx.workspace_id, ctx.user_id, body.ids, unread=body.unread)
+    elif body.unread:
+        raise HTTPException(status_code=400, detail="Pick the items to mark unread.")
+    else:
+        await inbox_mod.mark_all_read(ctx.workspace_id, ctx.user_id)
+    return {"ok": True, "unread": await inbox_mod.unread_count(ctx.workspace_id, ctx.user_id, ctx.role)}
+
+
+class HideBody(BaseModel):
+    ids: list[str] = Field(..., min_length=1, max_length=100)
+
+
+@router.post("/hide")
+@limiter.limit("60/minute")
+async def hide_entries(
+    request: Request,
+    body: HideBody,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Delete rows from the caller's own log. The shared audit trail is
+    untouched; items still waiting on a decision are skipped (dismiss them)."""
+    removed = await inbox_mod.hide(ctx.workspace_id, ctx.user_id, body.ids)
+    return {"removed": removed, "skipped": len(body.ids) - removed}
+
+
+@router.get("/unread-count")
+@limiter.limit("120/minute")
+async def unread_count(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The sidebar badge — unread items that need attention (the Inbox set)."""
+    return {"unread": await inbox_mod.unread_count(ctx.workspace_id, ctx.user_id, ctx.role)}
 
 
 class DecisionBody(BaseModel):
@@ -249,7 +437,7 @@ async def decide(
         raise HTTPException(status_code=400, detail="This item doesn't take a decision.")
 
     updated = await get_entry(entry_id)
-    return present(updated) if updated else {"id": entry_id}
+    return present(updated, user_id=ctx.user_id) if updated else {"id": entry_id}
 
 
 @router.get("/autonomy")
@@ -315,6 +503,7 @@ async def stream_activity(
     if not member or member.get("status") != "active":
         raise HTTPException(status_code=403, detail="Not a member of this workspace.")
     user_id, role = current_user["id"], member.get("role", "")
+    cursor_read = await inbox_mod.read_before(workspace_id, user_id)
 
     async def events():
         q = live.subscribe(workspace_id)
@@ -333,7 +522,7 @@ async def stream_activity(
                 for key in ("occurred_at", "snoozed_until"):
                     if isinstance(row.get(key), str):
                         row[key] = datetime.fromisoformat(row[key])
-                yield f"event: activity\ndata: {json.dumps(present(row))}\n\n"
+                yield f"event: activity\ndata: {json.dumps(present(row, user_id=user_id, read_before=cursor_read))}\n\n"
         finally:
             live.unsubscribe(workspace_id, q)
 

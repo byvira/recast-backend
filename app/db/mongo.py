@@ -90,6 +90,9 @@ post_metric_checkpoints: AsyncIOMotorCollection = get_client().get_default_datab
 autonomy_trust: AsyncIOMotorCollection  = get_client().get_default_database()["autonomy_trust"]
 autonomy_shadow: AsyncIOMotorCollection = get_client().get_default_database()["autonomy_shadow"]
 
+# app.shared.activity.inbox — one read-state doc per (workspace, member).
+inbox_state: AsyncIOMotorCollection = get_client().get_default_database()["inbox_state"]
+
 # ── Collection getter functions ───────────────────────────────────────────────
 
 def get_users_collection() -> AsyncIOMotorCollection:
