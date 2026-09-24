@@ -28,6 +28,7 @@ from app.db.mongo import brand_profiles
 from app.db.redis import get_cache, set_cache
 from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
+from app.agents.text import session_relay
 from app.agents.text.event_emitter import EventEmitter
 from app.shared.activity.runs import brand_label, end_run, start_run, update_run
 from app.pipelines.text.orchestrator import run_text_pipeline, run_batch_pipeline
@@ -61,6 +62,12 @@ BATCH_DAYS = 7
 # need LangGraph-level checkpointing (interrupt()/Command(resume=...))
 # around real pause points, which is a materially larger change than a
 # status registry.
+#
+# Multiple instances: a resume/status request that lands on an instance other
+# than the one holding the session is served via app.agents.text.session_relay
+# — the owner keeps a short-TTL heartbeat in Redis while the session runs, and
+# resumes are relayed to it over Redis pub/sub. Only a crashed/restarted owner
+# still means "lost".
 # ─────────────────────────────────────────────────────────────────────────────
 
 _active_sessions: dict[str, tuple[EventEmitter, str]] = {}
@@ -79,6 +86,17 @@ async def _register_session(session_id: str, workspace_id: str) -> None:
         {"workspace_id": workspace_id, "status": "active"},
         ttl=_SESSION_TTL_SECONDS,
     )
+
+
+async def _apply_local_resume(session_id: str, workspace_id: str, choice: str) -> bool:
+    """Relay target (app.agents.text.session_relay): apply a resume that
+    arrived on another instance, if this instance owns the session."""
+    entry = _active_sessions.get(session_id)
+    if not entry or entry[1] != workspace_id:
+        return False
+    await entry[0].resume(choice=choice)
+    logger.info("Session %s resumed via relay with choice: %s", session_id, choice)
+    return True
 
 
 async def _mark_session_ended(session_id: str, workspace_id: str) -> None:
@@ -185,6 +203,10 @@ async def generate_stream(
     await _register_session(session_id, ctx.workspace_id)
 
     async def event_stream():
+        # Cross-instance routing: beat while this instance owns the session,
+        # and listen for resumes that land on other instances.
+        session_relay.start_listener(_apply_local_resume)
+        heartbeat_task = asyncio.create_task(session_relay.heartbeat(session_id, ctx.workspace_id))
         # Emit session started immediately so frontend can show queued cards.
         # In batch mode the real card count is platforms × days, not just
         # platforms — the frontend needs platform_count to mean "how many
@@ -247,6 +269,7 @@ async def generate_stream(
             })
 
         finally:
+            heartbeat_task.cancel()
             _active_sessions.pop(session_id, None)
             await _mark_session_ended(session_id, ctx.workspace_id)
             if not pipeline_task.done():
@@ -280,12 +303,20 @@ async def resume_pipeline(
     Resume a pipeline that emitted agent_paused.
     body: { "choice": "angle_1" }
     """
+    choice = body.get("choice")
     entry = _active_sessions.get(session_id)
     if not entry or entry[1] != ctx.workspace_id:
         cached = await get_cache(_session_cache_key(session_id))
         if cached and cached.get("workspace_id") == ctx.workspace_id:
             if cached.get("status") == "ended":
                 raise HTTPException(status_code=409, detail="Session already finished.")
+            # Alive on another instance → hand the choice to it.
+            live_owner = await session_relay.owner(session_id)
+            if live_owner and live_owner.get("workspace_id") == ctx.workspace_id:
+                if not choice:
+                    raise HTTPException(status_code=400, detail="choice is required.")
+                if await session_relay.relay_resume(session_id, ctx.workspace_id, choice):
+                    return {"resumed": True, "session_id": session_id, "choice": choice, "relayed": True}
             # Registered in Redis (so it did exist and belongs to this
             # workspace) but missing from this process's local dict —
             # the only way that happens is this process restarted since
@@ -301,7 +332,6 @@ async def resume_pipeline(
         )
     emitter = entry[0]
 
-    choice = body.get("choice")
     if not choice:
         raise HTTPException(status_code=400, detail="choice is required.")
 
@@ -334,8 +364,14 @@ async def get_session_status(
 
     cached = await get_cache(_session_cache_key(session_id))
     if cached and cached.get("workspace_id") == ctx.workspace_id:
-        # Known to Redis but not running locally — either it legitimately
-        # ended, or this process restarted since the session began.
+        if cached.get("status") != "ended":
+            # Running on another instance (it's still beating) — resumable
+            # from here via the relay.
+            live_owner = await session_relay.owner(session_id)
+            if live_owner and live_owner.get("workspace_id") == ctx.workspace_id:
+                return {"session_id": session_id, "active": True, "can_resume": True, "status": "active"}
+        # Known to Redis but no live owner — either it legitimately ended,
+        # or the instance running it restarted/crashed since it began.
         status = "ended" if cached.get("status") == "ended" else "lost"
         return {"session_id": session_id, "active": False, "can_resume": False, "status": status}
 

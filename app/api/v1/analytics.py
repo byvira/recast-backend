@@ -216,6 +216,53 @@ async def get_dashboard_report(
         "errors":            result["errors"],
     }
 
+TOP_PERFORMER_SHARE = 0.05   # the Library tab is labelled "Top Performers (Top 5%)"
+TOP_PERFORMER_CHECKPOINT = "24h"
+
+
+@router.get("/top-performers")
+@limiter.limit("30/minute")
+async def top_performers(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The workspace's top 5% of published posts by engagement rate,
+    measured at the same age for every post — 24h after publishing
+    (``post_metric_checkpoints``) — so a week-old post isn't compared with
+    one that went out this morning. At least one post once any has been
+    measured; ``measured == 0`` means there's nothing to rank yet.
+
+    Text pipeline only today — text posts are the only published pieces.
+    When audio/video/image publishing exists, add a ``pipeline`` filter here
+    (checkpoints already carry ``pipeline_type``) so each Library tab ranks
+    within its own medium. See docs/DEFERRED_AND_PARTIAL_SCOPE.md PAR-013."""
+    import math
+    from app.db.mongo import post_metric_checkpoints
+
+    rows = await post_metric_checkpoints.find(
+        {"workspace_id": ctx.workspace_id, "checkpoint": TOP_PERFORMER_CHECKPOINT},
+        {"piece_id": 1, "metrics.engagement_rate": 1, "platform": 1},
+    ).to_list(length=5000)
+    ranked = sorted(
+        rows, key=lambda r: float((r.get("metrics") or {}).get("engagement_rate") or 0.0), reverse=True,
+    )
+    top_n = math.ceil(len(ranked) * TOP_PERFORMER_SHARE) if ranked else 0
+    top = [r for r in ranked[:top_n] if float((r.get("metrics") or {}).get("engagement_rate") or 0.0) > 0]
+    return {
+        "checkpoint": TOP_PERFORMER_CHECKPOINT,
+        "share": TOP_PERFORMER_SHARE,
+        "measured": len(ranked),
+        "items": [
+            {
+                "piece_id": r["piece_id"],
+                "engagement_rate": float((r.get("metrics") or {}).get("engagement_rate") or 0.0),
+                "rank": i + 1,
+            }
+            for i, r in enumerate(top)
+        ],
+    }
+
+
 @router.get("/calendar")
 @limiter.limit("30/minute")
 async def get_calendar(

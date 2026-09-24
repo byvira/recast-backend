@@ -36,6 +36,12 @@ def _serialize(p: PlatformDefinition) -> dict[str, Any]:
         "confidence": p.confidence,
         "connectable": p.publisher_cls is not None,
         "has_analytics": p.analytics_fetcher_cls is not None,
+        # The content Platform value text generation uses for this platform
+        # (app.models.text.Platform) — the frontend builds its platform maps
+        # from these instead of hardcoding them. None when the platform has
+        # no text generation rules.
+        "text_platform": (p.text_enum_value or p.label) if p.has_text_prompt_rules else None,
+        "text_thread_platform": p.thread_enum_value if p.has_text_prompt_rules else None,
     }
 
 

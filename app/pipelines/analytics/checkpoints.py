@@ -11,6 +11,11 @@ A checkpoint is only recorded inside its window (see ``CHECKPOINTS``). If the
 job wasn't running when a window was open, that checkpoint is recorded as
 ``missed`` rather than filled with numbers taken at the wrong age.
 After 7d a post is never polled here again.
+
+Reads ``content_pieces`` only, i.e. the text pipeline — the only one that
+publishes today. When audio/video/image publishing lands, extend
+``_capture_workspace`` to those pipelines' published items (rows already
+record ``pipeline_type``). See docs/DEFERRED_AND_PARTIAL_SCOPE.md PAR-013.
 """
 
 from __future__ import annotations

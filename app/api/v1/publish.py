@@ -11,7 +11,7 @@ permission; reading status requires membership.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -330,21 +330,58 @@ async def publish_now(
 
         break
 
-    await _update_piece_status(
-        body.piece_id, ws, "failed",
-        error_message="All retry attempts exhausted",
-        increment_attempts=True,
+    # Only a TRANSIENT error (rate limit / 5xx) reaches here — AUTH, FATAL and
+    # unfixable FIXABLE errors all returned above. The scheduled worker keeps
+    # retrying exactly these on its own backoff, so hand the post to it rather
+    # than failing a post the platform may well accept in a few minutes. The
+    # two paths now end the same way: permanent errors fail, temporary ones
+    # keep being retried in the background.
+    retry_at = datetime.now(timezone.utc) + timedelta(
+        seconds=get_retry_delay(ErrorType.TRANSIENT, 0) or 60
     )
-    await _record_publish_failure(
-        ws, ctx.user_id, body.piece_id, platform,
-        f"Still failing after {attempt} automatic retries.",
+    await content_pieces.update_one(
+        {"piece_id": body.piece_id, "workspace_id": ws},
+        {"$set": {
+            "publish_status":       "queued",
+            "publish_scheduled_at": retry_at.isoformat(),
+            # The worker publishes to publish_target and would otherwise fall
+            # back to LinkedIn for a piece that never had one set.
+            "publish_target":       platform,
+            # A fresh background budget (MAX_RETRIES for TRANSIENT) — the
+            # attempts spent while the user watched don't count against it.
+            "publish_attempts":     0,
+            "last_error":           result.error_message or "Platform temporarily unavailable",
+            "updated_at":           datetime.now(timezone.utc),
+        }},
+    )
+    from app.shared.activity import record_system
+    from app.shared.activity.projector import platform_name
+    await record_system(
+        workspace_id=ws,
+        key=f"publish:{body.piece_id}",
+        actor_name="",
+        actor_user_id=ctx.user_id,
+        category="post_published",
+        title=f"{platform_name(platform)} is busy — retrying in the background",
+        description=(
+            f"{result.error_message or 'The platform is temporarily unavailable.'} "
+            f"Recast will keep retrying automatically, starting "
+            f"{retry_at.strftime('%H:%M')} UTC."
+        ),
+        status="warning",
+        channel=platform,
+        target_id=body.piece_id,
+        target_type="Scheduled Post",
+        href="/dashboard/calendar",
+        metadata={"retries": attempt},
     )
     return {
         "success":  False,
         "piece_id": body.piece_id,
         "platform": platform,
-        "status":   "failed",
-        "reason":   "All retry attempts exhausted",
+        "status":   "retry_scheduled",
+        "retry_at": retry_at.isoformat(),
+        "reason":   result.error_message or "Platform temporarily unavailable",
         "attempts": attempt,
     }
 
