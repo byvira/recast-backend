@@ -24,6 +24,8 @@ from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import content_pieces, users
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
+from app.pipelines.publish.health import mark_healthy
+from app.workers.token_refresh import recover_connection
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.supervisor.alerts import alert_fatal, save_incident
 from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
@@ -81,6 +83,10 @@ async def _update_piece_status(
         updates["platform_post_url"] = platform_post_url
     if error_message:
         updates["last_error"] = error_message
+    if status == "published":
+        # The real go-live time — metric checkpoints (1h/24h/72h/7d) are
+        # measured from this, not from updated_at.
+        updates["published_at"] = updates["updated_at"]
 
     flt = {"piece_id": piece_id, "workspace_id": workspace_id}
     if increment_attempts:
@@ -95,6 +101,25 @@ async def _update_piece_status(
 # ─────────────────────────────────────────────────────────────────────────────
 # PUBLISH NOW
 # ─────────────────────────────────────────────────────────────────────────────
+
+async def _record_publish_failure(ws: str, user_id: str, piece_id: str, platform: str, reason: str) -> None:
+    """Activity Log row for a publish that didn't go out (Passive lane)."""
+    from app.shared.activity import record_system
+    await record_system(
+        workspace_id=ws,
+        key=f"publish:{piece_id}",
+        actor_name="",
+        actor_user_id=user_id,
+        category="post_published",
+        title=f"Publishing to {platform} failed",
+        description=reason or "The platform rejected the post.",
+        status="failed",
+        channel=platform,
+        target_id=piece_id,
+        target_type="Draft Post",
+        href="/dashboard/drafts",
+    )
+
 
 @router.post("/now")
 @limiter.limit("10/minute")
@@ -152,6 +177,7 @@ async def publish_now(
     content    = piece["content"]
     attempt    = 0
     max_attempts = 3
+    auth_recovery_tried = False
 
     while attempt < max_attempts:
         pub_request.content = content
@@ -172,6 +198,7 @@ async def publish_now(
                 content_id=body.piece_id, target=platform,
                 external_url=result.platform_post_url or "",
             )
+            await mark_healthy(ws, platform, via="a successful publish")
             return {
                 "success":          True,
                 "piece_id":         body.piece_id,
@@ -199,6 +226,14 @@ async def publish_now(
             retry_at=None,
         )
 
+        if error_type == ErrorType.AUTH and not auth_recovery_tried:
+            # Self-heal once: renew the token and retry before bothering
+            # anyone. recover_connection records the failure if it can't.
+            auth_recovery_tried = True
+            if await recover_connection(ws, platform):
+                token_data = await get_token(ws, platform) or token_data
+                continue
+
         if error_type == ErrorType.AUTH:
             await _update_piece_status(
                 body.piece_id, ws, "failed",
@@ -218,6 +253,10 @@ async def publish_now(
                             "RECONNECT_URL": f"{settings.FRONTEND_URL}/dashboard/settings",
                         },
                     )
+            await _record_publish_failure(
+                ws, ctx.user_id, body.piece_id, platform,
+                f"{display_platform} connection expired or was revoked — reconnect it in Settings.",
+            )
             raise HTTPException(
                 status_code=401,
                 detail=f"{display_platform} token expired or revoked. "
@@ -243,6 +282,7 @@ async def publish_now(
                     error_message=result.error_message,
                     increment_attempts=True,
                 )
+                await _record_publish_failure(ws, ctx.user_id, body.piece_id, platform, result.error_message or "")
                 return {
                     "success":  False,
                     "piece_id": body.piece_id,
@@ -266,6 +306,7 @@ async def publish_now(
                 error_message=result.error_message,
                 increment_attempts=True,
             )
+            await _record_publish_failure(ws, ctx.user_id, body.piece_id, platform, result.error_message or "")
             return {
                 "success":  False,
                 "piece_id": body.piece_id,
@@ -292,6 +333,10 @@ async def publish_now(
         body.piece_id, ws, "failed",
         error_message="All retry attempts exhausted",
         increment_attempts=True,
+    )
+    await _record_publish_failure(
+        ws, ctx.user_id, body.piece_id, platform,
+        f"Still failing after {attempt} automatic retries.",
     )
     return {
         "success":  False,

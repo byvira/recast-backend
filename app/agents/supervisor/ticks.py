@@ -138,6 +138,8 @@ async def run_rules_for_workspace(workspace_id: str) -> list[str]:
             {"_id": fid},
             {"$set": {"notified": {"in_app": True, "email": c["severity"] == "critical", "at": now}}},
         )
+        from app.agents.supervisor.nodes import _project_flag
+        await _project_flag(fid)
         open_types.add(c["flag_type"])
         new_ids.append(fid)
         logger.info("supervisor rule flag: ws=%s type=%s severity=%s notif=%s",

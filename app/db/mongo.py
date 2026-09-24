@@ -75,6 +75,21 @@ workspace_flags: AsyncIOMotorCollection      = get_client().get_default_database
 admin_notifications: AsyncIOMotorCollection  = get_client().get_default_database()["admin_notifications"]
 agent_worker_state: AsyncIOMotorCollection   = get_client().get_default_database()["agent_worker_state"]
 
+# ── Activity Log read model (app.shared.activity) ─────────────────────────────
+# One row per thing the Activity Log shows — projected from workspace_events,
+# Remy's signals, Odette's insights/flags and system jobs — so the page is one
+# indexed query instead of a merge across four collections.
+activity_entries: AsyncIOMotorCollection     = get_client().get_default_database()["activity_entries"]
+
+# app.pipelines.analytics.checkpoints — each post's metrics at 1h/24h/72h/7d,
+# the fixed-age history post_metrics (latest-only) can't provide.
+post_metric_checkpoints: AsyncIOMotorCollection = get_client().get_default_database()["post_metric_checkpoints"]
+
+# app.agents.feedback.trust — shadow-mode trust score per (workspace,
+# pipeline, platform), and the per-decision shadow log behind it.
+autonomy_trust: AsyncIOMotorCollection  = get_client().get_default_database()["autonomy_trust"]
+autonomy_shadow: AsyncIOMotorCollection = get_client().get_default_database()["autonomy_shadow"]
+
 # ── Collection getter functions ───────────────────────────────────────────────
 
 def get_users_collection() -> AsyncIOMotorCollection:
@@ -237,6 +252,27 @@ async def create_indexes() -> None:
 
     # agent_worker_state — per-workspace checkpoint + debounce bookkeeping.
     await agent_worker_state.create_index("updated_at")
+
+    # activity_entries — Activity Log read model. Lane-first so the Active lane
+    # (a handful of open agent items) never scans Passive history.
+    await activity_entries.create_index([("workspace_id", 1), ("lane", 1), ("occurred_at", -1), ("_id", -1)])
+    await activity_entries.create_index([("workspace_id", 1), ("occurred_at", -1), ("_id", -1)])
+    # Same 90-day retention as workspace_events. Open Active items carry no
+    # expires_at, so an undecided suggestion never silently disappears.
+    await activity_entries.create_index("expires_at", expireAfterSeconds=0)
+
+    # post_metric_checkpoints — learning reads are per member / per workspace
+    # at one checkpoint age.
+    await post_metric_checkpoints.create_index([("workspace_id", 1), ("checkpoint", 1), ("captured_at", -1)])
+    await post_metric_checkpoints.create_index([("workspace_id", 1), ("user_id", 1), ("checkpoint", 1)])
+    # content_pieces — the checkpoint job's "recently published" scan.
+    await content_pieces.create_index([("workspace_id", 1), ("publish_status", 1), ("published_at", -1)])
+    # Trust score aggregation — one tuple's drafts in the 60-day window.
+    await content_pieces.create_index([("workspace_id", 1), ("platform", 1), ("created_at", -1)])
+    await autonomy_trust.create_index("workspace_id")
+    await autonomy_shadow.create_index([("workspace_id", 1), ("platform", 1), ("recorded_at", -1)])
+    # The shadow log is evidence for a decision, not an audit trail — 180 days.
+    await autonomy_shadow.create_index("recorded_at", expireAfterSeconds=180 * 24 * 3600)
 
     # localized_strings — runtime-translation cache (app.shared.localized_strings).
     # One doc per (key, language); language is an opaque string, not validated

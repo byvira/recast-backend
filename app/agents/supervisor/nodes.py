@@ -181,6 +181,20 @@ async def synthesize_node(state: SupervisorState) -> dict:
 # 4. persist
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _project_insight(insight_id: str) -> None:
+    from app.shared.activity import project_odette_insight
+    doc = await workspace_insights.find_one({"_id": insight_id})
+    if doc:
+        await project_odette_insight(doc)
+
+
+async def _project_flag(flag_id: str) -> None:
+    from app.shared.activity import project_odette_flag
+    doc = await workspace_flags.find_one({"_id": flag_id})
+    if doc:
+        await project_odette_flag(doc)
+
+
 async def persist_node(state: SupervisorState) -> dict:
     ws = state["workspace_id"]
     now = datetime.now(timezone.utc)
@@ -212,6 +226,7 @@ async def persist_node(state: SupervisorState) -> dict:
             "created_by_agent_run": run_id,
         })
         insight_ids.append(iid)
+        await _project_insight(iid)
 
     flag_ids: list[str] = []
     notif_ids: list[str] = []
@@ -249,6 +264,7 @@ async def persist_node(state: SupervisorState) -> dict:
             {"_id": fid},
             {"$set": {"notified": {"in_app": True, "email": severity == "critical", "at": now}}},
         )
+        await _project_flag(fid)
 
     # notify on high-priority insights when the model asked for it
     if findings.get("notify"):

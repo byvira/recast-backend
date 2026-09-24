@@ -17,6 +17,9 @@ from app.pipelines.publish.supervisor.alerts import alert_fatal
 from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
 from app.pipelines.publish.supervisor.retry import get_retry_delay, should_retry
 from app.pipelines.publish.token_store import get_token
+from app.pipelines.publish.health import mark_healthy
+from app.workers.token_refresh import recover_connection
+from app.shared.activity import record_system
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,20 @@ async def _notify_publish_failure(
     uses (app.api.v1.publish) — this worker previously fired no alert of any
     kind. Never raises; a notification failure must not crash the scheduler.
     """
+    await record_system(
+        workspace_id=workspace_id,
+        key=f"publish:{piece_id}",
+        actor_name="Publishing scheduler",
+        category="post_published",
+        title=f"Scheduled post to {platform} failed",
+        description=error_message,
+        status="failed",
+        channel=platform,
+        target_id=piece_id,
+        target_type="Scheduled Post",
+        href="/dashboard/calendar",
+        metadata={"scheduledFor": scheduled_at} if scheduled_at else None,
+    )
     try:
         await alert_fatal(
             piece_id=piece_id,
@@ -180,6 +197,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 "platform_post_id":  result.platform_post_id,
                 "platform_post_url": result.platform_post_url,
                 "updated_at":        datetime.now(timezone.utc),
+                "published_at":      datetime.now(timezone.utc),
             }},
         )
         try:
@@ -189,13 +207,64 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 actor_user_id=user_id, actor_role="",
                 content_id=piece_id, target=platform,
                 external_url=result.platform_post_url or "",
+                via="scheduled",
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("emit content.published failed for %s: %s", piece_id, exc)
+        await mark_healthy(workspace_id, platform, via="a successful publish")
+        if piece.get("publish_attempts"):
+            # Close out the retry chain row with the recovery.
+            await record_system(
+                workspace_id=workspace_id,
+                key=f"publish:{piece_id}",
+                actor_name="Publishing scheduler",
+                category="post_published",
+                title=f"Recovered: scheduled post to {platform} published",
+                description=f"Went live after {piece['publish_attempts']} automatic "
+                            f"{'retry' if piece['publish_attempts'] == 1 else 'retries'}.",
+                channel=platform,
+                target_id=piece_id,
+                target_type="Live Post",
+                href=result.platform_post_url or None,
+                metadata={"retries": piece["publish_attempts"]},
+            )
         logger.info("Scheduled piece %s published to %s", piece_id, platform)
     else:
         error_type = classify_error(result.error_code or 500, result.error_message or "")
         attempt = piece.get("publish_attempts", 0)
+
+        # Self-heal an AUTH rejection once per piece: renew the token and
+        # requeue for the very next tick. If renewal fails, recover_connection
+        # has recorded it (and escalates on the second failure in a row).
+        if error_type == ErrorType.AUTH and not piece.get("auth_recovery_tried"):
+            recovered = await recover_connection(workspace_id, platform)
+            await content_pieces.update_one(
+                {"piece_id": piece_id},
+                {"$set": {
+                    "auth_recovery_tried": True,
+                    **({
+                        "publish_status": "queued",
+                        "publish_scheduled_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc),
+                    } if recovered else {}),
+                }},
+            )
+            if recovered:
+                await record_system(
+                    workspace_id=workspace_id,
+                    key=f"publish:{piece_id}",
+                    actor_name="Publishing scheduler",
+                    category="post_published",
+                    title=f"Renewed {platform} access — retrying scheduled post",
+                    description="The platform rejected the old access token; Recast renewed it "
+                                "automatically and queued the post again.",
+                    status="warning",
+                    channel=platform,
+                    target_id=piece_id,
+                    target_type="Scheduled Post",
+                    href="/dashboard/calendar",
+                )
+                return
 
         # AUTH errors can't be retried without the user reconnecting the
         # platform — same as /publish/now's own AUTH branch — so those (and
@@ -222,6 +291,21 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             logger.info(
                 "Scheduled piece %s failed on %s (attempt %d, %s) — requeued for retry at %s",
                 piece_id, platform, attempt + 1, error_type.value, next_at.isoformat(),
+            )
+            await record_system(
+                workspace_id=workspace_id,
+                key=f"publish:{piece_id}",
+                actor_name="Publishing scheduler",
+                category="post_published",
+                title=f"Retrying scheduled post to {platform}",
+                description=f"{result.error_message or 'Platform error'} — retrying automatically "
+                            f"in {max(delay // 60, 1)} min.",
+                status="warning",
+                channel=platform,
+                target_id=piece_id,
+                target_type="Scheduled Post",
+                href="/dashboard/calendar",
+                metadata={"retryAttempt": attempt + 1, "errorType": error_type.value.lower()},
             )
             return
 

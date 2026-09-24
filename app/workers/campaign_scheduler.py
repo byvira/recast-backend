@@ -15,11 +15,12 @@ its own.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import get_campaigns_collection
 from app.pipelines.campaigns.batch_runner import generate_campaign_batch
+from app.shared.activity import record_system
 
 logger = logging.getLogger(__name__)
 
@@ -53,3 +54,35 @@ async def run_due_campaign_batches() -> None:
             )
         except Exception as e:
             logger.error("Scheduled batch failed for campaign %s: %s", campaign.get("id"), e)
+            await _back_off(campaign, str(e))
+
+
+#: A failed run used to leave next_run_at in the past, so this job re-ran the
+#: same failing (LLM-costing) campaign every minute indefinitely. Back off
+#: exponentially instead: 1h, 2h, 4h … capped at a day.
+_BACKOFF_CAP = timedelta(hours=24)
+
+
+async def _back_off(campaign: dict, error: str) -> None:
+    failures = int((campaign.get("cadence") or {}).get("failures") or 0) + 1
+    delay = min(timedelta(hours=2 ** (failures - 1)), _BACKOFF_CAP)
+    retry_at = datetime.now(timezone.utc) + delay
+    await get_campaigns_collection().update_one(
+        {"id": campaign["id"]},
+        {"$set": {"cadence.failures": failures, "cadence.next_run_at": retry_at,
+                  "cadence.last_error": error[:500]}},
+    )
+    hours = round(delay.total_seconds() / 3600)
+    await record_system(
+        workspace_id=campaign["workspace_id"],
+        key=f"campaign_run:{campaign['id']}",
+        actor_name="Campaign scheduler",
+        category="content_generated",
+        title=f"Campaign \"{campaign.get('name') or 'Untitled'}\" couldn't generate",
+        description=f"{error} Recast will try again in {hours} hour{'s' if hours != 1 else ''}.",
+        status="failed",
+        target_id=campaign["id"],
+        target_type="Campaign",
+        href="/dashboard/campaigns",
+        metadata={"retryAttempt": failures},
+    )

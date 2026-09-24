@@ -32,6 +32,7 @@ from app.db.migrations import run_startup_migrations
 from app.db.redis import get_redis
 from app.shared.llm import llm_health_check
 from app.api.v1 import text_stream
+from app.api.v1 import activity as activity_router
 from app.api.v1 import assistant as assistant_router
 from app.api.v1 import supervisor as supervisor_router
 from app.db.redis import close_redis
@@ -154,7 +155,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Start scheduler
     scheduler.add_job(process_scheduled_posts,  "interval", minutes=1, id="scheduled_posts")
     scheduler.add_job(run_due_campaign_batches, "interval", minutes=1, id="campaign_batches")
-    scheduler.add_job(refresh_expiring_tokens,  "interval", hours=24, id="token_refresh")
+    scheduler.add_job(refresh_expiring_tokens,  "interval", hours=1,  id="token_refresh")
     scheduler.add_job(refresh_analytics,        "interval", hours=6,    id="analytics_refresh")
 
     # Remy/Odette's agent jobs — normally a separate arq worker process (see
@@ -171,6 +172,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Shutting down application...")
     scheduler.shutdown()
     await agent_workers.stop()
+    from app.shared.activity import live as activity_live
+    await activity_live.stop()
     get_mongo_client().close()
     await close_redis()
     logger.info("Connections closed successfully")
@@ -193,6 +196,7 @@ OPENAPI_TAGS = [
     {"name": "Analytics", "description": "Cross-platform post performance analytics and insights."},
     {"name": "Assistant", "description": "Per-member personal assistant — voice persona, drift signals, and draft alignment."},
     {"name": "Supervisor", "description": "Workspace supervisor (admin-only) — insights, flags, and dashboard for workspace health."},
+    {"name": "Activity", "description": "Activity Log — Active lane (Remy/Odette items awaiting a decision) and Passive lane (record of work done), plus a live SSE stream."},
     {"name": "Pipeline", "description": "Real-time streaming endpoints for the text generation pipeline."},
     {"name": "Health", "description": "Service health checks."},
 ]
@@ -323,6 +327,7 @@ app.include_router(platforms_router.router, prefix="/api/v1/platforms", tags=["P
 app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
+app.include_router(activity_router.router, prefix="/api/v1/activity", tags=["Activity"])
 app.include_router(
     text_stream.router,
     prefix="/api/v1/pipeline",

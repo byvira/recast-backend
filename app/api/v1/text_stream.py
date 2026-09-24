@@ -14,6 +14,7 @@ Register in app/main.py:
 
 import asyncio
 import json
+import time
 import logging
 from typing import Any, Optional
 from uuid import uuid4
@@ -28,6 +29,7 @@ from app.db.redis import get_cache, set_cache
 from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.agents.text.event_emitter import EventEmitter
+from app.shared.activity.runs import brand_label, end_run, start_run, update_run
 from app.pipelines.text.orchestrator import run_text_pipeline, run_batch_pipeline
 
 router = APIRouter()
@@ -204,6 +206,7 @@ async def generate_stream(
                 session_id=session_id,
                 workspace_id=ctx.workspace_id,
                 user_id=ctx.user_id,
+                project=brand_label(brand),
             )
         )
 
@@ -347,12 +350,53 @@ async def _run_pipeline_with_emitter(
     session_id:   str,
     workspace_id: str,
     user_id:      str,
+    project:      str = "",
 ) -> None:
     """
     Wraps run_text_pipeline (or, in batch mode, run_batch_pipeline) with
     error handling. All exceptions caught and emitted as pipeline_error
-    events.
+    events. Reports the run's outcome (pipeline.run_completed) either way —
+    a client disconnect (CancelledError) is not a finished run and isn't
+    reported.
     """
+    started = time.monotonic()
+    requested = len(body.platforms) * (BATCH_DAYS if body.batch_mode else 1)
+
+    # Control Tower: real progress from the run's own events — outputs done
+    # for a batch (many cards), pipeline stages completed otherwise.
+    await start_run(
+        workspace_id=workspace_id, run_id=session_id, kind="text",
+        title=_run_label(body.content), project=project,
+        steps_total=requested if body.batch_mode else len(_PIPELINE_STAGES),
+    )
+
+    async def _progress(em: EventEmitter) -> None:
+        active = [s for s, st in em.stages.items() if st == "active"]
+        await update_run(
+            workspace_id, session_id,
+            stage=_PIPELINE_STAGES.get(active[-1], "") if active else None,
+            steps_done=(
+                len(em.completed_platforms) if body.batch_mode
+                else sum(1 for st in em.stages.values() if st == "complete")
+            ),
+        )
+
+    emitter.on_progress = _progress
+    try:
+        await _run_and_report(body, emitter, session_id, workspace_id, user_id, started, requested)
+    finally:
+        await end_run(workspace_id, session_id)
+
+
+async def _run_and_report(
+    body: GenerateTextRequest,
+    emitter: EventEmitter,
+    session_id: str,
+    workspace_id: str,
+    user_id: str,
+    started: float,
+    requested: int,
+) -> None:
     try:
         if body.batch_mode:
             # Batch mode is single-platform by construction (ConfigPanel's
@@ -397,10 +441,39 @@ async def _run_pipeline_with_emitter(
         )
         await emitter.emit_error(message=str(exc), recoverable=False)
 
+    from app.pipelines.text.events import emit_run_completed
+    await emit_run_completed(
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        platforms=[str(p) for p in emitter.completed_platforms],
+        requested=requested,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        brand_id=body.brand_id,
+        title=body.content,
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+#: The six stages EventEmitter.emit_stage reports, with the label the
+#: Control Tower shows under the progress bar.
+_PIPELINE_STAGES = {
+    "source_analysis": "Analysing source",
+    "angle_extraction": "Finding angles",
+    "hook_generation": "Writing hooks",
+    "platform_formatting": "Formatting for platforms",
+    "score_rank": "Scoring drafts",
+    "approval_queue": "Preparing for review",
+}
+
+
+def _run_label(text: str) -> str:
+    first = (text or "").strip().splitlines()[0] if (text or "").strip() else "Text pipeline"
+    return first if len(first) <= 60 else first[:57].rstrip() + "…"
+
 
 def _sse(event_type: str, data: dict[str, Any]) -> str:
     """Format a single SSE message string."""

@@ -83,6 +83,8 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
         format_ctx = {"summary": d.get("summary", _MEMBER_CHURN_DEFAULT)}
     elif flag_type == "assistant_signal_storm":
         format_ctx = {"summary": d.get("summary", _SIGNAL_STORM_DEFAULT)}
+    elif flag_type == "connection_broken":
+        format_ctx = {"platform": d.get("platform"), "account": d.get("account"), "failures": d.get("failures")}
     else:
         format_ctx = {"flag_type_label": flag_type.replace("_", " "), "detail": str(d)}
 

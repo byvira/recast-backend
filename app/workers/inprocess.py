@@ -3,7 +3,7 @@ of a separate arq worker process (see ``app.workers.agent_worker`` for that
 deployment path and why it isn't used right now).
 
 Wired into ``app.main``'s lifespan, reusing the same ``AsyncIOScheduler``
-already running ``process_scheduled_posts`` etc. All four jobs are the exact
+already running ``process_scheduled_posts`` etc. All jobs are the exact
 functions arq would have run — nothing here reimplements their logic.
 """
 
@@ -11,12 +11,8 @@ from __future__ import annotations
 
 import logging
 
-from app.agents.supervisor.ticks import (
-    personal_volume_sweep,
-    supervisor_reason_tick,
-    supervisor_rules_tick,
-)
 from app.workers.agent_worker import personal_consumer_guard, stop_consumer
+from app.workers.jobs import schedule_inprocess
 
 logger = logging.getLogger(__name__)
 
@@ -32,18 +28,8 @@ async def start(scheduler) -> None:
         personal_consumer_guard, "interval", minutes=1, args=[_ctx],
         id="agent_consumer_guard",
     )
-    scheduler.add_job(
-        supervisor_rules_tick, "interval", minutes=1, args=[_ctx],
-        id="supervisor_rules_tick",
-    )
-    scheduler.add_job(
-        supervisor_reason_tick, "cron", minute="*/5", args=[_ctx],
-        id="supervisor_reason_tick",
-    )
-    scheduler.add_job(
-        personal_volume_sweep, "cron", hour="0,6,12,18", minute=7, args=[_ctx],
-        id="personal_volume_sweep",
-    )
+    # Every agent/autonomy job, from the list the arq worker also uses.
+    schedule_inprocess(scheduler, _ctx)
     logger.info("in-process agent workers started")
 
 

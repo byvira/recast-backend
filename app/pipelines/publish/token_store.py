@@ -70,6 +70,7 @@ async def save_token(
     username: str,
     connected_by: str = "",
     profile_url: Optional[str] = None,
+    recovered_via: str = "reconnecting",
 ) -> None:
     """
     Save or update OAuth tokens for a workspace + platform.
@@ -87,6 +88,10 @@ async def save_token(
         )
 
     now = datetime.now(timezone.utc)
+    previous = await workspace_connections.find_one(
+        {"workspace_id": workspace_id, "platform": platform}, {"health.state": 1}
+    )
+    previous_state = ((previous or {}).get("health") or {}).get("state", "healthy")
 
     await workspace_connections.update_one(
         {"workspace_id": workspace_id, "platform": platform},
@@ -102,6 +107,11 @@ async def save_token(
                 "profile_url": profile_url,
                 "is_active": True,
                 "last_refreshed_at": now,
+                # A (re)connect or renewal is a fresh, working credential.
+                "health": {
+                    "state": "healthy", "failures": 0, "reason": "",
+                    "checked_at": now, "last_ok_at": now, "escalated": False,
+                },
             },
             "$setOnInsert": {
                 "id": str(uuid4()),
@@ -113,6 +123,9 @@ async def save_token(
     )
 
     logger.info("Token saved for workspace %s platform %s", workspace_id, platform)
+
+    from app.pipelines.publish.health import note_recovered
+    await note_recovered(workspace_id, platform, previous_state=previous_state, via=recovered_via)
 
 
 async def get_token(workspace_id: str, platform: str) -> Optional[dict]:
@@ -177,6 +190,7 @@ async def get_all_tokens(workspace_id: str) -> list[dict]:
             "connected_at": a.get("connected_at"),
             "expires_at": a.get("expires_at"),
             "connected_by": a.get("connected_by", ""),
+            "health": (a.get("health") or {}).get("state", "healthy"),
         }
         for a in accounts
     ]

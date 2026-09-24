@@ -186,12 +186,8 @@ async def run_personal_graph_job(ctx: dict, event: dict) -> dict:
 # Layer 2 — workspace supervisor cron bodies (imported from the agent package)
 # ─────────────────────────────────────────────────────────────────────────────
 
-from app.agents.supervisor.ticks import (  # noqa: E402
-    personal_volume_sweep,
-    run_supervisor_now,
-    supervisor_reason_tick,
-    supervisor_rules_tick,
-)
+from app.agents.supervisor.ticks import run_supervisor_now  # noqa: E402
+from app.workers.jobs import arq_cron_jobs  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,20 +225,14 @@ async def _on_shutdown(ctx: dict) -> None:
     logger.info("agent worker stopped")
 
 
-_EVERY_5_MIN = {m for m in range(60) if m % 5 == 0}
-
 class WorkerSettings:
     functions = [run_personal_graph_job, run_supervisor_now]
     cron_jobs = [
         # Layer 1 — keep the personal-assistant stream consumer alive
         cron(personal_consumer_guard, run_at_startup=True),
-        # Layer 2 — deterministic hard-limit flags, every minute
-        cron(supervisor_rules_tick, name="supervisor_rules_tick"),
-        # Layer 2 — debounced LLM reasoning pass, every 5 minutes
-        cron(supervisor_reason_tick, name="supervisor_reason_tick", minute=_EVERY_5_MIN),
-        # volume_drop sweep (moved off the per-piece personal graph), every 6h
-        cron(personal_volume_sweep, name="personal_volume_sweep",
-             hour={0, 6, 12, 18}, minute=7),
+        # Everything else — the same list the in-process runner schedules
+        # (app.workers.jobs), so both deployments run identical jobs.
+        *arq_cron_jobs(),
     ]
     on_startup = _on_startup
     on_shutdown = _on_shutdown

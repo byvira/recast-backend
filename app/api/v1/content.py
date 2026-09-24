@@ -187,6 +187,7 @@ async def edit_piece(
         new_content=body.content.strip(),
         action="manual_edit",
         instruction="User edited content manually",
+        actor_user_id=ctx.user_id,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
@@ -404,6 +405,7 @@ async def restore_piece_version(
         piece_id=piece_id,
         workspace_id=ctx.workspace_id,
         version_number=version_number,
+        actor_user_id=ctx.user_id,
     )
     if not restored:
         raise HTTPException(

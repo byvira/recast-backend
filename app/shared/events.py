@@ -128,6 +128,12 @@ async def emit_event(
         logger.error("emit_event: Mongo insert failed (event dropped): %s", exc)
         return None
 
+    # ── 1b. Activity Log projection ──────────────────────────────────────
+    # After the durable write (so a duplicate never projects twice) and
+    # before the stream mirror. project_event never raises.
+    from app.shared.activity import project_event
+    await project_event(doc)
+
     # ── 2. Mirror onto the Redis Stream ─────────────────────────────────
     # A stream failure is non-fatal: the event is safely in Mongo and a worker
     # can backfill from there. We log loudly so it isn't missed.

@@ -51,6 +51,15 @@ to a separate process is a deploy config change, not a rewrite. See a
 low-cost separate-host option (Fly.io, ~$2/mo) if isolation becomes worth it
 before Render's own worker pricing does.
 
+**Job list (2026-09-24):** the agent/autonomy jobs now live in one list,
+`app/workers/jobs.py::JOBS`, which both `inprocess.py` (today) and
+`agent_worker.WorkerSettings` (if deployed separately) schedule from:
+`supervisor_rules_tick` (1 min), `supervisor_reason_tick` (5 min),
+`personal_volume_sweep` (6h), `capture_metric_checkpoints` (15 min),
+`performance_feedback_sweep` (daily 02:23 UTC), `autonomy_trust_refresh`
+(daily 02:41 UTC, shadow mode — never publishes), `cadence_monitor` (hourly).
+Add new background jobs there, not directly to either runner.
+
 ## Health check
 
 - Path: `/health`
@@ -65,7 +74,8 @@ before Render's own worker pricing does.
 > instance" — once confirmed against the dashboard._
 
 **Known constraint:** the in-process `AsyncIOScheduler` (`process_scheduled_posts`
-every 1 min, `refresh_expiring_tokens` every 24h, `refresh_analytics` every 6h)
+every 1 min, `refresh_expiring_tokens` every 1h — it only renews connections
+that are due, see `app/workers/token_refresh.py` — `refresh_analytics` every 6h)
 is not safe across >1 instance — each job would double-fire. Do not scale past
 1 web instance until that's addressed (locking or moved to Render Cron).
 
