@@ -302,6 +302,10 @@ async def resume_pipeline(
     """
     Resume a pipeline that emitted agent_paused.
     body: { "choice": "angle_1" }
+
+    Ready but not yet triggered: no pipeline node pauses today (see
+    EventEmitter's pause/resume section). Works across instances via
+    app.agents.text.session_relay.
     """
     choice = body.get("choice")
     entry = _active_sessions.get(session_id)

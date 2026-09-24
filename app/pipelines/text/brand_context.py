@@ -71,6 +71,13 @@ def build_tone_override(tone: Optional[str], language_code: str = "en") -> str:
         "storytelling": "TONE OVERRIDE (this run only): Use narrative storytelling. Open with a scene or moment. Build through the piece. Make it personal and specific.",
         "professional": "TONE OVERRIDE (this run only): Write with a professional, polished register — credible and composed, like a skilled practitioner speaking plainly to a peer. Avoid corporate jargon, buzzwords, and empty formal filler. Confident and clear, not stiff.",
         "direct": "TONE OVERRIDE (this run only): Say exactly what you mean, plainly and literally. No metaphors, no hedging, no flourish. Short, concrete statements the reader can act on immediately.",
+        # QA-007: "witty" and "empathetic" are real ToneSelector options
+        # (Frontend/Recast/types/textPipeline.types.ts) that had no entry
+        # here — every generation silently fell back to plain brand tone
+        # with no indication the choice had any effect. See also the
+        # matching ToneOverride enum member in app/models/text.py.
+        "witty": "TONE OVERRIDE (this run only): Write with genuine wit — sharp, clever observations and a well-placed turn of phrase. Humor comes from the specific detail, not from a joke bolted on. Playful, never flippant; the point still lands.",
+        "empathetic": "TONE OVERRIDE (this run only): Write with real empathy — name the reader's actual experience before offering anything else, so they feel understood first. Warm and specific, not sentimental or generic reassurance.",
     }
     if not tone or tone == "brand":
         return ""

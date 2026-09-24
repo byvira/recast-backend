@@ -291,7 +291,10 @@ async def generate_next_batch(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Campaign batch generation error: {str(e)}")
+        # QA-003: was f"Campaign batch generation error: {str(e)}" returned
+        # straight to the client — logged server-side instead.
+        logger.error("Campaign batch generation failed for campaign %s: %s", campaign_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Batch generation failed. Please try again.")
 
     updated = await get_campaigns_collection().find_one({"id": campaign_id, "workspace_id": ctx.workspace_id})
     progress = await _campaign_progress(ctx.workspace_id, campaign_id)

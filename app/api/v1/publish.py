@@ -29,7 +29,7 @@ from app.workers.token_refresh import recover_connection
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.supervisor.alerts import alert_fatal, save_incident
 from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
-from app.pipelines.publish.supervisor.retry import should_retry, get_retry_delay
+from app.pipelines.publish.supervisor.retry import get_retry_delay
 from app.pipelines.publish.supervisor.fixer import fix_content
 
 router = APIRouter()
@@ -316,18 +316,12 @@ async def publish_now(
                 "reason":   result.error_message,
             }
 
-        if should_retry(error_type, attempt):
-            import asyncio
-            delay = get_retry_delay(error_type, attempt)
-            if delay > 0:
-                logger.info(
-                    "Transient error on %s attempt %d — retrying in %ds",
-                    platform, attempt + 1, delay,
-                )
-                await asyncio.sleep(min(delay, 10))
-            attempt += 1
-            continue
-
+        # QA-002: this used to sleep in-request (up to 10s, up to 3 attempts
+        # — 20-30s+ of a hanging "Publish Now" click, with no client-side
+        # timeout) before reaching the background handoff below. A TRANSIENT
+        # error now goes straight there on the first attempt — the
+        # background worker is exactly where a real wait-and-retry belongs,
+        # not inside a synchronous HTTP request.
         break
 
     # Only a TRANSIENT error (rate limit / 5xx) reaches here — AUTH, FATAL and

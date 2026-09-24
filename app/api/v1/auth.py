@@ -7,7 +7,10 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from jose import JWTError, jwt
+# QA-001: migrated off python-jose (unmaintained, known CVEs) to PyJWT —
+# see app/core/auth.py's import comment for the full rationale.
+import jwt
+from jwt import PyJWTError
 from pymongo.errors import DuplicateKeyError
 
 from app.core.auth import (
@@ -520,13 +523,14 @@ async def logout(
     refresh_token = request.cookies.get("refresh_token")
     if refresh_token:
         try:
-            # audience/issuer must be passed even though full validation
-            # isn't needed here — every token carries an `aud` claim, and
-            # python-jose raises JWTClaimsError (a JWTError subclass) on
-            # that claim's presence alone without an expected audience,
-            # which the except below would otherwise swallow silently
-            # (this previously made refresh-token blacklisting on logout a
-            # no-op for every request).
+            # audience/issuer are validated the same way create_refresh_token
+            # signed them — every real token satisfies this, so this only
+            # rejects a forged/expired one, matching the historical fix's
+            # intent (this decode used to be silently skipped by a stricter
+            # library's claims check, making logout blacklisting a no-op for
+            # every request). PyJWT's decode() has no equivalent footgun —
+            # it simply ignores a claim it wasn't asked to validate — but
+            # audience/issuer stay explicit here to keep the check meaningful.
             payload = jwt.decode(
                 refresh_token,
                 settings.SECRET_KEY,
@@ -539,7 +543,7 @@ async def logout(
             if ttl > 0:
                 redis = await get_redis()
                 await redis.setex(f"blacklist:{refresh_token}", ttl, "1")
-        except JWTError:
+        except PyJWTError:
             pass  # Already expired — no blacklist entry needed
 
     # Clear cookies from browser regardless of token validity
