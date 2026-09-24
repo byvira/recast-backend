@@ -7,8 +7,9 @@ from the same ``JOBS``, so moving them to a separate process stays a deploy
 config change. Every job takes arq's ``ctx`` dict and guards itself with
 ``distributed_job_lock`` (or equivalent), so running both at once is safe.
 
-The web-only jobs in ``app.main`` (scheduled publishing, campaign batches,
-token refresh, analytics refresh) are request-adjacent and stay there.
+This is the only place background jobs are registered — including the
+publishing/campaign/token/analytics jobs that used to be added directly in
+``app.main``. Add new jobs here, not to either runner.
 """
 
 from __future__ import annotations
@@ -25,6 +26,10 @@ from app.agents.feedback.cadence import cadence_monitor
 from app.agents.feedback.sweep import performance_feedback_sweep
 from app.agents.feedback.trust import autonomy_trust_refresh
 from app.pipelines.analytics.checkpoints import capture_metric_checkpoints
+from app.pipelines.analytics.scheduler import refresh_analytics
+from app.workers.campaign_scheduler import run_due_campaign_batches
+from app.workers.scheduled_posts import process_scheduled_posts
+from app.workers.token_refresh import refresh_expiring_tokens
 
 
 @dataclass(frozen=True)
@@ -36,11 +41,28 @@ class Job:
     hour: Optional[frozenset[int]] = None
 
 
+def _no_ctx(func: Callable[[], Awaitable[object]]) -> Callable[[dict], Awaitable[object]]:
+    """Adapt a job that takes no arguments to the runners' ``(ctx)`` call."""
+    async def _job(ctx: dict) -> object:
+        return await func()
+    _job.__name__ = func.__name__
+    _job.__qualname__ = func.__qualname__
+    return _job
+
+
 def _every(step: int, *, offset: int = 0) -> frozenset[int]:
     return frozenset(m for m in range(60) if m % step == offset % step)
 
 
 JOBS: list[Job] = [
+    # Publishing & campaigns — every minute (each job holds its own lock).
+    Job("scheduled_posts", _no_ctx(process_scheduled_posts)),
+    Job("campaign_batches", _no_ctx(run_due_campaign_batches)),
+    # Token renewal — hourly; it only renews connections that are due.
+    Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=frozenset({11})),
+    # Latest post/account metrics — every 6h.
+    Job("analytics_refresh", _no_ctx(refresh_analytics),
+        minute=frozenset({17}), hour=frozenset({0, 6, 12, 18})),
     # Layer 2 — deterministic hard-limit flags, every minute.
     Job("supervisor_rules_tick", supervisor_rules_tick),
     # Layer 2 — debounced LLM reasoning pass, every 5 minutes.

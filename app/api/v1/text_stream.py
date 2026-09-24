@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, get_current_workspace, require
+from app.core.workspace import WorkspaceContext, get_current_workspace, require_stream
 from app.db.mongo import brand_profiles
 from app.db.redis import get_cache, set_cache
 from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
@@ -116,7 +116,9 @@ async def generate_stream(
     # workspace > caller-account > "en" precedence chain as /api/v1/text/generate
     # (see app.shared.language and api/v1/text.py::_resolve_request_language).
     language:      Optional[str]  = Query(None,       description="Content language — omit to use the workspace/account default"),
-    ctx:           WorkspaceContext = Depends(require("create_content")),
+    # require_stream: EventSource can't send X-Workspace-Id, so the active
+    # workspace also arrives as ?workspace_id= (same membership check).
+    ctx:           WorkspaceContext = Depends(require_stream("create_content")),
 ) -> StreamingResponse:
     """
     Stream text pipeline execution via Server-Sent Events.

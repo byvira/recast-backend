@@ -497,3 +497,34 @@ async def test_control_tower_lists_what_runs_next(api_client):
     assert [(u["kind"], u["title"]) for u in upcoming] == [
         ("campaign_run", "Launch week"), ("scheduled_post", "Hiring update"),
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Backfill (scripts/backfill_activity.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def test_backfill_projects_history_idempotently_without_suggestions(api_client):
+    from app.db.mongo import workspace_events
+    from scripts.backfill_activity import backfill
+
+    owner = await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Backfill", tier="large")
+    event_id = str(uuid4())
+    # Written straight to the store, as pre-Activity-Log history would be.
+    await workspace_events.insert_one({
+        "_id": event_id, "event_id": event_id, "event_type": "pipeline.run_completed",
+        "pipeline_type": "text", "workspace_id": ws_id, "actor_user_id": owner["id"],
+        "actor_role": "owner", "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "idempotency_key": f"bf:{event_id}",
+        "payload": {"session_id": "old-run", "pieces": 1, "platforms": ["LinkedIn"],
+                    "title": "Old run", "trigger": "manual"},
+    })
+
+    dry = await backfill(execute=False, workspace_id=ws_id)
+    assert dry["events"] == 1
+    assert await activity_entries.count_documents({"workspace_id": ws_id}) == 0   # dry run wrote nothing
+
+    await backfill(execute=True, workspace_id=ws_id)
+    await backfill(execute=True, workspace_id=ws_id)                              # re-run is safe
+    rows = await activity_entries.find({"workspace_id": ws_id}).to_list(10)
+    assert [r["_id"] for r in rows] == [f"event:{event_id}"]                      # no next-step row

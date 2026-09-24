@@ -74,8 +74,12 @@ def test_time_window_uses_the_members_timezone():
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def _seed_posts(ws_id: str, user_id: str) -> None:
-    """12 measured posts: Threads clearly outperforms LinkedIn."""
+    """12 measured posts: Threads clearly outperforms LinkedIn — and that's the
+    *only* pattern in the data. Every post goes out at the same hour (varying
+    by day, not hour), so no time-of-day finding can appear depending on when
+    the test happens to run."""
     now = datetime.now(timezone.utc)
+    base = (now - timedelta(days=14)).replace(hour=12, minute=0, second=0, microsecond=0)
     for i in range(12):
         piece_id = str(uuid4())
         winner = i < 6
@@ -88,8 +92,8 @@ async def _seed_posts(ws_id: str, user_id: str) -> None:
             "user_id": user_id, "checkpoint": "24h",
             "platform": "threads" if winner else "linkedin", "word_count": 120,
             "metrics": {"engagement_rate": 6.0 if winner else 2.0},
-            "published_at": now - timedelta(days=2, hours=i),
-            "captured_at": now - timedelta(days=1, hours=i),
+            "published_at": base + timedelta(days=i),
+            "captured_at": base + timedelta(days=i, hours=24),
         })
 
 
@@ -122,6 +126,7 @@ async def test_two_dismissals_silence_that_kind_of_finding(api_client):
             "signal_type": "performance_pattern", "status": "dismissed",
             "metric": {"name": "platform"}, "pattern_key": "platform:Linkedin", "created_at": old,
         })
+    # Platform is the only pattern in the data and it's silenced → nothing.
     assert await sweep.coach_member(ws_id, me["id"]) is None
 
 

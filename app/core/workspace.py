@@ -16,7 +16,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 import structlog
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 
 from app.core.auth import get_current_user
 from app.core.rbac import assert_permission
@@ -65,7 +65,26 @@ async def get_current_workspace(
         HTTPException 403: Caller is not an active member of the target workspace.
         HTTPException 404: Membership exists but the workspace document is gone.
     """
-    workspace_id = x_workspace_id or current_user.get("default_workspace_id")
+    return await _resolve_workspace(current_user, x_workspace_id)
+
+
+async def get_stream_workspace(
+    current_user: dict[str, Any] = Depends(get_current_user),
+    x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
+    workspace_id: Optional[str] = Query(default=None, max_length=64),
+) -> WorkspaceContext:
+    """``get_current_workspace`` for Server-Sent Events routes.
+
+    A browser ``EventSource`` can't set request headers, so without this an
+    SSE route always fell back to the caller's *default* workspace no matter
+    which one they'd switched to. Same resolution and membership check —
+    the workspace can additionally come from a ``workspace_id`` query param.
+    """
+    return await _resolve_workspace(current_user, x_workspace_id or workspace_id)
+
+
+async def _resolve_workspace(current_user: dict[str, Any], requested: Optional[str]) -> WorkspaceContext:
+    workspace_id = requested or current_user.get("default_workspace_id")
     if not workspace_id:
         raise HTTPException(
             status_code=400,
@@ -97,6 +116,16 @@ def require(permission: str):
     """
 
     async def _dep(ctx: WorkspaceContext = Depends(get_current_workspace)) -> WorkspaceContext:
+        assert_permission(ctx.member, permission)
+        return ctx
+
+    return _dep
+
+
+def require_stream(permission: str):
+    """``require`` for SSE routes — see ``get_stream_workspace``."""
+
+    async def _dep(ctx: WorkspaceContext = Depends(get_stream_workspace)) -> WorkspaceContext:
         assert_permission(ctx.member, permission)
         return ctx
 

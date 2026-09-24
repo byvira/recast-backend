@@ -20,6 +20,7 @@ from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.health import mark_healthy
 from app.workers.token_refresh import recover_connection
 from app.shared.activity import record_system
+from app.shared.activity.projector import platform_name
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ async def _notify_publish_failure(
         key=f"publish:{piece_id}",
         actor_name="Publishing scheduler",
         category="post_published",
-        title=f"Scheduled post to {platform} failed",
+        title=f"Scheduled post to {platform_name(platform)} failed",
         description=error_message,
         status="failed",
         channel=platform,
@@ -219,7 +220,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 key=f"publish:{piece_id}",
                 actor_name="Publishing scheduler",
                 category="post_published",
-                title=f"Recovered: scheduled post to {platform} published",
+                title=f"Recovered: scheduled post to {platform_name(platform)} published",
                 description=f"Went live after {piece['publish_attempts']} automatic "
                             f"{'retry' if piece['publish_attempts'] == 1 else 'retries'}.",
                 channel=platform,
@@ -255,7 +256,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                     key=f"publish:{piece_id}",
                     actor_name="Publishing scheduler",
                     category="post_published",
-                    title=f"Renewed {platform} access — retrying scheduled post",
+                    title=f"Renewed {platform_name(platform)} access — retrying scheduled post",
                     description="The platform rejected the old access token; Recast renewed it "
                                 "automatically and queued the post again.",
                     status="warning",
@@ -297,7 +298,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 key=f"publish:{piece_id}",
                 actor_name="Publishing scheduler",
                 category="post_published",
-                title=f"Retrying scheduled post to {platform}",
+                title=f"Retrying scheduled post to {platform_name(platform)}",
                 description=f"{result.error_message or 'Platform error'} — retrying automatically "
                             f"in {max(delay // 60, 1)} min.",
                 status="warning",
