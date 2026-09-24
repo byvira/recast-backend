@@ -3,6 +3,7 @@ OAuth endpoints — connect, callback, disconnect, list accounts.
 Handles all platform OAuth flows through one unified router.
 """
 
+import json
 import logging
 import secrets
 from typing import Any
@@ -19,6 +20,7 @@ from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.pipelines.publish.registry import get_publisher
 from app.core.config import settings
 from app.db.mongo import users
+from app.db.redis import get_redis
 from app.pipelines.publish.token_store import (
     save_token,
     delete_token,
@@ -28,7 +30,13 @@ from app.pipelines.publish.token_store import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_oauth_states: dict[str, dict] = {}
+# QA-004: was an in-process dict — leaked memory forever for any state that
+# never got a callback (abandoned OAuth flows), and broke entirely the moment
+# more than one app instance was running (state created on instance A, callback
+# hits instance B, lookup fails). Redis with a TTL fixes both: entries expire
+# on their own, and any instance can consume a state created by any other.
+_OAUTH_STATE_TTL_SECONDS = 15 * 60
+_OAUTH_STATE_KEY_PREFIX = "oauth:state:"
 
 
 class BlueskyConnectRequest(BaseModel):
@@ -36,28 +44,30 @@ class BlueskyConnectRequest(BaseModel):
     app_password: str
 
 
-def _create_state(user_id: str, platform: str, workspace_id: str) -> str:
+async def _create_state(user_id: str, platform: str, workspace_id: str) -> str:
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = {
-        "user_id": user_id,
-        "platform": platform,
-        "workspace_id": workspace_id,
-    }
+    client = await get_redis()
+    await client.set(
+        f"{_OAUTH_STATE_KEY_PREFIX}{state}",
+        json.dumps({
+            "user_id": user_id,
+            "platform": platform,
+            "workspace_id": workspace_id,
+        }),
+        ex=_OAUTH_STATE_TTL_SECONDS,
+    )
     return state
 
 
-def _consume_state(state: str) -> dict | None:
-    data = _oauth_states.pop(state, None)
-    if not data:
-        logger.error(
-            "State NOT FOUND — state=%s available_states=%d",
-            state[:20], len(_oauth_states),
-        )
-        logger.error(
-            "Available state keys: %s",
-            [k[:10] for k in _oauth_states.keys()]
-        )
-    return data
+async def _consume_state(state: str) -> dict | None:
+    client = await get_redis()
+    # GETDEL: atomic read-and-delete, so a state token can never be replayed
+    # even under concurrent callback requests.
+    raw = await client.getdel(f"{_OAUTH_STATE_KEY_PREFIX}{state}")
+    if raw is None:
+        logger.error("State NOT FOUND or already consumed/expired — state=%s", state[:20])
+        return None
+    return json.loads(raw)
 
 
 def _derive_profile_url(platform: str, username: str, platform_user_id: str = "") -> str | None:
@@ -190,7 +200,7 @@ async def connect_meta(
     One connect flow, three platforms connected simultaneously.
     """
     from app.pipelines.publish.meta.oauth import build_auth_url
-    state    = _create_state(ctx.user_id, "meta", ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, "meta", ctx.workspace_id)
     auth_url = build_auth_url(state, platform="meta")
 
     return {
@@ -227,7 +237,7 @@ async def meta_callback(
     state_parts = state.split("|", 1)
     state_token = state_parts[0]
 
-    state_data = _consume_state(state_token)
+    state_data = await _consume_state(state_token)
     if not state_data:
         return _oauth_popup_response(False, "Invalid or expired OAuth state. Please try connecting again.")
 
@@ -319,7 +329,7 @@ async def connect_threads(
     Start Threads OAuth flow — separate from Facebook Login.
     Threads uses threads.net/oauth/authorize not Facebook.
     """
-    state    = _create_state(ctx.user_id, "threads", ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, "threads", ctx.workspace_id)
     params   = {
         "client_id":     settings.THREADS_APP_ID,
         "redirect_uri":  settings.THREADS_REDIRECT_URI,
@@ -354,7 +364,7 @@ async def threads_callback(
     if not code or not state:
         return _oauth_popup_response(False, "Missing code or state.")
 
-    state_data = _consume_state(state)
+    state_data = await _consume_state(state)
     if not state_data:
         return _oauth_popup_response(False, "Invalid or expired state.")
 
@@ -443,7 +453,7 @@ async def connect_google(
     Covers YouTube (and other Google products as scopes are added).
     """
     from app.pipelines.publish.google.oauth import build_auth_url
-    state    = _create_state(ctx.user_id, "google", ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, "google", ctx.workspace_id)
     auth_url = build_auth_url(state, platform="google")
 
     return {
@@ -473,7 +483,7 @@ async def google_callback(
     state_parts = state.split("|", 1)
     state_token = state_parts[0]
 
-    state_data = _consume_state(state_token)
+    state_data = await _consume_state(state_token)
     if not state_data:
         return _oauth_popup_response(False, "Invalid or expired OAuth state. Please try connecting again.")
 
@@ -555,7 +565,7 @@ async def connect_platform(
             detail=f"Platform '{platform}' not supported.",
         )
 
-    state    = _create_state(ctx.user_id, platform, ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, platform, ctx.workspace_id)
     auth_url = publisher.build_auth_url(state)
 
     return {
@@ -578,7 +588,7 @@ async def oauth_callback(
     if error:
         return _oauth_popup_response(False, f"OAuth denied: {error}")
 
-    state_data = _consume_state(state)
+    state_data = await _consume_state(state)
     if not state_data:
         return _oauth_popup_response(False, "Invalid or expired OAuth state. Please try connecting again.")
 

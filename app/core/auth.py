@@ -6,7 +6,14 @@ from typing import Any
 import structlog
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+# QA-001: was python-jose, unmaintained with known CVEs (algorithm-confusion,
+# a JWE decompression-bomb DoS) — neither directly exploitable here (a single
+# fixed algorithm, no JWE ever used) but it's the entire session-auth layer
+# and gets no further security fixes. PyJWT is actively maintained and a
+# drop-in replacement for the encode/decode calls below (same parameter
+# names); only the exception type changes (JWTError → PyJWTError).
+import jwt
+from jwt import PyJWTError
 
 from app.core.config import settings
 from app.db.mongo import users
@@ -196,7 +203,7 @@ def verify_token(token: str, expected_type: str = "access") -> dict[str, Any]:
                 detail=f"Invalid token type. Expected '{expected_type}'.",
             )
         return payload
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired token.",
@@ -217,12 +224,11 @@ async def blacklist_token(token: str) -> None:
     """
     try:
         # Decode without expiry verification to extract the exp claim.
-        # audience/issuer must still be passed even though we don't care
-        # about validating them here — every token carries an `aud` claim,
-        # and python-jose raises JWTClaimsError on that claim's presence
-        # alone if no expected audience is given, which the bare except
-        # below would otherwise swallow silently (this previously made
-        # blacklisting a no-op for every token issued by this app).
+        # audience/issuer are validated the same way create_access_token /
+        # create_refresh_token signed them, so this only rejects a genuinely
+        # forged token, not every real one — see api/v1/auth.py's logout
+        # decode for the historical version of this footgun (fixed there and
+        # never present in PyJWT to begin with; kept explicit here anyway).
         payload = jwt.decode(
             token,
             settings.SECRET_KEY,
@@ -375,7 +381,7 @@ async def get_current_user(request: Request) -> dict:
             audience=settings.JWT_AUDIENCE,
             issuer=settings.JWT_ISSUER,
         )
-    except JWTError:
+    except PyJWTError:
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired token.",

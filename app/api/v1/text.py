@@ -260,7 +260,11 @@ async def generate_text_content(
                 ),
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Batch generation error: {str(e)}")
+            # QA-003: was f"Batch generation error: {str(e)}" — an
+            # unconstrained internal exception straight into the response
+            # body. Logged with the real detail server-side instead.
+            logger.error("Batch generation failed for brand %s: %s", body.brand_id, e, exc_info=True)
+            raise HTTPException(status_code=500, detail="Batch generation failed. Please try again.")
 
     try:
         async with tracked_run(
@@ -287,7 +291,10 @@ async def generate_text_content(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
+        # QA-003: was f"Pipeline error: {str(e)}" returned straight to the
+        # client — logged server-side instead.
+        logger.error("Text generation failed for brand %s: %s", body.brand_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Generation failed. Please try again.")
 
     # The graph's collect_output_node already persisted every piece for real
     # (ensure_session_exists + save_live_piece, live, per platform) and
@@ -358,7 +365,10 @@ async def repurpose_content(
         # different URL or paste the content directly".
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Repurpose error: {str(e)}")
+        # QA-003: was f"Repurpose error: {str(e)}" returned straight to the
+        # client — logged server-side instead.
+        logger.error("Repurpose failed for brand %s: %s", body.brand_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Repurpose failed. Please try again.")
 
     # _run_single_repurpose already persisted every piece for real (live,
     # per platform) and stamped its real piece_id onto it — see
@@ -447,7 +457,10 @@ async def batch_generate(
                 language=language,
             )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Batch error: {str(e)}")
+        # QA-003: was f"Batch error: {str(e)}" returned straight to the
+        # client — logged server-side instead.
+        logger.error("Batch generation failed for brand %s: %s", body.brand_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Batch generation failed. Please try again.")
 
     # Save each day — non-blocking
     for i, day_result in enumerate(results):
@@ -842,7 +855,7 @@ async def regenerate_content(
         logger.error(
             "Regenerate pipeline failed for %s: %s", body.platform, e, exc_info=True
         )
-        raise HTTPException(status_code=500, detail=f"Regeneration failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Regeneration failed. Please try again.")
 
     if not result.pieces:
         raise HTTPException(status_code=500, detail="Regeneration produced no output.")

@@ -5,13 +5,20 @@ fastapi==0.115.5
 uvicorn[standard]==0.32.1
 pydantic==2.10.3
 pydantic-settings==2.6.1
-python-multipart==0.0.12
+# QA-006: was 0.0.12, flagged for known DoS/ReDoS advisories in older
+# python-multipart releases. Bumped in isolation — no other package
+# constrains this one, so it was safe to move independently.
+python-multipart>=0.0.18,<0.1.0
 scalar-fastapi>=1.0.3
 
 # ─────────────────────────────────────────
 # Auth
 # ─────────────────────────────────────────
-python-jose[cryptography]==3.3.0
+# QA-001: was python-jose[cryptography]==3.3.0 — unmaintained, known CVEs
+# (algorithm-confusion, a JWE-decompression DoS). PyJWT is actively
+# maintained and a drop-in replacement for this app's usage — see
+# app/core/auth.py's import comment.
+PyJWT[crypto]==2.13.0
 passlib[bcrypt]==1.7.4
 
 # ─────────────────────────────────────────
@@ -34,9 +41,18 @@ google-genai>=1.0.0
 # ─────────────────────────────────────────
 # Agents — LangGraph
 # ─────────────────────────────────────────
-langgraph>=0.2.55
-langchain-core>=0.3.0
-langgraph-checkpoint-mongodb>=0.1.0
+# QA-006: langgraph-checkpoint-mongodb was flagged to bump to >=0.3.0, but
+# even its floor (0.3.0) requires langchain-mongodb>=0.8.0 -> langchain>=1.0
+# -> pydantic>=2.13.0 (above this file's own pydantic==2.10.3 pin) and
+# pymongo 4.15+ (motor==3.6.0 pins pymongo<4.10, so pymongo would break too).
+# That's a LangChain 1.0 migration, not a patch — confirmed by attempting it,
+# which also dragged starlette to 1.7.0 and broke FastAPI's Router entirely
+# (fastapi==0.115.5 pins starlette<0.42.0). Left pinned to the 0.1.x line
+# deliberately; tracked as its own migration in docs/bugs/bug_sept_24.md
+# rather than forced through here.
+langgraph>=0.2.55,<0.3.0
+langchain-core>=0.3.0,<0.4.0
+langgraph-checkpoint-mongodb>=0.1.0,<0.2.0
 
 # ─────────────────────────────────────────
 # Storage
@@ -57,7 +73,14 @@ slowapi>=0.1.9
 # ─────────────────────────────────────────
 # Observability
 # ─────────────────────────────────────────
-langsmith>=0.1.0
+# QA-006: langsmith was flagged to bump to >=0.8.18, but any langsmith
+# >=0.9 pulled a langgraph-sdk bump whose own websockets floor (>=14,<17)
+# collided with google-genai's separate pin (websockets<15) — confirmed by
+# attempting it, which broke pip's resolver into an unsatisfiable state.
+# Capped rather than left floating so a future fresh install doesn't hit
+# the same conflict unexpectedly; same migration this file's
+# langgraph-checkpoint-mongodb comment describes would need to land first.
+langsmith>=0.1.0,<0.9.0
 structlog>=24.0.0
 sentry-sdk[fastapi]>=2.0.0
 

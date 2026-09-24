@@ -28,7 +28,7 @@ from app.models.text import (
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.normalizer import normalise_input
 from app.pipelines.text.repurpose import run_repurpose_agent, run_structured_repurpose_agent
-from app.pipelines.text.generator import validate_content, validate_structured_sections
+from app.pipelines.text.generator import GENERIC_OPENINGS, validate_content, validate_structured_sections
 from app.shared.llm import call_llm_structured
 from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data
@@ -636,12 +636,16 @@ async def _run_single_repurpose(
                     metadata={
                         **metadata,
                         "banned_words": enforcement["banned_words"],
-                        "banned_openings": [
-                            "are you tired of", "have you ever wondered",
-                            "what if you could", "in today's world",
-                            "we all know", "it's no secret",
-                            "i am excited to share", "as someone who",
-                        ],
+                        # QA-008: was a hand-copied, drifted-out-of-sync
+                        # duplicate of generator.py's GENERIC_OPENINGS — the
+                        # same bug class already fixed in nodes.py (see
+                        # GENERIC_OPENINGS's own docstring) but missed here.
+                        # This list was missing "the uncomfortable truth" and
+                        # 3 others, which is exactly the phrase
+                        # text/hooks/generate.jinja's "Hook 3" label steers
+                        # the model toward. Import the single source of
+                        # truth instead of maintaining a second copy.
+                        "banned_openings": GENERIC_OPENINGS,
                     },
                 )
             )

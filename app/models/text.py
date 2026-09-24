@@ -133,6 +133,8 @@ class ToneOverride(str, Enum):
     STORYTELLING = "storytelling"
     PROFESSIONAL = "professional"
     DIRECT = "direct"
+    WITTY = "witty"
+    EMPATHETIC = "empathetic"
 
 
 class ScheduleMode(str, Enum):
