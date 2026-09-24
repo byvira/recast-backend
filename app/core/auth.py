@@ -424,6 +424,10 @@ async def require_platform_staff(user: dict = Depends(get_current_user)) -> dict
     workspace is not Recast staff, and must never reach those routes just
     by being a workspace owner.
 
+    is_master_admin also passes (a strictly broader grant — full Ops
+    Dashboard access on any workspace, not just read access to this
+    cross-tenant data; see app.core.workspace.require_ops_admin).
+
     No bootstrap UI exists yet — flip the flag directly in Mongo for the
     first account:
         db.users.update_one({"email": "you@example.com"},
@@ -436,8 +440,8 @@ async def require_platform_staff(user: dict = Depends(get_current_user)) -> dict
         The same user document, once confirmed to be platform staff.
 
     Raises:
-        HTTPException 403: is_platform_staff is not set on this user.
+        HTTPException 403: neither is_platform_staff nor is_master_admin is set.
     """
-    if not user.get("is_platform_staff"):
+    if not user.get("is_platform_staff") and not user.get("is_master_admin"):
         raise HTTPException(status_code=403, detail="Platform staff access required.")
     return user

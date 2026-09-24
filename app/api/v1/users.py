@@ -63,6 +63,7 @@ async def _build_profile_response(
         default_workspace_id=user.get("default_workspace_id"),
         last_active=user.get("last_active"),
         created_at=user["created_at"],
+        is_master_admin=user.get("is_master_admin", False),
     )
 
 

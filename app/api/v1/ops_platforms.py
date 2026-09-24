@@ -11,7 +11,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, require
+from app.core.workspace import WorkspaceContext, require_ops_admin
 from app.models.platform_config import PlatformConfigWrite
 from app.pipelines.publish.platform_config_store import (
     delete_platform_config,
@@ -24,7 +24,7 @@ from app.platforms.base import get_platform, import_all
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_OWNER = require("manage_workspace_settings")
+_OWNER = require_ops_admin("manage_workspace_settings")
 
 
 def _assert_config_driven(platform: str) -> None:

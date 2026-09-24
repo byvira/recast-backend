@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.auth import require_platform_staff
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, require
+from app.core.workspace import WorkspaceContext, require_ops_admin
 from app.db.mongo import ops_llm_notes, workspace_ai_budgets, workspace_ai_usage_daily
 from app.models.ai_usage import (
     OpsLLMNote,
@@ -41,7 +41,7 @@ from app.shared.llm import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_OWNER = require("manage_workspace_settings")
+_OWNER = require_ops_admin("manage_workspace_settings")
 
 
 @router.get("/budget")

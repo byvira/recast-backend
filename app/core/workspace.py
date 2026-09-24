@@ -122,6 +122,63 @@ def require(permission: str):
     return _dep
 
 
+def require_ops_admin(permission: str):
+    """Ops Dashboard variant of require() — a master admin
+    (user.is_master_admin) gets *permission* on ANY workspace, without
+    needing real membership in it. Every other caller falls through to the
+    exact real check require() does (real membership row, real role, real
+    assert_permission) — a master admin is a strictly additive grant, never
+    a shortcut that changes behavior for anyone else.
+
+    Deliberately confined to the three Ops Dashboard route files
+    (ops_platforms.py, ops_ai_budget.py, ops_cohorts.py), each of which
+    opts in explicitly by using this instead of require(). Never make this
+    the default for require() itself — a master admin must gain access to
+    the ops/platform-config surface, not silently to every brand/content/
+    campaign endpoint in the product, which is a far bigger grant than
+    "the ops dashboard" asks for.
+
+    Usage identical to require()::
+
+        _OWNER = require_ops_admin("manage_workspace_settings")
+    """
+
+    async def _dep(
+        current_user: dict[str, Any] = Depends(get_current_user),
+        x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
+    ) -> WorkspaceContext:
+        if not current_user.get("is_master_admin"):
+            ctx = await _resolve_workspace(current_user, x_workspace_id)
+            assert_permission(ctx.member, permission)
+            return ctx
+
+        workspace_id = x_workspace_id or current_user.get("default_workspace_id")
+        if not workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No workspace context. Send an X-Workspace-Id header or set a default workspace.",
+            )
+        workspace = await workspaces.find_one({"id": workspace_id})
+        if not workspace:
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+
+        # Synthetic owner membership — never written to workspace_members,
+        # exists only for this request so downstream code that reads
+        # ctx.member/ctx.role (audit trails, created_by fields) still gets
+        # a sensible value instead of a real (possibly nonexistent) row.
+        synthetic_member: dict[str, Any] = {
+            "id": "master-admin",
+            "workspace_id": workspace_id,
+            "user_id": current_user["id"],
+            "role": WorkspaceRole.OWNER.value,
+            "status": "active",
+        }
+        structlog.contextvars.bind_contextvars(workspace_id=workspace_id, master_admin=True)
+        return WorkspaceContext(workspace=workspace, member=synthetic_member, user=current_user)
+
+    return _dep
+
+
 def require_stream(permission: str):
     """``require`` for SSE routes — see ``get_stream_workspace``."""
 

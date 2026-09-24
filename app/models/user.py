@@ -133,6 +133,13 @@ class UserProfile(BaseModel):
     # workspace. See app.core.auth.require_platform_staff. No bootstrap UI
     # yet — set directly in Mongo for the first account.
     is_platform_staff: bool = False
+    # Strictly more than is_platform_staff: full Ops Dashboard access
+    # (Platforms, AI Budget, Cohorts, LLM Health) on ANY workspace, without
+    # needing real membership in it — see app.core.workspace.require_ops_admin.
+    # Implies is_platform_staff (require_platform_staff also accepts this).
+    # Deliberately its own flag, not a role value, so it can never be
+    # granted by a workspace invite flow — only ever set directly in Mongo.
+    is_master_admin: bool = False
     created_at: datetime
     last_active: datetime
 
@@ -159,6 +166,11 @@ class UserProfileResponse(BaseModel):
     default_workspace_id: str | None = None
     last_active:         datetime | None = None #
     created_at:          datetime
+    # Frontend reads this to unlock the Ops Dashboard nav entry/full access
+    # client-side (hooks/use-permissions.ts) — a UX nicety only, same as
+    # every other permission flag here; the real gate is server-side
+    # (app.core.workspace.require_ops_admin / app.core.auth.require_platform_staff).
+    is_master_admin:     bool = False
 
 
 class PublicProfileResponse(BaseModel):

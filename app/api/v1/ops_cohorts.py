@@ -13,14 +13,14 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, require
+from app.core.workspace import WorkspaceContext, require_ops_admin
 from app.db.mongo import workspace_cohorts
 from app.models.cohort import WorkspaceCohort, WorkspaceCohortWrite
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-_OWNER = require("manage_workspace_settings")
+_OWNER = require_ops_admin("manage_workspace_settings")
 
 
 @router.get("")
