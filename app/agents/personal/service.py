@@ -68,13 +68,40 @@ async def list_signals(
 
 
 async def acknowledge_signal(workspace_id: str, user_id: str, signal_id: str) -> dict:
+    return await resolve_signal(workspace_id, user_id, signal_id, "acknowledged")
+
+
+async def resolve_signal(workspace_id: str, user_id: str, signal_id: str, status: str) -> dict:
+    """Close a signal as ``acknowledged`` (the member took it on board) or
+    ``dismissed`` (not useful). The difference is Remy's feedback signal."""
+    if status not in {"acknowledged", "dismissed"}:
+        raise HTTPException(status_code=400, detail="status must be 'acknowledged' or 'dismissed'")
     res = await personal_signals.update_one(
         {"_id": signal_id, "workspace_id": workspace_id, "user_id": user_id},
-        {"$set": {"status": "acknowledged", "resolved_at": datetime.now(timezone.utc)}},
+        {"$set": {"status": status, "resolved_at": datetime.now(timezone.utc)}},
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Signal not found.")
-    return {"id": signal_id, "status": "acknowledged"}
+    await _sync_signal_activity(signal_id)
+    return {"id": signal_id, "status": status}
+
+
+async def snooze_signal(workspace_id: str, user_id: str, signal_id: str, until: datetime) -> dict:
+    res = await personal_signals.update_one(
+        {"_id": signal_id, "workspace_id": workspace_id, "user_id": user_id},
+        {"$set": {"snoozed_until": until}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Signal not found.")
+    await _sync_signal_activity(signal_id)
+    return {"id": signal_id, "snoozed_until": until}
+
+
+async def _sync_signal_activity(signal_id: str) -> None:
+    from app.shared.activity import project_remy_signal
+    doc = await personal_signals.find_one({"_id": signal_id})
+    if doc:
+        await project_remy_signal(doc)
 
 
 async def assist(

@@ -9,4 +9,5 @@ rbac_violation: "A '{actor_role}' performed '{event_type}', which that role isn'
 brand_voice_instability: "The brand voice was edited {count} times in 24h. Rapid churn here destabilises every member's output — consolidate the changes and lock it."
 member_churn: "{summary}. Confirm this was intended and that access was cleaned up."
 assistant_signal_storm: "{summary}. Worth a look — it usually means a shared cause (a brief change, a bad template, an automation loop)."
+connection_broken: "{platform} ({account}) stopped accepting Recast's access and automatic renewal failed {failures} times. Reconnect it in Settings — scheduled posts to it will fail until then."
 __fallback__: "{flag_type_label}: {detail}"

@@ -26,14 +26,16 @@ from app.shared.pipeline_types import PipelineType
 
 def emit_content_published(workspace_id: str, *, pipeline_type: "PipelineType | str",
                            actor_user_id: str, actor_role: str, content_id: str,
-                           target: str = "", external_url: str = "") -> None:
+                           target: str = "", external_url: str = "",
+                           via: str = "now") -> None:
     """A content piece went live on a platform. Feeds the daily_publish_cap rule.
-    ``pipeline_type`` is the content's pipeline (required for content.* events)."""
+    ``pipeline_type`` is the content's pipeline (required for content.* events).
+    ``via`` is "scheduled" when the scheduler published it, "now" otherwise."""
     emit_event_background(
         event_type=EventType.CONTENT_PUBLISHED, pipeline_type=pipeline_type,
         workspace_id=workspace_id, actor_user_id=actor_user_id, actor_role=actor_role,
         payload=ContentPublishedPayload(content_id=content_id, target=target,
-                                        external_url=external_url),
+                                        external_url=external_url, via=via),
         idempotency_key=f"content.published:{content_id}:{target}",
     )
 

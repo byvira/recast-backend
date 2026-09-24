@@ -1,0 +1,18 @@
+# English source templates for engagement-pattern findings (app.agents.feedback).
+# Two voices per finding: remy.* speaks to one member about their own posts
+# (warm, lowercase-comfortable peer); odette.* speaks to workspace admins
+# (crisp, directive). Every variable is a number or a platform name, so a
+# translation of the template is a translation of the whole message.
+# Translated on demand and cached via app.shared.localized_strings.
+remy.platform: "your {winner} posts are getting {ratio}× the engagement of what you post elsewhere (going by {n} posts, a day after each went out). worth putting more there?"
+remy.length_short: "your shorter posts (under {words} words) are getting {ratio}× the engagement of your longer ones ({n} posts, a day in). might be worth keeping things tight."
+remy.length_long: "your longer posts ({words}+ words) are getting {ratio}× the engagement of your shorter ones ({n} posts, a day in). people seem to want the depth."
+remy.opener_question: "posts where you open with a question are getting {ratio}× the engagement of ones that don't ({n} posts, a day in). worth doing more of?"
+remy.opener_statement: "posts that open with a straight statement are getting {ratio}× the engagement of your question openers ({n} posts, a day in)."
+remy.time: "posts that go out between {start}:00 and {end}:00 your time are getting {ratio}× the engagement of the rest ({n} posts, a day in). might be your window."
+odette.platform: "{winner} is outperforming: posts there get {ratio}× the engagement of posts on other channels, measured a day after publishing across {n} posts. Weight the plan toward it."
+odette.length_short: "Shorter posts (under {words} words) get {ratio}× the engagement of longer ones across the workspace ({n} posts, measured at 24h). Tighten the default length."
+odette.length_long: "Longer posts ({words}+ words) get {ratio}× the engagement of shorter ones across the workspace ({n} posts, measured at 24h). Give the team room for depth."
+odette.opener_question: "Question openers get {ratio}× the engagement of other openers across the workspace ({n} posts, measured at 24h). Make them the default hook."
+odette.opener_statement: "Statement openers get {ratio}× the engagement of question openers across the workspace ({n} posts, measured at 24h). Ease off the questions."
+odette.time: "Posts going out between {start}:00 and {end}:00 UTC get {ratio}× the engagement of the rest ({n} posts, measured at 24h). Schedule into that window."

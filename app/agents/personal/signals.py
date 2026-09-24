@@ -69,6 +69,10 @@ async def emit_signal(
         await personal_signals.insert_one(doc)
     except Exception as exc:  # noqa: BLE001
         logger.error("emit_signal: personal_signals insert failed: %s", exc)
+    else:
+        # Remy's feedback lands in the member's Active lane (member-private).
+        from app.shared.activity import project_remy_signal
+        await project_remy_signal(doc)
 
     try:
         payload = AssistantSignalPayload(

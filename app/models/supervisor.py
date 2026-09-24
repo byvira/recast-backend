@@ -30,6 +30,8 @@ class FlagType(str, Enum):
     MEMBER_CHURN = "member_churn"
     ASSISTANT_SIGNAL_STORM = "assistant_signal_storm"
     LLM_ANOMALY = "llm_anomaly"
+    CONNECTION_BROKEN = "connection_broken"   # app.pipelines.publish.health escalation
+    CAMPAIGN_STALLED = "campaign_stalled"     # app.agents.feedback.cadence
 
 
 class Detection(str, Enum):

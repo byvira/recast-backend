@@ -6,13 +6,16 @@ require the ``create_content`` permission; scoring and chip listing require
 membership only.
 """
 
+import asyncio
 import logging
+import time
 from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.middleware import limiter
+from app.shared.activity.runs import brand_label, run_label, tracked_run
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles
 from app.models.text import (
@@ -149,6 +152,32 @@ async def _save_result(
         return []
 
 
+def _report_run(result: TextPipelineResult, *, requested: int, started: float, title: str) -> None:
+    """Fire ``pipeline.run_completed`` for a finished run without adding
+    latency to the response (Activity Log summary + Control Tower ETA)."""
+    from app.pipelines.text.events import emit_run_completed
+    platforms = [
+        p.platform.value if hasattr(p.platform, "value") else str(p.platform)
+        for p in result.pieces if (p.content or "").strip()
+    ]
+    task = asyncio.create_task(emit_run_completed(
+        workspace_id=result.workspace_id,
+        user_id=result.user_id,
+        session_id=result.session_id,
+        platforms=platforms,
+        requested=requested,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        brand_id=result.brand_id,
+        title=title,
+    ))
+    task.add_done_callback(_log_report_task)
+
+
+def _log_report_task(task: "asyncio.Task") -> None:
+    if not task.cancelled() and task.exception():
+        logger.error("run report failed: %s", task.exception())
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # URL PREVIEW
 # ─────────────────────────────────────────────────────────────────────────────
@@ -187,22 +216,28 @@ async def generate_text_content(
     Generate content for one or more platforms from any input.
     Supports all four frontend input modes: write, prompt, url, repurpose.
     """
-    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    brand = await _get_verified_brand(body.brand_id, ctx.workspace_id)
     language = await _resolve_request_language(body.language, ctx, content_for_detection=body.content)
+    started = time.monotonic()
 
     if body.batch_mode:
         try:
-            results = await run_batch_pipeline(
-                topic_cluster=body.content,
-                platforms=body.platforms,
-                brand_id=body.brand_id,
-                workspace_id=ctx.workspace_id,
-                user_id=ctx.user_id,
-                extras=body.extras,
-                days=body.batch_days,
-                detected_intent=body.detected_intent,
-                language=language,
-            )
+            async with tracked_run(
+                workspace_id=ctx.workspace_id, run_id=str(uuid4()), kind="text",
+                title=run_label(body.content), project=brand_label(brand),
+                steps_total=None,
+            ):
+                results = await run_batch_pipeline(
+                    topic_cluster=body.content,
+                    platforms=body.platforms,
+                    brand_id=body.brand_id,
+                    workspace_id=ctx.workspace_id,
+                    user_id=ctx.user_id,
+                    extras=body.extras,
+                    days=body.batch_days,
+                    detected_intent=body.detected_intent,
+                    language=language,
+                )
             # Save all batch day results
             for i, day_result in enumerate(results):
                 await _save_result(
@@ -211,6 +246,8 @@ async def generate_text_content(
                     tone=body.tone,
                     label=f"batch day {i + 1}",
                 )
+                _report_run(day_result, requested=len(body.platforms), started=started,
+                            title=day_result.angle or body.content)
             return results[0] if results else TextPipelineResult(
                 session_id="empty",
                 workspace_id=ctx.workspace_id,
@@ -226,22 +263,27 @@ async def generate_text_content(
             raise HTTPException(status_code=500, detail=f"Batch generation error: {str(e)}")
 
     try:
-        result = await run_text_pipeline(
-            source_type=body.source_type,
-            content=body.content,
-            platforms=body.platforms,
-            brand_id=body.brand_id,
-            workspace_id=ctx.workspace_id,
-            user_id=ctx.user_id,
-            extras=body.extras,
-            goal=body.goal,
-            tone=body.tone,
-            intent=body.intent,
-            language=language,
-            schedule_mode=body.schedule_mode.value,
-            scheduled_at=body.scheduled_at,
-            publish_targets=body.publish_targets,
-        )
+        async with tracked_run(
+            workspace_id=ctx.workspace_id, run_id=str(uuid4()), kind="text",
+            title=run_label(body.content), project=brand_label(brand),
+            steps_total=None,
+        ):
+            result = await run_text_pipeline(
+                source_type=body.source_type,
+                content=body.content,
+                platforms=body.platforms,
+                brand_id=body.brand_id,
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
+                extras=body.extras,
+                goal=body.goal,
+                tone=body.tone,
+                intent=body.intent,
+                language=language,
+                schedule_mode=body.schedule_mode.value,
+                scheduled_at=body.scheduled_at,
+                publish_targets=body.publish_targets,
+            )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -260,6 +302,7 @@ async def generate_text_content(
         for piece, piece_id in zip(result.pieces, piece_ids):
             piece.piece_id = piece_id
 
+    _report_run(result, requested=len(body.platforms), started=started, title=body.content)
     return result
 
 
@@ -278,28 +321,34 @@ async def repurpose_content(
     Repurpose existing content from one platform format to others.
     Brand voice is always re-applied — never copy-paste.
     """
-    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    brand = await _get_verified_brand(body.brand_id, ctx.workspace_id)
     language = await _resolve_request_language(body.language, ctx, content_for_detection=body.source_content)
+    started = time.monotonic()
 
     try:
-        result = await run_text_pipeline(
-            source_type=body.source_type,
-            content=body.source_content,
-            platforms=body.target_platforms,
-            brand_id=body.brand_id,
-            workspace_id=ctx.workspace_id,
-            user_id=ctx.user_id,
-            extras=body.extras,
-            goal=body.goal,
-            tone=body.tone,
-            source_platform=body.source_platform,
-            is_repurpose=True,
-            intent=ContentIntent.AUTO,
-            language=language,
-            structure_rules=(
-                [r.model_dump() for r in body.structure_rules] if body.structure_rules else None
-            ),
-        )
+        async with tracked_run(
+            workspace_id=ctx.workspace_id, run_id=str(uuid4()), kind="text",
+            title=run_label(body.source_content), project=brand_label(brand),
+            steps_total=None,
+        ):
+            result = await run_text_pipeline(
+                source_type=body.source_type,
+                content=body.source_content,
+                platforms=body.target_platforms,
+                brand_id=body.brand_id,
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
+                extras=body.extras,
+                goal=body.goal,
+                tone=body.tone,
+                source_platform=body.source_platform,
+                is_repurpose=True,
+                intent=ContentIntent.AUTO,
+                language=language,
+                structure_rules=(
+                    [r.model_dump() for r in body.structure_rules] if body.structure_rules else None
+                ),
+            )
     except ValueError as e:
         # Bad input, not a server failure — an unscrapable/JS-gated/paywalled
         # URL (scrape_url's ValueError) is the common case reported by
@@ -327,6 +376,7 @@ async def repurpose_content(
         for piece, piece_id in zip(result.pieces, piece_ids):
             piece.piece_id = piece_id
 
+    _report_run(result, requested=len(body.target_platforms), started=started, title=body.source_content)
     return result
 
 
@@ -376,20 +426,26 @@ async def batch_generate(
     Generate a full week of content from a single topic cluster.
     Rate limited to 5/minute — expensive operation.
     """
-    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    brand = await _get_verified_brand(body.brand_id, ctx.workspace_id)
     language = await _resolve_request_language(body.language, ctx, content_for_detection=body.topic_cluster)
+    started = time.monotonic()
 
     try:
-        results = await run_batch_pipeline(
-            topic_cluster=body.topic_cluster,
-            platforms=body.platforms,
-            brand_id=body.brand_id,
-            workspace_id=ctx.workspace_id,
-            user_id=ctx.user_id,
-            extras=body.extras,
-            days=body.days,
-            language=language,
-        )
+        async with tracked_run(
+            workspace_id=ctx.workspace_id, run_id=str(uuid4()), kind="text",
+            title=run_label(body.topic_cluster), project=brand_label(brand),
+            steps_total=None,
+        ):
+            results = await run_batch_pipeline(
+                topic_cluster=body.topic_cluster,
+                platforms=body.platforms,
+                brand_id=body.brand_id,
+                workspace_id=ctx.workspace_id,
+                user_id=ctx.user_id,
+                extras=body.extras,
+                days=body.days,
+                language=language,
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Batch error: {str(e)}")
 
@@ -401,6 +457,8 @@ async def batch_generate(
             tone=None,
             label=f"batch day {i + 1}",
         )
+        _report_run(day_result, requested=len(body.platforms), started=started,
+                    title=day_result.angle or body.topic_cluster)
 
     return results
 
@@ -516,6 +574,7 @@ async def refine_content(
                 new_content=result["refined"],
                 action=body.chip,
                 instruction=body.custom_instruction or CHIP_PROMPTS.get(body.chip, body.chip),
+                actor_user_id=ctx.user_id,
             )
             logger.info(
                 "Version saved for piece %s via chip %s",
@@ -636,6 +695,7 @@ async def refine_chat(
                 new_content=refined,
                 action=f"chat_turn_{turn}",
                 instruction=messages[-1]["content"][:200],
+                actor_user_id=ctx.user_id,
             )
             version_saved = True
             logger.info(
@@ -694,7 +754,7 @@ async def regenerate_content(
     Runs the full LangGraph pipeline for just the one platform.
     Brand voice, tone, and goal are re-applied identically to the original run.
     """
-    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    brand = await _get_verified_brand(body.brand_id, ctx.workspace_id)
 
     # 1. Resolve source content
     source_content: str = body.content or ""
@@ -804,6 +864,7 @@ async def regenerate_content(
             new_content=piece.content,
             action="regenerated",
             instruction="Regenerated from scratch",
+            actor_user_id=ctx.user_id,
         )
         if updated:
             real_piece_id = body.piece_id

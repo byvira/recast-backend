@@ -50,7 +50,28 @@ async def set_insight_status(workspace_id: str, insight_id: str, status: str) ->
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Insight not found.")
+    await _sync_insight_activity(insight_id)
     return {"id": insight_id, "status": status}
+
+
+async def snooze_insight(workspace_id: str, insight_id: str, until: datetime) -> dict:
+    res = await workspace_insights.update_one(
+        {"_id": insight_id, "workspace_id": workspace_id},
+        {"$set": {"snoozed_until": until, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Insight not found.")
+    await _sync_insight_activity(insight_id)
+    return {"id": insight_id, "snoozed_until": until}
+
+
+async def _sync_insight_activity(insight_id: str) -> None:
+    """Keep the Activity Log row in step with a decision made on either
+    surface (Odette's page or the Activity Log)."""
+    from app.shared.activity import project_odette_insight
+    doc = await workspace_insights.find_one({"_id": insight_id})
+    if doc:
+        await project_odette_insight(doc)
 
 
 # ── flags ───────────────────────────────────────────────────────────────────
@@ -74,7 +95,26 @@ async def set_flag_status(workspace_id: str, flag_id: str, status: str) -> dict:
     )
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Flag not found.")
+    await _sync_flag_activity(flag_id)
     return {"id": flag_id, "status": status}
+
+
+async def snooze_flag(workspace_id: str, flag_id: str, until: datetime) -> dict:
+    res = await workspace_flags.update_one(
+        {"_id": flag_id, "workspace_id": workspace_id},
+        {"$set": {"snoozed_until": until}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Flag not found.")
+    await _sync_flag_activity(flag_id)
+    return {"id": flag_id, "snoozed_until": until}
+
+
+async def _sync_flag_activity(flag_id: str) -> None:
+    from app.shared.activity import project_odette_flag
+    doc = await workspace_flags.find_one({"_id": flag_id})
+    if doc:
+        await project_odette_flag(doc)
 
 
 # ── dashboard ───────────────────────────────────────────────────────────────

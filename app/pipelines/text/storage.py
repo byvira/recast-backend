@@ -539,17 +539,65 @@ async def get_piece(piece_id: str, workspace_id: str) -> Optional[dict]:
 # UPDATE
 # ─────────────────────────────────────────────────────────────────────────────
 
+_DIFF_CHARS = 1200
+
+
+def _edit_title(action: str, platform: str) -> str:
+    if action == "manual_edit":
+        return f"Edited {platform} draft"
+    if action == "regenerated":
+        return f"Regenerated {platform} draft"
+    if action.startswith("restored_from_v"):
+        return f"Restored {platform} draft to version {action.removeprefix('restored_from_v')}"
+    if action.startswith("chat_turn_"):
+        return f"Refined {platform} draft in chat"
+    return f"Refined {platform} draft ({action.replace('_', ' ')})"
+
+
+def _clip(text: str) -> str:
+    text = text or ""
+    return text if len(text) <= _DIFF_CHARS else text[:_DIFF_CHARS].rstrip() + "…"
+
+
+async def _record_edit(
+    *, piece: dict, new_content: str, previous_version: int, action: str, actor_user_id: str,
+) -> None:
+    """Passive-lane row with the diff; ``restore`` lets the Activity Log's
+    "Restore this version" put the pre-edit version back."""
+    from app.shared.activity import record_system
+    platform = piece.get("platform", "")
+    await record_system(
+        workspace_id=piece["workspace_id"],
+        key=f"edit:{piece['piece_id']}:{previous_version + 1}",
+        actor_name="",
+        actor_user_id=actor_user_id,
+        category="content_edited",
+        title=_edit_title(action, platform),
+        description=f"Saved as version {previous_version + 1}.",
+        channel=platform,
+        target_id=piece["piece_id"],
+        target_type="Draft Post",
+        href="/dashboard/drafts",
+        diff={"field": "Content", "before": _clip(piece.get("content", "")), "after": _clip(new_content)},
+        restore={"piece_id": piece["piece_id"], "version_number": previous_version},
+    )
+
+
 async def update_piece_content(
     piece_id: str,
     workspace_id: str,
     new_content: str,
     action: str,
     instruction: str,
+    actor_user_id: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Update piece content after chip or chat refinement.
     Automatically creates a new version and increments version_count.
     Returns updated piece or None if not found.
+
+    ``actor_user_id`` (the member making the change) records the edit in the
+    Activity Log with a before/after diff and the version to restore.
     """
     from app.pipelines.text.quality import flesch_reading_ease
 
@@ -608,6 +656,12 @@ async def update_piece_content(
         piece_id, new_version_number, action,
     )
 
+    if actor_user_id:
+        await _record_edit(
+            piece=piece, new_content=new_content, previous_version=new_version_number - 1,
+            action=action, actor_user_id=actor_user_id,
+        )
+
     return await get_piece(piece_id, workspace_id)
 
 
@@ -640,6 +694,10 @@ async def update_piece_status(
     await content_pieces.update_one(
         {"piece_id": piece_id, "workspace_id": workspace_id}, {"$set": updates}
     )
+    if approval_status:
+        # Shadow-mode trust score: log what it would have done vs. this human call.
+        from app.agents.feedback.trust import record_shadow
+        await record_shadow(piece, approval_status)
     return await get_piece(piece_id, workspace_id)
 
 
@@ -652,17 +710,29 @@ async def approve_all_pieces(session_id: str, workspace_id: str) -> int:
     if not session or session.get("workspace_id") != workspace_id:
         return 0
 
+    session_filter = {
+        "session_id": session_id,
+        "workspace_id": workspace_id,
+        "deleted": {"$ne": True},
+    }
+    # Pre-change state for the trust score's shadow log (one session = a
+    # handful of pieces, so this read is small).
+    before = await content_pieces.find(
+        {**session_filter, "approval_status": {"$ne": ApprovalStatus.APPROVED.value}},
+        {"piece_id": 1, "workspace_id": 1, "platform": 1, "pipeline_type": 1,
+         "approval_status": 1, "version_count": 1},
+    ).to_list(length=200)
+
     result = await content_pieces.update_many(
-        {
-            "session_id": session_id,
-            "workspace_id": workspace_id,
-            "deleted": {"$ne": True},
-        },
+        session_filter,
         {"$set": {
             "approval_status": ApprovalStatus.APPROVED.value,
             "updated_at": datetime.now(timezone.utc),
         }},
     )
+    from app.agents.feedback.trust import record_shadow
+    for piece in before:
+        await record_shadow(piece, ApprovalStatus.APPROVED.value)
     return result.modified_count
 
 
@@ -712,6 +782,7 @@ async def restore_version(
     piece_id: str,
     workspace_id: str,
     version_number: int,
+    actor_user_id: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Restore a piece to a specific version.
@@ -735,4 +806,5 @@ async def restore_version(
         new_content=target_version["content"],
         action=f"restored_from_v{version_number}",
         instruction=f"Restored to version {version_number}",
+        actor_user_id=actor_user_id,
     )

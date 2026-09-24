@@ -29,6 +29,15 @@ class EventEmitter:
         self.queue: asyncio.Queue = asyncio.Queue()
         self._resume_event: asyncio.Event = asyncio.Event()
         self._resume_choice: str | None = None
+        # Run bookkeeping read after the pipeline finishes (Activity Log's
+        # run summary) and while it runs (Control Tower progress). Plain
+        # counters — the queue itself is drained by the SSE route.
+        self.completed_platforms: list[str] = []
+        self.stages: dict[str, str] = {}
+        self.error: str | None = None
+        # Optional async callback(emitter) fired after stage/output events —
+        # the SSE route uses it to feed the Control Tower's run registry.
+        self.on_progress = None
 
     # ─────────────────────────────────────────────────────────────────────────
     # Core emit
@@ -36,6 +45,17 @@ class EventEmitter:
 
     async def emit(self, event_type: str, data: dict[str, Any]) -> None:
         """Push a typed SSE event to the queue."""
+        if event_type == "output_complete" and data.get("platform"):
+            self.completed_platforms.append(str(data["platform"]))
+        elif event_type == "pipeline_stage" and data.get("stage"):
+            self.stages[str(data["stage"])] = str(data.get("status", ""))
+        elif event_type == "pipeline_error":
+            self.error = str(data.get("message", ""))
+        if self.on_progress and event_type in ("pipeline_stage", "output_complete"):
+            try:
+                await self.on_progress(self)
+            except Exception:  # noqa: BLE001 — progress is best-effort
+                pass
         await self.queue.put({
             "type":      event_type,
             "data":      data,

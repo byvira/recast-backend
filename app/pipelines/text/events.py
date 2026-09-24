@@ -14,7 +14,12 @@ import asyncio
 import logging
 
 from app.db.mongo import workspace_members
-from app.models.agent_events import ContentEventPayload, ContentRef, EventType
+from app.models.agent_events import (
+    ContentEventPayload,
+    ContentRef,
+    EventType,
+    PipelineRunCompletedPayload,
+)
 from app.models.text import TextPipelineResult
 from app.shared.events import emit_event
 from app.shared.pipeline_types import PipelineType
@@ -77,3 +82,50 @@ def _log_task(task: "asyncio.Task") -> None:
         task.result()
     except Exception as exc:  # noqa: BLE001
         logger.error("emit_pieces_created task failed: %s", exc)
+
+
+async def emit_run_completed(
+    *,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    platforms: list[str],
+    requested: int,
+    duration_ms: int,
+    brand_id: str = "",
+    title: str = "",
+    trigger: str = "manual",
+) -> None:
+    """One ``pipeline.run_completed`` per run — the Activity Log's run summary
+    and the Control Tower's ETA baseline. ``requested`` is how many outputs
+    the run was asked for; the shortfall is reported as ``failed``. Never
+    raises."""
+    if not workspace_id or not user_id or not session_id:
+        return
+    try:
+        await emit_event(
+            event_type=EventType.PIPELINE_RUN_COMPLETED,
+            pipeline_type=PipelineType.TEXT,
+            workspace_id=workspace_id,
+            actor_user_id=user_id,
+            actor_role=await _actor_role(workspace_id, user_id),
+            payload=PipelineRunCompletedPayload(
+                session_id=session_id,
+                pieces=len(platforms),
+                failed=max(requested - len(platforms), 0),
+                duration_ms=max(duration_ms, 0),
+                brand_id=brand_id,
+                platforms=platforms,
+                title=_run_title(title),
+                trigger=trigger,
+            ),
+            idempotency_key=f"pipeline.run_completed:{session_id}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("emit_run_completed failed for session %s: %s", session_id, exc)
+
+
+def _run_title(text: str) -> str:
+    """First line of the source, trimmed to a label."""
+    first = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    return first if len(first) <= 80 else first[:77].rstrip() + "…"

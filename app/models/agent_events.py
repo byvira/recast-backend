@@ -79,6 +79,7 @@ class SignalType(str, Enum):
     VOLUME_DROP = "volume_drop"
     TOPIC_SHIFT = "topic_shift"
     QUALITY_REGRESSION = "quality_regression"
+    PERFORMANCE_PATTERN = "performance_pattern"   # app.agents.feedback — engagement coaching
 
 
 class Severity(str, Enum):
@@ -128,6 +129,7 @@ class ContentPublishedPayload(BaseModel):
     target: str = ""
     external_url: str = ""
     published_at: Optional[datetime] = None
+    via: str = "now"             # "now" (a member clicked publish) | "scheduled" (the scheduler)
 
 
 class PipelineRunCompletedPayload(BaseModel):
@@ -136,6 +138,9 @@ class PipelineRunCompletedPayload(BaseModel):
     failed: int = 0
     duration_ms: int = 0
     brand_id: str = ""
+    platforms: list[str] = Field(default_factory=list)
+    title: str = ""              # short label of what the run was about
+    trigger: str = "manual"      # "manual" | "campaign"
 
 
 class MemberChangePayload(BaseModel):
