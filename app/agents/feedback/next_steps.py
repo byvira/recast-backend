@@ -90,6 +90,7 @@ async def suggest_after_run(event: dict) -> None:
             ),
             "target_id": p["session_id"],
             "target_type": "Pipeline Execution",
+            "target_label": p.get("title") or None,
             "href": "/dashboard/library",
             "status": "warning",
             "metadata": {"suggestedChannels": ", ".join(missing)},

@@ -76,6 +76,22 @@ def _as_dt(value: Any) -> datetime:
     return datetime.now(timezone.utc)
 
 
+_PIECE_TARGETS = {"Draft Post", "Live Post", "Scheduled Post"}
+
+
+async def piece_label(piece_id: Optional[str]) -> Optional[str]:
+    """First line of a piece's content, trimmed — how people recognise a post."""
+    if not piece_id:
+        return None
+    from app.db.mongo import content_pieces
+    piece = await content_pieces.find_one({"piece_id": piece_id}, {"content": 1})
+    text = ((piece or {}).get("content") or "").strip()
+    if not text:
+        return None
+    first = text.splitlines()[0].strip()
+    return first if len(first) <= 70 else first[:67].rstrip() + "…"
+
+
 def _humanize(slug: str) -> str:
     return (slug or "").replace("_", " ").strip().capitalize()
 
@@ -168,12 +184,16 @@ async def _event_entry(event: dict) -> Optional[dict]:
             "actor": actor,
             "category": "post_published",
             "title": f"Published to {target or 'platform'}",
+            # The link lives in href / metadata.publishedUrl (rendered as a
+            # real link), not pasted into the sentence.
             "description": (
-                "Scheduled post went live." if scheduled else "Post published."
-            ) + (f" {p['external_url']}" if p.get("external_url") else ""),
+                f"Scheduled post went live on {target or 'the platform'}."
+                if scheduled else f"Post went live on {target or 'the platform'}."
+            ),
             "channel": target.lower() or None,
             "target_id": p.get("content_id"),
             "target_type": "Live Post",
+            "target_label": await piece_label(p.get("content_id")),
             "href": p.get("external_url") or None,
             "metadata": metadata or None,
         }
@@ -274,6 +294,7 @@ async def project_remy_signal(signal: dict) -> None:
             "description": signal.get("member_message") or "",
             "target_id": target_id,
             "target_type": "Draft Post" if target_id else None,
+            "target_label": await piece_label(target_id),
             "href": "/dashboard/remy",
             "status": "success" if outcome else "warning",
             "metadata": metadata,
@@ -388,6 +409,7 @@ async def record_system(
     actor_user_id: Optional[str] = None,
     diff: Optional[dict] = None,
     restore: Optional[dict] = None,
+    target_label: Optional[str] = None,
 ) -> None:
     """Record one piece of work that isn't a bus event — autonomous jobs
     (scheduler, retries, token refreshes) or an outcome with no event of its
@@ -414,6 +436,9 @@ async def record_system(
         "channel": channel,
         "target_id": target_id,
         "target_type": target_type,
+        "target_label": target_label or (
+            await piece_label(target_id) if target_type in _PIECE_TARGETS else None
+        ),
         "href": href,
         "metadata": metadata or None,
         "diff": diff,

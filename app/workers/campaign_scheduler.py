@@ -83,6 +83,7 @@ async def _back_off(campaign: dict, error: str) -> None:
         status="failed",
         target_id=campaign["id"],
         target_type="Campaign",
+        target_label=campaign.get("name") or None,
         href="/dashboard/campaigns",
         metadata={"retryAttempt": failures},
     )
