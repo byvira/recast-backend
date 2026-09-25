@@ -12,10 +12,23 @@ from starlette.responses import JSONResponse, Response
 
 from app.core.logger import logger
 
-# Sane ceiling for a JSON API request body. None of this app's routes accept
-# file uploads — media goes through Cloudinary/URLs — so anything past a
-# couple of MB is either a mistake or an attempt to OOM a free-tier instance.
+# Sane ceiling for a JSON API request body — none of the *JSON* routes need
+# more than a couple of MB, so this stays a real anti-abuse cap for them.
+#
+# Real file uploads (POST /api/v1/media — images/video/audio, added this
+# session) are the one deliberate exception, see _EXEMPT_PATH_PREFIXES below.
+# That endpoint has its own real per-workspace, per-media-kind size check
+# (app.api.v1.media._max_bytes_for, up to 200MB for video) — this outer cap
+# staying at 2MB for it was a stale assumption from before that endpoint
+# existed (the comment here used to say "none of this app's routes accept
+# file uploads," which was true then, not now), and it silently 413'd every
+# real upload over 2MB. Worse: because this middleware is the *outermost*
+# layer (runs before CORSMiddleware — see main.py), that 413 never carried
+# CORS headers, so the browser reported it as a CORS failure instead of a
+# clear size-limit error — confirmed live against the deployed backend.
 MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
+
+_EXEMPT_PATH_PREFIXES = ("/api/v1/media",)
 
 
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
@@ -26,9 +39,16 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     it's ever read into memory. Requests without Content-Length (chunked
     transfer) pass through uninspected here — none of this app's clients use
     chunked uploads today.
+
+    Paths under _EXEMPT_PATH_PREFIXES skip this check entirely — they have
+    their own real, kind-aware size validation downstream, and shouldn't be
+    capped by a limit sized for JSON API bodies.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        if request.url.path.startswith(_EXEMPT_PATH_PREFIXES):
+            return await call_next(request)
+
         content_length = request.headers.get("content-length")
         if content_length is not None:
             try:
