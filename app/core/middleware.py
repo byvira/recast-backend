@@ -28,7 +28,17 @@ from app.core.logger import logger
 # clear size-limit error — confirmed live against the deployed backend.
 MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
 
+# Exempt by prefix — this path is entirely upload/transform routes, nothing
+# JSON-only to keep protected here.
 _EXEMPT_PATH_PREFIXES = ("/api/v1/media",)
+
+# Exempt by exact suffix instead of prefix for campaigns — only the
+# thumbnail upload (POST /api/v1/campaigns/{id}/thumbnail) is a real
+# UploadFile route (same stale-cap bug as /api/v1/media above, own 5MB
+# check via MAX_THUMBNAIL_BYTES). The rest of /api/v1/campaigns (create,
+# batch-generate, suggest-topics, ...) is JSON and should keep the 2MB
+# anti-abuse cap, so this doesn't use a blanket prefix exemption.
+_EXEMPT_PATH_SUFFIXES = ("/thumbnail",)
 
 
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
@@ -40,13 +50,15 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     transfer) pass through uninspected here — none of this app's clients use
     chunked uploads today.
 
-    Paths under _EXEMPT_PATH_PREFIXES skip this check entirely — they have
-    their own real, kind-aware size validation downstream, and shouldn't be
-    capped by a limit sized for JSON API bodies.
+    Paths under _EXEMPT_PATH_PREFIXES, or ending in _EXEMPT_PATH_SUFFIXES,
+    skip this check entirely — they have their own real, kind-aware size
+    validation downstream, and shouldn't be capped by a limit sized for
+    JSON API bodies.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if request.url.path.startswith(_EXEMPT_PATH_PREFIXES):
+        path = request.url.path
+        if path.startswith(_EXEMPT_PATH_PREFIXES) or path.endswith(_EXEMPT_PATH_SUFFIXES):
             return await call_next(request)
 
         content_length = request.headers.get("content-length")
