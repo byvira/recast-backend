@@ -81,7 +81,14 @@ async def generate_campaign_batch(
             requested=len(platforms_by_day[day_index]) if platforms_by_day else len(platforms),
             duration_ms=int((time.monotonic() - day_started[0]) * 1000),
             brand_id=campaign["brand_id"],
-            title=f"{campaign.get('name') or campaign['topic_cluster']} — day {day_index + 1}",
+            # PAR-014: campaigns run headless (no emitter, no live SSE
+            # viewer) — this title, surfaced in the Activity Log, is the
+            # only place a degraded day (repeated topic due to a planning
+            # failure) reaches the user at all.
+            title=(
+                f"{campaign.get('name') or campaign['topic_cluster']} — day {day_index + 1}"
+                + (" ⚠ repeated topic — day-angle planning failed" if result.angle_planning_degraded else "")
+            ),
             trigger="campaign",
         )
         day_started[0] = time.monotonic()

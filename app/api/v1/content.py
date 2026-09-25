@@ -7,6 +7,7 @@ require ``edit_content``; approve / reject / schedule / approve-all require
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -15,7 +16,8 @@ from pydantic import BaseModel
 from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import users
+from app.db.mongo import content_pieces, media_assets, users
+from app.models.media import MediaAsset
 from app.pipelines.publish.registry import get_publisher
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.validators import validate_for_platform
@@ -65,6 +67,14 @@ async def _notify_approval_decision(piece: dict, ctx: WorkspaceContext, action_t
 
 class EditPieceRequest(BaseModel):
     content: str
+
+
+class UpdatePieceMediaRequest(BaseModel):
+    # Empty = remove media (Row 8's "remove" control). One id = swap to that
+    # already-uploaded asset (Row 8's "swap" control, after a POST
+    # /api/v1/media upload). Never more than one — a piece carries a single
+    # attached visual today, same as the default-image picker's own output.
+    media_id: Optional[str] = None
 
 
 class ApprovePieceRequest(BaseModel):
@@ -192,6 +202,38 @@ async def edit_piece(
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
     return updated
+
+
+@router.patch("/pieces/{piece_id}/media")
+@limiter.limit("30/minute")
+async def update_piece_media(
+    request: Request,
+    piece_id: str,
+    body: UpdatePieceMediaRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Row 8 — swap or remove a piece's attached visual (the default-image
+    picker's output, or a previous manual attach). No version history —
+    unlike edit_piece's text edits, this isn't a content-quality trail
+    worth diffing, just which image is currently attached."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+
+    media: list[dict] = []
+    if body.media_id:
+        asset_doc = await media_assets.find_one({
+            "id": body.media_id, "workspace_id": ctx.workspace_id,
+        })
+        if not asset_doc:
+            raise HTTPException(status_code=404, detail="Media not found.")
+        media = [MediaAsset(**asset_doc).model_dump()]
+
+    await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"media": media, "updated_at": datetime.now(timezone.utc)}},
+    )
+    return await get_piece(piece_id, ctx.workspace_id)
 
 
 @router.patch("/pieces/{piece_id}/approve")

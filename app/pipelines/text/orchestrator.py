@@ -12,7 +12,8 @@ from typing import Awaitable, Callable, Optional
 
 from app.agents.text.graph import build_single_platform_graph
 from app.agents.text.state import build_initial_state
-from app.db.mongo import brand_profiles
+from app.db.mongo import brand_profiles, content_pieces
+from app.models.media import MediaAsset
 from app.models.text import (
     AgentTask,
     ContentGoal,
@@ -29,11 +30,12 @@ from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.normalizer import normalise_input
 from app.pipelines.text.repurpose import run_repurpose_agent, run_structured_repurpose_agent
 from app.pipelines.text.generator import GENERIC_OPENINGS, validate_content, validate_structured_sections
-from app.shared.llm import call_llm_structured
+from app.shared.llm import call_llm_structured, set_usage_workspace
 from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
 from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
+from app.pipelines.media.default_image import pick_default_image
 from app.agents.text.event_emitter import EventEmitter
 from uuid import uuid4
 
@@ -282,6 +284,14 @@ async def run_text_pipeline(
     GUARANTEE: always emits pipeline_complete after all platforms finish,
     regardless of how many platforms failed.
     """
+    # PAR-012: single highest-leverage usage_workspace() call in the
+    # codebase — every call_llm/call_llm_structured made anywhere in this
+    # function's call tree (angles, generator, repurpose, chips, hook_agent,
+    # normalizer, scorer, seo) now attributes to workspace_id, with zero
+    # signature changes in any of those files. See set_usage_workspace's
+    # docstring for why no matching reset is needed here.
+    set_usage_workspace(workspace_id)
+
     brand_profile = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
     if not brand_profile:
         raise ValueError(f"Brand profile not found: {brand_id}")
@@ -370,6 +380,77 @@ async def run_text_pipeline(
                 ))
             else:
                 pieces.append(result)
+
+    # ── Default-image picker (Row 7) ──────────────────────────────────────
+    # Every real piece gets a default visual with zero extra user action —
+    # a matching brand asset, or an auto-rendered on-brand quote card. Runs
+    # once here, the single point every path (repurpose + normal) already
+    # converges on before returning, rather than duplicated per-path.
+    #
+    # One image per run, shared across every platform's piece — not one
+    # per piece. Different platforms generate genuinely different copy for
+    # the same topic (different hook lines), so picking per-piece would
+    # render a *different* quote card per platform for what's really one
+    # underlying content idea — the same inconsistency real scheduling
+    # tools (Buffer/Hootsuite/Later) avoid by attaching one image and
+    # leaving aspect-ratio fitting to each platform. Brand-asset match was
+    # already deterministic per workspace either way; this makes the
+    # quote-card fallback consistent too, and cuts N Cloudinary uploads
+    # down to 1 — the same concern that motivated running this
+    # concurrently rather than sequentially below.
+    #
+    # Known, honest scope limit: the picked image is a single square
+    # (1080x1080) render — no per-platform aspect-ratio crop/letterbox is
+    # applied here. Every publisher today accepts a square image without
+    # rejecting it; real per-platform cropping is a real follow-up, not
+    # solved by this row.
+    eligible = [p for p in pieces if p.content and not p.media]
+    shared_asset: Optional[MediaAsset] = None
+    if eligible:
+        shared_asset = await pick_default_image(
+            piece_content=eligible[0].content,
+            brand_profile=brand_profile,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+
+    async def _attach_shared_image(piece: GeneratedPiece) -> None:
+        piece.media = [shared_asset]
+
+        # The SSE live-generation path (app/agents/text/nodes.py's
+        # collect_output_node) already persisted this piece via
+        # save_live_piece — before this picker ever ran — and already sent
+        # its output_complete event with no media. Two follow-ups so the
+        # live card and the saved record both end up correct, not just
+        # whatever TextPipelineResult.pieces this function returns (the
+        # blocking /generate path saves *from* that return value directly,
+        # so it needs no backfill — piece_id is only ever set here for the
+        # SSE path).
+        if piece.piece_id:
+            try:
+                await content_pieces.update_one(
+                    {"piece_id": piece.piece_id},
+                    {"$set": {"media": [shared_asset.model_dump()]}},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to backfill media for piece %s: %s", piece.piece_id, exc)
+        if emitter:
+            try:
+                await emitter.emit_media_ready(
+                    platform=_platform_str(piece.platform),
+                    media=[shared_asset.model_dump(mode="json")],
+                    batch_day_index=batch_day_index,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to emit media_ready for %s: %s", piece.platform, exc)
+
+    if shared_asset and eligible:
+        # Still concurrent, not sequential — now N parallel Mongo/SSE
+        # follow-ups for one already-uploaded image, not N uploads.
+        await asyncio.gather(
+            *(_attach_shared_image(p) for p in eligible),
+            return_exceptions=True,
+        )
 
     # ── Emit pipeline_complete ──────────────────────────────────────────────
     # Fires after ALL platforms (success or failure) are gathered. This is
@@ -853,11 +934,31 @@ async def run_batch_pipeline(
 
     angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster)
     angle_result = await call_llm_structured(angle_prompt)
-    angles = (
-        angle_result.get("angles", [topic_cluster] * days)
-        if angle_result
-        else [topic_cluster] * days
-    )
+    planned_angles = angle_result.get("angles") if angle_result else None
+    # PAR-014: this used to fall back to [topic_cluster] * days silently on
+    # any planning failure — call_llm_structured() returns {} on parse
+    # failure rather than raising, so a batch/campaign could silently ship
+    # N days of near-identical content with nothing surfacing it anywhere.
+    # A short (but non-empty) angles list had the same silent-failure shape
+    # one level down: angles[:days] only truncates a too-long list, so a
+    # too-short one silently produced fewer days than requested with no
+    # signal either. Both are now explicitly detected and surfaced: an SSE
+    # log line for anyone watching live, and angle_planning_degraded on the
+    # result so a headless caller (campaigns' batch_runner.py, no emitter)
+    # can flag it too.
+    degraded = not planned_angles or len(planned_angles) < days
+    angles = (planned_angles or []) + [topic_cluster] * max(0, days - len(planned_angles or []))
+    if degraded:
+        logger.warning(
+            "Batch day-angle planning %s for topic_cluster=%r (days=%d, got %d) — "
+            "padding missing days with the same topic",
+            "failed" if not planned_angles else "returned too few angles",
+            topic_cluster, days, len(planned_angles or []),
+        )
+        if emitter:
+            await emitter.emit_log(
+                "⚠ Couldn't plan distinct day angles for every day — some days will repeat the same topic."
+            )
 
     results = []
     for i, angle in enumerate(angles[:days]):
@@ -886,6 +987,10 @@ async def run_batch_pipeline(
         )
         result.batch_mode = True
         result.angle = angle
+        # Only the padded tail days (beyond what was actually planned) are
+        # degraded — a partial shortfall shouldn't mark the real, distinct
+        # angles that did come back.
+        result.angle_planning_degraded = i >= len(planned_angles or [])
         if on_day_complete:
             await on_day_complete(i, result)
         results.append(result)

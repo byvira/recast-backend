@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_PHONE_NUMBER: str = ""
 
+    # ElevenLabs — present in .env but not yet wired to any code (no caller
+    # anywhere in the app). Declared here only so pydantic-settings' strict
+    # mode (extra="forbid") doesn't fail Settings() construction on an
+    # otherwise-valid .env — this was blocking the entire test suite from
+    # even collecting. A real audio/TTS pipeline is the actual place this
+    # gets used, not built yet (see the plan's video/audio pipeline note).
+    ELEVEN_LABS: str = ""
+
     # LLM provider — "groq" | "gemini"
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: str = ""
@@ -90,6 +98,12 @@ class Settings(BaseSettings):
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
+
+    # Cloudflare Workers AI — image generation provider (Row 11,
+    # app.pipelines.media.image_generation). Free tier: 10,000 neurons/day,
+    # hard block on exhaustion, no surprise billing.
+    CLOUDFLARE_API_TOKEN: str = ""
+    CLOUDFLARE_ACCOUNT_ID: str = ""
 
     # Free tier credits limit
     FREE_CREDITS_LIMIT: int = 100

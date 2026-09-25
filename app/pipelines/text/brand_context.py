@@ -41,6 +41,60 @@ def build_goal_context(goal: Optional[str]) -> str:
     return f"{instruction}\n\n" if instruction else ""
 
 
+# Row 15 — durable best-practice patterns per platform, not a claim of
+# reverse-engineering an actual black-box ranking algorithm. Distinct from
+# generator.py's ENGAGEMENT_PATTERNS, which is generic hook/body/closing
+# craft with no platform awareness at all — this is specifically "what
+# this platform's audience and format reward," on top of that. Explicitly
+# tied to the piece's real content, never a generic template phrase — same
+# principle hook_agent.py's anti-generic filtering already proves works.
+#
+# Keyed by app.models.text.Platform's real enum *values* (confirmed live:
+# Blog/Newsletter/Facebook/Instagram/LinkedIn/Twitter/X/Twitter/X Thread/
+# YouTube) — NOT by every publish-time platform. Threads and Bluesky are
+# real publishers (app/pipelines/publish/) but have no dedicated
+# has_text_prompt_rules=True entry (app/platforms/base.py), so they're not
+# part of this enum at all today — content for them is generated under a
+# different platform's rules and cross-posted, not generated with its own
+# engagement framing. Adding one here for either would be dead code that
+# never runs, not a real fix — a genuine follow-up once/if they get their
+# own generation rules, not silently faked now.
+_ENGAGEMENT_PRIORITY = {
+    "LinkedIn": (
+        "ENGAGEMENT PRIORITY FOR LINKEDIN: Dwell time and comments are what "
+        "this platform's format rewards — write for someone who stops "
+        "scrolling and reads the whole thing, not a skimmer. End with a "
+        "specific, answerable question tied to THIS piece's actual claim "
+        "(never a generic \"thoughts?\") — the kind a reader can answer "
+        "from their own real experience in one line."
+    ),
+    "Instagram": (
+        "ENGAGEMENT PRIORITY FOR INSTAGRAM: Saves and shares are what this "
+        "platform's format rewards — write something worth returning to or "
+        "sending to a specific person, not just reacting to once. Favor a "
+        "concrete, reusable takeaway (a real number, a real step, a real "
+        "before/after) over pure narrative."
+    ),
+    "Facebook": (
+        "ENGAGEMENT PRIORITY FOR FACEBOOK: Comments from people who know the "
+        "author are what this platform's format rewards — write with the "
+        "specificity of something that actually happened to a real person, "
+        "not broadcast-style messaging. Personal and concrete outperforms "
+        "polished and general here."
+    ),
+}
+
+
+def build_engagement_context(platform: str) -> str:
+    """
+    Per-platform 'what actually drives engagement here' instruction.
+    Empty for any platform not in _ENGAGEMENT_PRIORITY above — no fabricated
+    claim for a platform this hasn't been reasoned through for yet.
+    """
+    instruction = _ENGAGEMENT_PRIORITY.get(platform, "")
+    return f"{instruction}\n\n" if instruction else ""
+
+
 
 # Tones that read as informal/conversational — for a non-English output
 # language, real bilingual speakers naturally code-switch in registers like

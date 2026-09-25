@@ -21,7 +21,8 @@ from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import content_pieces, users
+from app.db.mongo import brand_profiles, content_pieces, users
+from app.models.media import MediaAsset
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
 from app.pipelines.publish.health import mark_healthy
@@ -47,6 +48,15 @@ class PublishNowRequest(BaseModel):
     # disagree with the piece's real platform and publish content generated
     # for one network onto a completely different one's API. Derived from
     # the piece server-side instead — see publish_now().
+    # YouTube-only — the (possibly user-edited) draft from POST
+    # /publish/youtube/prepare. Ignored for every other platform. None means
+    # "no review step happened" — YouTubePublisher generates real metadata
+    # fresh in that case, never a blank/guessed default.
+    youtube_metadata: Optional[dict] = None
+
+
+class YouTubePrepareRequest(BaseModel):
+    piece_id: str
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,6 +81,7 @@ async def _update_piece_status(
     platform_post_url: Optional[str] = None,
     error_message: Optional[str] = None,
     increment_attempts: bool = False,
+    media_dropped_reason: Optional[str] = None,
 ) -> None:
     """Update publish status fields on a piece."""
     updates: dict = {
@@ -83,6 +94,11 @@ async def _update_piece_status(
         updates["platform_post_url"] = platform_post_url
     if error_message:
         updates["last_error"] = error_message
+    # Row 9: the same outcome the Activity Log already shows, also written
+    # onto the piece itself so Drafts/Library/Calendar can render a real
+    # "media dropped" badge without joining against Activity Log rows.
+    if status == "published":
+        updates["media_dropped_reason"] = media_dropped_reason or None
     if status == "published":
         # The real go-live time — metric checkpoints (1h/24h/72h/7d) are
         # measured from this, not from updated_at.
@@ -162,7 +178,9 @@ async def publish_now(
             detail=f"Platform '{display_platform}' not supported.",
         )
 
-    # Build publish request
+    # Build publish request — media populated for real (was always empty,
+    # PublishRequest.media_urls existed but neither construction site ever
+    # passed it) from whatever the piece actually has attached.
     pub_request = PublishRequest(
         piece_id=body.piece_id,
         workspace_id=ws,
@@ -170,6 +188,8 @@ async def publish_now(
         brand_id=piece["brand_id"],
         platform=platform,
         content=piece["content"],
+        media=[MediaAsset(**m) for m in piece.get("media") or []],
+        youtube_metadata=body.youtube_metadata,
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
 
@@ -191,6 +211,7 @@ async def publish_now(
                 platform_post_id=result.platform_post_id,
                 platform_post_url=result.platform_post_url,
                 increment_attempts=True,
+                media_dropped_reason=result.media_dropped_reason,
             )
             from app.shared.governance_events import emit_content_published
             emit_content_published(
@@ -198,6 +219,7 @@ async def publish_now(
                 actor_user_id=ctx.user_id, actor_role=ctx.role,
                 content_id=body.piece_id, target=platform,
                 external_url=result.platform_post_url or "",
+                media_dropped_reason=result.media_dropped_reason or "",
             )
             await mark_healthy(ws, platform, via="a successful publish")
             return {
@@ -391,6 +413,34 @@ async def publish_now(
 
 # Cancelling now lives on app.api.v1.content's /pieces/{id}/cancel-schedule
 # for the same reason scheduling does — one implementation, not two.
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# YOUTUBE — REVIEW STEP
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/youtube/prepare")
+@limiter.limit("20/minute")
+async def prepare_youtube_publish(
+    request: Request,
+    body: YouTubePrepareRequest,
+    ctx: WorkspaceContext = Depends(require("publish_content")),
+) -> dict:
+    """Real, brand-grounded YouTube title/description/tags/category draft
+    for the user to review and edit before publishing — never a guess the
+    user can't see or change. The actual /now call, when given this back
+    (possibly edited) as youtube_metadata, uses it as-is."""
+    from app.pipelines.publish.youtube.metadata import generate_youtube_metadata
+
+    ws = ctx.workspace_id
+    piece = await _get_verified_piece(body.piece_id, ws)
+
+    brand = await brand_profiles.find_one({"id": piece["brand_id"], "workspace_id": ws})
+    if not brand:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    metadata = await generate_youtube_metadata(piece["content"], brand)
+    return metadata.model_dump()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

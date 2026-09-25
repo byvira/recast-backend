@@ -24,7 +24,7 @@ from typing import Optional
 
 from app.agents.text.state import TextAgentState
 from app.models.text import AgentTask, GeneratedPiece, Platform
-from app.pipelines.text.brand_context import build_goal_context, build_tone_override
+from app.pipelines.text.brand_context import build_goal_context, build_tone_override, build_engagement_context
 from app.pipelines.text.generator import GENERIC_OPENINGS, generate_for_platform
 from app.pipelines.text.hook_agent import apply_recommended_hook, run_hook_agent
 from app.pipelines.text.normalizer import clean_raw_content, extract_content_brief
@@ -160,6 +160,12 @@ async def build_context_node(state: TextAgentState) -> dict:
     tone = state["tone"]
     goal_context = build_goal_context(goal.value if goal else None)
     tone_override_text = build_tone_override(tone.value if tone else "brand", state["language"])
+    current_platform_str = str(
+        state["current_platform"].value
+        if hasattr(state["current_platform"], "value")
+        else state["current_platform"]
+    )
+    engagement_context = build_engagement_context(current_platform_str)
 
     # ── Extract all enforcement data ──────────────────────────────────────
     enforcement = _extract_enforcement_data(brand_profile)
@@ -203,6 +209,7 @@ async def build_context_node(state: TextAgentState) -> dict:
         "brand_context": brand_context,
         "goal_context": goal_context,
         "tone_override_text": tone_override_text,
+        "engagement_context": engagement_context,
         "extras": updated_extras,
     }
 
@@ -233,6 +240,7 @@ async def generate_node(state: TextAgentState) -> dict:
         "tone_override_text": state["tone_override_text"],
           "required_phrases": selected_phrases,
         "goal_context": state["goal_context"],
+        "engagement_context": state["engagement_context"],
         "content_brief": state["content_brief"],
         "retry_feedback": state["retry_feedback"],
         "retry_count": state["retry_count"],

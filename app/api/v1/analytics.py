@@ -349,6 +349,9 @@ async def get_calendar(
             "status":       publish_status,
             "published_at": (piece.get("updated_at") if publish_status == "published" else None),
             "post_url":     piece.get("platform_post_url"),
+            # Row 9 — same real publish outcome the Activity Log and the
+            # piece's own media_dropped_reason field already carry.
+            "media_dropped_reason": piece.get("media_dropped_reason"),
         }
 
         campaign_id = piece.get("campaign_id")
@@ -356,6 +359,10 @@ async def get_calendar(
         days[date_key].append({
             "id":               piece.get("piece_id", ""),
             "content_preview":  piece.get("content", "")[:120],
+            # Row 7/9 — whether this piece has a default (or attached) visual,
+            # for the calendar's compact per-day cards (too small for a full
+            # thumbnail) to show a real media indicator, not a guess.
+            "has_media":        bool(piece.get("media")),
             "status":           publish_status,
             # Calendar used to be read-only — "status" alone (bare
             # publish_status) can't tell drafting apart from staging, both

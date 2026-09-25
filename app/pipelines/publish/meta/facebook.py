@@ -63,15 +63,33 @@ class FacebookPublisher(PlatformPublisher):
 
         page_id = request.platform_user_id
 
+        # Previously always posted to /feed (text-only) regardless of what
+        # was attached — media_urls existed on the old PublishRequest but
+        # this publisher never read it. /feed doesn't take raw media at
+        # all; photos and videos are their own endpoints with their own
+        # param shape, so this now branches instead of ignoring media.
+        # If media was attached but this kind isn't supported, the piece
+        # still publishes as a text post rather than failing outright —
+        # media_result.dropped_reason carries the honest reason onto the
+        # result below, never a silent drop.
+        media_result = self.attach_media(request)
+
+        if media_result.has_media and media_result.asset.kind.value == "image":
+            endpoint, params = f"{GRAPH_BASE}/{page_id}/photos", {
+                "url": media_result.asset.url, "caption": request.content, "access_token": access_token,
+            }
+        elif media_result.has_media and media_result.asset.kind.value == "video":
+            endpoint, params = f"{GRAPH_BASE}/{page_id}/videos", {
+                "file_url": media_result.asset.url, "description": request.content, "access_token": access_token,
+            }
+        else:
+            endpoint, params = f"{GRAPH_BASE}/{page_id}/feed", {
+                "message": request.content, "access_token": access_token,
+            }
+
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{GRAPH_BASE}/{page_id}/feed",
-                    params={
-                        "message":      request.content,
-                        "access_token": access_token,
-                    },
-                )
+                response = await client.post(endpoint, params=params)
 
                 if response.status_code == 200:
                     post_id  = response.json()["id"]
@@ -86,6 +104,7 @@ class FacebookPublisher(PlatformPublisher):
                         piece_id=request.piece_id,
                         platform_post_id=post_id,
                         platform_post_url=post_url,
+                        media_dropped_reason=media_result.dropped_reason,
                     )
 
                 error_data    = response.json()

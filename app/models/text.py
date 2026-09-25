@@ -7,6 +7,8 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 from enum import Enum as PyEnum
 
+from app.models.media import MediaAsset
+
 # Em dashes are a well-known LLM writing tell users flagged repeatedly as
 # "AI slop" — prompt instructions alone don't reliably stop models from
 # using them, so GeneratedPiece strips them unconditionally below. Matches
@@ -378,6 +380,10 @@ class GeneratedPiece(BaseModel):
     publish_status: Optional[str] = None
     publish_scheduled_at: Optional[datetime] = None
     publish_job_id: Optional[str] = None
+    # Real media attached to this piece — brand-asset match, an auto-generated
+    # quote card, an upload, or (Nano Banana) AI-generated; empty until the
+    # default-image picker or a manual attach fills it in. See MediaAsset.
+    media: list[MediaAsset] = []
 
     @field_validator("content")
     @classmethod
@@ -422,6 +428,12 @@ class TextPipelineResult(BaseModel):
     batch_mode: bool = False
     batch_day_index: Optional[int] = None
     angle: Optional[str] = None
+    # PAR-014 fix: True when batch_angles planning failed and this day fell
+    # back to the literal topic_cluster string instead of a distinct angle —
+    # see run_batch_pipeline in app/pipelines/text/orchestrator.py. Lets a
+    # caller (campaigns' batch_runner.py) surface the degradation instead of
+    # silently producing near-duplicate content across days.
+    angle_planning_degraded: bool = False
     # Set only for repurpose runs — the Platform this content originated
     # from, so it survives the round-trip into content_pieces instead of
     # being dropped after the prompt is built (see save_pipeline_result /

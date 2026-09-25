@@ -99,6 +99,12 @@ class TextAgentState(TypedDict):
     # Named tone_override_text to avoid collision with the tone field above
     # which holds the ToneOverride enum value.
 
+    # Row 15 — per-platform "what actually drives engagement here" (dwell
+    # time/comments on LinkedIn, saves/shares on Instagram, replies on
+    # Threads, ...). Distinct from ENGAGEMENT_PATTERNS (generator.py), which
+    # is generic hook/body/closing craft with no platform awareness at all.
+    engagement_context: str
+
     content_brief: str
 
     # ─────────────────────────────────────────────────────────────
@@ -247,6 +253,7 @@ def build_initial_state(
         brand_context="",
         goal_context="",
         tone_override_text="",
+        engagement_context="",
         content_brief="",
 
         # Generation — empty until generate_node runs

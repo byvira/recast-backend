@@ -20,13 +20,15 @@ GOOGLE_SCOPES = [
     "openid",
     "email",
     "profile",
-    # youtube.readonly only — analytics/stats tracking, not publishing.
-    # youtube.upload was requested here before with nothing in the app
-    # ever using it (no YouTube publisher is registered — see
-    # app/pipelines/publish/registry.py) — an unused write-capable scope
-    # that only made Google's consent screen scarier and risked extra
-    # OAuth app review scrutiny for no real capability.
+    # youtube.readonly — analytics/stats reading.
     "https://www.googleapis.com/auth/youtube.readonly",
+    # youtube.upload — real publishing (app/pipelines/publish/youtube/
+    # publisher.py). Previously left out deliberately while no publisher
+    # existed (an unused write-capable scope just scared the consent
+    # screen for nothing) — a real YouTubePublisher now exists, so this is
+    # back. Existing connections made before this change only have the
+    # readonly scope and must reconnect (re-consent) to publish.
+    "https://www.googleapis.com/auth/youtube.upload",
 ]
 
 

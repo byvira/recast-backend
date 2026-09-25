@@ -62,6 +62,19 @@ def validate_bluesky(content: str) -> Tuple[bool, list[str]]:
     return len(issues) == 0, issues
 
 
+def validate_youtube(content: str) -> Tuple[bool, list[str]]:
+    # Validates the raw content used as the description — the derived
+    # title (first line, see youtube/publisher.py) is truncated to
+    # YouTube's 100-char limit at publish time, not a hard validation
+    # failure here, same as the quote-card picker's own hook-line handling.
+    issues = []
+    if len(content) > 5000:
+        issues.append(f"Description too long: {len(content)} chars (max 5000)")
+    if not content.strip():
+        issues.append("Content is empty")
+    return len(issues) == 0, issues
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PLATFORM VALIDATOR REGISTRY
 #

@@ -55,6 +55,7 @@ async def upload_file(
     Returns:
         Secure Cloudinary URL pointing to the uploaded file.
     """
+    _ensure_configured()
     result = cloudinary.uploader.upload(
         file,
         upload_preset=content_type.value,       # uses the preset we created
@@ -77,6 +78,7 @@ async def get_file_url(public_id: str, content_type: ContentType) -> str:
     Returns:
         Accessible secure URL for the file.
     """
+    _ensure_configured()
     resource_type = _get_resource_type(content_type)
     return cloudinary.utils.cloudinary_url(
         public_id,
@@ -95,6 +97,7 @@ async def delete_file(public_id: str, content_type: ContentType) -> bool:
     Returns:
         True if deletion was successful.
     """
+    _ensure_configured()
     result = cloudinary.uploader.destroy(
         public_id,
         resource_type=_get_resource_type(content_type)

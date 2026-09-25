@@ -130,6 +130,11 @@ class ContentPublishedPayload(BaseModel):
     external_url: str = ""
     published_at: Optional[datetime] = None
     via: str = "now"             # "now" (a member clicked publish) | "scheduled" (the scheduler)
+    # Set when the piece had media attached but this platform couldn't take
+    # it — the text half still published, but this makes that a visible
+    # Activity Log outcome instead of a silent drop. See
+    # PlatformPublisher.attach_media / PublishResult.media_dropped_reason.
+    media_dropped_reason: Optional[str] = None
 
 
 class PipelineRunCompletedPayload(BaseModel):

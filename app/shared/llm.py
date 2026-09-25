@@ -60,9 +60,19 @@ class GroqModel(str, Enum):
 
 
 class GeminiModel(str, Enum):
-    FLASH      = "gemini-2.5-flash"
-    FLASH_LITE = "gemini-2.5-flash-lite"
-    PRO        = "gemini-2.5-pro"
+    # Migrated 2026-09-26: gemini-2.5-flash-lite and gemini-2.5-pro both 404
+    # ("no longer available to new users") with Google's own recommended
+    # replacement named in the error body. gemini-2.5-flash itself returns a
+    # separate 403 PERMISSION_DENIED ("Your project has been denied access.
+    # Please contact support.") — a project-level access issue, not a model-
+    # name problem; gemini-3.5-flash returns the identical 403, confirming
+    # it's real access denial rather than another deprecated name. See
+    # DEF-024 in docs/DEFERRED_AND_PARTIAL_SCOPE.md — this is a Google
+    # Cloud Console issue the app owner must resolve directly with Google;
+    # no model-ID change here fixes it.
+    FLASH      = "gemini-3.5-flash"
+    FLASH_LITE = "gemini-3.5-flash-lite"
+    PRO        = "gemini-3.1-pro-preview"
 
 
 # Embedding model for the personal-assistant voice baseline.
@@ -127,6 +137,26 @@ class usage_workspace:
 
     async def __aexit__(self, *exc_info: object) -> None:
         self.__exit__(*exc_info)
+
+
+def set_usage_workspace(workspace_id: str | None) -> None:
+    """Fire-and-forget alternative to usage_workspace() for a large
+    function where wrapping the whole body in a `with` block would mean
+    reindenting it (e.g. run_text_pipeline, "main entry point for all text
+    generation" — angles/generator/repurpose/chips/hook_agent/normalizer/
+    scorer/seo all get attributed to *workspace_id* just by this one call at
+    its top, no signature changes needed in any of those files).
+
+    No matching reset — safe here specifically because each real caller
+    (an HTTP/SSE request, or one iteration of a campaign's day-loop, which
+    is always the same workspace_id per campaign) runs in its own asyncio
+    Task, and the Task (and this ContextVar's value with it) is discarded
+    once that request/run finishes. Do not call this from a long-lived
+    worker loop that reuses one Task across multiple different workspaces
+    without an intervening call to reset it — use usage_workspace() there
+    instead (see Odette's reason_node/synthesize_node for that pattern).
+    """
+    _current_workspace_id.set(workspace_id)
 
 
 def _record_workspace_usage(total_tokens: int, calls: int = 1) -> None:

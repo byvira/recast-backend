@@ -61,6 +61,12 @@ cloudinary>=1.41.0
 aiofiles>=23.0.0
 
 # ─────────────────────────────────────────
+# Media rendering — default quote-card image fallback
+# (app/pipelines/media/default_image.py)
+# ─────────────────────────────────────────
+Pillow>=10.0.0
+
+# ─────────────────────────────────────────
 # Job Queue
 # ─────────────────────────────────────────
 arq>=0.25.0

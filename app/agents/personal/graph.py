@@ -17,6 +17,7 @@ from app.agents.personal import nodes
 from app.agents.personal.state import PersonaState, build_initial_state
 from app.agents.personal.scope import ScopeError
 from app.core.tracing import ainvoke_traced
+from app.shared.llm import set_usage_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,11 @@ async def run_personal_graph(event: dict[str, Any]) -> dict:
     except ScopeError as exc:
         logger.warning("personal graph: skipping unscopable event %s: %s", event.get("event_id"), exc)
         return {"skipped": str(exc)}
+
+    # PAR-012 — covers judge_drift_node's call_llm_structured below. Each
+    # event re-sets this before its own calls, so it self-corrects per event
+    # even though this arq consumer processes many workspaces in one loop.
+    set_usage_workspace(state["workspace_id"])
 
     pt = event.get("pipeline_type") or "none"
     result, _run_url = await ainvoke_traced(

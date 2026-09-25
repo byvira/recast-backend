@@ -466,6 +466,7 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
     # ── Read pre-built context strings ────────────────────────────────────
     tone_override_text = task.metadata.get("tone_override_text", "")
     goal_context = task.metadata.get("goal_context", "")
+    engagement_context = task.metadata.get("engagement_context", "")
     content_brief = task.metadata.get("content_brief", "")
     retry_feedback = task.metadata.get("retry_feedback", "")
     retry_count = task.metadata.get("retry_count", 0)
@@ -520,6 +521,7 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         brand_context=task.brand_context,
         tone_override_text=tone_override_text,
         goal_context=goal_context,
+        engagement_context=engagement_context,
         content_brief=content_brief,
         specificity_instruction=SPECIFICITY_INSTRUCTION,
         engagement_patterns=ENGAGEMENT_PATTERNS,

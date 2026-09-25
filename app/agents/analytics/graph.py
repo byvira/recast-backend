@@ -11,6 +11,7 @@ from app.agents.analytics.state import AnalyticsAgentState, build_initial_state
 from app.agents.analytics import nodes
 from app.core.tracing import ainvoke_traced
 from app.db.mongo import users
+from app.shared.llm import set_usage_workspace
 
 
 def build_analytics_graph():
@@ -52,6 +53,8 @@ async def run_analytics(*, workspace_id: str, question: str, user_id: str = "") 
     user's own ``users.language``, self-contained, same pattern used for
     score_hook/align_draft elsewhere in this i18n work.
     """
+    set_usage_workspace(workspace_id)  # PAR-012 — covers analyze_node/recommend_node below
+
     language = "en"
     if user_id:
         try:

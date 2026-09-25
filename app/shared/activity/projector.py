@@ -194,16 +194,26 @@ async def _event_entry(event: dict) -> Optional[dict]:
         metadata = {}
         if p.get("external_url"):
             metadata["publishedUrl"] = p["external_url"]
+        media_dropped_reason = p.get("media_dropped_reason")
+        base_description = (
+            f"Scheduled post went live on {target or 'the platform'}."
+            if scheduled else f"Post went live on {target or 'the platform'}."
+        )
         return {
             **base,
             "actor": actor,
             "category": "post_published",
-            "title": f"Published to {target or 'platform'}",
+            # PAR-016: never silent — the same "published, but a caveat"
+            # marker PAR-014 uses for campaign day-angle fallbacks.
+            "title": (
+                f"Published to {target or 'platform'}"
+                + (" ⚠ media not included" if media_dropped_reason else "")
+            ),
             # The link lives in href / metadata.publishedUrl (rendered as a
             # real link), not pasted into the sentence.
             "description": (
-                f"Scheduled post went live on {target or 'the platform'}."
-                if scheduled else f"Post went live on {target or 'the platform'}."
+                f"{base_description} {media_dropped_reason}."
+                if media_dropped_reason else base_description
             ),
             "channel": (p.get("target") or "").lower() or None,
             "target_id": p.get("content_id"),

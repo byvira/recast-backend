@@ -26,6 +26,23 @@ class TierConfig(BaseModel):
     settings: dict = {}   # per-tier extras — expand later without migration
 
 
+class MediaUploadLimits(BaseModel):
+    """Per-kind max upload size, in MB — app.api.v1.media reads these
+    instead of a hardcoded constant, so a future pricing tier can vary
+    them per workspace without a code change. Defaults match the original
+    hardcoded values (app.api.v1.media.MAX_BYTES's old constants) — an
+    existing workspace with this field unset behaves identically to
+    before. Bounds are sanity limits, not a promise the provider (Cloudinary
+    free tier) will actually accept a file that large — a real upload can
+    still be rejected upstream; see the plan's note on verifying
+    Cloudinary's actual per-file ceiling with a live test before relying
+    on a value near the upper bound.
+    """
+    image_mb: int = Field(5, ge=1, le=25)
+    video_mb: int = Field(50, ge=1, le=200)
+    audio_mb: int = Field(20, ge=1, le=100)
+
+
 class CreateWorkspaceBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     tier: WorkspaceTier
@@ -44,6 +61,9 @@ class Workspace(BaseModel):
     # precedence level (see app.shared.language) rather than treating this
     # as "English". Settable via PATCH /api/v1/workspace/{id}.
     language: Optional[str] = None
+    # None means "use the hardcoded defaults" — same precedence convention
+    # as `language` above. Settable via PATCH /api/v1/workspace/{id}.
+    media_upload_limits: Optional[MediaUploadLimits] = None
     created_at: datetime
     updated_at: datetime
 

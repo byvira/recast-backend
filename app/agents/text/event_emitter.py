@@ -154,6 +154,26 @@ class EventEmitter:
             "batch_day_index":   batch_day_index,
         })
 
+    async def emit_media_ready(
+        self,
+        platform:        str,
+        media:           list[dict],
+        batch_day_index: int | None = None,
+    ) -> None:
+        """Signal that the default-image picker (Row 7) has attached a
+        visual to an already-completed card. Fired separately from
+        output_complete because the picker runs after all platforms are
+        gathered (app/pipelines/text/orchestrator.py's single completion
+        path) — by the time it runs, output_complete has already been sent
+        for every card, so the live SSE panel needs this follow-up event to
+        show the picked image instead of it only ever reaching the piece
+        once persisted."""
+        await self.emit("media_ready", {
+            "platform":        platform,
+            "media":           media,
+            "batch_day_index": batch_day_index,
+        })
+
     async def emit_paused(
         self,
         platform: str,

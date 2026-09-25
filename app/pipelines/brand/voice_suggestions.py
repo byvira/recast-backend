@@ -21,7 +21,7 @@ import logging
 from typing import Any, Optional
 
 from app.prompts.registry import load_prompt
-from app.shared.llm import GroqModel, call_llm_structured
+from app.shared.llm import GroqModel, call_llm_structured, set_usage_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,8 @@ async def generate_voice_pattern_suggestions(
     into a friendly "couldn't generate, write your own" response rather
     than a raw 500.
     """
+    set_usage_workspace(brand_profile.get("workspace_id"))  # PAR-012
+
     brand_type = brand_profile.get("brand_type", "Person")
     identity_line = _identity_summary(brand_type, brand_profile.get("identity") or {})
     audience_line = _audience_summary(brand_profile.get("audience") or {})

@@ -23,6 +23,12 @@ from app.pipelines.publish.supervisor.classifier import classify_error
 logger = logging.getLogger(__name__)
 
 LINKEDIN_UGC_URL = "https://api.linkedin.com/v2/ugcPosts"
+LINKEDIN_ASSETS_URL = "https://api.linkedin.com/v2/assets?action=registerUpload"
+
+_RECIPE_BY_KIND = {
+    "image": "urn:li:digitalmediaRecipe:feedshare-image",
+    "video": "urn:li:digitalmediaRecipe:feedshare-video",
+}
 
 
 class LinkedInPublisher(PlatformPublisher):
@@ -39,13 +45,61 @@ class LinkedInPublisher(PlatformPublisher):
     def validate_content(self, content: str) -> tuple[bool, list[str]]:
         return validate_linkedin(content)
 
+    async def _register_and_upload_asset(
+        self, client: httpx.AsyncClient, person_id: str, access_token: str, asset_url: str, kind: str
+    ) -> str:
+        """LinkedIn's UGC API needs bytes uploaded first, unlike Meta's
+        fetch-by-URL pattern — this is why LinkedIn overrides the base
+        attach_media() default rather than using it directly. Three steps:
+        register the upload -> PUT the actual bytes -> the returned asset
+        URN goes in the post payload. Single-PUT only — LinkedIn's simpler
+        recipe works for images and reasonably-sized video; very large
+        video needs LinkedIn's separate multi-part upload API, not
+        implemented here (a real, honest scope limit, not a silent gap).
+
+        Returns the asset URN. Raises on any failure — the caller decides
+        how to report that as a media_dropped_reason.
+        """
+        register_resp = await client.post(
+            LINKEDIN_ASSETS_URL,
+            json={
+                "registerUploadRequest": {
+                    "recipes": [_RECIPE_BY_KIND[kind]],
+                    "owner": f"urn:li:person:{person_id}",
+                    "serviceRelationships": [
+                        {"relationshipType": "OWNER", "identifier": "urn:li:userGeneratedContent"}
+                    ],
+                }
+            },
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        )
+        register_resp.raise_for_status()
+        value = register_resp.json()["value"]
+        upload_url = value["uploadMechanism"][
+            "com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest"
+        ]["uploadUrl"]
+        asset_urn = value["asset"]
+
+        media_bytes_resp = await client.get(asset_url)
+        media_bytes_resp.raise_for_status()
+
+        put_resp = await client.put(
+            upload_url,
+            content=media_bytes_resp.content,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        put_resp.raise_for_status()
+
+        return asset_urn
+
     async def publish(
         self,
         request: PublishRequest,
         access_token: str,
     ) -> PublishResult:
         """
-        Publish a text post to LinkedIn using UGC Posts API.
+        Publish a post to LinkedIn using the UGC Posts API — text-only, or
+        with an uploaded image/video asset attached.
         """
         is_valid, issues = self.validate_content(request.content)
         if not is_valid:
@@ -58,16 +112,36 @@ class LinkedInPublisher(PlatformPublisher):
                 error_message=f"Content validation failed: {'; '.join(issues)}",
             )
 
+        # Previously hardcoded shareMediaCategory=NONE regardless of what
+        # was attached — attach_media() only makes the "is this kind
+        # supported" decision here; the actual upload mechanics below are
+        # LinkedIn-specific (register -> PUT -> reference), so this doesn't
+        # use the base default's URL-reference return path directly.
+        media_result = self.attach_media(request)
+        media_dropped_reason = media_result.dropped_reason
+        share_content: dict = {
+            "shareCommentary": {"text": request.content},
+            "shareMediaCategory": "NONE",
+        }
+
+        if media_result.has_media:
+            asset = media_result.asset
+            try:
+                async with httpx.AsyncClient() as upload_client:
+                    asset_urn = await self._register_and_upload_asset(
+                        upload_client, request.platform_user_id, access_token, asset.url, asset.kind.value
+                    )
+                share_content["shareMediaCategory"] = asset.kind.value.upper()
+                share_content["media"] = [{"status": "READY", "media": asset_urn}]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("LinkedIn asset upload failed for piece %s: %s", request.piece_id, exc)
+                media_dropped_reason = "LinkedIn media upload failed — published as text only"
+
         payload = {
             "author":          f"urn:li:person:{request.platform_user_id}",
             "lifecycleState":  "PUBLISHED",
             "specificContent": {
-                "com.linkedin.ugc.ShareContent": {
-                    "shareCommentary": {
-                        "text": request.content,
-                    },
-                    "shareMediaCategory": "NONE",
-                }
+                "com.linkedin.ugc.ShareContent": share_content
             },
             "visibility": {
                 "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
@@ -99,6 +173,7 @@ class LinkedInPublisher(PlatformPublisher):
                         piece_id=request.piece_id,
                         platform_post_id=post_id,
                         platform_post_url=post_url,
+                        media_dropped_reason=media_dropped_reason,
                     )
 
                 # Handle error

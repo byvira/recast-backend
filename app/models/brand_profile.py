@@ -10,12 +10,23 @@ from app.models.text import ToneOverride
 
 
 class BrandType(str, Enum):
-    """Category of brand being set up."""
+    """Category of brand being set up.
+
+    Shop/Entertainment added for the hybrid-media plan (2026-09-26) —
+    Business/Product loosely covered e-commerce/film marketing before this,
+    with no dedicated identity fields or onboarding copy for either.
+    Entertainment (not "Movie") deliberately: covers films, web series,
+    documentaries, and shows without needing another new type later —
+    matches this enum's existing convention of broad categories, not
+    narrow verticals.
+    """
 
     PERSON = "Person"
     PERSONAL_BRAND = "Personal Brand"
     BUSINESS = "Business"
     PRODUCT = "Product"
+    SHOP = "Shop"
+    ENTERTAINMENT = "Entertainment"
 
 
 class ReadingLevel(str, Enum):
@@ -77,6 +88,50 @@ class VoiceTone(BaseModel):
     humor: HumorLevel = HumorLevel.NONE
     emoji: EmojiUsage = EmojiUsage.SOMETIMES
     style: str = ""
+
+
+class BrandColors(BaseModel):
+    primary: str = ""
+    secondary: str = ""
+    accent: str = ""
+
+
+class BrandFonts(BaseModel):
+    heading: str = ""
+    body: str = ""
+
+
+class VisualIdentity(BaseModel):
+    """My Voices' Brand Assets tab — the visual counterpart to VoiceTone/
+    VoiceCalibration above. Colors/fonts/logo were never modeled anywhere
+    on BrandProfile before this (voice_tone/calibration cover writing style
+    only) — genuinely new data, not a reuse. Brand-profile-scoped, same as
+    voice/tone: a workspace can hold several distinct brands, each needs
+    its own visual identity, not one shared workspace-wide set.
+
+    Feeds the default-image picker's quote-card template render and (once
+    funded) Nano Banana's generation prompt — both read real colors/fonts/
+    style here instead of a generic default.
+    """
+
+    logo_url: str = ""
+    logo_alt_url: str = ""  # e.g. a white/reversed variant for dark backgrounds
+    colors: BrandColors = Field(default_factory=BrandColors)
+    fonts: BrandFonts = Field(default_factory=BrandFonts)
+    # Free text, mirrors voice_tone.style but for imagery — "minimalist",
+    # "vibrant", "cinematic" — read directly into generation prompts.
+    visual_style_notes: str = ""
+    # Reference/product images for the brand-asset-match step (the default-
+    # image picker's first, cheapest source) — MediaAsset ids, not full
+    # objects, so this stays lightweight even with a large library.
+    reference_media_ids: list[str] = Field(default_factory=list)
+    # Row 16 — one AI-generated mascot/avatar per brand, built from this
+    # brand's real onboarding data (identity/brand_type/voice/visual style),
+    # not a random or generic character. Auto-generated once onboarding
+    # completes (fire-and-forget — doesn't block completion), fully
+    # editable after: regenerate, upload a real one instead, or clear back
+    # to "" (never a forced/locked image). Empty until generated or set.
+    mascot_url: str = ""
 
 
 class ExtractionData(BaseModel):
@@ -217,10 +272,14 @@ class VoiceCalibration(BaseModel):
 
 class TrainingSample(BaseModel):
     """My Voices' Training tab — a writing sample the user pasted in to
-    teach this voice. extracted_traits stays empty until real trait
-    analysis exists (an LLM call, not built here) — the original mock
-    always showed 3 fixed fake traits regardless of content; an empty
-    list is more honest than fabricating that analysis."""
+    teach this voice. extracted_traits is real since 2026-09-26 (PAR-015,
+    app.pipelines.brand.trait_extraction.extract_sample_traits) — a
+    structured LLM call reading the actual sample for specific, verifiable
+    stylistic observations, replacing the earlier honest-but-empty
+    placeholder (which itself replaced an original mock that always showed
+    3 fixed fake traits regardless of content). Still empty when extraction
+    fails or the sample is too short/generic to support a real observation
+    — that's the extraction being honest, not a leftover gap."""
 
     id: str
     title: str
@@ -237,6 +296,13 @@ class UpdateCalibrationBody(BaseModel):
     per-field patches."""
 
     calibration: VoiceCalibration
+
+
+class UpdateVisualIdentityBody(BaseModel):
+    """Full replace — same single-save-button convention as
+    UpdateCalibrationBody, for My Voices' Brand Assets tab."""
+
+    visual_identity: VisualIdentity
 
 
 class AddTrainingSampleBody(BaseModel):
@@ -316,5 +382,6 @@ class BrandProfile(BaseModel):
     default_tone: Optional[str] = None
     calibration: VoiceCalibration = Field(default_factory=VoiceCalibration)
     training_samples: list[TrainingSample] = Field(default_factory=list)
+    visual_identity: VisualIdentity = Field(default_factory=VisualIdentity)
     created_at: datetime
     updated_at: datetime

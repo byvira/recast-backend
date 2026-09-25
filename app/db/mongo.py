@@ -59,6 +59,9 @@ workspace_ai_usage_daily: AsyncIOMotorCollection = get_client().get_default_data
 # app.models.ai_usage.OpsLLMNote.
 ops_llm_notes: AsyncIOMotorCollection = get_client().get_default_database()["ops_llm_notes"]
 
+# Real, workspace-scoped media references — see app.models.media.MediaAsset.
+media_assets: AsyncIOMotorCollection = get_client().get_default_database()["media_assets"]
+
 # ── Sprint 4 — Content storage collections ───────────────────────────────────
 content_sessions: AsyncIOMotorCollection = get_client().get_default_database()["content_sessions"]
 content_pieces: AsyncIOMotorCollection = get_client().get_default_database()["content_pieces"]
@@ -169,6 +172,7 @@ async def create_indexes() -> None:
     await workspace_ai_budgets.create_index("workspace_id", unique=True)
     await workspace_ai_usage_daily.create_index([("workspace_id", 1), ("date", 1)], unique=True)
     await ops_llm_notes.create_index([("status", 1), ("created_at", -1)])
+    await media_assets.create_index([("workspace_id", 1), ("created_at", -1)])
 
     # ── Metrics ──────────────────────────────────────────────────────────
     await account_metrics.create_index([("workspace_id", 1), ("platform", 1)], unique=True)

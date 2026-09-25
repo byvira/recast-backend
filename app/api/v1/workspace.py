@@ -13,7 +13,7 @@ from app.core.notifications import send_templated_email
 from app.core.rbac import require_permission
 from app.core.tiers import TIER_DEFAULTS
 from app.db.mongo import users, workspaces, workspace_members
-from app.models.workspace import CreateWorkspaceBody, WorkspaceRole
+from app.models.workspace import CreateWorkspaceBody, MediaUploadLimits, WorkspaceRole
 
 router = APIRouter()
 
@@ -25,6 +25,10 @@ class UpdateWorkspaceBody(BaseModel):
     # against any fixed set; omit the field (not empty string) to leave the
     # current value untouched.
     language: Optional[str] = None
+    # Per-kind max upload size (Plan & Quotas) — app.api.v1.media reads
+    # this instead of a hardcoded constant. Omit the field to leave the
+    # current value (or the hardcoded default, if never set) untouched.
+    media_upload_limits: Optional[MediaUploadLimits] = None
 
 
 class SetRoleBody(BaseModel):

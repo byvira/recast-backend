@@ -63,16 +63,26 @@ class ThreadsPublisher(PlatformPublisher):
 
         threads_user_id = request.platform_user_id
 
+        # Previously hardcoded media_type=TEXT regardless of what was
+        # attached — this now uses whatever attach_media() decides is
+        # actually supported, and records an honest drop reason otherwise.
+        media_result = self.attach_media(request)
+        container_params = {"text": request.content, "access_token": access_token}
+        if media_result.has_media and media_result.asset.kind.value == "image":
+            container_params["media_type"] = "IMAGE"
+            container_params["image_url"] = media_result.asset.url
+        elif media_result.has_media and media_result.asset.kind.value == "video":
+            container_params["media_type"] = "VIDEO"
+            container_params["video_url"] = media_result.asset.url
+        else:
+            container_params["media_type"] = "TEXT"
+
         try:
             async with httpx.AsyncClient() as client:
                 # Step 1 — Create container
                 container_response = await client.post(
                     f"{THREADS_BASE}/{threads_user_id}/threads",
-                    params={
-                        "media_type":   "TEXT",
-                        "text":         request.content,
-                        "access_token": access_token,
-                    },
+                    params=container_params,
                 )
 
                 if container_response.status_code != 200:
@@ -112,6 +122,7 @@ class ThreadsPublisher(PlatformPublisher):
                         piece_id=request.piece_id,
                         platform_post_id=post_id,
                         platform_post_url=post_url,
+                        media_dropped_reason=media_result.dropped_reason,
                     )
 
                 error_data    = publish_response.json()

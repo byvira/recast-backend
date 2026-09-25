@@ -13,21 +13,25 @@ def _youtube() -> PlatformDefinition:
         },
         mode="code_driven",
         integration_pattern="api_publish",
-        # Analytics fetcher is real and live (app/pipelines/analytics/youtube.py, used by
-        # the aggregator today); no publisher exists yet (not in PUBLISHERS/registry.py) —
-        # reading works, publishing doesn't, hence "partial" rather than "active" or "planned".
-        status="partial",
-        publisher_cls=None,
+        # Basic publishing shipped 2026-09-25 (app/pipelines/publish/youtube/
+        # publisher.py) — real resumable video upload, brand-grounded
+        # title/description/tags/category via metadata.py, private-by-
+        # default (see policy_constraints below). Full "engaging video
+        # asset" richness (chapters, captions, end screens) is a
+        # deliberate later stage, not part of this build.
+        status="active",
+        publisher_cls="app.pipelines.publish.youtube.publisher.YouTubePublisher",
         analytics_fetcher_cls="app.pipelines.analytics.youtube.YouTubeAnalyticsFetcher",
-        validator_fn=None,
+        validator_fn="app.pipelines.publish.validators.validate_youtube",
         audit_required=True,
         rate_limits="Default 100 video uploads/day; extra quota needs an audit (Google quota page, checked 2026-09-20).",
         policy_constraints=[
             "Unverified projects created after July 2020 are restricted to private uploads until audit passes.",
         ],
         access_notes=(
-            "OAuth connected for analytics reading. A connected account with no YouTube channel "
-            "correctly returns nothing. Publishing not built — no YouTube publisher exists yet."
+            "OAuth now requests youtube.upload alongside youtube.readonly (was readonly-only "
+            "until the publisher existed) — a connection made before 2026-09-25 must reconnect "
+            "to publish. A connected account with no YouTube channel correctly returns nothing."
         ),
         confidence="verified",
         has_text_prompt_rules=True,

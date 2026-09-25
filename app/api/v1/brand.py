@@ -5,6 +5,8 @@ Writes require the ``edit_brand_voice`` permission; reads require membership onl
 ``user_id`` on each document is the creator (audit), not the scoping key.
 """
 
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -26,10 +28,15 @@ from app.models.brand_profile import (
     TrainingSample,
     UpdateBrandTypeBody,
     UpdateCalibrationBody,
+    UpdateVisualIdentityBody,
     UpdateVoiceBody,
 )
 from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggestions
 from app.pipelines.brand.voice_playground import preview_rewrite_in_voice
+from app.pipelines.brand.trait_extraction import extract_sample_traits
+from app.pipelines.media.image_generation import generate_brand_mascot
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -536,6 +543,33 @@ async def update_brand_calibration(
     return _doc_to_brand_profile(updated)
 
 
+@router.patch("/{brand_id}/visual-identity", response_model=BrandProfile)
+@limiter.limit("30/minute")
+async def update_brand_visual_identity(
+    request: Request,
+    brand_id: str,
+    body: UpdateVisualIdentityBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """
+    My Voices' Brand Assets tab — full replace, same single-save-button
+    convention as update_brand_calibration above.
+    """
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": {
+            "visual_identity": body.visual_identity.model_dump(),
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
+
+
 @router.post("/{brand_id}/training-samples", response_model=BrandProfile, status_code=201)
 @limiter.limit("30/minute")
 async def add_training_sample(
@@ -552,13 +586,16 @@ async def add_training_sample(
         raise HTTPException(status_code=400, detail="Sample content cannot be empty.")
 
     content = body.content.strip()
+    # PAR-015: was always []. A failed/unusable extraction still saves the
+    # sample with an honest empty list — never blocks the save itself.
+    traits = await extract_sample_traits(content, workspace_id=ctx.workspace_id)
     sample = TrainingSample(
         id=str(uuid4()),
         title=body.title.strip() or "Untitled sample",
         source_type=body.source_type,
         word_count=len(content.split()),
         snippet=content[:180] + ("..." if len(content) > 180 else ""),
-        extracted_traits=[],
+        extracted_traits=traits,
         added_at=datetime.now(timezone.utc),
     )
     await brand_profiles.update_one(
@@ -646,6 +683,29 @@ async def set_active_brand(
     return _doc_to_brand_profile(updated)
 
 
+async def _generate_and_save_mascot(brand_id: str, workspace_id: str, user_id: str) -> None:
+    """Row 16 — fire-and-forget mascot generation. Runs after the response
+    that triggered it has already returned (asyncio.create_task), so a
+    slow or failed generation never blocks brand completion or the manual
+    regenerate endpoint below. Re-reads the doc fresh rather than trusting
+    a stale copy, since this runs after the caller's own response."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
+    if not doc:
+        return
+    asset = await generate_brand_mascot(brand_profile=doc, workspace_id=workspace_id, user_id=user_id)
+    if not asset:
+        return
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": workspace_id},
+        {
+            "$set": {
+                "visual_identity.mascot_url": asset.url,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+
 @router.put("/{brand_id}/complete")
 @limiter.limit("20/minute")
 async def complete_brand_profile(
@@ -656,6 +716,12 @@ async def complete_brand_profile(
     """
     Mark a brand profile as complete.
     Sets user.onboarding_done = true if this is the caller's first completed profile.
+
+    Row 16 — fires mascot generation in the background right after
+    completion (fire-and-forget, doesn't block this response — generation
+    takes several real seconds across multiple gate calls + the actual
+    image call). The mascot appears in the Brand Assets tab once it's
+    ready, not synchronously here.
     """
     doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
@@ -674,7 +740,45 @@ async def complete_brand_profile(
             {"$set": {"onboarding_done": True}},
         )
 
+    if not (doc.get("visual_identity") or {}).get("mascot_url"):
+        asyncio.create_task(_generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id))
+
     return {"brand_id": brand_id, "is_complete": True}
+
+
+@router.post("/{brand_id}/visual-identity/mascot/regenerate", response_model=BrandProfile)
+@limiter.limit("10/minute")
+async def regenerate_brand_mascot(
+    request: Request,
+    brand_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """Row 16 — Brand Assets tab's "Regenerate" button. Unlike the
+    fire-and-forget trigger on /complete, this awaits and returns the
+    result directly — the user explicitly asked for this one and is
+    looking at a loading state waiting for it."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+
+    asset = await generate_brand_mascot(brand_profile=doc, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+    if not asset:
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't generate a mascot right now. Try again in a moment.",
+        )
+
+    await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {
+            "$set": {
+                "visual_identity.mascot_url": asset.url,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
 
 
 @router.delete("/{brand_id}")

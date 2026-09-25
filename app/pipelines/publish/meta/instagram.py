@@ -64,9 +64,9 @@ class InstagramPublisher(PlatformPublisher):
             )
 
         ig_user_id = getattr(request, "ig_user_id", None) or request.platform_user_id
-        image_url  = (request.media_urls or [None])[0]
+        media_result = self.attach_media(request)
 
-        if not image_url:
+        if not media_result.has_media:
             return PublishResult(
                 success=False,
                 platform="instagram",
@@ -74,21 +74,28 @@ class InstagramPublisher(PlatformPublisher):
                 error_type="FIXABLE",
                 error_code=400,
                 error_message=(
-                    "Instagram requires an image. "
-                    "Provide media_urls with at least one image URL."
+                    media_result.dropped_reason
+                    or "Instagram requires an image or video. Attach media before publishing."
                 ),
             )
+
+        asset = media_result.asset
+        # image_url for photos; video_url + media_type=REELS for video — the
+        # same container-create endpoint, a different param shape per kind.
+        # Extends this publisher beyond the single-image-only it was before.
+        container_params = {"caption": request.content, "access_token": access_token}
+        if asset.kind.value == "video":
+            container_params["video_url"] = asset.url
+            container_params["media_type"] = "REELS"
+        else:
+            container_params["image_url"] = asset.url
 
         try:
             async with httpx.AsyncClient() as client:
                 # Step 1 — Create media container
                 container_response = await client.post(
                     f"{GRAPH_BASE}/{ig_user_id}/media",
-                    params={
-                        "image_url":    image_url,
-                        "caption":      request.content,
-                        "access_token": access_token,
-                    },
+                    params=container_params,
                 )
 
                 if container_response.status_code != 200:

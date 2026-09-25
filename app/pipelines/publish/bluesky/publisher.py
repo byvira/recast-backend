@@ -111,14 +111,52 @@ class BlueSkyPublisher(PlatformPublisher):
 
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
+        # ATP doesn't accept a bare external URL for a native image embed —
+        # it needs the raw bytes uploaded as a blob first (com.atproto.repo
+        # .uploadBlob), then referenced in the post record. attach_media()
+        # still makes the shared "is this kind supported" decision (registry
+        # declares image: native, no video key — video is correctly dropped
+        # by the base default); the blob fetch+upload below is Bluesky's own
+        # mechanics, same pattern as LinkedIn's register-upload override.
+        media_result = self.attach_media(request)
+        embed = None
+        blob_dropped_reason = media_result.dropped_reason
+
+        if media_result.has_media:
+            try:
+                async with httpx.AsyncClient() as client:
+                    image_bytes_resp = await client.get(media_result.asset.url)
+                    image_bytes_resp.raise_for_status()
+                    upload_resp = await client.post(
+                        f"{ATP_BASE_URL}/com.atproto.repo.uploadBlob",
+                        content=image_bytes_resp.content,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": media_result.asset.mime_type,
+                        },
+                    )
+                    upload_resp.raise_for_status()
+                    blob = upload_resp.json()["blob"]
+                    embed = {
+                        "$type": "app.bsky.embed.images",
+                        "images": [{"image": blob, "alt": ""}],
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Bluesky blob upload failed for piece %s: %s", request.piece_id, exc)
+                blob_dropped_reason = "Bluesky media upload failed — published as text only"
+
+        record = {
+            "$type":     "app.bsky.feed.post",
+            "text":      request.content,
+            "createdAt": now,
+        }
+        if embed:
+            record["embed"] = embed
+
         payload = {
             "repo":       request.platform_user_id,   # DID
             "collection": "app.bsky.feed.post",
-            "record": {
-                "$type":     "app.bsky.feed.post",
-                "text":      request.content,
-                "createdAt": now,
-            },
+            "record": record,
         }
 
         try:
@@ -159,6 +197,7 @@ class BlueSkyPublisher(PlatformPublisher):
                         piece_id=request.piece_id,
                         platform_post_id=post_uri,
                         platform_post_url=post_url,
+                        media_dropped_reason=blob_dropped_reason,
                     )
 
                 error_data    = response.json()

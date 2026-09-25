@@ -27,15 +27,19 @@ from app.shared.pipeline_types import PipelineType
 def emit_content_published(workspace_id: str, *, pipeline_type: "PipelineType | str",
                            actor_user_id: str, actor_role: str, content_id: str,
                            target: str = "", external_url: str = "",
-                           via: str = "now") -> None:
+                           via: str = "now", media_dropped_reason: str = "") -> None:
     """A content piece went live on a platform. Feeds the daily_publish_cap rule.
     ``pipeline_type`` is the content's pipeline (required for content.* events).
-    ``via`` is "scheduled" when the scheduler published it, "now" otherwise."""
+    ``via`` is "scheduled" when the scheduler published it, "now" otherwise.
+    ``media_dropped_reason`` set means the piece had media that this
+    platform couldn't take — still a successful publish, but visibly
+    flagged rather than silently text-only."""
     emit_event_background(
         event_type=EventType.CONTENT_PUBLISHED, pipeline_type=pipeline_type,
         workspace_id=workspace_id, actor_user_id=actor_user_id, actor_role=actor_role,
         payload=ContentPublishedPayload(content_id=content_id, target=target,
-                                        external_url=external_url, via=via),
+                                        external_url=external_url, via=via,
+                                        media_dropped_reason=media_dropped_reason or None),
         idempotency_key=f"content.published:{content_id}:{target}",
     )
 

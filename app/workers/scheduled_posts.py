@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.notifications import send_templated_email
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import content_pieces, users, workspaces
+from app.models.media import MediaAsset
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
 from app.pipelines.publish.supervisor.alerts import alert_fatal
@@ -168,7 +169,9 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         logger.error("No publisher for platform %s", platform)
         return
 
-    # Build request
+    # Build request — media populated for real, same fix as the publish-now
+    # path (app/api/v1/publish.py); this was the other of the two real
+    # construction sites that always left it empty.
     pub_request = PublishRequest(
         piece_id=piece_id,
         workspace_id=workspace_id,
@@ -176,6 +179,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         brand_id=piece["brand_id"],
         platform=platform,
         content=piece["content"],
+        media=[MediaAsset(**m) for m in piece.get("media") or []],
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
 
@@ -199,6 +203,10 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 "platform_post_url": result.platform_post_url,
                 "updated_at":        datetime.now(timezone.utc),
                 "published_at":      datetime.now(timezone.utc),
+                # Row 9: same outcome the Activity Log already shows (see
+                # emit_content_published below), also on the piece itself so
+                # Drafts/Library/Calendar can render a real badge.
+                "media_dropped_reason": result.media_dropped_reason or None,
             }},
         )
         try:
@@ -209,6 +217,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 content_id=piece_id, target=platform,
                 external_url=result.platform_post_url or "",
                 via="scheduled",
+                media_dropped_reason=result.media_dropped_reason or "",
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("emit content.published failed for %s: %s", piece_id, exc)
