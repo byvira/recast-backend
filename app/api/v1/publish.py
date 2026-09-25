@@ -16,6 +16,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from pymongo import ReturnDocument
 
 from app.core.config import settings
 from app.core.middleware import limiter
@@ -71,6 +72,45 @@ async def _get_verified_piece(piece_id: str, workspace_id: str) -> dict:
     if not piece:
         raise HTTPException(status_code=404, detail="Piece not found.")
     return piece
+
+
+async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> dict:
+    """Atomically transition a piece into "publishing", rejecting the call
+    if it's already publishing or published.
+
+    _get_verified_piece + a later plain update_one(..., "publishing") left a
+    real race window: two near-simultaneous /publish/now calls (a genuine
+    double-click before the frontend's disabled state re-renders, two tabs,
+    or a direct API call) could both pass the read, both build a publish
+    request, and both call publisher.publish() — for YouTube specifically,
+    two real video uploads from one user action. find_one_and_update's
+    compare-and-swap is atomic at the database level, so only one caller can
+    ever win the claim.
+    """
+    piece = await content_pieces.find_one_and_update(
+        {
+            "piece_id": piece_id,
+            "workspace_id": workspace_id,
+            "deleted": {"$ne": True},
+            "publish_status": {"$nin": ["publishing", "published"]},
+        },
+        {"$set": {"publish_status": "publishing", "updated_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if piece is not None:
+        return piece
+
+    # Either the piece doesn't exist, or it's already publishing/published —
+    # distinguish so a real 404 doesn't get reported as "already publishing."
+    existing = await content_pieces.find_one(
+        {"piece_id": piece_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    raise HTTPException(
+        status_code=409,
+        detail="This piece is already being published or has already been published.",
+    )
 
 
 async def _update_piece_status(
@@ -151,7 +191,11 @@ async def publish_now(
     auto-fix on fixable errors, alert on fatal errors.
     """
     ws = ctx.workspace_id
-    piece = await _get_verified_piece(body.piece_id, ws)
+    # Atomic claim, not a plain read — see _claim_piece_for_publishing's own
+    # docstring. This also marks the piece "publishing" immediately, so the
+    # separate _update_piece_status(..., "publishing") call further down is
+    # gone; the claim already did it as part of the same atomic operation.
+    piece = await _claim_piece_for_publishing(body.piece_id, ws)
     # Derived from the piece, not caller input — a piece is always exactly
     # one platform, and the publish subsystem's own vocabulary (token_store,
     # the PUBLISHERS registry, the scheduled_posts worker) is the lowercase
@@ -192,8 +236,6 @@ async def publish_now(
         youtube_metadata=body.youtube_metadata,
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
-
-    await _update_piece_status(body.piece_id, ws, "publishing")
 
     content    = piece["content"]
     attempt    = 0

@@ -176,6 +176,23 @@ async def transform_media(
             status_code=400,
             detail=f"Unsupported aspect ratio. Choose one of: {', '.join(ASPECT_RATIO_PRESETS)}.",
         )
+    # Neither build_transformed_url nor anything above validates the trim
+    # values themselves — a negative or inverted range (trim_end_s before
+    # trim_start_s) passed every existing check and reached the URL builder
+    # unvalidated, which then computed a negative duration_s below and
+    # stored it. The shipped UI self-clamps and can't produce this, but the
+    # endpoint itself must reject it for any other caller.
+    if want_trim:
+        if body.trim_start_s is not None and body.trim_start_s < 0:
+            raise HTTPException(status_code=400, detail="trim_start_s can't be negative.")
+        if body.trim_end_s is not None and body.trim_end_s < 0:
+            raise HTTPException(status_code=400, detail="trim_end_s can't be negative.")
+        if (
+            body.trim_start_s is not None
+            and body.trim_end_s is not None
+            and body.trim_end_s <= body.trim_start_s
+        ):
+            raise HTTPException(status_code=400, detail="trim_end_s must be after trim_start_s.")
 
     try:
         new_url = build_transformed_url(

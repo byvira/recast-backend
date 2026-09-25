@@ -7,7 +7,7 @@ final, locked answer.
 """
 
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -39,7 +39,12 @@ class YouTubeMetadata(BaseModel):
     description: str
     tags: list[str] = []
     category_id: str = _DEFAULT_CATEGORY_ID
-    privacy_status: str = "private"
+    # Was a plain str — the review-modal UI only ever offers these 3 values,
+    # but the server itself never enforced that, so a direct API call could
+    # send anything and have it forwarded unchanged to Google's real upload
+    # call. Pydantic now 422s on construction for anything else, matching
+    # what the UI already restricts to.
+    privacy_status: Literal["private", "unlisted", "public"] = "private"
     made_for_kids: bool = False
 
 

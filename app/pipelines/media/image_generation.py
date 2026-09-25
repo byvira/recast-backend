@@ -33,11 +33,13 @@ automatic, capped fallback.
 
 Every image goes through a 4-stage gate/polish pipeline before the actual
 provider call — the product owner's own framing, "3x gated and polish
-layer":
+layer". Real execution order (verified against _run_gates below, corrected
+here to match — this docstring previously stated a different order than
+the code actually runs):
   1. LLM prompt polish/expansion (Groq, already-free connection)
-  2. Anti-generic gate
-  3. Brand-fit gate
-  4. Safety/content gate
+  2. Safety/content gate
+  3. Anti-generic gate
+  4. Brand-fit gate
 A prompt that fails a gate gets one re-polish retry; if it still fails,
 this returns None and the caller (the default-image picker) falls through
 to the quote-card template — never silent, never blocks generation.

@@ -1,5 +1,6 @@
 """Request logging middleware and SlowAPI rate limiter setup."""
 
+import re
 import time
 import uuid
 
@@ -32,13 +33,21 @@ MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
 # JSON-only to keep protected here.
 _EXEMPT_PATH_PREFIXES = ("/api/v1/media",)
 
-# Exempt by exact suffix instead of prefix for campaigns — only the
-# thumbnail upload (POST /api/v1/campaigns/{id}/thumbnail) is a real
+# Exempt by exact route shape instead of a bare suffix for campaigns — only
+# the thumbnail upload (POST /api/v1/campaigns/{id}/thumbnail) is a real
 # UploadFile route (same stale-cap bug as /api/v1/media above, own 5MB
 # check via MAX_THUMBNAIL_BYTES). The rest of /api/v1/campaigns (create,
 # batch-generate, suggest-topics, ...) is JSON and should keep the 2MB
 # anti-abuse cap, so this doesn't use a blanket prefix exemption.
-_EXEMPT_PATH_SUFFIXES = ("/thumbnail",)
+#
+# A bare string-suffix match (`path.endswith("/thumbnail")`) was too broad:
+# any future unrelated route that happens to end in "/thumbnail" (a typo'd
+# route name, a settings field) would silently inherit this bypass — the
+# exact CORS-masking failure mode this middleware exists to prevent,
+# reopened by a naming coincidence. Matched by real shape instead: exactly
+# one path segment (the campaign id) between "/api/v1/campaigns/" and
+# "/thumbnail", nothing else.
+_CAMPAIGN_THUMBNAIL_PATH_RE = re.compile(r"^/api/v1/campaigns/[^/]+/thumbnail$")
 
 
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
@@ -50,15 +59,15 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     transfer) pass through uninspected here — none of this app's clients use
     chunked uploads today.
 
-    Paths under _EXEMPT_PATH_PREFIXES, or ending in _EXEMPT_PATH_SUFFIXES,
-    skip this check entirely — they have their own real, kind-aware size
-    validation downstream, and shouldn't be capped by a limit sized for
-    JSON API bodies.
+    Paths under _EXEMPT_PATH_PREFIXES, or exactly matching
+    _CAMPAIGN_THUMBNAIL_PATH_RE, skip this check entirely — they have their
+    own real, kind-aware size validation downstream, and shouldn't be
+    capped by a limit sized for JSON API bodies.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         path = request.url.path
-        if path.startswith(_EXEMPT_PATH_PREFIXES) or path.endswith(_EXEMPT_PATH_SUFFIXES):
+        if path.startswith(_EXEMPT_PATH_PREFIXES) or _CAMPAIGN_THUMBNAIL_PATH_RE.match(path):
             return await call_next(request)
 
         content_length = request.headers.get("content-length")
