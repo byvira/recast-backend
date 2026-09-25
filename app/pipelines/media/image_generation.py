@@ -2,18 +2,34 @@
 
 Default provider: Cloudflare Workers AI running FLUX.1 [schnell]
 (@cf/black-forest-labs/flux-1-schnell) — a real Cloudflare account +
-Workers AI API token, free tier: 10,000 neurons/day (~200-500 images/day
-depending on size), HARD BLOCK on exhaustion, not silent billing. Verified
-live 2026-09-25 with a real call before wiring this in (previous
-candidates — Gemini Nano Banana, Hugging Face FLUX, and Pollinations.ai —
-all turned out to require real payment or a key/budget this project
-doesn't have; see the plan's "Stage E provider pivot" and "Stage E
-unpaused" notes for the full trail). Gemini Nano Banana
-(gemini-2.5-flash-image) itself has NO free API tier — a free-tier key
-gets a 429 with limit: 0, real usage is $0.039/image. It's still wired
-here as a selectable provider (the product owner wants it choosable
-alongside others) but never called automatically — see
-generate_brand_image's provider param.
+Workers AI API token, free tier: 10,000 neurons/day, HARD BLOCK on
+exhaustion, not silent billing. Verified live 2026-09-25 with a real call
+before wiring this in (previous candidates — Gemini Nano Banana, Hugging
+Face FLUX, and Pollinations.ai — all turned out to require real payment or
+a key/budget this project doesn't have; see the plan's "Stage E provider
+pivot" and "Stage E unpaused" notes for the full trail).
+
+At the 1024x1024/4-step settings this module actually uses, one image
+costs 57.6 neurons (4 steps x 9.6 + four 512x512 tiles x 4.8 — verified
+against Cloudflare's own pricing) — the real daily ceiling is
+10,000/57.6 = ~173 images/day for the WHOLE app, not per workspace.
+Corrected 2026-09-25 from an earlier "~200-500" estimate that didn't
+account for the real per-image cost. At that ceiling, exhaustion isn't a
+rare edge case for any real multi-tenant usage — confirmed live the same
+day (a 429 with the real Cloudflare quota-exhausted error body).
+
+Gemini Nano Banana (gemini-2.5-flash-image) has NO free API tier — a
+free-tier key gets a 429 with limit: 0, real usage is $0.039/image.
+**As of 2026-09-25 it's a capped automatic fallback**, not just a
+selectable-but-inert provider: once Cloudflare fails (including real
+quota exhaustion), _generate_image_bytes tries Gemini next, but only if
+today's Gemini-fallback call count is still under
+settings.GEMINI_IMAGE_FALLBACK_DAILY_CAP (default 100/day, ~$3.90/day —
+a settings value, not hardcoded, so the product owner can tune spend
+without a code change). Explicitly *requesting* Gemini as the primary
+provider (generate_brand_image's provider param) is still refused — that
+guard is about deliberate provider selection, a separate concern from this
+automatic, capped fallback.
 
 Every image goes through a 4-stage gate/polish pipeline before the actual
 provider call — the product owner's own framing, "3x gated and polish
@@ -33,6 +49,7 @@ discarded) — MediaAsset.qa_flagged is exactly the kind of real risk Row
 10's preview-before-publish gate exists to catch before it publishes.
 """
 
+import asyncio
 import base64
 import logging
 from datetime import datetime, timezone
@@ -41,11 +58,12 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
+from pymongo import ReturnDocument
 
 from app.core.config import settings
-from app.db.mongo import media_assets
+from app.db.mongo import image_fallback_usage, media_assets
 from app.models.media import MediaAsset, MediaKind, MediaSource
-from app.shared.llm import call_llm, call_vision, GroqModel
+from app.shared.llm import call_llm, call_vision, get_gemini_client, GeminiModel, GroqModel
 from app.shared.storage import ContentType as UploadContentType, upload_file
 
 logger = logging.getLogger(__name__)
@@ -232,6 +250,74 @@ async def _call_cloudflare(prompt: str) -> bytes:
     return base64.b64decode(image_b64)
 
 
+async def _gemini_fallback_slot_available() -> bool:
+    """Atomically claims one of today's capped Gemini-fallback slots.
+    Increments first, then checks the result against the cap — the same
+    reserve-then-use tradeoff app.shared.llm's Groq TPM budget check makes
+    (a tiny race window under real concurrency is acceptable; this isn't
+    a hot path). A cap of 0 disables the fallback entirely without a
+    separate feature flag."""
+    if settings.GEMINI_IMAGE_FALLBACK_DAILY_CAP <= 0:
+        return False
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    doc = await image_fallback_usage.find_one_and_update(
+        {"_id": today},
+        {"$inc": {"gemini_calls": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return doc["gemini_calls"] <= settings.GEMINI_IMAGE_FALLBACK_DAILY_CAP
+
+
+async def _call_gemini(prompt: str) -> bytes:
+    """Real Gemini Nano Banana (gemini-2.5-flash-image) call — paid,
+    $0.039/image. Only ever reached via _generate_image_bytes's capped
+    fallback path, never called directly elsewhere. Raises on any failure,
+    same contract as _call_cloudflare."""
+    client = get_gemini_client()
+    loop = asyncio.get_running_loop()
+    response = await loop.run_in_executor(
+        None,
+        lambda: client.models.generate_content(
+            model=GeminiModel.IMAGE.value,
+            contents=prompt,
+        ),
+    )
+    for part in response.candidates[0].content.parts:
+        inline_data = getattr(part, "inline_data", None)
+        if inline_data and inline_data.data:
+            return inline_data.data
+    raise RuntimeError("Gemini returned no image data")
+
+
+async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
+    """The one place either provider is actually called. Tries Cloudflare
+    (free, ~173 images/day for the whole app at this size — see
+    settings.CLOUDFLARE_API_TOKEN's docstring) first; only on failure
+    (including real quota exhaustion — a live 429 was confirmed
+    2026-09-25) does it check for a capped Gemini fallback slot. Returns
+    None if both are unavailable — the caller falls through to the
+    quote-card template (generate_brand_image) or leaves mascot_url unset
+    (generate_brand_mascot), never raises."""
+    try:
+        return await _call_cloudflare(prompt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Cloudflare image generation failed, checking Gemini fallback: %s", exc)
+
+    if not settings.GEMINI_API_KEY:
+        return None
+    if not await _gemini_fallback_slot_available():
+        logger.info("Gemini fallback daily cap reached — no image generated today.")
+        return None
+    try:
+        image_bytes = await _call_gemini(prompt)
+        logger.info("Cloudflare exhausted — served this image via the capped Gemini fallback.")
+        return image_bytes
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Gemini fallback image generation also failed: %s", exc)
+        return None
+
+
 async def _qa_gate(image_bytes: bytes, brand_profile: dict) -> tuple[bool, Optional[str]]:
     """Row 12 — post-generation QA: does the actual generated image fit
     this brand's real VisualIdentity? Same Gemini connection call_vision
@@ -312,11 +398,12 @@ async def generate_brand_mascot(
     *, brand_profile: dict, workspace_id: str, user_id: str,
 ) -> Optional[MediaAsset]:
     """Row 16 — one AI-generated mascot per brand, through the same
-    4-stage gate/polish pipeline and provider as generate_brand_image.
-    Never raises — a failed mascot generation just leaves mascot_url
-    unset, never blocks brand creation/completion."""
-    if not settings.CLOUDFLARE_API_TOKEN or not settings.CLOUDFLARE_ACCOUNT_ID:
-        logger.warning("Cloudflare Workers AI not configured — skipping mascot generation.")
+    4-stage gate/polish pipeline and provider chain as generate_brand_image
+    (Cloudflare free tier first, capped Gemini fallback second). Never
+    raises — a failed mascot generation just leaves mascot_url unset,
+    never blocks brand creation/completion."""
+    if not settings.CLOUDFLARE_API_TOKEN and not settings.GEMINI_API_KEY:
+        logger.warning("No image generation provider configured — skipping mascot generation.")
         return None
 
     try:
@@ -325,7 +412,9 @@ async def generate_brand_mascot(
         if not prompt:
             return None
 
-        image_bytes = await _call_cloudflare(prompt)
+        image_bytes = await _generate_image_bytes(prompt)
+        if not image_bytes:
+            return None
         qa_flagged, qa_reason = await _qa_gate(image_bytes, brand_profile)
 
         url = await upload_file(image_bytes, UploadContentType.IMAGE, user_id)
@@ -363,11 +452,16 @@ async def generate_brand_image(
     the caller falls through to the quote-card template, same behaviour
     as if this function didn't exist.
 
-    provider defaults to Cloudflare Workers AI (free, real, working — see
-    module docstring). GEMINI is a genuine code path here but is never
-    selected automatically anywhere in this codebase — it costs real
-    money and there's no workspace opt-in mechanism built yet to gate it
-    behind. Passing it explicitly today is refused, not silently billed.
+    provider defaults to Cloudflare Workers AI (free, ~173 images/day for
+    the whole app — see module docstring). Explicitly requesting GEMINI as
+    the *primary* provider here is still refused — it costs real money and
+    there's no per-workspace opt-in mechanism to gate deliberate paid usage
+    behind. That's separate from the automatic fallback below: once
+    Cloudflare's free tier is exhausted for the day, _generate_image_bytes
+    automatically tries Gemini as a paid fallback, but only up to
+    settings.GEMINI_IMAGE_FALLBACK_DAILY_CAP images/day app-wide — a
+    deliberate, capped, always-on safety net rather than an unbounded
+    opt-in a workspace has to discover and enable.
     """
     if provider == ImageProvider.GEMINI:
         logger.error(
@@ -376,8 +470,8 @@ async def generate_brand_image(
         )
         return None
 
-    if not settings.CLOUDFLARE_API_TOKEN or not settings.CLOUDFLARE_ACCOUNT_ID:
-        logger.warning("Cloudflare Workers AI not configured — skipping AI image generation.")
+    if not settings.CLOUDFLARE_API_TOKEN and not settings.GEMINI_API_KEY:
+        logger.warning("No image generation provider configured — skipping AI image generation.")
         return None
 
     try:
@@ -385,7 +479,9 @@ async def generate_brand_image(
         if not prompt:
             return None
 
-        image_bytes = await _call_cloudflare(prompt)
+        image_bytes = await _generate_image_bytes(prompt)
+        if not image_bytes:
+            return None
         qa_flagged, qa_reason = await _qa_gate(image_bytes, brand_profile)
 
         url = await upload_file(image_bytes, UploadContentType.IMAGE, user_id)

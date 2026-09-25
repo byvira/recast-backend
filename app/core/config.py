@@ -101,9 +101,24 @@ class Settings(BaseSettings):
 
     # Cloudflare Workers AI — image generation provider (Row 11,
     # app.pipelines.media.image_generation). Free tier: 10,000 neurons/day,
-    # hard block on exhaustion, no surprise billing.
+    # hard block on exhaustion, no surprise billing. At the 1024x1024/4-step
+    # settings this app actually uses, one image costs 57.6 neurons (4 steps
+    # x 9.6 neurons + four 512x512 tiles x 4.8 neurons — verified against
+    # Cloudflare's own pricing), so the real daily ceiling is 10,000/57.6 =
+    # ~173 images/day for the WHOLE app (one shared account, not per
+    # workspace) — corrected 2026-09-25 from an earlier "~200-500" estimate
+    # that didn't account for the real per-image neuron cost at this size.
     CLOUDFLARE_API_TOKEN: str = ""
     CLOUDFLARE_ACCOUNT_ID: str = ""
+
+    # Gemini Nano Banana (gemini-2.5-flash-image) as a PAID fallback for
+    # image generation, only used once Cloudflare's free ~173/day is
+    # exhausted. $0.039/image — capped so an exhausted free tier can't turn
+    # into unbounded spend. 0 disables the fallback entirely (Cloudflare
+    # exhaustion then falls straight through to the quote-card template,
+    # the pre-2026-09-25 behavior). A settings value, not hardcoded, so the
+    # cap is a config change, not a code change.
+    GEMINI_IMAGE_FALLBACK_DAILY_CAP: int = 100
 
     # Free tier credits limit
     FREE_CREDITS_LIMIT: int = 100

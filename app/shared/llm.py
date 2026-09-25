@@ -73,6 +73,10 @@ class GeminiModel(str, Enum):
     FLASH      = "gemini-3.5-flash"
     FLASH_LITE = "gemini-3.5-flash-lite"
     PRO        = "gemini-3.1-pro-preview"
+    # Nano Banana — image generation, not text. Paid, no free tier
+    # ($0.039/image, verified live 2026-09-25). Only ever called from
+    # app.pipelines.media.image_generation's capped Cloudflare fallback.
+    IMAGE      = "gemini-2.5-flash-image"
 
 
 # Embedding model for the personal-assistant voice baseline.

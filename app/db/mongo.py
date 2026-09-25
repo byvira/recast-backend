@@ -62,6 +62,13 @@ ops_llm_notes: AsyncIOMotorCollection = get_client().get_default_database()["ops
 # Real, workspace-scoped media references — see app.models.media.MediaAsset.
 media_assets: AsyncIOMotorCollection = get_client().get_default_database()["media_assets"]
 
+# One doc per UTC date ({"_id": "2026-09-25", "gemini_calls": N}), app-wide
+# (not per-workspace — mirrors Cloudflare's own single shared-account quota).
+# Atomically incremented to cap Gemini Nano Banana fallback spend once
+# Cloudflare's free tier is exhausted — see
+# app.pipelines.media.image_generation._gemini_fallback_slot_available.
+image_fallback_usage: AsyncIOMotorCollection = get_client().get_default_database()["image_fallback_usage"]
+
 # ── Sprint 4 — Content storage collections ───────────────────────────────────
 content_sessions: AsyncIOMotorCollection = get_client().get_default_database()["content_sessions"]
 content_pieces: AsyncIOMotorCollection = get_client().get_default_database()["content_pieces"]
