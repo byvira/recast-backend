@@ -391,7 +391,9 @@ def _build_mascot_raw_prompt(brand_profile: dict) -> str:
     if color_desc:
         parts.append(f"Brand colors to favor: {color_desc}.")
     parts.append(
-        "Centered, simple background so it reads clearly as a profile/avatar image."
+        "Centered on a plain transparent background (no scenery, no solid color fill, "
+        "no studio backdrop) so it reads clearly as a profile/avatar icon that can sit "
+        "directly on a dark app UI."
     )
     return " ".join(parts)
 
