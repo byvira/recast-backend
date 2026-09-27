@@ -6,11 +6,15 @@ require ``edit_content``; approve / reject / schedule / approve-all require
 ``approve_content`` (owner or admin only).
 """
 
+import csv
+import io
 import logging
+import zipfile
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.middleware import limiter
@@ -25,6 +29,7 @@ from app.pipelines.text.storage import (
     get_session,
     get_workspace_sessions,
     get_workspace_pieces,
+    get_all_workspace_pieces,
     get_piece,
     update_piece_content,
     update_piece_status,
@@ -455,3 +460,101 @@ async def restore_piece_version(
             detail=f"Piece or version {version_number} not found.",
         )
     return restored
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPORT — real Library download, added 2026-09-26 (standalone-usage audit,
+# see pow/audio_image_pipeline/GAPS.md). Library's Markdown/CSV/ZIP buttons
+# previously called `handlePlaceholderExport`, an honest mock that never did
+# anything. A user who never connects a publish platform needs a real way to
+# get their content out — this covers every real piece in the workspace
+# (get_all_workspace_pieces has no pagination), read fresh from the DB at
+# export time, not whatever a page's already-loaded cache happens to hold.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _piece_header(p: dict) -> str:
+    created = p.get("created_at")
+    created_str = created.strftime("%Y-%m-%d %H:%M UTC") if isinstance(created, datetime) else str(created or "")
+    return f"{p.get('platform', '')} — {p.get('brand_name', '')} — {created_str}"
+
+
+def _pieces_to_markdown(pieces: list[dict]) -> str:
+    if not pieces:
+        return "# Recast Library Export\n\nNo pieces to export.\n"
+    parts = [f"# Recast Library Export ({len(pieces)} pieces)\n"]
+    for p in pieces:
+        parts.append(f"## {_piece_header(p)}\n")
+        parts.append(p.get("content", "") + "\n")
+        hashtags = p.get("seo", {}).get("hashtags") or []
+        if hashtags:
+            parts.append("Tags: " + ", ".join(f"#{t}" for t in hashtags) + "\n")
+        parts.append("---\n")
+    return "\n".join(parts)
+
+
+def _pieces_to_csv(pieces: list[dict]) -> str:
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        ["piece_id", "platform", "brand_name", "stage", "word_count", "char_count", "created_at", "content"]
+    )
+    for p in pieces:
+        created = p.get("created_at")
+        created_str = created.isoformat() if isinstance(created, datetime) else str(created or "")
+        writer.writerow([
+            p.get("piece_id", ""),
+            p.get("platform", ""),
+            p.get("brand_name", ""),
+            p.get("stage", ""),
+            p.get("word_count", ""),
+            p.get("char_count", ""),
+            created_str,
+            p.get("content", ""),
+        ])
+    return buf.getvalue()
+
+
+def _pieces_to_zip(pieces: list[dict]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in pieces:
+            slug = (p.get("piece_id") or "piece")[:12]
+            filename = f"{p.get('platform', 'piece')}_{slug}.md"
+            body = f"# {_piece_header(p)}\n\n{p.get('content', '')}\n"
+            zf.writestr(filename, body)
+    return buf.getvalue()
+
+
+_EXPORT_CONTENT_TYPES = {
+    "markdown": ("text/markdown", "recast-library.md"),
+    "csv": ("text/csv", "recast-library.csv"),
+    "zip": ("application/zip", "recast-library.zip"),
+}
+
+
+@router.get("/export")
+@limiter.limit("10/minute")
+async def export_pieces(
+    request: Request,
+    format: str = Query(..., pattern="^(markdown|csv|zip)$"),
+    brand_id: Optional[str] = Query(None),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> Response:
+    """Real export of every real piece in the workspace (optionally
+    filtered to one brand) — markdown/csv/zip. No pagination: the whole
+    library, read fresh from the DB, not a partial or stale view."""
+    pieces = await get_all_workspace_pieces(workspace_id=ctx.workspace_id, brand_id=brand_id)
+    media_type, filename = _EXPORT_CONTENT_TYPES[format]
+
+    if format == "markdown":
+        body: str | bytes = _pieces_to_markdown(pieces)
+    elif format == "csv":
+        body = _pieces_to_csv(pieces)
+    else:
+        body = _pieces_to_zip(pieces)
+
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

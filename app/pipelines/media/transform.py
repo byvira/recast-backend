@@ -79,3 +79,41 @@ def build_transformed_url(
     prefix = source_url[: match.start(1)]
     rest = match.group(2)
     return f"{prefix}/upload/{transformation}/{rest}"
+
+
+# png/webp — Stage 2 scope of the ImageAsset export feature
+# (pow/audio_image_pipeline/01-image-pipeline-plan.md). mp3/wav — Stage 4
+# scope of the AudioAsset export feature (02-audio-pipeline-plan.md).
+# svg/pdf/zip (image) and SRT/VTT/JSON transcript + ID3 tags (audio) are
+# real, separate Phase-4 work (svg needs a vector source path to exist at
+# all, never a rasterize-on-the-fly; pdf/zip/transcript-export need their
+# own compilation modules, not a Cloudinary URL param) — not silently
+# faked here. Cloudinary's f_<ext> transform param works the same way
+# across image/video(audio) resource types, confirmed via its own docs.
+_EXPORT_FORMAT_PARAMS: dict[str, str] = {
+    "png": "f_png",
+    "webp": "f_webp",
+    "mp3": "f_mp3",
+    "wav": "f_wav",
+}
+
+
+def build_export_url(source_url: str, *, export_format: str) -> str:
+    """Same insertion technique as build_transformed_url, for a plain
+    format-conversion export (no crop/trim). Raises ValueError for a
+    format this function doesn't (yet) support — never silently returns
+    the original URL as if the conversion happened."""
+    if export_format not in _EXPORT_FORMAT_PARAMS:
+        raise ValueError(
+            f"build_export_url only supports {sorted(_EXPORT_FORMAT_PARAMS)} today "
+            f"— {export_format!r} needs its own real export pipeline, not a "
+            "Cloudinary format param."
+        )
+
+    match = _UPLOAD_SEGMENT.search(source_url)
+    if not match:
+        raise ValueError(f"Not a recognizable Cloudinary delivery URL: {source_url}")
+
+    prefix = source_url[: match.start(1)]
+    rest = match.group(2)
+    return f"{prefix}/upload/{_EXPORT_FORMAT_PARAMS[export_format]}/{rest}"

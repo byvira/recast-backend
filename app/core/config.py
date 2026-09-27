@@ -111,6 +111,30 @@ class Settings(BaseSettings):
     CLOUDFLARE_API_TOKEN: str = ""
     CLOUDFLARE_ACCOUNT_ID: str = ""
 
+    # ElevenLabs TTS — real, paid plan, product owner's own account, decided
+    # 2026-09-25 specifically for the audio pipeline (see
+    # pow/audio_image_pipeline/02-audio-pipeline-plan.md's TTS integration
+    # section). Deliberately on its own account, not Cloudflare's Workers AI
+    # TTS models — those share the same 10,000-neuron/day pool as Flux image
+    # generation, and one narration could burn most of that shared budget.
+    # Empty until the user provides it — see pow/.../PROGRESS.md's Blockers.
+    # Confirmed live 2026-09-26 the account is still on its free plan
+    # (library voices 402 "payment_required" via the API) — a real Azure
+    # TTS fallback was built and live-tested the same day, then removed
+    # the same day per the user's explicit choice: keep ElevenLabs only,
+    # upgrade the account later. Not re-added without a new decision —
+    # see pow/audio_image_pipeline/PROGRESS.md's Decisions Log.
+    ELEVENLABS_API_KEY: str = ""
+
+    # Deepgram — added 2026-09-26 by the user directly to .env (not yet
+    # wired into any code path) to check real feasibility as a TTS option
+    # while ElevenLabs' account is still on its free plan. Aura (Deepgram's
+    # TTS product) was in file 03's original research: real accounts get a
+    # $200 one-time free credit, no expiration — a one-time signup credit,
+    # not a recurring free tier, standard billing applies once spent. Not
+    # yet a decided pick — this is a live feasibility check only.
+    DEEPGRAM_API_KEY: str = ""
+
     # Gemini Nano Banana (gemini-2.5-flash-image) as a PAID fallback for
     # image generation, only used once Cloudflare's free ~173/day is
     # exhausted. $0.039/image — capped so an exhausted free tier can't turn

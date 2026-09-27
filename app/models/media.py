@@ -19,6 +19,9 @@ class MediaKind(str, Enum):
     IMAGE = "image"
     VIDEO = "video"
     AUDIO = "audio"
+    # A PDF/ZIP export artifact (image-carousel export) — not a playable/
+    # viewable media kind, but still a real, downloadable MediaAsset.
+    DOCUMENT = "document"
 
 
 class MediaSource(str, Enum):
@@ -36,6 +39,16 @@ class MediaSource(str, Enum):
     # right (own id, own URL), not a mutation of the original, so the
     # source asset stays intact and independently referenceable.
     EDITED = "edited"
+    # A server-side Pillow-composited slide (app.pipelines.media.image_render)
+    # for an ImageAsset — layout + brand tokens + text baked into a real file,
+    # not a browser-only CSS preview.
+    RENDERED = "rendered"
+    # Real TTS output (app.pipelines.media.tts_generation) for an AudioAsset.
+    SYNTHESIZED = "synthesized"
+    # Post-DSP-cleanup output (denoise/loudness-normalize/EQ) of another
+    # MediaAsset — a real, distinct derivative, same "never mutate the
+    # source" convention as EDITED.
+    ENHANCED = "enhanced"
 
 
 class MediaAsset(BaseModel):

@@ -107,6 +107,19 @@ autonomy_shadow: AsyncIOMotorCollection = get_client().get_default_database()["a
 # app.shared.activity.inbox — one read-state doc per (workspace, member).
 inbox_state: AsyncIOMotorCollection = get_client().get_default_database()["inbox_state"]
 
+# ── Image pipeline — see app.models.image_asset, pow/audio_image_pipeline/01 ──
+image_assets: AsyncIOMotorCollection = get_client().get_default_database()["image_assets"]
+image_asset_versions: AsyncIOMotorCollection = get_client().get_default_database()["image_asset_versions"]
+image_share_links: AsyncIOMotorCollection = get_client().get_default_database()["image_share_links"]
+
+# ── Audio pipeline — see app.models.audio_asset, pow/audio_image_pipeline/02 ──
+audio_assets: AsyncIOMotorCollection = get_client().get_default_database()["audio_assets"]
+audio_asset_versions: AsyncIOMotorCollection = get_client().get_default_database()["audio_asset_versions"]
+audio_share_links: AsyncIOMotorCollection = get_client().get_default_database()["audio_share_links"]
+shows: AsyncIOMotorCollection = get_client().get_default_database()["shows"]
+# Multi-voice dialogue (2026-09-26, bugs/gaps sweep) — see app.models.audio_asset.GuestVoiceProfile
+guest_voice_profiles: AsyncIOMotorCollection = get_client().get_default_database()["guest_voice_profiles"]
+
 # ── Collection getter functions ───────────────────────────────────────────────
 
 def get_users_collection() -> AsyncIOMotorCollection:
@@ -298,4 +311,29 @@ async def create_indexes() -> None:
     # against any fixed set.
     localized_strings = get_client().get_default_database()["localized_strings"]
     await localized_strings.create_index([("key", 1), ("language", 1)], unique=True)
+
+    # ── Image pipeline ────────────────────────────────────────────────────
+    await image_assets.create_index([("workspace_id", 1), ("created_at", -1)])
+    await image_assets.create_index([("workspace_id", 1), ("approval_status", 1)])
+    # Stale-upstream detection (Phase 3) needs a fast lookup of every
+    # ImageAsset derived from a given text piece.
+    await image_assets.create_index("source_piece_id")
+    await image_asset_versions.create_index(
+        [("image_asset_id", 1), ("version_number", -1)]
+    )
+    await image_share_links.create_index("token", unique=True)
+    await image_share_links.create_index([("image_asset_id", 1), ("revoked", 1)])
+
+    # ── Audio pipeline ────────────────────────────────────────────────────
+    await audio_assets.create_index([("workspace_id", 1), ("created_at", -1)])
+    await audio_assets.create_index([("workspace_id", 1), ("approval_status", 1)])
+    await audio_assets.create_index("source_piece_id")
+    await audio_assets.create_index([("show_id", 1), ("created_at", 1)])
+    await audio_asset_versions.create_index(
+        [("audio_asset_id", 1), ("version_number", -1)]
+    )
+    await audio_share_links.create_index("token", unique=True)
+    await audio_share_links.create_index([("audio_asset_id", 1), ("revoked", 1)])
+    await shows.create_index([("workspace_id", 1), ("created_at", -1)])
+    await guest_voice_profiles.create_index([("audio_asset_id", 1)])
 

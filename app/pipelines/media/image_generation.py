@@ -441,6 +441,60 @@ async def generate_brand_mascot(
         return None
 
 
+async def generate_image_from_prompt(
+    *,
+    prompt: str,
+    workspace_id: str,
+    user_id: str,
+    target_size: tuple[int, int],
+    provider: ImageProvider = ImageProvider.CLOUDFLARE,
+    brand_profile: Optional[dict] = None,
+) -> Optional[bytes]:
+    """The provider-agnostic entry point for "generate real image bytes from
+    an already-specific prompt" — factored out of generate_brand_image (which
+    is now a thin wrapper around this) so a caller with its own prompt (the
+    image-assets generate endpoint, not a topic+brand_profile framing) can
+    reuse the real gate/provider pipeline without faking a topic. Same
+    never-raises contract as everything else in this module — any failure
+    returns None.
+
+    brand_profile is optional here: the brand-fit gate already treats a
+    missing/empty profile as "nothing to check against" (passes), and the
+    QA gate is the caller's own responsibility on the returned bytes, not
+    run inside this function — this only covers prompt-gating + generation.
+
+    target_size is accepted and passed through to the caller's own record
+    of intent (e.g. the layout the caller is about to composite this into)
+    but not enforced here: neither the Cloudflare nor the Gemini call this
+    module makes accepts a target width/height today, so the provider
+    always returns its own natural output size. Resizing/cropping into a
+    specific layout's real pixel dimensions is the render step's job
+    (app.pipelines.media.image_render), not this function's — documented
+    rather than silently pretended.
+    """
+    if provider == ImageProvider.GEMINI:
+        logger.error(
+            "Gemini image provider requested but has no opt-in mechanism "
+            "yet — refusing rather than silently spending real money."
+        )
+        return None
+
+    if not settings.CLOUDFLARE_API_TOKEN and not settings.GEMINI_API_KEY:
+        logger.warning("No image generation provider configured — skipping AI image generation.")
+        return None
+
+    try:
+        polished = await _run_gates(prompt, brand_profile or {})
+        if not polished:
+            return None
+        return await _generate_image_bytes(polished)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "generate_image_from_prompt failed for workspace %s: %s", workspace_id, exc
+        )
+        return None
+
+
 async def generate_brand_image(
     *,
     topic: str,
@@ -464,26 +518,25 @@ async def generate_brand_image(
     settings.GEMINI_IMAGE_FALLBACK_DAILY_CAP images/day app-wide — a
     deliberate, capped, always-on safety net rather than an unbounded
     opt-in a workspace has to discover and enable.
-    """
-    if provider == ImageProvider.GEMINI:
-        logger.error(
-            "Gemini image provider requested but has no opt-in mechanism "
-            "yet — refusing rather than silently spending real money."
-        )
-        return None
 
-    if not settings.CLOUDFLARE_API_TOKEN and not settings.GEMINI_API_KEY:
-        logger.warning("No image generation provider configured — skipping AI image generation.")
+    A thin wrapper around generate_image_from_prompt — builds the
+    topic-driven raw prompt this function has always used, then delegates
+    the actual gate/provider work, then does the QA gate + upload + persist
+    steps this function alone is responsible for (generate_image_from_prompt
+    only returns bytes, it never uploads/persists).
+    """
+    image_bytes = await generate_image_from_prompt(
+        prompt=_build_raw_prompt(topic, brand_profile),
+        workspace_id=workspace_id,
+        user_id=user_id,
+        target_size=IMAGE_SIZE,
+        provider=provider,
+        brand_profile=brand_profile,
+    )
+    if not image_bytes:
         return None
 
     try:
-        prompt = await _run_gates(_build_raw_prompt(topic, brand_profile), brand_profile)
-        if not prompt:
-            return None
-
-        image_bytes = await _generate_image_bytes(prompt)
-        if not image_bytes:
-            return None
         qa_flagged, qa_reason = await _qa_gate(image_bytes, brand_profile)
 
         url = await upload_file(image_bytes, UploadContentType.IMAGE, user_id)

@@ -15,12 +15,12 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from app.api.v1 import audio, image, text, video
+from app.api.v1 import audio, text, video
 from app.api.v1 import auth as auth_router
 from app.api.v1 import brand as brand_router
 from app.api.v1 import onboarding_draft as drafts_router
 from app.api.v1 import users as users_router
-from app.api.v1 import content, media, oauth, publish
+from app.api.v1 import audio_assets, content, image_assets, media, oauth, publish
 from app.api.v1 import presets as presets_router
 from app.api.v1 import campaigns as campaigns_router
 from app.core.config import settings
@@ -314,7 +314,12 @@ app.include_router(campaigns_router.router, prefix="/api/v1/campaigns", tags=["C
 app.include_router(text.router,           prefix="/api/v1/text",       tags=["Text Pipeline"])
 app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Audio"])
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
-app.include_router(image.router,          prefix="/api/v1/image",      tags=["Image"])
+# app.api.v1.image's router is a confirmed dead decoy (every handler is a
+# placeholder — see pow/audio_image_pipeline/00-overview.md Finding #1) —
+# retired here, not deleted yet (its files go away once image_assets.router
+# below fully replaces it, a later phase).
+app.include_router(image_assets.router, prefix="/api/v1/image-assets", tags=["Image Assets"])
+app.include_router(audio_assets.router, prefix="/api/v1/audio-assets", tags=["Audio Assets"])
 app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["Analytics"])
 app.include_router(assistant_router.router, prefix="/api/v1/assistant", tags=["Assistant"])
 app.include_router(supervisor_router.router, prefix="/api/v1/supervisor", tags=["Supervisor"])

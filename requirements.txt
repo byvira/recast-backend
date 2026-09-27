@@ -62,9 +62,20 @@ aiofiles>=23.0.0
 
 # ─────────────────────────────────────────
 # Media rendering — default quote-card image fallback
-# (app/pipelines/media/default_image.py)
+# (app/pipelines/media/default_image.py) + the real ImageAsset render
+# service (app/pipelines/media/image_render.py) and its export formats
 # ─────────────────────────────────────────
 Pillow>=10.0.0
+pygments>=2.18.0
+fpdf2>=2.7.9
+
+# ─────────────────────────────────────────
+# Audio DSP cleanup — app/pipelines/media/audio_enhance.py's real
+# implementation (built 2026-09-26, bugs/gaps sweep)
+# ─────────────────────────────────────────
+noisereduce>=3.0.3
+pyloudnorm>=0.1.1
+soundfile>=0.13.0
 
 # ─────────────────────────────────────────
 # Job Queue

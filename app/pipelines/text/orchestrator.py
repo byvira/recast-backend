@@ -36,6 +36,8 @@ from app.agents.text.nodes import _extract_enforcement_data
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
 from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
 from app.pipelines.media.default_image import pick_default_image
+from app.pipelines.media.pdf_export import generate_pieces_pdf
+from app.shared.storage import ContentType, upload_file
 from app.agents.text.event_emitter import EventEmitter
 from uuid import uuid4
 
@@ -466,6 +468,25 @@ async def run_text_pipeline(
             total_pieces=len(pieces),
         )
 
+    # DEF-031 fix: extras.pdf_export was declared and threaded all the way
+    # into state["extras"], but nothing ever generated a real PDF from it.
+    # One PDF per run (not per piece) — the toggle applies to the whole
+    # generation result, matching TextPipelineResult.pdf_export_url's own
+    # shape (a single field on the result, not on each GeneratedPiece).
+    pdf_export_url = None
+    if metadata.get("pdf_export") and any(p.content.strip() for p in pieces):
+        try:
+            identity = brand_profile.get("identity") or {}
+            brand_name = identity.get("name") or identity.get("productName") or identity.get("company_name") or ""
+            pdf_bytes = generate_pieces_pdf(pieces, brand_name=brand_name)
+            pdf_export_url = await upload_file(
+                file=pdf_bytes,
+                content_type=ContentType.EXPORT,
+                user_id=user_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("PDF export failed for session %s: %s", session_id, exc, exc_info=True)
+
     return TextPipelineResult(
         session_id=normalised.session_id,
         workspace_id=workspace_id,
@@ -479,6 +500,7 @@ async def run_text_pipeline(
         batch_day_index=batch_day_index,
         source_platform=_platform_str(source_platform) if source_platform else None,
         created_at=datetime.now(timezone.utc),
+        pdf_export_url=pdf_export_url,
         assistant_nudge=await _safe_assistant_nudge(workspace_id, user_id),
     )
 

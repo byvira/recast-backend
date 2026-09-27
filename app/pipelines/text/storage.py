@@ -523,6 +523,32 @@ async def get_workspace_pieces(
     }
 
 
+async def get_all_workspace_pieces(
+    workspace_id: str,
+    platform: Optional[str] = None,
+    brand_id: Optional[str] = None,
+) -> list[dict]:
+    """Every real piece in the workspace matching the given filters, no
+    pagination — real export (Library's Markdown/CSV/ZIP buttons) needs
+    the caller's *entire* library, not one page of it, and needs a fresh
+    DB read at export time rather than whatever a page's already-loaded
+    React Query cache happens to hold (added 2026-09-26, standalone-usage
+    audit — see pow/audio_image_pipeline/GAPS.md). Same query shape as
+    get_workspace_pieces, just without skip/limit."""
+    query: dict = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
+    if platform:
+        query["platform"] = platform
+    if brand_id:
+        query["brand_id"] = brand_id
+
+    pieces = await content_pieces.find(query).sort("created_at", -1).to_list(length=None)
+    for p in pieces:
+        p.pop("_id", None)
+        p["stage"] = compute_kanban_stage(p)
+    await _attach_display_names(pieces)
+    return pieces
+
+
 async def get_piece(piece_id: str, workspace_id: str) -> Optional[dict]:
     """Fetch one piece by piece_id. Returns None if not found or outside the workspace."""
     piece = await content_pieces.find_one(

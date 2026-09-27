@@ -7,7 +7,12 @@ def build_video_agent():
     """Build and compile the video pipeline LangGraph agent."""
     graph = StateGraph(BaseAgentState)
 
-    graph.add_node("plan",       nodes.plan_node)
+    # "plan" collides with BaseAgentState's own `plan: list[str]` field —
+    # LangGraph refuses a node name that's also a state key (the same
+    # bug confirmed and fixed in app/agents/audio/graph.py 2026-09-26,
+    # applied here the same way: this graph could not be imported before
+    # this fix either).
+    graph.add_node("plan_step",  nodes.plan_node)
     graph.add_node("transcribe", nodes.transcribe_node)
     graph.add_node("analyse",    nodes.analyse_node)
     graph.add_node("generate",   nodes.generate_node)
@@ -15,9 +20,9 @@ def build_video_agent():
     graph.add_node("retry",      nodes.retry_node)
     graph.add_node("deliver",    nodes.deliver_node)
 
-    graph.set_entry_point("plan")
+    graph.set_entry_point("plan_step")
 
-    graph.add_edge("plan",       "transcribe")
+    graph.add_edge("plan_step",  "transcribe")
     graph.add_edge("transcribe", "analyse")
     graph.add_edge("analyse",    "generate")
     graph.add_edge("generate",   "evaluate")

@@ -79,7 +79,7 @@ def normalise_brand_keys(data: dict) -> dict:
 
 def _doc_to_brand_profile(doc: dict) -> BrandProfile:
     """Convert a raw MongoDB document to a BrandProfile model instance."""
-    from app.models.brand_profile import AudienceProfile, VoiceCalibration, VoiceTone
+    from app.models.brand_profile import AudienceProfile, VisualIdentity, VoiceCalibration, VoiceTone
 
     return BrandProfile(
         id=doc["id"],
@@ -105,6 +105,17 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         default_tone=doc.get("default_tone"),
         calibration=VoiceCalibration(**doc["calibration"]) if doc.get("calibration") else VoiceCalibration(),
         training_samples=doc.get("training_samples", []),
+        # Real bug, found and fixed 2026-09-26 while wiring the Image
+        # pipeline's real brand-color sourcing (pow/audio_image_pipeline
+        # Stage 5): visual_identity was never mapped here at all, so
+        # every brand API response — including update_brand_visual_identity's
+        # own response, right after saving it — silently returned the
+        # empty Pydantic default instead of the real, persisted colors/
+        # fonts/logo. The DB write itself was fine; only the read-back was
+        # broken. My Voices' Brand Assets tab likely only ever looked
+        # correct because it echoes its own local draft state after
+        # saving, not the server's actual response.
+        visual_identity=VisualIdentity(**doc["visual_identity"]) if doc.get("visual_identity") else VisualIdentity(),
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
     )

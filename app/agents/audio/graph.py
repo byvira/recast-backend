@@ -7,7 +7,13 @@ def build_audio_agent():
     """Build and compile the audio pipeline LangGraph agent."""
     graph = StateGraph(BaseAgentState)
 
-    graph.add_node("plan",       nodes.plan_node)
+    # "plan" collides with BaseAgentState's own `plan: list[str]` field —
+    # LangGraph refuses a node name that's also a state key
+    # ("ValueError: 'plan' is already being used as a state key",
+    # confirmed live 2026-09-26: this graph could not even be imported
+    # before this fix). Renamed the same way app.agents.text.graph already
+    # renames its own colliding node names (generate_hooks/generate_seo).
+    graph.add_node("plan_step",  nodes.plan_node)
     graph.add_node("transcribe", nodes.transcribe_node)
     graph.add_node("analyse",    nodes.analyse_node)
     graph.add_node("generate",   nodes.generate_node)
@@ -15,9 +21,9 @@ def build_audio_agent():
     graph.add_node("retry",      nodes.retry_node)
     graph.add_node("deliver",    nodes.deliver_node)
 
-    graph.set_entry_point("plan")
+    graph.set_entry_point("plan_step")
 
-    graph.add_edge("plan",       "transcribe")
+    graph.add_edge("plan_step",  "transcribe")
     graph.add_edge("transcribe", "analyse")
     graph.add_edge("analyse",    "generate")
     graph.add_edge("generate",   "evaluate")

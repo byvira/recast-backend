@@ -11,6 +11,10 @@ class ContentType(str, Enum):
     VIDEO = "recast_video"
     AUDIO = "recast_audio"
     THUMBNAIL = "recast_thumbnails"
+    # PDF/ZIP carousel export artifacts — an arbitrary file, not an
+    # image/video Cloudinary can transform, so it needs its own
+    # resource_type branch below.
+    EXPORT = "recast_exports"
 
 _configured = False
 
@@ -36,6 +40,8 @@ def _ensure_configured() -> None:
 def _get_resource_type(content_type: ContentType) -> str:
     if content_type == ContentType.VIDEO or content_type == ContentType.AUDIO:
         return "video"  # Cloudinary uses "video" for audio too
+    if content_type == ContentType.EXPORT:
+        return "raw"  # arbitrary file (PDF/ZIP), not an image/video transform target
     return "image"
 
 async def upload_file(
