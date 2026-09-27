@@ -16,6 +16,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
+from app.agents.supervisor.service import assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core.config import settings
 from app.core.middleware import limiter
@@ -244,6 +245,8 @@ async def generate_image_asset(
     check has something to compare against later. If `prompt` IS given,
     it's used verbatim — an explicit edit always wins over auto-derivation.
     """
+    await assert_generation_allowed(ctx.workspace_id)
+
     if body.active_layout not in SUPPORTED_LAYOUTS:
         raise HTTPException(
             status_code=400,

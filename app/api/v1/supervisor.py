@@ -28,6 +28,10 @@ class StatusBody(BaseModel):
     status: str
 
 
+class KillSwitchBody(BaseModel):
+    halted: bool
+
+
 @router.get("/insights")
 @limiter.limit("30/minute")
 async def get_insights(
@@ -110,3 +114,16 @@ async def run_supervisor_pass(
     """Owner-only: trigger a supervisor reasoning pass now (enqueues on the arq
     worker). Returns immediately."""
     return await service.trigger_run(ctx.workspace_id)
+
+
+@router.post("/kill-switch")
+@limiter.limit("10/minute")
+async def set_kill_switch(
+    request: Request,
+    body: KillSwitchBody,
+    ctx: WorkspaceContext = Depends(_OWNER),
+) -> dict:
+    """Owner-only: arm/disarm the emergency kill switch. Real and persisted —
+    every Text/Audio/Image generation call rejects new work with a 403 while
+    armed (see service.assert_generation_allowed)."""
+    return await service.set_generation_halted(ctx.workspace_id, body.halted)

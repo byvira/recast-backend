@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
+from app.agents.supervisor.service import assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core.config import settings
 from app.core.middleware import limiter
@@ -86,6 +87,8 @@ async def generate_audio_asset(
     short reformatting pass" is a real Phase-2 enhancement, deliberately
     skipped here to keep this slice minimal but real, not faked.
     """
+    await assert_generation_allowed(ctx.workspace_id)
+
     script = (body.script or "").strip()
     source_content_hash: Optional[str] = None
 
@@ -214,6 +217,8 @@ async def generate_dialogue(
     file via concatenate_turns. A named guest speaker's voice_id is saved
     as a real GuestVoiceProfile, scoped to this one AudioAsset, so the
     same guest can be reused across turns without repeating the id."""
+    await assert_generation_allowed(ctx.workspace_id)
+
     if not body.turns:
         raise HTTPException(status_code=400, detail="At least one turn is required.")
 
@@ -402,6 +407,8 @@ async def localize_audio_asset(
     plan needs a real, specific error, not a confusing failure three
     steps later inside the TTS call.
     """
+    await assert_generation_allowed(ctx.workspace_id)
+
     is_supported, reason = is_language_supported(body.target_language)
     if not is_supported:
         raise HTTPException(status_code=400, detail=reason)

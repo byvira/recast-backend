@@ -139,7 +139,7 @@ async def build_context_node(state: TextAgentState) -> dict:
 
     Handles both camelCase (frontend save) and snake_case (backend model).
     """
-    from app.db.mongo import brand_profiles
+    from app.db.mongo import brand_profiles, member_lexicon
 
     _brand_query = {"id": state["brand_id"]}
     if state.get("workspace_id"):
@@ -169,6 +169,23 @@ async def build_context_node(state: TextAgentState) -> dict:
 
     # ── Extract all enforcement data ──────────────────────────────────────
     enforcement = _extract_enforcement_data(brand_profile)
+
+    # ── Merge in this member's own jargon blacklist (Remy's Lexicon tab) —
+    # real personal enforcement, not just brand-level. Was persisted with
+    # zero consumers until now; reuses the exact same banned_words gate
+    # (prompt instruction + hard-gate retry) brand banned_words already use,
+    # rather than building a second, parallel mechanism. Whitelist has no
+    # counterpart to attach to yet (there's no generic jargon detector for
+    # it to exempt terms from) — still genuinely not wired.
+    if state.get("user_id"):
+        lexicon_doc = await member_lexicon.find_one(
+            {"workspace_id": state.get("workspace_id"), "user_id": state["user_id"]},
+            {"blacklist": 1},
+        )
+        if lexicon_doc and lexicon_doc.get("blacklist"):
+            enforcement["banned_words"] = list(
+                dict.fromkeys([*enforcement["banned_words"], *lexicon_doc["blacklist"]])
+            )
 
     # ── Debug log — confirms banned words are being read ──────────────────
     logger.info(

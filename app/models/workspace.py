@@ -64,6 +64,11 @@ class Workspace(BaseModel):
     # None means "use the hardcoded defaults" — same precedence convention
     # as `language` above. Settable via PATCH /api/v1/workspace/{id}.
     media_upload_limits: Optional[MediaUploadLimits] = None
+    # Owner-only emergency stop (Odette's "kill switch"). When true, every
+    # Text/Audio/Image generation entry point rejects new work with a 403
+    # until an owner turns it back off — see app.agents.supervisor.service
+    # .assert_generation_allowed, the single shared check all three call.
+    generation_halted: bool = False
     created_at: datetime
     updated_at: datetime
 

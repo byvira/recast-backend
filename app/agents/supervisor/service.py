@@ -157,6 +157,7 @@ async def dashboard(workspace_id: str) -> dict:
         "seats": seats,
         "active_members": active_members,
         "seat_headroom": (seats - active_members) if seats else None,
+        "generation_halted": bool(ws.get("generation_halted", False)),
         "open_flags": [
             {"id": f["_id"], "type": f.get("flag_type"), "severity": f.get("severity"),
              "detection": f.get("detection"), "summary": f.get("summary_persona"),
@@ -169,6 +170,33 @@ async def dashboard(workspace_id: str) -> dict:
         "notifications_total": unread_notifs,
         "generated_at": now.isoformat(),
     }
+
+
+# ── kill switch ─────────────────────────────────────────────────────────────
+
+async def set_generation_halted(workspace_id: str, halted: bool) -> dict:
+    """Owner-only emergency stop. Real, persisted, workspace-wide — every
+    Text/Audio/Image generation entry point checks this via
+    assert_generation_allowed before doing any real work."""
+    await workspaces.update_one(
+        {"id": workspace_id},
+        {"$set": {"generation_halted": halted, "updated_at": datetime.now(timezone.utc)}},
+    )
+    return {"workspace_id": workspace_id, "generation_halted": halted}
+
+
+async def assert_generation_allowed(workspace_id: str) -> None:
+    """Raises 403 if this workspace's owner has armed the kill switch.
+    Called at the top of every real generation entry point (Text's
+    run_text_pipeline, Image's generate_image_asset, Audio's
+    generate_audio_asset/generate_dialogue) — one shared check, not a
+    per-pipeline reimplementation."""
+    ws = await workspaces.find_one({"id": workspace_id}, {"generation_halted": 1})
+    if ws and ws.get("generation_halted"):
+        raise HTTPException(
+            status_code=403,
+            detail="Generation is paused for this workspace. An owner armed the emergency kill switch in Odette.",
+        )
 
 
 # ── notifications ───────────────────────────────────────────────────────────
