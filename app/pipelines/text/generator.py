@@ -248,6 +248,18 @@ def build_banned_words_instruction(
     )
 
 
+def build_approved_vocabulary_instruction(approved_vocabulary: List[str]) -> str:
+    """
+    The positive mirror of build_banned_words_instruction — a member's
+    personal "approved vocabulary" whitelist (Remy's Lexicon tab) told to
+    the model as explicitly cleared, not jargon to avoid. Empty by default;
+    only ever populated from a member's own saved lexicon, never brand-level.
+
+    Renders app/prompts/text/generate/approved_vocabulary.jinja.
+    """
+    return load_prompt("text/generate/approved_vocabulary", approved_vocabulary=approved_vocabulary)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # POST-GENERATION VALIDATION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -481,10 +493,12 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
     approved_openers = task.metadata.get("approved_openers", [])
     approved_closers = task.metadata.get("approved_closers", [])
     required_phrases = task.metadata.get("required_phrases", [])
+    approved_vocabulary = task.metadata.get("approved_vocabulary", [])
 
     # ── Build instruction blocks ──────────────────────────────────────────
     approved_copy_instruction = build_approved_copy_instruction(task)
     banned_instruction = build_banned_words_instruction(banned_words, preferred_synonyms)
+    approved_vocabulary_instruction = build_approved_vocabulary_instruction(approved_vocabulary)
 
     # ── Hashtag instruction — brand vocabulary aware ──────────────────────
     if task.metadata.get("hashtags", True):
@@ -531,6 +545,7 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         hashtag_instruction=hashtag_instruction,
         cta_instruction=cta_instruction,
         banned_instruction=banned_instruction,
+        approved_vocabulary_instruction=approved_vocabulary_instruction,
         content=task.content,
         platform=task.platform.value,
     )

@@ -1,0 +1,8 @@
+{%- if approved_vocabulary %}
+
+APPROVED VOCABULARY — these terms are explicitly cleared for use. Do not
+avoid, hedge around, or over-explain them as if they were jargon:
+{% for word in approved_vocabulary %}
+  ✓ '{{ word }}' is approved brand/technical vocabulary — use it plainly
+{%- endfor %}
+{% endif %}

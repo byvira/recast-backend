@@ -4,6 +4,7 @@ from app.pipelines.text.brand_context import build_goal_context, build_tone_over
 from app.pipelines.text.generator import (
     PLATFORM_RULES,
     build_approved_copy_instruction,
+    build_approved_vocabulary_instruction,
     build_banned_words_instruction,
     build_language_instruction,
 )
@@ -51,10 +52,12 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
     approved_openers = task.metadata.get("approved_openers", [])
     approved_closers = task.metadata.get("approved_closers", [])
     preferred_synonyms = task.metadata.get("preferred_synonyms", [])
+    approved_vocabulary = task.metadata.get("approved_vocabulary", [])
 
     # ── Build enforcement instruction blocks ──────────────────────────────
     approved_copy_instruction = build_approved_copy_instruction(task)
     banned_instruction = build_banned_words_instruction(banned_words, preferred_synonyms)
+    approved_vocabulary_instruction = build_approved_vocabulary_instruction(approved_vocabulary)
 
     # ── Retry feedback block ──────────────────────────────────────────────
     retry_feedback = task.metadata.get("retry_feedback", "")
@@ -77,6 +80,7 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
         engagement_context=engagement_context,
         tone_override=tone_override,
         banned_instruction=banned_instruction,
+        approved_vocabulary_instruction=approved_vocabulary_instruction,
         brand_context=task.brand_context,
         platform=task.platform.value,
     )
@@ -123,8 +127,10 @@ async def run_structured_repurpose_agent(task: AgentTask, source_platform: Platf
 
     banned_words = task.metadata.get("banned_words", [])
     preferred_synonyms = task.metadata.get("preferred_synonyms", [])
+    approved_vocabulary = task.metadata.get("approved_vocabulary", [])
     approved_copy_instruction = build_approved_copy_instruction(task)
     banned_instruction = build_banned_words_instruction(banned_words, preferred_synonyms)
+    approved_vocabulary_instruction = build_approved_vocabulary_instruction(approved_vocabulary)
 
     retry_feedback = task.metadata.get("retry_feedback", "")
     retry_count = task.retry_count or 0
@@ -145,6 +151,7 @@ async def run_structured_repurpose_agent(task: AgentTask, source_platform: Platf
         engagement_context=engagement_context,
         tone_override=tone_override,
         banned_instruction=banned_instruction,
+        approved_vocabulary_instruction=approved_vocabulary_instruction,
         brand_context=task.brand_context,
         platform=task.platform.value,
         structure_rules=structure_rules,

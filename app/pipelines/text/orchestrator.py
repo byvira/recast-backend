@@ -33,7 +33,7 @@ from app.pipelines.text.repurpose import run_repurpose_agent, run_structured_rep
 from app.pipelines.text.generator import GENERIC_OPENINGS, validate_content, validate_structured_sections
 from app.shared.llm import call_llm_structured, set_usage_workspace
 from app.prompts.registry import load_prompt
-from app.agents.text.nodes import _extract_enforcement_data
+from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
 from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
 from app.pipelines.media.default_image import pick_default_image
@@ -326,6 +326,8 @@ async def run_text_pipeline(
             scheduled_at=scheduled_at,
             emitter=emitter,
             session_id=session_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
             structure_rules=structure_rules,
         )
 
@@ -538,6 +540,8 @@ async def _run_repurpose_path(
     scheduled_at,
     emitter,
     session_id,
+    workspace_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     structure_rules: Optional[list[dict]] = None,
 ) -> list[GeneratedPiece]:
     """
@@ -548,6 +552,9 @@ async def _run_repurpose_path(
     """
     brand_context = build_brand_context(brand_profile)
     enforcement   = _extract_enforcement_data(brand_profile)
+    enforcement   = await merge_member_lexicon_enforcement(
+        enforcement, workspace_id=workspace_id, user_id=user_id,
+    )
 
     repurpose_coros = [
         _run_single_repurpose(
@@ -620,6 +627,7 @@ async def _run_single_repurpose(
         "approved_openers":   enforcement["approved_openers"],
         "approved_closers":   enforcement["approved_closers"],
         "preferred_synonyms": enforcement.get("preferred_synonyms", []),
+        "approved_vocabulary": enforcement.get("approved_vocabulary", []),
         "structure_rules":    structure_rules,
     }
     generate_fn = run_structured_repurpose_agent if structure_rules else run_repurpose_agent

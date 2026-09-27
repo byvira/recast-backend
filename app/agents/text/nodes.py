@@ -88,7 +88,55 @@ def _extract_enforcement_data(brand_profile: dict) -> dict:
         "approved_openers": openers,
         "approved_closers": closers,
         "required_phrases": phrases,
+        "approved_vocabulary": [],
     }
+
+
+async def merge_member_lexicon_enforcement(
+    enforcement: dict, *, workspace_id: Optional[str], user_id: Optional[str],
+) -> dict:
+    """Merges a member's personal Lexicon (Remy's Vocabulary & Pronunciation
+    tab) into brand-level enforcement, in place, real personal enforcement
+    on top of brand enforcement, not a second parallel mechanism:
+      - blacklist -> banned_words: the exact same hard-gate + prompt
+        instruction brand banned_words already use (validate_content,
+        banned_words.jinja).
+      - whitelist -> approved_vocabulary: the positive mirror — explicitly
+        tells the model these terms are cleared brand/technical vocabulary,
+        not jargon to hedge around or avoid (approved_vocabulary.jinja).
+
+    Called from every real generation entry point that builds enforcement
+    from a brand profile — both the normal-generation graph's
+    build_context_node and the repurpose path's _run_repurpose_path — so
+    personal enforcement applies consistently regardless of which mode
+    produced the content. Shared, not duplicated, since both already read
+    the same MemberLexicon shape.
+
+    No-op (brand enforcement returned unchanged, `approved_vocabulary`
+    still defaults to []) when user_id/workspace_id aren't given or the
+    member has no saved lexicon — never raises.
+    """
+    from app.db.mongo import member_lexicon
+
+    if not user_id:
+        return enforcement
+
+    lexicon_doc = await member_lexicon.find_one(
+        {"workspace_id": workspace_id, "user_id": user_id},
+        {"blacklist": 1, "whitelist": 1},
+    )
+    if not lexicon_doc:
+        return enforcement
+
+    if lexicon_doc.get("blacklist"):
+        enforcement["banned_words"] = list(
+            dict.fromkeys([*enforcement["banned_words"], *lexicon_doc["blacklist"]])
+        )
+    if lexicon_doc.get("whitelist"):
+        enforcement["approved_vocabulary"] = list(
+            dict.fromkeys([*enforcement.get("approved_vocabulary", []), *lexicon_doc["whitelist"]])
+        )
+    return enforcement
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,7 +187,7 @@ async def build_context_node(state: TextAgentState) -> dict:
 
     Handles both camelCase (frontend save) and snake_case (backend model).
     """
-    from app.db.mongo import brand_profiles, member_lexicon
+    from app.db.mongo import brand_profiles
 
     _brand_query = {"id": state["brand_id"]}
     if state.get("workspace_id"):
@@ -169,23 +217,9 @@ async def build_context_node(state: TextAgentState) -> dict:
 
     # ── Extract all enforcement data ──────────────────────────────────────
     enforcement = _extract_enforcement_data(brand_profile)
-
-    # ── Merge in this member's own jargon blacklist (Remy's Lexicon tab) —
-    # real personal enforcement, not just brand-level. Was persisted with
-    # zero consumers until now; reuses the exact same banned_words gate
-    # (prompt instruction + hard-gate retry) brand banned_words already use,
-    # rather than building a second, parallel mechanism. Whitelist has no
-    # counterpart to attach to yet (there's no generic jargon detector for
-    # it to exempt terms from) — still genuinely not wired.
-    if state.get("user_id"):
-        lexicon_doc = await member_lexicon.find_one(
-            {"workspace_id": state.get("workspace_id"), "user_id": state["user_id"]},
-            {"blacklist": 1},
-        )
-        if lexicon_doc and lexicon_doc.get("blacklist"):
-            enforcement["banned_words"] = list(
-                dict.fromkeys([*enforcement["banned_words"], *lexicon_doc["blacklist"]])
-            )
+    enforcement = await merge_member_lexicon_enforcement(
+        enforcement, workspace_id=state.get("workspace_id"), user_id=state.get("user_id"),
+    )
 
     # ── Debug log — confirms banned words are being read ──────────────────
     logger.info(
