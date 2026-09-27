@@ -19,6 +19,7 @@ from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import member_lexicon, member_voice_settings
 from app.models.lexicon import MemberLexicon, MemberLexiconWrite
 from app.models.voice_settings import MemberVoiceSettings, MemberVoiceSettingsWrite
+from app.pipelines.media.tts_generation import sync_pronunciation_dictionary
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -193,7 +194,26 @@ async def update_lexicon(
     doc = await member_lexicon.find_one(
         {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
     )
-    return MemberLexicon(**doc)
+    lexicon = MemberLexicon(**doc)
+
+    # Real ElevenLabs sync — never blocks the save itself. A failed sync
+    # just means the next narration has no pronunciation locators to
+    # attach, not a broken lexicon save.
+    synced = await sync_pronunciation_dictionary(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, lexicon=lexicon,
+    )
+    if synced:
+        await member_lexicon.update_one(
+            {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id},
+            {"$set": {
+                "elevenlabs_dictionary_id": synced["id"],
+                "elevenlabs_dictionary_version_id": synced["version_id"],
+            }},
+        )
+        lexicon.elevenlabs_dictionary_id = synced["id"]
+        lexicon.elevenlabs_dictionary_version_id = synced["version_id"]
+
+    return lexicon
 
 
 @router.get("/nudge")

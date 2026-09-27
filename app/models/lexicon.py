@@ -14,6 +14,14 @@ from pydantic import BaseModel, Field
 class PronunciationEntry(BaseModel):
     id: str
     term: str
+    # Despite the field name (kept for backward compatibility with the
+    # existing UI/API contract), this is used as a plain-text phonetic
+    # RESPELLING (e.g. "zen-dlee"), not strict IPA — ElevenLabs' alias-type
+    # pronunciation rule (the only mechanism that works with the
+    # eleven_multilingual_v2 model this codebase synthesizes with) does a
+    # literal text substitution, not phoneme interpretation. Real IPA
+    # characters here would be read aloud as-is, which is wrong. See
+    # tts_generation.py::sync_pronunciation_dictionary.
     ipa: str
     notes: str = ""
 
@@ -37,6 +45,13 @@ class MemberLexicon(BaseModel):
     whitelist: list[str] = Field(default_factory=list)
     blacklist: list[str] = Field(default_factory=list)
     writing_blueprint: WritingBlueprint = Field(default_factory=WritingBlueprint)
+
+    # Real ElevenLabs pronunciation-dictionary sync target, set once the
+    # first save with at least one pronunciation succeeds. None means
+    # "never synced yet" or "last sync failed" — synthesize_speech simply
+    # skips pronunciation locators in that case, never blocks narration.
+    elevenlabs_dictionary_id: Optional[str] = None
+    elevenlabs_dictionary_version_id: Optional[str] = None
 
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

@@ -29,6 +29,7 @@ from app.db.mongo import (
     content_pieces,
     guest_voice_profiles,
     media_assets,
+    member_lexicon,
     member_voice_settings,
 )
 from app.models.agent_events import ContentEventPayload, ContentRef, EventType
@@ -40,6 +41,7 @@ from app.models.audio_asset import (
     AudioSourceType,
     GuestVoiceProfile,
 )
+from app.models.lexicon import MemberLexicon
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.models.voice_settings import MemberVoiceSettings
 from app.pipelines.audio.transcriber import transcribe_audio_bytes
@@ -65,6 +67,15 @@ async def _get_voice_settings(workspace_id: str, user_id: str) -> MemberVoiceSet
     if doc:
         return MemberVoiceSettings(**doc)
     return MemberVoiceSettings(id=f"{workspace_id}:{user_id}", workspace_id=workspace_id, user_id=user_id)
+
+
+async def _get_lexicon(workspace_id: str, user_id: str) -> Optional[MemberLexicon]:
+    """Real, already-persisted per-member lexicon (Remy's Vocabulary &
+    Pronunciation tab). None (not a default instance) when the member has
+    never saved one — synthesize_speech treats that the same as "no
+    pronunciation locators", so this stays a pure optional lookup."""
+    doc = await member_lexicon.find_one({"workspace_id": workspace_id, "user_id": user_id})
+    return MemberLexicon(**doc) if doc else None
 
 
 class GenerateAudioAssetRequest(BaseModel):
@@ -109,9 +120,11 @@ async def generate_audio_asset(
         )
 
     voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
+    lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
     audio_bytes = await synthesize_speech(
         text=script,
         voice_settings=voice_settings,
+        lexicon=lexicon,
         workspace_id=ctx.workspace_id,
         user_id=ctx.user_id,
     )
@@ -223,10 +236,15 @@ async def generate_dialogue(
         raise HTTPException(status_code=400, detail="At least one turn is required.")
 
     member_voice_settings_obj = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
+    member_lexicon_obj = await _get_lexicon(ctx.workspace_id, ctx.user_id)
 
     turn_audio: list[bytes] = []
     guest_voices_seen: dict[str, str] = {}
     for turn in body.turns:
+        # A guest speaker has no lexicon of their own — the member's
+        # pronunciation dictionary applies only when the member's own
+        # voice is actually reading the line.
+        turn_lexicon: Optional[MemberLexicon] = None
         if turn.voice_id:
             voice_settings = MemberVoiceSettings(
                 id=f"guest:{turn.speaker}", workspace_id=ctx.workspace_id, user_id=ctx.user_id,
@@ -235,9 +253,11 @@ async def generate_dialogue(
             guest_voices_seen[turn.speaker] = turn.voice_id
         else:
             voice_settings = member_voice_settings_obj
+            turn_lexicon = member_lexicon_obj
 
         audio_bytes = await synthesize_speech(
-            text=turn.text, voice_settings=voice_settings, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+            text=turn.text, voice_settings=voice_settings, lexicon=turn_lexicon,
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id,
         )
         if not audio_bytes:
             raise HTTPException(
@@ -438,8 +458,10 @@ async def localize_audio_asset(
         )
 
     voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
+    lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
     audio_bytes = await synthesize_speech(
-        text=translated_text, voice_settings=voice_settings, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+        text=translated_text, voice_settings=voice_settings, lexicon=lexicon,
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id,
     )
     if not audio_bytes:
         raise HTTPException(

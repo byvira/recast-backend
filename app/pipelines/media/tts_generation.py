@@ -34,6 +34,9 @@ logger = logging.getLogger(__name__)
 _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 _ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 
+_ELEVENLABS_DICT_CREATE_URL = "https://api.elevenlabs.io/v1/pronunciation-dictionaries/add-from-rules"
+_ELEVENLABS_DICT_ADD_RULES_URL = "https://api.elevenlabs.io/v1/pronunciation-dictionaries/{dictionary_id}/add-rules"
+
 _DEEPGRAM_TTS_URL = "https://api.deepgram.com/v1/speak"
 # A real Deepgram Aura-2 voice, confirmed live 2026-09-26 (a real 200 with
 # real audio bytes on the first try) — used as the safe default the same
@@ -117,7 +120,77 @@ def _resolve_deepgram_model(voice_settings: MemberVoiceSettings) -> str:
     return _DEEPGRAM_DEFAULT_VOICE
 
 
-async def _call_elevenlabs(*, text: str, voice_settings: MemberVoiceSettings, workspace_id: str) -> bytes:
+async def sync_pronunciation_dictionary(
+    *, workspace_id: str, user_id: str, lexicon: MemberLexicon,
+) -> Optional[dict]:
+    """Real ElevenLabs pronunciation-dictionary sync (confirmed live
+    2026-09-27, not assumed) — creates the dictionary on first save,
+    replaces its rules on every save after (add-rules replaces a rule with
+    the same string_to_replace, so this is idempotent, not additive-forever).
+
+    Uses "alias" rules, not "phoneme": eleven_multilingual_v2 (the model
+    this codebase synthesizes with) has zero phoneme-tag support at all —
+    confirmed against ElevenLabs' own docs — only eleven_flash_v2
+    (English-only) or eleven_v3 support phoneme rules. Alias rules are a
+    plain text substitution, so they work with any model, but that also
+    means PronunciationEntry.ipa must be a real phonetic respelling
+    ("zen-dlee"), not IPA notation — see that field's own docstring.
+
+    Never raises — returns None on any failure (no API key, no real
+    pronunciation entries, or the HTTP call itself failing), same
+    defensive contract as every other provider call in this module. The
+    caller persists the returned id/version_id; a None return just means
+    the next synthesis call has no locators to attach, not a hard error.
+    """
+    if not settings.ELEVENLABS_API_KEY:
+        return None
+
+    rules = [
+        {
+            "string_to_replace": p.term,
+            "type": "alias",
+            "alias": p.ipa,
+        }
+        for p in lexicon.pronunciations
+        if p.term.strip() and p.ipa.strip()
+    ]
+    if not rules:
+        return None
+
+    headers = {"xi-api-key": settings.ELEVENLABS_API_KEY, "Content-Type": "application/json"}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            if lexicon.elevenlabs_dictionary_id:
+                response = await client.post(
+                    _ELEVENLABS_DICT_ADD_RULES_URL.format(dictionary_id=lexicon.elevenlabs_dictionary_id),
+                    headers=headers,
+                    json={"rules": rules},
+                )
+            else:
+                response = await client.post(
+                    _ELEVENLABS_DICT_CREATE_URL,
+                    headers=headers,
+                    json={"name": f"recast-member-{workspace_id}-{user_id}"[:50], "rules": rules},
+                )
+            response.raise_for_status()
+            data = response.json()
+            return {"id": data["id"], "version_id": data["version_id"]}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "ElevenLabs pronunciation-dictionary sync failed for workspace %s, user %s: %s",
+            workspace_id, user_id, exc,
+        )
+        return None
+
+
+async def _call_elevenlabs(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    workspace_id: str,
+    pronunciation_dictionary_locators: Optional[list[dict]] = None,
+) -> bytes:
     """Real ElevenLabs call. Maps MemberVoiceSettings' already-real,
     already-persisted fields onto ElevenLabs' actual request shape
     (confirmed live against ElevenLabs' API docs 2026-09-26):
@@ -148,6 +221,8 @@ async def _call_elevenlabs(*, text: str, voice_settings: MemberVoiceSettings, wo
             "speed": voice_settings.speech_speed,
         },
     }
+    if pronunciation_dictionary_locators:
+        body["pronunciation_dictionary_locators"] = pronunciation_dictionary_locators
     headers = {"xi-api-key": settings.ELEVENLABS_API_KEY, "Content-Type": "application/json"}
     url = _ELEVENLABS_TTS_URL.format(voice_id=voice_id)
 
@@ -192,24 +267,30 @@ async def synthesize_speech(
     Deepgram Aura if configured. Returns None only if neither provider is
     usable. Never raises.
 
-    `lexicon` is accepted per the plan's signature but NOT applied by
-    either provider yet — ElevenLabs' pronunciation_dictionary_locators
-    references an already-uploaded dictionary resource by id, not inline
-    text substitution, and Deepgram's API has no pronunciation-override
-    mechanism in its docs at all. MemberLexicon has no synced dictionary
-    id yet (see GAPS.md G-8). Logged, not silently ignored.
+    `lexicon`: if it has a synced elevenlabs_dictionary_id (see
+    sync_pronunciation_dictionary, called from PUT /assistant/lexicon on
+    save), those locators are attached to the ElevenLabs request for real
+    pronunciation control. Deepgram's API still has no pronunciation-
+    override mechanism of any kind, so the fallback path never applies
+    the lexicon regardless — a genuine per-provider gap, not a bug here.
     """
-    if lexicon and lexicon.pronunciations:
-        logger.info(
-            "MemberLexicon has %d pronunciation entries for workspace %s, but no "
-            "provider-side pronunciation sync exists yet (GAPS.md G-8) — "
-            "synthesizing without them.",
-            len(lexicon.pronunciations), workspace_id,
-        )
+    pronunciation_locators = None
+    if lexicon and lexicon.elevenlabs_dictionary_id and lexicon.elevenlabs_dictionary_version_id:
+        pronunciation_locators = [
+            {
+                "pronunciation_dictionary_id": lexicon.elevenlabs_dictionary_id,
+                "version_id": lexicon.elevenlabs_dictionary_version_id,
+            }
+        ]
 
     if settings.ELEVENLABS_API_KEY:
         try:
-            return await _call_elevenlabs(text=text, voice_settings=voice_settings, workspace_id=workspace_id)
+            return await _call_elevenlabs(
+                text=text,
+                voice_settings=voice_settings,
+                workspace_id=workspace_id,
+                pronunciation_dictionary_locators=pronunciation_locators,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "ElevenLabs TTS failed for workspace %s, checking Deepgram fallback: %s",
