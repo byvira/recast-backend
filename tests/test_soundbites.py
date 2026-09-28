@@ -155,3 +155,96 @@ async def test_approve_missing_soundbite_404s(signup_user, stubs):
     client, _, ws_id, _ = await _setup(signup_user)
     res = await client.patch(f"/api/v1/audio-assets/soundbites/nope/approve", headers=_h(ws_id))
     assert res.status_code == 404
+
+
+# ── /soundbites/refine — the natural-language refinement bar ────────────────
+
+async def test_refine_maps_free_text_to_a_real_bounded_action_and_applies_it(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _asset_with_transcript_and_media(client, ws_id, brand_id, monkeypatch)
+    monkeypatch.setattr(audio_module, "call_llm_structured", _fake_structured_one_suggestion())
+    created = (await client.post(f"/api/v1/audio-assets/{asset['id']}/soundbites", headers=_h(ws_id))).json()
+    assert created[0]["approval_status"] == "pending"
+
+    async def _fake_refine_mapping(prompt, **kwargs):
+        return {"actions": ["prevent_clipping"]}
+
+    monkeypatch.setattr(audio_module, "call_llm_structured", _fake_refine_mapping)
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/soundbites/refine",
+        json={"instruction": "prevent audio from clipping"}, headers=_h(ws_id),
+    )
+    assert res.status_code == 200, res.text
+    updated = res.json()
+    assert len(updated) == 1
+    assert "confidence" in updated[0]
+
+
+async def test_refine_rejects_an_instruction_matching_no_real_action(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _asset_with_transcript_and_media(client, ws_id, brand_id, monkeypatch)
+    monkeypatch.setattr(audio_module, "call_llm_structured", _fake_structured_one_suggestion())
+    await client.post(f"/api/v1/audio-assets/{asset['id']}/soundbites", headers=_h(ws_id))
+
+    async def _fake_no_match(prompt, **kwargs):
+        return {"actions": []}
+
+    monkeypatch.setattr(audio_module, "call_llm_structured", _fake_no_match)
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/soundbites/refine",
+        json={"instruction": "make it sound like a robot"}, headers=_h(ws_id),
+    )
+    assert res.status_code == 400
+
+
+async def test_refine_needs_pending_soundbites(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _asset_with_transcript_and_media(client, ws_id, brand_id, monkeypatch)
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/soundbites/refine",
+        json={"instruction": "prevent clipping"}, headers=_h(ws_id),
+    )
+    assert res.status_code == 400
+
+
+async def test_refine_needs_real_instruction_text(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _asset_with_transcript_and_media(client, ws_id, brand_id, monkeypatch)
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/soundbites/refine",
+        json={"instruction": "   "}, headers=_h(ws_id),
+    )
+    assert res.status_code == 400
+
+
+async def test_refine_removes_real_filler_words_using_the_parent_transcript_slice(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()
+    # A real filler word ("um") inside the soundbite's own span (0-4s).
+    words = [
+        {"word": "This", "start_s": 0.0, "end_s": 0.5, "speaker": None},
+        {"word": "um", "start_s": 0.5, "end_s": 1.0, "speaker": None},
+        {"word": "is", "start_s": 1.0, "end_s": 1.5, "speaker": None},
+        {"word": "real", "start_s": 1.5, "end_s": 2.0, "speaker": None},
+        {"word": "and", "start_s": 2.0, "end_s": 2.5, "speaker": None},
+        {"word": "worth", "start_s": 2.5, "end_s": 3.0, "speaker": None},
+        {"word": "sharing", "start_s": 3.0, "end_s": 3.5, "speaker": None},
+    ]
+    from app.db.mongo import audio_assets as audio_assets_col
+    await audio_assets_col.update_one({"id": asset["id"]}, {"$set": {"transcript": words}})
+    master = _tone(8.0)
+    monkeypatch.setattr(audio_module, "_download_media_bytes", lambda url: _async_return(master))
+
+    monkeypatch.setattr(audio_module, "call_llm_structured", _fake_structured_one_suggestion())
+    extract_res = await client.post(f"/api/v1/audio-assets/{asset['id']}/soundbites", headers=_h(ws_id))
+    assert extract_res.status_code == 201, extract_res.text
+
+    async def _fake_filler_mapping(prompt, **kwargs):
+        return {"actions": ["remove_filler_pauses"]}
+
+    monkeypatch.setattr(audio_module, "call_llm_structured", _fake_filler_mapping)
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/soundbites/refine",
+        json={"instruction": "remove long filler pauses"}, headers=_h(ws_id),
+    )
+    assert res.status_code == 200, res.text

@@ -2359,3 +2359,108 @@ async def reject_soundbite(
         raise HTTPException(status_code=404, detail="Soundbite not found.")
     media = await media_assets.find_one({"id": result["media_id"]})
     return SoundbiteOut(**result, url=media["url"] if media else "")
+
+
+class RefineSoundbitesRequest(BaseModel):
+    instruction: str
+
+
+_REFINE_ACTIONS = {"prevent_clipping", "remove_filler_pauses", "recheck_quality"}
+
+
+@router.post("/{audio_asset_id}/soundbites/refine", response_model=list[SoundbiteOut])
+@limiter.limit("5/minute")
+async def refine_soundbites(
+    request: Request,
+    audio_asset_id: str,
+    body: RefineSoundbitesRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> list[SoundbiteOut]:
+    """Real, bounded natural-language refinement: one gated LLM call maps
+    free text onto a fixed set of 3 real actions (never an arbitrary one),
+    then actually applies them to every pending soundbite via the same
+    real DSP `apply_cleanup` the Cleanup tab uses."""
+    instruction = body.instruction.strip()
+    if not instruction:
+        raise HTTPException(status_code=400, detail="Type what you want changed first.")
+
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+
+    targets = await soundbites.find(
+        {"audio_asset_id": audio_asset_id, "workspace_id": ctx.workspace_id, "approval_status": "pending"},
+    ).to_list(length=100)
+    if not targets:
+        raise HTTPException(status_code=400, detail="No pending soundbites to refine.")
+
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+    prompt = load_prompt("audio/soundbite_refine", instruction=instruction)
+    try:
+        result = await call_llm_structured(prompt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Soundbite refine mapping failed for %s: %s", audio_asset_id, exc)
+        raise HTTPException(status_code=502, detail="Couldn't understand that instruction right now. Try again.")
+
+    actions = [a for a in (result.get("actions") or []) if a in _REFINE_ACTIONS]
+    if not actions:
+        raise HTTPException(status_code=400, detail="That instruction doesn't match anything real this can do yet.")
+
+    parent_words = doc.get("transcript", [])
+    updated: list[SoundbiteOut] = []
+    for target in targets:
+        media = await media_assets.find_one({"id": target["media_id"], "workspace_id": ctx.workspace_id})
+        if not media:
+            continue
+        clip_bytes = await _download_media_bytes(media["url"])
+
+        settings_kwargs: dict = {}
+        if "prevent_clipping" in actions:
+            settings_kwargs["compressor"] = 0.6
+        clip_words = None
+        if "remove_filler_pauses" in actions:
+            clip_words = [
+                {**w, "start_s": w["start_s"] - target["start_s"], "end_s": w["end_s"] - target["start_s"]}
+                for w in parent_words
+                if target["start_s"] <= w["start_s"] < target["end_s"]
+            ]
+            if clip_words:  # apply_cleanup rejects remove_fillers with no transcript
+                settings_kwargs["remove_fillers"] = True
+                settings_kwargs["silence_trim_s"] = 0.75
+
+        cleaned = clip_bytes
+        if settings_kwargs:
+            try:
+                cleaned, _, _ = await asyncio.to_thread(
+                    apply_cleanup, clip_bytes, CleanupSettings(**settings_kwargs), clip_words or [],
+                )
+            except CleanupError as exc:
+                logger.warning("Soundbite refine cleanup skipped for %s: %s", target["id"], exc)
+
+        status, confidence, flag_message, measured_lufs = evaluate_quality(cleaned)
+
+        if cleaned != clip_bytes:
+            new_url = await upload_file(cleaned, UploadContentType.AUDIO, ctx.user_id)
+            now = datetime.now(timezone.utc)
+            new_media = MediaAsset(
+                id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.AUDIO, url=new_url,
+                mime_type="audio/wav", source=MediaSource.ENHANCED, created_by=ctx.user_id,
+                created_at=now, size_bytes=len(cleaned),
+            )
+            await media_assets.insert_one(new_media.model_dump())
+            media_id, url = new_media.id, new_url
+        else:
+            media_id, url = target["media_id"], media["url"]
+
+        await soundbites.update_one(
+            {"id": target["id"]},
+            {"$set": {
+                "media_id": media_id, "status": status.value, "confidence": confidence,
+                "flag_message": flag_message, "measured_lufs": measured_lufs,
+            }},
+        )
+        refreshed = await soundbites.find_one({"id": target["id"]})
+        updated.append(SoundbiteOut(**refreshed, url=url))
+
+    return updated
