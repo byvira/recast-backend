@@ -37,6 +37,23 @@ class TranscriptWord(BaseModel):
     speaker: Optional[str] = None  # for diarization
 
 
+class SignoffRole(str, Enum):
+    """The 4 review roles the Audio Inspector's Governance panel already
+    names in its UI — real signoffs against these, not a decorative
+    checklist with nothing behind it."""
+    AUDIO_ENGINEER = "audio_engineer"
+    BRAND_GUARDIAN = "brand_guardian"
+    EXECUTIVE_PRODUCER = "executive_producer"
+    LEGAL_COMPLIANCE = "legal_compliance"
+
+
+class Signoff(BaseModel):
+    role: SignoffRole
+    user_id: str
+    user_name: str
+    signed_at: datetime
+
+
 class AudioAsset(BaseModel):
     id: str
     workspace_id: str
@@ -73,6 +90,10 @@ class AudioAsset(BaseModel):
     # this asset was produced by /localize from another one.
     language: str = "en"
     source_audio_asset_id: Optional[str] = None
+    # Real Governance & Multi-Tier Review Matrix — the UI already named
+    # these 4 roles with nothing behind the checkboxes; each entry is one
+    # real member's real signoff, not a locally-toggled checkbox.
+    signoffs: list[Signoff] = []
 
 
 class AudioAssetVersion(BaseModel):  # mirrors ImageAssetVersion
@@ -100,6 +121,45 @@ class AudioShareLink(BaseModel):  # mirrors ImageShareLink
     created_at: datetime
     expires_at: datetime
     revoked: bool = False
+
+
+class PodcastFeedSettings(BaseModel):
+    """One real, public RSS feed per brand. Real-world podcast platforms
+    (Spotify for Podcasters, Apple Podcasts Connect) don't offer a push
+    API for a third-party host to dispatch episodes into — they poll a
+    feed URL you submit once. This is that feed, not a "connected"
+    integration."""
+
+    id: str  # == brand_id
+    workspace_id: str
+    brand_id: str
+    token: str
+    title: str
+    description: str = ""
+    is_enabled: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class PodcastFeedEnableRequest(BaseModel):
+    brand_id: str
+    title: str
+    description: str = ""
+
+
+class PodcastFeedUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    is_enabled: Optional[bool] = None
+
+
+class PodcastFeedStatusResponse(BaseModel):
+    is_enabled: bool
+    token: Optional[str] = None
+    feed_url: Optional[str] = None
+    title: str = ""
+    description: str = ""
+    episode_count: int = 0
 
 
 class GuestVoiceProfile(BaseModel):

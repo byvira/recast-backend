@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
@@ -31,6 +31,8 @@ from app.db.mongo import (
     media_assets,
     member_lexicon,
     member_voice_settings,
+    podcast_feed_settings,
+    users,
 )
 from app.models.agent_events import ContentEventPayload, ContentRef, EventType
 from app.models.audio_asset import (
@@ -40,7 +42,14 @@ from app.models.audio_asset import (
     AudioShareLink,
     AudioSourceType,
     GuestVoiceProfile,
+    PodcastFeedEnableRequest,
+    PodcastFeedSettings,
+    PodcastFeedStatusResponse,
+    PodcastFeedUpdateRequest,
+    Signoff,
+    SignoffRole,
 )
+from app.models.workspace import WorkspaceRole
 from app.models.lexicon import MemberLexicon
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.models.voice_settings import MemberVoiceSettings
@@ -919,3 +928,221 @@ async def create_audio_share_link(
     )
     await audio_share_links.insert_one(link.model_dump())
     return AudioShareLinkResponse(token=token, url=f"{settings.FRONTEND_URL}/share/{token}", expires_at=expires_at)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Real role signoffs — the Governance panel's own "Role Review Signoffs
+# (4 Required)" already named these roles; each entry here is one real
+# member's real signoff against one, not a locally-toggled checkbox.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SignoffRequest(BaseModel):
+    role: SignoffRole
+
+
+@router.post("/{audio_asset_id}/signoff", response_model=AudioAsset)
+@limiter.limit("30/minute")
+async def sign_off_audio_asset(
+    request: Request,
+    audio_asset_id: str,
+    body: SignoffRequest,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> AudioAsset:
+    """Idempotent per role — signing a role you (or someone else) already
+    signed just replaces that entry with your own, real timestamp."""
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+
+    user = await users.find_one({"id": ctx.user_id}, {"name": 1, "email": 1})
+    user_name = ((user or {}).get("name") or (user or {}).get("email") or "Member")
+
+    signoff = Signoff(role=body.role, user_id=ctx.user_id, user_name=user_name, signed_at=datetime.now(timezone.utc))
+    remaining = [s for s in doc.get("signoffs", []) if s.get("role") != body.role.value]
+    remaining.append(signoff.model_dump())
+    await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"signoffs": remaining, "updated_at": datetime.now(timezone.utc)}},
+    )
+    updated = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    return AudioAsset(**updated)
+
+
+@router.delete("/{audio_asset_id}/signoff/{role}", response_model=AudioAsset)
+@limiter.limit("30/minute")
+async def undo_signoff(
+    request: Request,
+    audio_asset_id: str,
+    role: SignoffRole,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> AudioAsset:
+    """The person who signed can undo their own signoff; an owner/admin
+    can undo anyone's — the same real-membership check as elsewhere,
+    not a role any editor can override."""
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+
+    existing = next((s for s in doc.get("signoffs", []) if s.get("role") == role.value), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"'{role.value}' hasn't been signed off yet.")
+    if existing.get("user_id") != ctx.user_id and ctx.role not in (WorkspaceRole.OWNER.value, WorkspaceRole.ADMIN.value):
+        raise HTTPException(status_code=403, detail="Only the person who signed this off, or a workspace owner/admin, can undo it.")
+
+    remaining = [s for s in doc.get("signoffs", []) if s.get("role") != role.value]
+    await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"signoffs": remaining, "updated_at": datetime.now(timezone.utc)}},
+    )
+    updated = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    return AudioAsset(**updated)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Real podcast RSS feed — one per brand. Spotify for Podcasters and Apple
+# Podcasts Connect don't offer a push API for a third-party host to
+# dispatch episodes into; the real mechanism is a feed URL you submit once,
+# which they then poll. This serves that real feed, not a fake "Connected"
+# integration.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _escape_xml(text: str) -> str:
+    return (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        .replace('"', "&quot;").replace("'", "&apos;")
+    )
+
+
+async def _feed_episode_count(brand_id: str) -> int:
+    return await audio_assets.count_documents({"brand_id": brand_id, "approval_status": AudioApprovalStatus.APPROVED.value})
+
+
+@router.post("/feed/enable", response_model=PodcastFeedStatusResponse, status_code=201)
+@limiter.limit("10/minute")
+async def enable_podcast_feed(
+    request: Request,
+    body: PodcastFeedEnableRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> PodcastFeedStatusResponse:
+    existing = await podcast_feed_settings.find_one({"brand_id": body.brand_id, "workspace_id": ctx.workspace_id})
+    now = datetime.now(timezone.utc)
+    # The token stays stable across re-enables — a feed already submitted
+    # to Spotify/Apple must keep resolving to the same URL.
+    token = existing["token"] if existing else secrets.token_urlsafe(24)
+
+    doc = PodcastFeedSettings(
+        id=body.brand_id, workspace_id=ctx.workspace_id, brand_id=body.brand_id,
+        token=token, title=body.title, description=body.description, is_enabled=True,
+        created_at=(existing["created_at"] if existing else now), updated_at=now,
+    )
+    await podcast_feed_settings.update_one(
+        {"brand_id": body.brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": doc.model_dump()},
+        upsert=True,
+    )
+    episode_count = await _feed_episode_count(body.brand_id)
+    return PodcastFeedStatusResponse(
+        is_enabled=True, token=token, feed_url=f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/audio-assets/feed/{token}.xml",
+        title=body.title, description=body.description, episode_count=episode_count,
+    )
+
+
+@router.get("/feed/status", response_model=PodcastFeedStatusResponse)
+@limiter.limit("30/minute")
+async def get_podcast_feed_status(
+    request: Request,
+    brand_id: str = Query(...),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> PodcastFeedStatusResponse:
+    doc = await podcast_feed_settings.find_one({"brand_id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        return PodcastFeedStatusResponse(is_enabled=False)
+    episode_count = await _feed_episode_count(brand_id)
+    return PodcastFeedStatusResponse(
+        is_enabled=doc["is_enabled"], token=doc["token"],
+        feed_url=f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/audio-assets/feed/{doc['token']}.xml" if doc["is_enabled"] else None,
+        title=doc.get("title", ""), description=doc.get("description", ""), episode_count=episode_count,
+    )
+
+
+@router.patch("/feed/{brand_id}", response_model=PodcastFeedStatusResponse)
+@limiter.limit("20/minute")
+async def update_podcast_feed(
+    request: Request,
+    brand_id: str,
+    body: PodcastFeedUpdateRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> PodcastFeedStatusResponse:
+    doc = await podcast_feed_settings.find_one({"brand_id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="No podcast feed set up for this brand yet.")
+
+    updates: dict = {"updated_at": datetime.now(timezone.utc)}
+    if body.title is not None:
+        updates["title"] = body.title
+    if body.description is not None:
+        updates["description"] = body.description
+    if body.is_enabled is not None:
+        updates["is_enabled"] = body.is_enabled
+    await podcast_feed_settings.update_one({"brand_id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": updates})
+
+    updated = await podcast_feed_settings.find_one({"brand_id": brand_id, "workspace_id": ctx.workspace_id})
+    episode_count = await _feed_episode_count(brand_id)
+    return PodcastFeedStatusResponse(
+        is_enabled=updated["is_enabled"], token=updated["token"],
+        feed_url=f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/audio-assets/feed/{updated['token']}.xml" if updated["is_enabled"] else None,
+        title=updated.get("title", ""), description=updated.get("description", ""), episode_count=episode_count,
+    )
+
+
+@router.get("/feed/{token}.xml")
+@limiter.limit("120/minute")
+async def get_podcast_feed_xml(request: Request, token: str) -> Response:
+    """Public, unauthenticated — this is the real feed URL a member submits
+    to Spotify for Podcasters / Apple Podcasts Connect once. Only real,
+    approved episodes for that brand appear; nothing here is guessable
+    (a 24-byte urlsafe token) or lists anything from another brand."""
+    settings_doc = await podcast_feed_settings.find_one({"token": token})
+    if not settings_doc or not settings_doc.get("is_enabled"):
+        raise HTTPException(status_code=404, detail="This feed doesn't exist or isn't enabled.")
+
+    episodes = await audio_assets.find(
+        {"brand_id": settings_doc["brand_id"], "approval_status": AudioApprovalStatus.APPROVED.value},
+    ).sort("created_at", -1).limit(200).to_list(length=200)
+
+    media_ids = [e.get("approved_master_media_id") or e.get("media_id") for e in episodes]
+    media_ids = [m for m in media_ids if m]
+    media_by_id: dict = {}
+    if media_ids:
+        found = await media_assets.find({"id": {"$in": media_ids}}).to_list(length=len(media_ids))
+        media_by_id = {m["id"]: m for m in found}
+
+    items_xml = []
+    for ep in episodes:
+        media_id = ep.get("approved_master_media_id") or ep.get("media_id")
+        media = media_by_id.get(media_id)
+        if not media:
+            continue  # no real playable file — never list an episode with nothing to play
+        pub_date = ep["created_at"]
+        if isinstance(pub_date, str):
+            pub_date = datetime.fromisoformat(pub_date)
+        items_xml.append(f"""    <item>
+      <title>{_escape_xml(ep.get('title', 'Untitled episode'))}</title>
+      <guid isPermaLink="false">{ep['id']}</guid>
+      <pubDate>{pub_date.strftime('%a, %d %b %Y %H:%M:%S GMT')}</pubDate>
+      <enclosure url="{_escape_xml(media['url'])}" type="audio/mpeg" length="0" />
+      <itunes:duration>{int(media.get('duration_s') or 0)}</itunes:duration>
+    </item>""")
+
+    title = _escape_xml(settings_doc.get("title") or "Podcast")
+    description = _escape_xml(settings_doc.get("description") or "")
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+  <channel>
+    <title>{title}</title>
+    <description>{description}</description>
+    <itunes:explicit>false</itunes:explicit>
+{chr(10).join(items_xml)}
+  </channel>
+</rss>"""
+    return Response(content=xml, media_type="application/rss+xml")

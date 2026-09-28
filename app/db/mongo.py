@@ -116,6 +116,11 @@ image_share_links: AsyncIOMotorCollection = get_client().get_default_database()[
 audio_assets: AsyncIOMotorCollection = get_client().get_default_database()["audio_assets"]
 audio_asset_versions: AsyncIOMotorCollection = get_client().get_default_database()["audio_asset_versions"]
 audio_share_links: AsyncIOMotorCollection = get_client().get_default_database()["audio_share_links"]
+# One real podcast RSS feed per brand — see PodcastFeedSettings
+# (app.models.audio_asset). Separate from the generic Show model: a feed
+# is scoped by brand_id alone, with no "which episodes belong to this
+# show" assignment step for the member to do first.
+podcast_feed_settings: AsyncIOMotorCollection = get_client().get_default_database()["podcast_feed_settings"]
 shows: AsyncIOMotorCollection = get_client().get_default_database()["shows"]
 # Multi-voice dialogue (2026-09-26, bugs/gaps sweep) — see app.models.audio_asset.GuestVoiceProfile
 guest_voice_profiles: AsyncIOMotorCollection = get_client().get_default_database()["guest_voice_profiles"]
@@ -334,6 +339,8 @@ async def create_indexes() -> None:
     )
     await audio_share_links.create_index("token", unique=True)
     await audio_share_links.create_index([("audio_asset_id", 1), ("revoked", 1)])
+    await podcast_feed_settings.create_index("brand_id", unique=True)
+    await podcast_feed_settings.create_index("token", unique=True, sparse=True)
     await shows.create_index([("workspace_id", 1), ("created_at", -1)])
     await guest_voice_profiles.create_index([("audio_asset_id", 1)])
 
