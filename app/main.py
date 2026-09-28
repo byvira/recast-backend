@@ -38,6 +38,7 @@ from app.api.v1 import supervisor as supervisor_router
 from app.db.redis import close_redis
 from app.api.v1 import analytics as analytics_router
 from app.api.v1 import search as search_router
+from app.api.v1 import share as share_router
 from app.api.v1 import platforms as platforms_router
 from app.api.v1 import ops_platforms as ops_platforms_router
 from app.api.v1 import ops_cohorts as ops_cohorts_router
@@ -323,6 +324,7 @@ app.include_router(image_assets.router, prefix="/api/v1/image-assets", tags=["Im
 app.include_router(audio_assets.router, prefix="/api/v1/audio-assets", tags=["Audio Assets"])
 app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["Analytics"])
 app.include_router(search_router.router, prefix="/api/v1/search", tags=["Search"])
+app.include_router(share_router.router, prefix="/api/v1/share", tags=["Share"])
 app.include_router(assistant_router.router, prefix="/api/v1/assistant", tags=["Assistant"])
 app.include_router(supervisor_router.router, prefix="/api/v1/supervisor", tags=["Supervisor"])
 app.include_router(platforms_router.router, prefix="/api/v1/platforms", tags=["Platforms"])

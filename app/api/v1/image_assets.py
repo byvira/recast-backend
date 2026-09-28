@@ -14,7 +14,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
@@ -882,3 +882,50 @@ async def create_image_share_link(
     )
     await image_share_links.insert_one(link.model_dump())
     return ShareLinkResponse(token=token, url=f"{settings.FRONTEND_URL}/share/{token}", expires_at=expires_at)
+
+
+class ShareLinkItem(BaseModel):
+    token: str
+    url: str
+    created_at: datetime
+    expires_at: datetime
+
+
+@router.get("/{image_asset_id}/share-links", response_model=list[ShareLinkItem])
+async def list_image_share_links(
+    image_asset_id: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> list[ShareLinkItem]:
+    """This image's links that still work — not revoked and not expired."""
+    if not await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"id": 1}):
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    now = datetime.now(timezone.utc)
+    docs = await image_share_links.find(
+        {"image_asset_id": image_asset_id, "workspace_id": ctx.workspace_id, "revoked": False},
+    ).sort("created_at", -1).to_list(length=100)
+    items = []
+    for d in docs:
+        expires = d["expires_at"] if d["expires_at"].tzinfo else d["expires_at"].replace(tzinfo=timezone.utc)
+        if expires <= now:
+            continue
+        items.append(ShareLinkItem(
+            token=d["token"], url=f"{settings.FRONTEND_URL}/share/{d['token']}",
+            created_at=d["created_at"], expires_at=d["expires_at"],
+        ))
+    return items
+
+
+@router.delete("/{image_asset_id}/share-link/{token}", status_code=204)
+async def revoke_image_share_link(
+    image_asset_id: str,
+    token: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> Response:
+    """Stops a link working immediately; the record stays (revoked)."""
+    result = await image_share_links.update_one(
+        {"token": token, "image_asset_id": image_asset_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"revoked": True}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Share link not found.")
+    return Response(status_code=204)

@@ -930,6 +930,54 @@ async def create_audio_share_link(
     return AudioShareLinkResponse(token=token, url=f"{settings.FRONTEND_URL}/share/{token}", expires_at=expires_at)
 
 
+class AudioShareLinkItem(BaseModel):
+    token: str
+    url: str
+    created_at: datetime
+    expires_at: datetime
+
+
+@router.get("/{audio_asset_id}/share-links", response_model=list[AudioShareLinkItem])
+async def list_audio_share_links(
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> list[AudioShareLinkItem]:
+    """This recording's links that still work — not revoked and not expired."""
+    if not await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id}, {"id": 1}):
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    now = datetime.now(timezone.utc)
+    docs = await audio_share_links.find(
+        {"audio_asset_id": audio_asset_id, "workspace_id": ctx.workspace_id, "revoked": False},
+    ).sort("created_at", -1).to_list(length=100)
+    items = []
+    for d in docs:
+        expires = d["expires_at"] if d["expires_at"].tzinfo else d["expires_at"].replace(tzinfo=timezone.utc)
+        if expires <= now:
+            continue
+        items.append(AudioShareLinkItem(
+            token=d["token"], url=f"{settings.FRONTEND_URL}/share/{d['token']}",
+            created_at=d["created_at"], expires_at=d["expires_at"],
+        ))
+    return items
+
+
+@router.delete("/{audio_asset_id}/share-link/{token}", status_code=204)
+async def revoke_audio_share_link(
+    audio_asset_id: str,
+    token: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> Response:
+    """Stops a link working immediately. The link record stays (revoked) so
+    the history of what was shared isn't lost."""
+    result = await audio_share_links.update_one(
+        {"token": token, "audio_asset_id": audio_asset_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"revoked": True}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Share link not found.")
+    return Response(status_code=204)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Real role signoffs — the Governance panel's own "Role Review Signoffs
 # (4 Required)" already named these roles; each entry here is one real
