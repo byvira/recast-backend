@@ -74,7 +74,7 @@ async def _get_verified_piece(piece_id: str, workspace_id: str) -> dict:
     return piece
 
 
-async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> dict:
+async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> tuple[dict, Optional[str]]:
     """Atomically transition a piece into "publishing", rejecting the call
     if it's already publishing or published.
 
@@ -86,6 +86,11 @@ async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> dict:
     two real video uploads from one user action. find_one_and_update's
     compare-and-swap is atomic at the database level, so only one caller can
     ever win the claim.
+
+    Returns the piece plus the status it held before the claim, so a call
+    that then can't go ahead (platform not connected, unexpected error) can
+    put it back with _release_claim instead of leaving it stuck on
+    "publishing", which the claim itself refuses to pick up again.
     """
     piece = await content_pieces.find_one_and_update(
         {
@@ -95,10 +100,11 @@ async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> dict:
             "publish_status": {"$nin": ["publishing", "published"]},
         },
         {"$set": {"publish_status": "publishing", "updated_at": datetime.now(timezone.utc)}},
-        return_document=ReturnDocument.AFTER,
+        return_document=ReturnDocument.BEFORE,
     )
     if piece is not None:
-        return piece
+        previous = piece.get("publish_status")
+        return {**piece, "publish_status": "publishing"}, previous
 
     # Either the piece doesn't exist, or it's already publishing/published —
     # distinguish so a real 404 doesn't get reported as "already publishing."
@@ -111,6 +117,22 @@ async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> dict:
         status_code=409,
         detail="This piece is already being published or has already been published.",
     )
+
+
+async def _release_claim(piece_id: str, workspace_id: str, previous: Optional[str]) -> None:
+    """Undo _claim_piece_for_publishing for a call that never reached the
+    platform. Only touches a piece still on "publishing", so it can't
+    overwrite a real outcome written in the meantime."""
+    flt = {"piece_id": piece_id, "workspace_id": workspace_id, "publish_status": "publishing"}
+    if previous:
+        await content_pieces.update_one(
+            flt, {"$set": {"publish_status": previous, "updated_at": datetime.now(timezone.utc)}}
+        )
+    else:
+        await content_pieces.update_one(
+            flt,
+            {"$unset": {"publish_status": ""}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+        )
 
 
 async def _update_piece_status(
@@ -190,12 +212,33 @@ async def publish_now(
     Runs supervisor logic — auto-retry on transient errors,
     auto-fix on fixable errors, alert on fatal errors.
     """
+    try:
+        return await _publish_now(body, ctx)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # A crash between the claim and a real outcome would leave the piece
+        # on "publishing" forever, and the claim refuses to pick it up again.
+        # Only touches a piece still in flight, so a real outcome is kept.
+        await content_pieces.update_one(
+            {"piece_id": body.piece_id, "workspace_id": ctx.workspace_id, "publish_status": "publishing"},
+            {"$set": {
+                "publish_status": "failed",
+                "last_error": "Publishing hit an unexpected problem. Try again.",
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        logger.exception("publish_now crashed for piece %s: %s", body.piece_id, exc)
+        raise
+
+
+async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
     ws = ctx.workspace_id
     # Atomic claim, not a plain read — see _claim_piece_for_publishing's own
     # docstring. This also marks the piece "publishing" immediately, so the
     # separate _update_piece_status(..., "publishing") call further down is
     # gone; the claim already did it as part of the same atomic operation.
-    piece = await _claim_piece_for_publishing(body.piece_id, ws)
+    piece, previous_status = await _claim_piece_for_publishing(body.piece_id, ws)
     # Derived from the piece, not caller input — a piece is always exactly
     # one platform, and the publish subsystem's own vocabulary (token_store,
     # the PUBLISHERS registry, the scheduled_posts worker) is the lowercase
@@ -207,16 +250,18 @@ async def publish_now(
     # Check platform token exists for this workspace
     token_data = await get_token(ws, platform)
     if not token_data:
+        await _release_claim(body.piece_id, ws, previous_status)
         raise HTTPException(
             status_code=400,
             detail=f"{display_platform} is not connected. "
-                   f"Connect at /api/v1/oauth/{platform}/connect",
+                   "Connect it in Settings to publish.",
         )
 
     # Get publisher
     try:
         publisher = get_publisher(platform)
     except ValueError:
+        await _release_claim(body.piece_id, ws, previous_status)
         raise HTTPException(
             status_code=400,
             detail=f"Platform '{display_platform}' not supported.",

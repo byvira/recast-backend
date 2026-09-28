@@ -17,6 +17,7 @@ kanban "scheduled"/"failed" stages.
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+from app.db.mongo import content_pieces
 from app.pipelines.publish.base import PublishResult
 from app.pipelines.publish.token_store import save_token
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
@@ -225,3 +226,48 @@ async def test_a_dead_platform_token_is_attempted_exactly_once(signup_user):
         )
     assert res.status_code == 409
     assert fake_publisher.publish.await_count == 1
+
+
+async def test_a_refused_publish_does_not_leave_the_piece_stuck(signup_user):
+    """The claim marks the piece "publishing" before the connection check. A
+    piece refused for a missing connection used to stay on "publishing", and
+    the claim then rejected every later attempt as already in progress."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Release WS")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await content_pieces.update_one({"piece_id": piece_id}, {"$set": {"publish_status": "failed"}})
+
+    res = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers={"X-Workspace-Id": ws_id})
+    assert res.status_code == 400
+    doc = await content_pieces.find_one({"piece_id": piece_id})
+    assert doc["publish_status"] == "failed"  # put back, not left on "publishing"
+
+    # Connecting afterwards makes it publishable again.
+    await _connect_linkedin(ws_id)
+    fake_publisher = AsyncMock()
+    fake_publisher.publish = AsyncMock(return_value=PublishResult(
+        success=True, platform="linkedin", piece_id=piece_id, platform_post_id="p1",
+    ))
+    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher):
+        again = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers={"X-Workspace-Id": ws_id})
+    assert again.status_code == 200, again.text
+
+
+async def test_a_publisher_crash_does_not_leave_the_piece_publishing(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Crash WS")
+    await _connect_linkedin(ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+
+    fake_publisher = AsyncMock()
+    fake_publisher.publish = AsyncMock(side_effect=RuntimeError("boom"))
+    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher):
+        try:
+            res = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers={"X-Workspace-Id": ws_id})
+            assert res.status_code == 500
+        except RuntimeError:
+            pass  # the ASGI test client re-raises the app's exception
+
+    doc = await content_pieces.find_one({"piece_id": piece_id})
+    assert doc["publish_status"] == "failed"
+    assert "try again" in doc["last_error"].lower()
