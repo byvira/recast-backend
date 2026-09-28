@@ -286,6 +286,26 @@ async def test_upload_runs_real_dsp_and_stores_the_transcript(signup_user, stubs
     assert len(processed) > 0 and sr > 0
 
 
+async def test_an_uploaded_recordings_words_reach_the_agents(signup_user, stubs, monkeypatch):
+    """The event Odette reads used to carry content_text="" for an upload, so
+    nothing a member uploaded could ever be read. It now carries the words."""
+    from app.agents.personal.history import iter_member_content
+
+    events: list = []
+    monkeypatch.setattr(audio_module, "emit_event_background", lambda **kw: events.append(kw))
+    client, profile, ws_id, brand_id = await _setup(signup_user)
+
+    res = await _upload(client, ws_id, brand_id, _wav(0.5))
+    assert res.status_code == 201, res.text
+
+    assert events[-1]["payload"].content_text == "hello world"
+    assert events[-1]["payload"].content_summary == "hello world"
+
+    # And Remy's history reads the transcript, since an upload has no script.
+    rows = await iter_member_content(ws_id, profile["id"], pipeline_type="audio")
+    assert [r["text"] for r in rows] == ["hello world"]
+
+
 async def test_a_dsp_failure_never_blocks_the_upload(signup_user, stubs, monkeypatch):
     client, _, ws_id, brand_id = await _setup(signup_user)
 

@@ -27,17 +27,22 @@ after July 2020 are restricted to private uploads until an audit passes
 defaults to False, always a real, overridable field, never silently guessed.
 """
 
+import json
 import logging
+from typing import Optional
 
 import httpx
 
-from app.db.mongo import brand_profiles
+from app.db.mongo import brand_profiles, media_assets
+from app.models.media import MediaTranscriptWord
+from app.pipelines.media.captions import build_cues, language_code, to_srt
 from app.pipelines.publish.base import (
     PlatformPublisher,
     PublishRequest,
     PublishResult,
 )
 from app.pipelines.publish.validators import validate_youtube
+from app.pipelines.publish.youtube.links import collect_social_links
 from app.pipelines.publish.youtube.metadata import YouTubeMetadata, generate_youtube_metadata
 from app.pipelines.publish.google.oauth import (
     build_auth_url as google_build_auth_url,
@@ -49,6 +54,7 @@ from app.pipelines.publish.supervisor.classifier import classify_error
 logger = logging.getLogger(__name__)
 
 YOUTUBE_UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+YOUTUBE_CAPTIONS_URL = "https://www.googleapis.com/upload/youtube/v3/captions"
 
 
 class YouTubePublisher(PlatformPublisher):
@@ -110,6 +116,56 @@ class YouTubePublisher(PlatformPublisher):
             raise RuntimeError("YouTube upload succeeded but returned no video id")
         return video_id
 
+    async def _upload_captions(
+        self, client: httpx.AsyncClient, access_token: str, video_id: str, media_doc: dict,
+    ) -> Optional[str]:
+        """Attach the recording's real, word-timed transcript as a subtitle
+        track. Returns None on success or when there's simply no transcript,
+        otherwise a plain sentence for the member (surfaced as a partial
+        outcome). Needs the youtube.force-ssl scope, which connections made
+        before captions existed don't have — that case says so."""
+        words = [MediaTranscriptWord(**w) for w in media_doc.get("transcript") or []]
+        if not words:
+            return None
+
+        code = language_code(media_doc.get("transcript_language"))
+        if not code:
+            return (
+                "Your video is up, but its subtitle language couldn't be matched to a YouTube "
+                "language. Download the subtitle file and add it in YouTube Studio."
+            )
+
+        boundary = "recast_captions_boundary"
+        snippet = json.dumps({"snippet": {"videoId": video_id, "language": code, "name": "", "isDraft": False}})
+        body = (
+            f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{snippet}\r\n"
+            f"--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n{to_srt(build_cues(words))}\r\n"
+            f"--{boundary}--"
+        )
+        try:
+            resp = await client.post(
+                YOUTUBE_CAPTIONS_URL,
+                params={"uploadType": "multipart", "part": "snippet"},
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": f"multipart/related; boundary={boundary}",
+                },
+                content=body.encode("utf-8"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("YouTube caption upload failed for video %s: %s", video_id, exc)
+            return "Your video is up, but its subtitles couldn't be added. You can add them in YouTube Studio."
+
+        if resp.status_code in (401, 403):
+            return (
+                "Your video is up, but subtitles weren't added because this YouTube connection doesn't "
+                "allow it yet. Reconnect YouTube in Settings to turn subtitles on."
+            )
+        if not resp.is_success:
+            logger.warning("YouTube caption upload returned %s for video %s", resp.status_code, video_id)
+            return "Your video is up, but its subtitles couldn't be added. You can add them in YouTube Studio."
+        return None
+
     async def publish(
         self,
         request: PublishRequest,
@@ -145,13 +201,21 @@ class YouTubePublisher(PlatformPublisher):
 
         asset = media_result.asset
 
+        # The piece only embeds a snapshot of the video from when it was
+        # attached; analysis (transcript/chapters) happens later, on the
+        # media_assets document itself.
+        fresh_media = await media_assets.find_one({"id": asset.id}) or {}
+
         if request.youtube_metadata:
             metadata = YouTubeMetadata(**request.youtube_metadata)
         else:
             # No reviewed draft came with this request — generate the same
             # real, brand-grounded metadata fresh rather than a blank guess.
             doc = await brand_profiles.find_one({"id": request.brand_id, "workspace_id": request.workspace_id})
-            metadata = await generate_youtube_metadata(request.content, doc or {})
+            links = await collect_social_links(request.workspace_id, doc or {})
+            metadata = await generate_youtube_metadata(
+                request.content, doc or {}, media=fresh_media, social_links=links,
+            )
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -163,6 +227,10 @@ class YouTubePublisher(PlatformPublisher):
                     asset.mime_type or "video/*", metadata,
                 )
 
+                # Subtitles are a bonus on top of a video that's already up:
+                # a failure here is reported, never allowed to fail the post.
+                caption_note = await self._upload_captions(client, access_token, video_id, fresh_media)
+
                 post_url = f"https://youtube.com/watch?v={video_id}"
                 logger.info("YouTube video published: %s for piece %s", video_id, request.piece_id)
                 return PublishResult(
@@ -171,6 +239,7 @@ class YouTubePublisher(PlatformPublisher):
                     piece_id=request.piece_id,
                     platform_post_id=video_id,
                     platform_post_url=post_url,
+                    media_dropped_reason=caption_note,
                 )
 
         except httpx.HTTPStatusError as exc:

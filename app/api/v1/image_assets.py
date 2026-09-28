@@ -6,6 +6,7 @@ Follows media.py's/text.py's exact @limiter.limit/Depends(require(...))
 conventions.
 """
 
+import asyncio
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from app.agents.supervisor.service import assert_generation_allowed
+from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core.config import settings
 from app.core.middleware import limiter
@@ -50,11 +51,35 @@ from app.pipelines.media.image_render import (
 )
 from app.pipelines.media.transform import build_export_url
 from app.shared.events import emit_event_background
+from app.shared.llm import call_vision, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
 from app.shared.storage import ContentType as UploadContentType, upload_file
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+_DESCRIBE_IMAGE_PROMPT = (
+    "Describe this image in one or two plain sentences for someone who can't see it: "
+    "the main subject, the setting, and any text that is visibly written in it. "
+    "Only say what is actually visible; do not guess names, brands, or intentions."
+)
+
+
+async def _describe_uploaded_image(contents: bytes, mime_type: str, workspace_id: str) -> Optional[str]:
+    """Best-effort description of an uploaded image (its alt text, and the
+    only "text" an uploaded image has for Remy/Odette to read). Returns None
+    — never raises, never blocks the upload — if the vision provider is
+    unavailable, slow, or the workspace's AI budget is used up."""
+    try:
+        await assert_ai_budget_available(workspace_id)
+        set_usage_workspace(workspace_id)
+        text = await asyncio.wait_for(call_vision(_DESCRIBE_IMAGE_PROMPT, contents, mime_type), timeout=15)
+    except Exception as exc:  # noqa: BLE001 — includes the budget's HTTPException
+        logger.info("Image description skipped for workspace %s: %s", workspace_id, exc)
+        return None
+    text = (text or "").strip()
+    return text[:500] or None
 
 
 async def _get_brand_profile(brand_id: str, workspace_id: str) -> dict:
@@ -452,6 +477,11 @@ async def upload_image_asset(
     )
     await media_assets.insert_one(media.model_dump())
 
+    # An uploaded image has no prompt, so nothing in the app could say what
+    # it shows. A short description (best-effort) becomes its alt text and
+    # the text Remy and Odette read.
+    description = await _describe_uploaded_image(contents, file.content_type, ctx.workspace_id)
+
     asset_id = str(uuid4())
     asset = ImageAsset(
         id=asset_id,
@@ -461,6 +491,7 @@ async def upload_image_asset(
         created_at=now,
         updated_at=now,
         title=title,
+        alt_text=description,
         source_type=ImageSourceType.UPLOADED,
         slides=[
             Slide(
@@ -483,8 +514,8 @@ async def upload_image_asset(
         payload=ContentEventPayload(
             content_id=asset_id,
             content_ref=ContentRef(collection="image_assets", id=asset_id),
-            content_text="",
-            content_summary=title,
+            content_text=description or "",
+            content_summary=description or title,
             brand_id=brand_id,
         ),
     )

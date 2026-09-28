@@ -3,27 +3,35 @@ surface shares (text pipeline's default-image picker, manual attach, future
 audio/video pipelines). Same Cloudinary-through-backend pattern campaigns'
 thumbnail upload already used (app.shared.storage), extended to video/audio.
 
-width/height/duration_s are left unset on upload — no image/video inspection
-library is wired in yet (Pillow isn't a current dependency). The fields exist
-on MediaAsset for later use (e.g. Phase 4's aspect-ratio preview checks); this
-is a real, honest gap, not a silent one.
+width/height/duration_s come straight from Cloudinary's own upload response
+(it measures every file it ingests) — they used to be dropped, leaving these
+fields permanently unset. POST /{id}/analyze then adds the recording's
+transcript and chapters for video/audio, and GET /{id}/captions serves them
+as SRT/VTT.
 """
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 
+from app.agents.supervisor.service import assert_ai_budget_available
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, require
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import media_assets, workspaces
-from app.models.media import MediaAsset, MediaKind, MediaSource
+from app.models.agent_events import ContentEventPayload, ContentRef, EventType
+from app.models.media import MediaAnalysisStatus, MediaAsset, MediaKind, MediaSource, MediaTranscriptWord
 from app.models.workspace import MediaUploadLimits
+from app.pipelines.media.captions import build_cues, to_srt, to_vtt
 from app.pipelines.media.transform import ASPECT_RATIO_PRESETS, build_transformed_url
-from app.shared.storage import ContentType as UploadContentType, upload_file
+from app.pipelines.media.video_analysis import analyze_media, poster_url_for
+from app.shared.events import emit_event_background
+from app.shared.llm import set_usage_workspace
+from app.shared.pipeline_types import PipelineType
+from app.shared.storage import ContentType as UploadContentType, upload_file_detailed
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -108,7 +116,7 @@ async def upload_media(
         )
 
     try:
-        url = await upload_file(contents, _MIME_TO_UPLOAD_TYPE[kind], ctx.user_id)
+        uploaded = await upload_file_detailed(contents, _MIME_TO_UPLOAD_TYPE[kind], ctx.user_id)
     except Exception as exc:  # noqa: BLE001 — same tolerance as campaigns' thumbnail upload
         logger.error("Media upload failed for workspace %s: %s", ctx.workspace_id, exc)
         raise HTTPException(status_code=502, detail="Media upload failed. Try again.")
@@ -117,14 +125,101 @@ async def upload_media(
         id=str(uuid4()),
         workspace_id=ctx.workspace_id,
         kind=kind,
-        url=url,
+        url=uploaded["url"],
         mime_type=file.content_type,
+        width=uploaded.get("width") if kind != MediaKind.AUDIO else None,
+        height=uploaded.get("height") if kind != MediaKind.AUDIO else None,
+        duration_s=uploaded.get("duration_s") if kind != MediaKind.IMAGE else None,
+        poster_url=poster_url_for(uploaded["url"]) if kind == MediaKind.VIDEO else None,
         source=MediaSource.UPLOADED,
         created_by=ctx.user_id,
         created_at=datetime.now(timezone.utc),
     )
     await media_assets.insert_one(asset.model_dump())
     return asset
+
+
+async def _get_media_or_404(media_id: str, workspace_id: str) -> dict:
+    doc = await media_assets.find_one({"id": media_id, "workspace_id": workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Media not found.")
+    return doc
+
+
+@router.post("/{media_id}/analyze", response_model=MediaAsset)
+@limiter.limit("10/minute")
+async def analyze_media_asset(
+    request: Request,
+    media_id: str,
+    force: bool = Query(False, description="Re-run even if this recording was already analysed."),
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> MediaAsset:
+    """Transcribe a video/audio recording and build its real chapters.
+
+    Idempotent: an already-analysed recording is returned as-is unless
+    `force`. A recording that can't be transcribed still returns 200 with
+    analysis_status="failed" and a plain reason, so the caller can show it
+    instead of treating it as a server error."""
+    doc = await _get_media_or_404(media_id, ctx.workspace_id)
+    if doc.get("kind") not in (MediaKind.VIDEO.value, MediaKind.AUDIO.value):
+        raise HTTPException(status_code=400, detail="Only video and audio recordings can be analysed.")
+
+    if doc.get("analysis_status") == MediaAnalysisStatus.DONE.value and not force:
+        return MediaAsset(**doc)
+
+    # Chapter naming is an LLM call: count it toward, and respect, the budget.
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+
+    update = await analyze_media(doc)
+    await media_assets.update_one({"id": media_id, "workspace_id": ctx.workspace_id}, {"$set": update})
+
+    # A video only becomes something Remy and Odette can read once it has been
+    # analysed, so this is the moment it "exists" for them. Announced once —
+    # a forced re-run of an already-analysed recording must not double-count it.
+    first_time = doc.get("analysis_status") != MediaAnalysisStatus.DONE.value
+    if doc.get("kind") == MediaKind.VIDEO.value and first_time and update.get("analysis_status") == MediaAnalysisStatus.DONE.value:
+        spoken = " ".join(w["word"].strip() for w in update.get("transcript", []) if w["word"].strip())
+        emit_event_background(
+            event_type=EventType.CONTENT_CREATED,
+            pipeline_type=PipelineType.VIDEO,
+            workspace_id=ctx.workspace_id,
+            actor_user_id=ctx.user_id,
+            actor_role=ctx.role,
+            payload=ContentEventPayload(
+                content_id=media_id,
+                content_ref=ContentRef(collection="media_assets", id=media_id),
+                content_text=spoken,
+                content_summary=spoken[:400],
+            ),
+        )
+    return MediaAsset(**{**doc, **update})
+
+
+@router.get("/{media_id}/captions")
+@limiter.limit("60/minute")
+async def download_captions(
+    request: Request,
+    media_id: str,
+    format: Literal["srt", "vtt"] = Query("srt"),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> Response:
+    """Subtitle file (SRT or WebVTT) built from the recording's real,
+    word-timed transcript."""
+    doc = await _get_media_or_404(media_id, ctx.workspace_id)
+    words = [MediaTranscriptWord(**w) for w in doc.get("transcript") or []]
+    if not words:
+        raise HTTPException(
+            status_code=404,
+            detail="No transcript yet. Analyse this recording first to create captions.",
+        )
+    cues = build_cues(words)
+    body = to_srt(cues) if format == "srt" else to_vtt(cues)
+    return Response(
+        content=body,
+        media_type="text/vtt" if format == "vtt" else "application/x-subrip",
+        headers={"Content-Disposition": f'attachment; filename="captions-{media_id[:8]}.{format}"'},
+    )
 
 
 class TransformMediaRequest(BaseModel):

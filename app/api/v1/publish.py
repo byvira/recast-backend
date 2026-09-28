@@ -322,10 +322,23 @@ async def publish_now(
                 ws, ctx.user_id, body.piece_id, platform,
                 f"{display_platform} connection expired or was revoked — reconnect it in Settings.",
             )
+            # NOT a 401: the frontend's axios interceptor reads any 401 as
+            # "your login expired", silently refreshes the session and
+            # replays this request — a second real publish attempt (second
+            # incident, second reconnect email to the owner) — and the user
+            # then saw a raw API path. This is the platform's connection
+            # failing, not the user's session, so it gets its own status and
+            # a structured, plain-language reason the UI can act on.
             raise HTTPException(
-                status_code=401,
-                detail=f"{display_platform} token expired or revoked. "
-                       f"Reconnect at /api/v1/oauth/{platform}/connect",
+                status_code=409,
+                detail={
+                    "code": "platform_reconnect_required",
+                    "platform": platform,
+                    "message": (
+                        f"Your {display_platform} connection expired or was revoked. "
+                        "Reconnect it in Settings to publish."
+                    ),
+                },
             )
 
         if error_type == ErrorType.FIXABLE:
@@ -472,6 +485,8 @@ async def prepare_youtube_publish(
     for the user to review and edit before publishing — never a guess the
     user can't see or change. The actual /now call, when given this back
     (possibly edited) as youtube_metadata, uses it as-is."""
+    from app.db.mongo import media_assets
+    from app.pipelines.publish.youtube.links import collect_social_links
     from app.pipelines.publish.youtube.metadata import generate_youtube_metadata
 
     ws = ctx.workspace_id
@@ -481,8 +496,30 @@ async def prepare_youtube_publish(
     if not brand:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
-    metadata = await generate_youtube_metadata(piece["content"], brand)
-    return metadata.model_dump()
+    # The piece embeds only a snapshot of its video from attach time; the
+    # transcript and chapters live on the media_assets document.
+    media = None
+    attached = (piece.get("media") or [None])[0]
+    if attached and attached.get("id"):
+        media = await media_assets.find_one({"id": attached["id"], "workspace_id": ws})
+
+    links = await collect_social_links(ws, brand)
+    metadata = await generate_youtube_metadata(
+        piece["content"], brand, media=media, social_links=links,
+    )
+    return {
+        **metadata.model_dump(),
+        # What the review step needs to show about the recording itself.
+        "video": {
+            "media_id": (media or {}).get("id"),
+            "analysis_status": (media or {}).get("analysis_status", "none"),
+            "analysis_error": (media or {}).get("analysis_error"),
+            "chapter_count": len((media or {}).get("chapters") or []),
+            "has_transcript": bool((media or {}).get("transcript")),
+            "duration_s": (media or {}).get("duration_s"),
+        },
+        "social_links": [{"label": label, "url": url} for label, url in links],
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

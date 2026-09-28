@@ -51,6 +51,28 @@ class MediaSource(str, Enum):
     ENHANCED = "enhanced"
 
 
+class MediaTranscriptWord(BaseModel):
+    """One spoken word with its real position in the recording."""
+
+    word: str
+    start_s: float
+    end_s: float
+
+
+class MediaChapter(BaseModel):
+    """A chapter whose start time is a real position in the recording — never
+    a guess: chapters are only ever created from transcript segment starts."""
+
+    start_s: float
+    title: str
+
+
+class MediaAnalysisStatus(str, Enum):
+    NONE = "none"        # never analysed
+    DONE = "done"
+    FAILED = "failed"    # transcription couldn't run; reason in analysis_error
+
+
 class MediaAsset(BaseModel):
     """Stored in the `media_assets` collection, referenced by id from
     GeneratedPiece.media and PublishRequest — never duplicated per platform
@@ -74,3 +96,16 @@ class MediaAsset(BaseModel):
     # preview-before-publish gate exists to catch before it goes out.
     qa_flagged: bool = False
     qa_flag_reason: Optional[str] = None
+
+    # ── Understanding of the recording itself (video/audio) ───────────────
+    # Filled by POST /media/{id}/analyze. Until then the asset is just a file
+    # nothing in the app can "read"; after it, the words and their timings
+    # feed real chapters, captions, and YouTube metadata instead of a guess
+    # from the post text. All empty/None for images and never-analysed media.
+    analysis_status: MediaAnalysisStatus = MediaAnalysisStatus.NONE
+    analysis_error: Optional[str] = None
+    transcript: list[MediaTranscriptWord] = []
+    transcript_language: Optional[str] = None
+    chapters: list[MediaChapter] = []
+    # Still frame for players that shouldn't load the whole video (video only).
+    poster_url: Optional[str] = None

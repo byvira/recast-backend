@@ -640,6 +640,10 @@ async def upload_audio_asset(
     await audio_assets.insert_one(asset.model_dump())
     await _record_initial_version(asset)
 
+    # What the recording actually says is the only "text" an uploaded file
+    # has. It used to be sent as "" (title only), so Odette's digest and
+    # Remy's history could never read anything a member uploaded.
+    spoken = " ".join(w.word.strip() for w in transcript if w.word.strip())
     emit_event_background(
         event_type=EventType.CONTENT_CREATED,
         pipeline_type=PipelineType.AUDIO,
@@ -649,8 +653,8 @@ async def upload_audio_asset(
         payload=ContentEventPayload(
             content_id=asset_id,
             content_ref=ContentRef(collection="audio_assets", id=asset_id),
-            content_text="",
-            content_summary=title,
+            content_text=spoken,
+            content_summary=spoken[:400] or title,
             brand_id=brand_id,
         ),
     )

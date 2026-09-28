@@ -29,6 +29,11 @@ GOOGLE_SCOPES = [
     # back. Existing connections made before this change only have the
     # readonly scope and must reconnect (re-consent) to publish.
     "https://www.googleapis.com/auth/youtube.upload",
+    # youtube.force-ssl — attaching subtitle tracks (captions.insert). The
+    # upload scope above does NOT cover captions. Connections made before
+    # this was added lack it; the publisher reports that as a plain
+    # "reconnect to turn subtitles on" note instead of failing the post.
+    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
 

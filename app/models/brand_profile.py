@@ -132,6 +132,11 @@ class VisualIdentity(BaseModel):
     # editable after: regenerate, upload a real one instead, or clear back
     # to "" (never a forced/locked image). Empty until generated or set.
     mascot_url: str = ""
+    # Where to follow this brand — typed once by the member, used in places
+    # like a YouTube description's "Follow" block. Keys: linkedin, instagram,
+    # facebook, threads. Anything left out falls back to the profile URL of a
+    # connected account when one exists; nothing is invented.
+    social_links: dict[str, str] = Field(default_factory=dict)
 
 
 class ExtractionData(BaseModel):

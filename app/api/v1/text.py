@@ -550,6 +550,64 @@ async def score_readability_endpoint(
 # QUICK ACTION CHIPS
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _timestamps_from_recording(body: ApplyChipRequest, ctx: WorkspaceContext) -> dict:
+    """Append the attached recording's REAL chapters to the post. Analyses the
+    recording first if that hasn't happened yet; says plainly when there is no
+    recording (or no chapters to be had) instead of inventing any."""
+    from app.db.mongo import content_pieces, media_assets
+    from app.models.media import MediaChapter
+    from app.pipelines.media.video_analysis import analyze_media
+    from app.pipelines.publish.youtube.metadata import build_description
+    from app.agents.supervisor.service import assert_ai_budget_available
+    from app.shared.llm import set_usage_workspace
+
+    ws = ctx.workspace_id
+    piece = await content_pieces.find_one({"piece_id": body.piece_id, "workspace_id": ws}) if body.piece_id else None
+    attached = ((piece or {}).get("media") or [None])[0]
+    media = (
+        await media_assets.find_one({"id": attached["id"], "workspace_id": ws})
+        if attached and attached.get("id") else None
+    )
+    if not media or media.get("kind") not in ("video", "audio"):
+        raise HTTPException(
+            status_code=400,
+            detail="Timestamps come from a real recording. Attach a video or audio file to this piece first.",
+        )
+
+    if media.get("analysis_status") != "done":
+        await assert_ai_budget_available(ws)
+        set_usage_workspace(ws)
+        update = await analyze_media(media)
+        await media_assets.update_one({"id": media["id"], "workspace_id": ws}, {"$set": update})
+        media = {**media, **update}
+        if media.get("analysis_status") != "done":
+            raise HTTPException(
+                status_code=422,
+                detail=media.get("analysis_error") or "This recording couldn't be read, so there are no timestamps to add.",
+            )
+
+    chapters = [MediaChapter(**c) for c in media.get("chapters") or []]
+    if not chapters:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This recording is too short, or has too few distinct topics, to make chapters "
+                "(YouTube needs at least 3, spread over 30 seconds or more)."
+            ),
+        )
+
+    refined = build_description(body.content, chapters)
+    return {
+        "original": body.content,
+        "refined": refined,
+        "chip": body.chip,
+        "platform": body.platform,
+        "word_count": len(refined.split()),
+        "char_count": len(refined),
+        "changed": refined != body.content,
+    }
+
+
 @router.post("/refine", response_model=ApplyChipResponse)
 @limiter.limit("30/minute")
 async def refine_content(
@@ -571,22 +629,29 @@ async def refine_content(
             detail=f"Unknown chip '{body.chip}'. Available: {', '.join(CHIP_PROMPTS.keys())}",
         )
 
-    brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
+    if body.chip == "add_timestamps" and not body.custom_instruction:
+        # Timestamps are facts about a recording. This chip used to ask the
+        # model for "4-6 sections, spaced approximately evenly" from the post
+        # text alone — generic chapter names at invented times. Now it only
+        # ever writes the recording's real chapters.
+        result = await _timestamps_from_recording(body, ctx)
+    else:
+        brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
 
-    brand_context = build_brand_context(brand_profile)
-    enforcement = _extract_enforcement_data(brand_profile)
-    language = await _resolve_request_language(None, ctx, content_for_detection=body.content)
+        brand_context = build_brand_context(brand_profile)
+        enforcement = _extract_enforcement_data(brand_profile)
+        language = await _resolve_request_language(None, ctx, content_for_detection=body.content)
 
-    result = await apply_chip(
-        content=body.content,
-        chip_name=body.chip,
-        platform=body.platform,
-        brand_context=brand_context,
-        banned_words=enforcement.get("banned_words", []),
-        custom_instruction=body.custom_instruction,
-        language=language,
-        default_tone=brand_profile.get("default_tone"),
-    )
+        result = await apply_chip(
+            content=body.content,
+            chip_name=body.chip,
+            platform=body.platform,
+            brand_context=brand_context,
+            banned_words=enforcement.get("banned_words", []),
+            custom_instruction=body.custom_instruction,
+            language=language,
+            default_tone=brand_profile.get("default_tone"),
+        )
 
     # Save version if piece_id provided and content changed
     if body.piece_id and result.get("changed"):

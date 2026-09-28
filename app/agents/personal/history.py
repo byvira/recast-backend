@@ -11,10 +11,10 @@ Adding Audio/Image/Video later = append one :class:`ContentSource` to
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from app.db.mongo import audio_assets, content_pieces, image_assets
+from app.db.mongo import audio_assets, content_pieces, image_assets, media_assets
 from app.shared.pipeline_types import PipelineType
 
 
@@ -42,6 +42,28 @@ class ContentSource:
     quality_field: str = "quality_passed"
     flagged_field: str = "flagged_for_review"
     user_field: str = "user_id"
+    # Tried in order when ``text_field`` is empty. An UPLOADED recording or
+    # image has no script/prompt, so without this the agents saw an empty
+    # string for everything a member brought themselves. Values may be plain
+    # text or a word-timed transcript (list of {"word": ...}).
+    fallback_fields: tuple[str, ...] = ()
+    # Extra Mongo filter for a collection that holds more than this pipeline
+    # (video lives in ``media_assets`` alongside every image and audio file).
+    extra_filter: dict = field(default_factory=dict)
+
+
+def text_from_field(value: Any) -> str:
+    """Plain text from a document field: a string as-is, or a transcript /
+    list of strings joined into one."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts = [
+            (item.get("word", "") if isinstance(item, dict) else str(item)).strip()
+            for item in value
+        ]
+        return " ".join(p for p in parts if p)
+    return ""
 
 
 # pipeline_type value  ->  where/how its content lives.
@@ -78,6 +100,7 @@ PIPELINE_SOURCES: dict[str, ContentSource] = {
         id_field="id",
         flagged_field="qa_flagged",
         user_field="created_by",
+        fallback_fields=("transcript",),  # an uploaded recording has words, not a script
     ),
     PipelineType.IMAGE.value: ContentSource(
         collection=image_assets,
@@ -85,8 +108,18 @@ PIPELINE_SOURCES: dict[str, ContentSource] = {
         id_field="id",
         flagged_field="qa_flagged",
         user_field="created_by",
+        fallback_fields=("alt_text",),  # an uploaded image has a description, not a prompt
     ),
-    # PipelineType.VIDEO.value: ContentSource(collection=video_pieces, text_field="transcript", id_field="id"),
+    # Video has no pipeline collection of its own — an uploaded video is a
+    # MediaAsset. It only counts as content once it has been analysed (its
+    # words transcribed): before that there is nothing an agent can read.
+    PipelineType.VIDEO.value: ContentSource(
+        collection=media_assets,
+        text_field="transcript",
+        id_field="id",
+        user_field="created_by",
+        extra_filter={"kind": "video", "analysis_status": "done"},
+    ),
 }
 
 
@@ -122,23 +155,32 @@ async def iter_member_content(
     for pt, src in sources:
         cursor = (
             src.collection.find(
-                {"workspace_id": workspace_id, src.user_field: user_id, "deleted": {"$ne": True}},
+                {
+                    "workspace_id": workspace_id, src.user_field: user_id,
+                    "deleted": {"$ne": True}, **src.extra_filter,
+                },
                 {
                     src.id_field: 1,
                     src.text_field: 1,
                     src.created_field: 1,
                     src.quality_field: 1,
                     src.flagged_field: 1,
+                    **{f: 1 for f in src.fallback_fields},
                 },
             )
             .sort(src.created_field, -1 if newest_first else 1)
             .limit(limit)
         )
         async for doc in cursor:
+            text = text_from_field(doc.get(src.text_field))
+            for fallback in src.fallback_fields:
+                if text:
+                    break
+                text = text_from_field(doc.get(fallback))
             rows.append({
                 "id": doc.get(src.id_field, ""),
                 "pipeline_type": pt,
-                "text": doc.get(src.text_field, "") or "",
+                "text": text,
                 "created_at": doc.get(src.created_field),
                 "quality_passed": doc.get(src.quality_field, True),
                 "flagged_for_review": doc.get(src.flagged_field, False),

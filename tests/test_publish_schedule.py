@@ -188,9 +188,40 @@ async def test_failed_piece_shows_as_failed_stage_not_staging(signup_user):
             json={"piece_id": piece_id},
             headers={"X-Workspace-Id": ws_id},
         )
-    assert res.status_code == 401
+    # 409 with a structured reason, never 401: a 401 makes the frontend's
+    # axios interceptor refresh the session and replay the publish request.
+    assert res.status_code == 409, res.text
+    detail = res.json()["detail"]
+    assert detail["code"] == "platform_reconnect_required"
+    assert detail["platform"] == "linkedin"
+    assert "Reconnect it in Settings" in detail["message"]
+    assert "/api/" not in detail["message"]  # no raw API path in user-facing copy
 
     check = await client.get(f"/api/v1/content/pieces/{piece_id}", headers={"X-Workspace-Id": ws_id})
     body = check.json()
     assert body["publish_status"] == "failed"
     assert body["stage"] == "failed"
+
+
+async def test_a_dead_platform_token_is_attempted_exactly_once(signup_user):
+    """The old 401 made the browser replay the request, so a single click
+    caused two real publish attempts. The publisher must be hit once."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Once WS")
+    await _connect_linkedin(ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await client.patch(f"/api/v1/content/pieces/{piece_id}/approve", headers={"X-Workspace-Id": ws_id})
+
+    fake_publisher = AsyncMock()
+    fake_publisher.publish = AsyncMock(return_value=PublishResult(
+        success=False, platform="linkedin", piece_id=piece_id,
+        error_type="AUTH", error_code=401, error_message="Token expired",
+    ))
+
+    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher), \
+         patch("app.api.v1.publish.recover_connection", new=AsyncMock(return_value=False)):
+        res = await client.post(
+            "/api/v1/publish/now", json={"piece_id": piece_id}, headers={"X-Workspace-Id": ws_id},
+        )
+    assert res.status_code == 409
+    assert fake_publisher.publish.await_count == 1

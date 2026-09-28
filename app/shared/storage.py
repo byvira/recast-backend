@@ -44,6 +44,42 @@ def _get_resource_type(content_type: ContentType) -> str:
         return "raw"  # arbitrary file (PDF/ZIP), not an image/video transform target
     return "image"
 
+async def upload_file_detailed(
+    file: bytes,
+    content_type: ContentType,
+    user_id: str,
+    filename: str = None
+) -> dict:
+    """Upload file bytes to Cloudinary and return everything useful from its
+    response, not just the URL: Cloudinary already measures width/height
+    (images/video) and duration (video/audio) during upload, and callers used
+    to throw all of it away — leaving MediaAsset's width/height/duration_s
+    permanently unset for every upload.
+
+    Returns {"url", "width", "height", "duration_s", "bytes", "format"};
+    a key is None when Cloudinary didn't report it for that file type.
+    """
+    _ensure_configured()
+    result = cloudinary.uploader.upload(
+        file,
+        upload_preset=content_type.value,       # uses the preset we created
+        folder=f"recast/{content_type.value.replace('recast_', '')}/{user_id}",
+        resource_type=_get_resource_type(content_type),
+        public_id=filename,
+        use_filename=bool(filename),
+        unique_filename=True,
+    )
+    duration = result.get("duration")
+    return {
+        "url": result["secure_url"],
+        "width": result.get("width"),
+        "height": result.get("height"),
+        "duration_s": float(duration) if duration is not None else None,
+        "bytes": result.get("bytes"),
+        "format": result.get("format"),
+    }
+
+
 async def upload_file(
     file: bytes,
     content_type: ContentType,
@@ -61,17 +97,7 @@ async def upload_file(
     Returns:
         Secure Cloudinary URL pointing to the uploaded file.
     """
-    _ensure_configured()
-    result = cloudinary.uploader.upload(
-        file,
-        upload_preset=content_type.value,       # uses the preset we created
-        folder=f"recast/{content_type.value.replace('recast_', '')}/{user_id}",
-        resource_type=_get_resource_type(content_type),
-        public_id=filename,
-        use_filename=bool(filename),
-        unique_filename=True,
-    )
-    return result["secure_url"]
+    return (await upload_file_detailed(file, content_type, user_id, filename))["url"]
 
 
 async def get_file_url(public_id: str, content_type: ContentType) -> str:

@@ -35,7 +35,7 @@ def stubs(monkeypatch):
     """Stubs the AI background + the upload. Records every call so tests can
     assert on what was really produced (the uploaded bytes are the real
     Pillow render)."""
-    record = {"backgrounds": [], "uploads": []}
+    record = {"backgrounds": [], "uploads": [], "vision_calls": 0, "vision_reply": "A blue square on a plain background."}
 
     async def _fake_background(*, prompt, workspace_id, user_id, target_size, brand_profile):
         record["backgrounds"].append({"prompt": prompt, "size": target_size})
@@ -45,8 +45,15 @@ def stubs(monkeypatch):
         record["uploads"].append(data)
         return _CLOUDINARY_URL.format(name=uuid4().hex)
 
+    async def _fake_vision(prompt, image_bytes, mime_type="image/jpeg", *args, **kwargs):
+        # Never a real Gemini call: describing an uploaded image is best-effort
+        # and would otherwise spend real quota on every upload test.
+        record["vision_calls"] += 1
+        return record["vision_reply"]
+
     monkeypatch.setattr(image_module, "generate_image_from_prompt", _fake_background)
     monkeypatch.setattr(image_module, "upload_file", _fake_upload)
+    monkeypatch.setattr(image_module, "call_vision", _fake_vision)
     return record
 
 
@@ -186,6 +193,64 @@ async def test_upload_creates_an_uploaded_asset(signup_user, stubs):
     assert body["source_type"] == "uploaded"
     assert body["slides"][0]["slide_type"] == "upload"
     assert len(stubs["uploads"]) == 1
+
+
+async def test_upload_gets_a_description_that_agents_can_read(signup_user, stubs, monkeypatch):
+    """An uploaded image has no prompt, so nothing could say what it shows.
+    Its description becomes alt text AND the text in the event Odette reads."""
+    events: list = []
+    monkeypatch.setattr(image_module, "emit_event_background", lambda **kw: events.append(kw))
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    res = await client.post(
+        "/api/v1/image-assets/upload",
+        data={"title": "My photo", "brand_id": brand_id},
+        files={"file": ("photo.png", _png(), "image/png")},
+        headers=_h(ws_id),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["alt_text"] == "A blue square on a plain background."
+    assert events[-1]["payload"].content_text == "A blue square on a plain background."
+
+
+async def test_a_failed_description_never_blocks_the_upload(signup_user, stubs, monkeypatch):
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("vision unavailable")
+
+    monkeypatch.setattr(image_module, "call_vision", _boom)
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    res = await client.post(
+        "/api/v1/image-assets/upload",
+        data={"title": "My photo", "brand_id": brand_id},
+        files={"file": ("photo.png", _png(), "image/png")},
+        headers=_h(ws_id),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["alt_text"] is None
+
+
+async def test_an_exhausted_ai_budget_skips_the_description_but_not_the_upload(signup_user, stubs):
+    from datetime import datetime, timezone
+
+    from app.db.mongo import workspace_ai_budgets, workspace_ai_usage_daily
+
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    await workspace_ai_budgets.insert_one({"id": ws_id, "workspace_id": ws_id, "monthly_token_budget": 10})
+    await workspace_ai_usage_daily.insert_one(
+        {"_id": f"{ws_id}:{today}", "id": f"{ws_id}:{today}", "workspace_id": ws_id, "date": today, "tokens_used": 10}
+    )
+
+    res = await client.post(
+        "/api/v1/image-assets/upload",
+        data={"title": "My photo", "brand_id": brand_id},
+        files={"file": ("photo.png", _png(), "image/png")},
+        headers=_h(ws_id),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["alt_text"] is None
+    assert stubs["vision_calls"] == 0
 
 
 async def test_upload_rejects_unsupported_file_types(signup_user, stubs):
