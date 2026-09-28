@@ -290,6 +290,8 @@ async def generate_next_batch(
         result = await generate_campaign_batch(campaign, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         # QA-003: was f"Campaign batch generation error: {str(e)}" returned
         # straight to the client — logged server-side instead.

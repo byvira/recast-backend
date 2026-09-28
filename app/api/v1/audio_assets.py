@@ -17,7 +17,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from app.agents.supervisor.service import assert_generation_allowed
+from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core.config import settings
 from app.core.middleware import limiter
@@ -50,7 +50,7 @@ from app.pipelines.media.tts_generation import is_language_supported, synthesize
 from app.pipelines.media.transform import build_export_url
 from app.prompts.registry import load_prompt
 from app.shared.events import emit_event_background
-from app.shared.llm import call_llm
+from app.shared.llm import call_llm, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
 from app.shared.storage import ContentType as UploadContentType, upload_file
 
@@ -67,6 +67,25 @@ async def _get_voice_settings(workspace_id: str, user_id: str) -> MemberVoiceSet
     if doc:
         return MemberVoiceSettings(**doc)
     return MemberVoiceSettings(id=f"{workspace_id}:{user_id}", workspace_id=workspace_id, user_id=user_id)
+
+
+async def _record_initial_version(asset: AudioAsset) -> None:
+    """Version 1 = the asset as first created. Nothing else ever starts a
+    version history (the only writer, _bump_audio_version, is called only
+    from restore, which itself needs an existing version to restore), so
+    without this the versions list was permanently empty and restore
+    permanently 404."""
+    await audio_asset_versions.insert_one(AudioAssetVersion(
+        version_id=str(uuid4()),
+        audio_asset_id=asset.id,
+        workspace_id=asset.workspace_id,
+        user_id=asset.created_by,
+        version_number=1,
+        script_snapshot=asset.script,
+        media_id=asset.media_id,
+        action="created",
+        created_at=asset.created_at,
+    ).model_dump())
 
 
 async def _get_lexicon(workspace_id: str, user_id: str) -> Optional[MemberLexicon]:
@@ -170,6 +189,7 @@ async def generate_audio_asset(
         source_content_hash=source_content_hash,
     )
     await audio_assets.insert_one(asset.model_dump())
+    await _record_initial_version(asset)
 
     # file 04 Part 2 — first-class Phase 1 scope, not deferred, same as Image.
     emit_event_background(
@@ -303,6 +323,7 @@ async def generate_dialogue(
         source_piece_id=body.source_piece_id,
     )
     await audio_assets.insert_one(asset.model_dump())
+    await _record_initial_version(asset)
 
     if guest_voices_seen:
         await guest_voice_profiles.insert_many([
@@ -428,6 +449,10 @@ async def localize_audio_asset(
     steps later inside the TTS call.
     """
     await assert_generation_allowed(ctx.workspace_id)
+    await assert_ai_budget_available(ctx.workspace_id)
+    # Translation is a real LLM spend: attribute it to this workspace so it
+    # counts toward (and is limited by) the AI budget like Text generation.
+    set_usage_workspace(ctx.workspace_id)
 
     is_supported, reason = is_language_supported(body.target_language)
     if not is_supported:
@@ -500,6 +525,7 @@ async def localize_audio_asset(
         source_audio_asset_id=audio_asset_id,
     )
     await audio_assets.insert_one(localized.model_dump())
+    await _record_initial_version(localized)
 
     emit_event_background(
         event_type=EventType.CONTENT_CREATED,
@@ -612,6 +638,7 @@ async def upload_audio_asset(
         approval_status=AudioApprovalStatus.PENDING,
     )
     await audio_assets.insert_one(asset.model_dump())
+    await _record_initial_version(asset)
 
     emit_event_background(
         event_type=EventType.CONTENT_CREATED,

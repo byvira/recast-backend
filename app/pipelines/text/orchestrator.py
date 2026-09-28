@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
-from app.agents.supervisor.service import assert_generation_allowed
+from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.agents.text.graph import build_single_platform_graph
 from app.agents.text.state import build_initial_state
 from app.db.mongo import brand_profiles, content_pieces
@@ -295,6 +295,7 @@ async def run_text_pipeline(
     # docstring for why no matching reset is needed here.
     set_usage_workspace(workspace_id)
     await assert_generation_allowed(workspace_id)
+    await assert_ai_budget_available(workspace_id)
 
     brand_profile = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
     if not brand_profile:

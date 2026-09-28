@@ -88,13 +88,19 @@ async def get_usage(request: Request, ctx: WorkspaceContext = Depends(_OWNER)) -
         "total_tokens": total_tokens,
         "total_calls": total_calls,
         "daily": rows,
-        # Real for Odette (reasoning + synthesis) and Remy (align_draft) —
-        # the two agents wrapped in usage_workspace() so far. Other
-        # pipelines (text generation, repurpose, scoring, ...) aren't
-        # wrapped yet, so a workspace using only those still sees zeros
-        # here honestly, not a fabricated total.
+        # Every LLM call made inside one of these entry points is attributed
+        # to the workspace (via set_usage_workspace/usage_workspace), so this
+        # total is real for all of them. Not covered: campaign topic
+        # suggestions (no workspace_id reaches that call). Image generation
+        # and TTS don't spend LLM tokens, so they never appear here.
         "metered": True,
-        "metered_coverage": ["supervisor.reason", "supervisor.synthesize", "personal.align_draft"],
+        "metered_coverage": [
+            "text.generation (all platforms, repurpose, batch, campaigns)",
+            "audio.localization (translation)",
+            "brand.voice_playground", "brand.voice_suggestions", "brand.trait_extraction",
+            "analytics", "personal.assistant", "supervisor.reason", "supervisor.synthesize",
+        ],
+        "enforced": True,
     }
 
 

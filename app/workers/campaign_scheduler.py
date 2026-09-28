@@ -17,6 +17,9 @@ its own.
 import logging
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
+
+from app.agents.supervisor.service import assert_generation_allowed
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import get_campaigns_collection
 from app.pipelines.campaigns.batch_runner import generate_campaign_batch
@@ -44,6 +47,18 @@ async def run_due_campaign_batches() -> None:
     logger.info("Found %d campaigns due for automatic batch generation", len(due))
 
     for campaign in due:
+        # An owner-paused workspace isn't a failing campaign: skip without
+        # touching next_run_at, so it runs on the next tick after disarming
+        # instead of being backed off (and logged as "couldn't generate").
+        try:
+            await assert_generation_allowed(campaign["workspace_id"])
+        except HTTPException:
+            logger.info(
+                "Skipping scheduled campaign %s — workspace %s has generation paused.",
+                campaign.get("id"), campaign["workspace_id"],
+            )
+            continue
+
         try:
             await generate_campaign_batch(
                 campaign,
@@ -53,8 +68,11 @@ async def run_due_campaign_batches() -> None:
                 user_id=campaign["created_by"],
             )
         except Exception as e:
-            logger.error("Scheduled batch failed for campaign %s: %s", campaign.get("id"), e)
-            await _back_off(campaign, str(e))
+            # A deliberate rejection (e.g. the AI budget's 403) carries a
+            # readable detail; str() of an HTTPException is "403: ...".
+            reason = e.detail if isinstance(e, HTTPException) else str(e)
+            logger.error("Scheduled batch failed for campaign %s: %s", campaign.get("id"), reason)
+            await _back_off(campaign, str(reason))
 
 
 #: A failed run used to leave next_run_at in the past, so this job re-ran the

@@ -477,11 +477,17 @@ async def _run_and_report(
                 session_id=session_id,
             )
     except Exception as exc:
-        logger.error(
-            "Pipeline failed — session %s: %s",
-            session_id, exc, exc_info=True,
-        )
-        await emitter.emit_error(message=str(exc), recoverable=False)
+        # A deliberate HTTPException (e.g. the kill switch's 403) carries a
+        # user-facing detail; str() of it is "403: ..." which reads as a bug.
+        if isinstance(exc, HTTPException):
+            logger.info("Pipeline rejected — session %s: %s", session_id, exc.detail)
+            await emitter.emit_error(message=str(exc.detail), recoverable=False)
+        else:
+            logger.error(
+                "Pipeline failed — session %s: %s",
+                session_id, exc, exc_info=True,
+            )
+            await emitter.emit_error(message=str(exc), recoverable=False)
 
     from app.pipelines.text.events import emit_run_completed
     await emit_run_completed(

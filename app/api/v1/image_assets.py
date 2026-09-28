@@ -153,8 +153,28 @@ async def _bump_version(
     doc = await image_assets.find_one({"id": asset_id, "workspace_id": workspace_id})
     if not doc:
         return None
-    new_version_number = doc.get("version_count", 1) + 1
+    current_version = doc.get("version_count", 1)
+    new_version_number = current_version + 1
     now = datetime.now(timezone.utc)
+
+    # generate/upload never write a version row for the asset's first state,
+    # so without this the very first edit made "restore to the original"
+    # impossible (Version 1 not found). Snapshot the pre-change state under
+    # its own version number the first time it's about to be replaced.
+    if not await image_asset_versions.find_one(
+        {"image_asset_id": asset_id, "workspace_id": workspace_id, "version_number": current_version}
+    ):
+        await image_asset_versions.insert_one(ImageAssetVersion(
+            version_id=str(uuid4()),
+            image_asset_id=asset_id,
+            workspace_id=workspace_id,
+            user_id=doc.get("created_by") or actor_user_id,
+            version_number=current_version,
+            slides_snapshot=[Slide(**s) for s in doc.get("slides", [])],
+            action="created" if current_version == 1 else f"v{current_version}_baseline",
+            created_at=doc.get("created_at") or now,
+        ).model_dump())
+
     slides_dump = [s.model_dump() for s in new_slides]
     await image_assets.update_one(
         {"id": asset_id, "workspace_id": workspace_id},

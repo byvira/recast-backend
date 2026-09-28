@@ -259,6 +259,10 @@ async def generate_text_content(
                     __import__("datetime").timezone.utc
                 ),
             )
+        except HTTPException:
+            # e.g. the owner's emergency kill switch (403) — a deliberate,
+            # user-meaningful rejection, not a server failure to mask as 500.
+            raise
         except Exception as e:
             # QA-003: was f"Batch generation error: {str(e)}" — an
             # unconstrained internal exception straight into the response
@@ -290,6 +294,8 @@ async def generate_text_content(
             )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         # QA-003: was f"Pipeline error: {str(e)}" returned straight to the
         # client — logged server-side instead.
@@ -364,6 +370,8 @@ async def repurpose_content(
         # instead, which reads as "something broke" rather than "try a
         # different URL or paste the content directly".
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         # QA-003: was f"Repurpose error: {str(e)}" returned straight to the
         # client — logged server-side instead.
@@ -456,6 +464,8 @@ async def batch_generate(
                 days=body.days,
                 language=language,
             )
+    except HTTPException:
+        raise
     except Exception as e:
         # QA-003: was f"Batch error: {str(e)}" returned straight to the
         # client — logged server-side instead.
@@ -851,6 +861,8 @@ async def regenerate_content(
             language=language,
             session_id=str(uuid4()),
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(
             "Regenerate pipeline failed for %s: %s", body.platform, e, exc_info=True
