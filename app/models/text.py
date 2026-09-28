@@ -564,6 +564,15 @@ class ContentPieceVersion(BaseModel):
 
 
      
+class ManualPieceRequest(BaseModel):
+    """A piece saved exactly as given — no LLM call. For content already
+    produced elsewhere (e.g. Voices' playground transform) that just needs
+    to become a real draft, not be regenerated again."""
+    platform: str
+    brand_id: str
+    content:  str
+
+
 class RegenerateRequest(BaseModel):
     """Request body for single-platform content regeneration."""
     platform:  str

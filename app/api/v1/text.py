@@ -26,6 +26,7 @@ from app.models.text import (
     RepurposeRequest,
     TextPipelineResult,
     ContentIntent,
+    ManualPieceRequest,
     RegenerateRequest,
     RegenerateResponse,
     InputSourceType,
@@ -823,6 +824,47 @@ async def get_chips(
         chips=chips,
         total=len(chips),
     )
+
+@router.post("/pieces/manual", response_model=RegenerateResponse)
+@limiter.limit("30/minute")
+async def create_manual_piece(
+    request: Request,
+    body: ManualPieceRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> RegenerateResponse:
+    """
+    Save text already produced elsewhere as a real draft — no LLM call.
+
+    Voices' playground transform already ran the one real generation step
+    (the voice rewrite itself); "Send to Drafts" used to just show a fake
+    success toast with nothing saved. Regenerate isn't the right tool here
+    — it would run the text through the pipeline again and change it, not
+    persist exactly what's on screen.
+    """
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="No content to save.")
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    from app.models.text import Platform
+    try:
+        platform_enum = Platform(body.platform)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown platform '{body.platform}'.")
+
+    from app.pipelines.text.storage import ensure_session_exists, save_live_piece
+
+    session_id = str(uuid4())
+    await ensure_session_exists(
+        session_id=session_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+        brand_id=body.brand_id, source_type=InputSourceType.TEXT.value,
+    )
+    piece_id = await save_live_piece(
+        session_id=session_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+        brand_id=body.brand_id, platform=platform_enum.value,
+        content=content, word_count=len(content.split()), char_count=len(content),
+    )
+    return RegenerateResponse(platform=body.platform, content=content, piece_id=piece_id)
+
 
 @router.post("/regenerate", response_model=RegenerateResponse)
 @limiter.limit("20/minute")
