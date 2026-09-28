@@ -14,7 +14,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
@@ -757,6 +757,49 @@ async def reject_image_asset(
     )
     updated = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
     return ImageAsset(**updated)
+
+
+@router.get("/")
+@limiter.limit("60/minute")
+async def list_image_assets(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The workspace's images, newest first, each with its first slide as the
+    preview, for the Library's Image tab. Read only."""
+    flt = {"workspace_id": ctx.workspace_id}
+    docs = await image_assets.find(flt, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
+    total = await image_assets.count_documents(flt)
+
+    def _first_media_id(doc: dict) -> Optional[str]:
+        for slide in doc.get("slides") or []:
+            if slide.get("media_id"):
+                return slide["media_id"]
+        return None
+
+    media_ids = [m for m in (_first_media_id(d) for d in docs) if m]
+    media_by_id: dict = {}
+    if media_ids:
+        found = await media_assets.find(
+            {"id": {"$in": media_ids}, "workspace_id": ctx.workspace_id}, {"_id": 0}
+        ).to_list(length=len(media_ids))
+        media_by_id = {m["id"]: m for m in found}
+
+    items = []
+    for d in docs:
+        media_id = _first_media_id(d)
+        items.append({
+            "id": d["id"],
+            "title": d.get("title", ""),
+            "source_type": d.get("source_type"),
+            "created_at": d.get("created_at"),
+            "approval_status": d.get("approval_status"),
+            "slide_count": len(d.get("slides") or []),
+            "media": media_by_id.get(media_id) if media_id else None,
+        })
+    return {"items": items, "total": total}
 
 
 @router.get("/{image_asset_id}/versions")

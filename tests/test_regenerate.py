@@ -16,6 +16,8 @@ Runs the real pipeline end to end with the LLM mocked — never a real
 Groq call.
 """
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from app.db.mongo import brand_profiles, workspaces
@@ -226,3 +228,61 @@ async def test_regenerate_explicit_tone_wins_over_brand_default(signup_user, mon
     assert res.status_code == 200, res.text
     assert "casual, conversational tone" in captured["prompt"]
     assert "professional, polished register" not in captured["prompt"]
+
+
+async def test_regenerate_keeps_the_source_type_and_preset_section_rules(signup_user):
+    """Presets' and Quick Recast's Regenerate used to re-run from the draft's
+    own output as plain text and drop the preset's section rules. The request
+    can now carry the original source type and rules, and the pipeline must
+    receive them on the repurpose path that enforces them."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Regenerate Rules WS")
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+
+    fake_result = SimpleNamespace(pieces=[SimpleNamespace(
+        content="Rewritten from the source.", hooks=[], seo={},
+        readability_score=60, readability_level="Standard",
+    )])
+    spy = AsyncMock(return_value=fake_result)
+    with patch("app.api.v1.text.run_text_pipeline", new=spy):
+        res = await client.post(
+            "/api/v1/text/regenerate",
+            json={
+                "platform": "LinkedIn",
+                "brand_id": brand_id,
+                "piece_id": piece_id,
+                "content": "https://example.com/original-article",
+                "source_type": "url",
+                "structure_rules": [{"section_name": "Hook", "char_limit": 120, "guidelines": "Punchy"}],
+            },
+            headers={"X-Workspace-Id": ws_id},
+        )
+    assert res.status_code == 200, res.text
+    kwargs = spy.await_args.kwargs
+    assert kwargs["source_type"].value == "url"
+    assert kwargs["is_repurpose"] is True
+    assert kwargs["structure_rules"] == [{"section_name": "Hook", "char_limit": 120, "guidelines": "Punchy"}]
+    assert kwargs["content"] == "https://example.com/original-article"
+
+
+async def test_regenerate_without_rules_keeps_the_plain_path(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Regenerate Plain WS")
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+
+    fake_result = SimpleNamespace(pieces=[SimpleNamespace(
+        content="Plain rewrite.", hooks=[], seo={}, readability_score=60, readability_level="Standard",
+    )])
+    spy = AsyncMock(return_value=fake_result)
+    with patch("app.api.v1.text.run_text_pipeline", new=spy):
+        res = await client.post(
+            "/api/v1/text/regenerate",
+            json={"platform": "LinkedIn", "brand_id": brand_id, "piece_id": piece_id, "content": "Some source."},
+            headers={"X-Workspace-Id": ws_id},
+        )
+    assert res.status_code == 200, res.text
+    kwargs = spy.await_args.kwargs
+    assert kwargs["source_type"].value == "text"
+    assert "is_repurpose" not in kwargs and "structure_rules" not in kwargs

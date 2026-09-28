@@ -271,3 +271,162 @@ async def test_a_publisher_crash_does_not_leave_the_piece_publishing(signup_user
     doc = await content_pieces.find_one({"piece_id": piece_id})
     assert doc["publish_status"] == "failed"
     assert "try again" in doc["last_error"].lower()
+
+
+# ── Scheduled YouTube and Instagram need their media ─────────────────────────
+
+async def _connect(workspace_id: str, platform: str) -> None:
+    await save_token(
+        workspace_id=workspace_id, platform=platform,
+        access_token="fake-access-token", refresh_token=None,
+        expires_at=None, platform_user_id="acct-1", username="test-user", connected_by="",
+    )
+
+
+_VIDEO = {
+    "id": "media-video-1", "workspace_id": "x", "kind": "video", "url": "https://cdn.example/v.mp4",
+    "mime_type": "video/mp4", "source": "uploaded", "created_by": "u", "created_at": "2026-09-01T00:00:00Z",
+}
+_YT_DETAILS = {
+    "title": "My reviewed title", "description": "Reviewed description", "tags": ["a", "b"],
+    "category_id": "22", "privacy_status": "private", "made_for_kids": False,
+}
+
+
+async def test_scheduling_instagram_without_media_is_refused_up_front(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "IG Schedule WS")
+    await _connect(ws_id, "instagram")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="Instagram")
+
+    res = await client.patch(
+        f"/api/v1/content/pieces/{piece_id}/schedule",
+        json={"scheduled_at": "2026-12-01T10:00:00Z"}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 400
+    assert "image or video" in res.json()["detail"].lower()
+
+
+async def test_scheduling_youtube_needs_a_video(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "YT Schedule WS")
+    await _connect(ws_id, "youtube")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="YouTube")
+
+    res = await client.patch(
+        f"/api/v1/content/pieces/{piece_id}/schedule",
+        json={"scheduled_at": "2026-12-01T10:00:00Z", "youtube_metadata": _YT_DETAILS},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 400
+    assert "video" in res.json()["detail"].lower()
+
+
+async def test_a_scheduled_youtube_upload_keeps_the_details_that_were_reviewed(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "YT Details WS")
+    await _connect(ws_id, "youtube")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="YouTube")
+    await content_pieces.update_one({"piece_id": piece_id}, {"$set": {"media": [{**_VIDEO, "workspace_id": ws_id}]}})
+
+    res = await client.patch(
+        f"/api/v1/content/pieces/{piece_id}/schedule",
+        json={"scheduled_at": "2026-12-01T10:00:00Z", "youtube_metadata": _YT_DETAILS},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    stored = await content_pieces.find_one({"piece_id": piece_id})
+    assert stored["publish_status"] == "queued"
+    assert stored["publish_youtube_metadata"]["title"] == "My reviewed title"
+
+    # Cancelling drops them with the schedule.
+    cancel = await client.post(
+        f"/api/v1/content/pieces/{piece_id}/cancel-schedule", headers={"X-Workspace-Id": ws_id},
+    )
+    assert cancel.status_code == 200, cancel.text
+    after = await content_pieces.find_one({"piece_id": piece_id})
+    assert "publish_youtube_metadata" not in after
+
+
+async def test_a_scheduled_youtube_upload_rejects_invalid_details(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "YT Bad Details WS")
+    await _connect(ws_id, "youtube")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="YouTube")
+    await content_pieces.update_one({"piece_id": piece_id}, {"$set": {"media": [{**_VIDEO, "workspace_id": ws_id}]}})
+
+    res = await client.patch(
+        f"/api/v1/content/pieces/{piece_id}/schedule",
+        json={"scheduled_at": "2026-12-01T10:00:00Z", "youtube_metadata": {"title": ""}},
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 422
+
+
+# ── "I posted this myself" for platforms with no publisher ───────────────────
+
+async def _approved_twitter_piece(client, profile, ws_id: str) -> str:
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="Twitter/X")
+    approve = await client.patch(f"/api/v1/content/pieces/{piece_id}/approve", headers={"X-Workspace-Id": ws_id})
+    assert approve.status_code == 200, approve.text
+    return piece_id
+
+
+async def test_marking_a_manual_platform_post_as_posted_publishes_it(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Manual Post WS")
+    piece_id = await _approved_twitter_piece(client, profile, ws_id)
+
+    res = await client.post(
+        f"/api/v1/content/pieces/{piece_id}/mark-posted",
+        json={"post_url": "https://x.com/me/status/1"}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 200, res.text
+    stored = await content_pieces.find_one({"piece_id": piece_id})
+    assert stored["publish_status"] == "published"
+    assert stored["published_manually"] is True
+    assert stored["platform_post_url"] == "https://x.com/me/status/1"
+    assert stored["published_at"] is not None
+
+    check = await client.get(f"/api/v1/content/pieces/{piece_id}", headers={"X-Workspace-Id": ws_id})
+    assert check.json()["stage"] == "published"
+
+    # Doing it twice is refused, not silently repeated.
+    again = await client.post(
+        f"/api/v1/content/pieces/{piece_id}/mark-posted", json={}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert again.status_code == 400
+
+
+async def test_mark_posted_is_refused_for_a_platform_recast_can_publish_to(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Manual Refused WS")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="LinkedIn")
+    await client.patch(f"/api/v1/content/pieces/{piece_id}/approve", headers={"X-Workspace-Id": ws_id})
+
+    res = await client.post(
+        f"/api/v1/content/pieces/{piece_id}/mark-posted", json={}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert res.status_code == 400
+    assert "publish now" in res.json()["detail"].lower()
+    stored = await content_pieces.find_one({"piece_id": piece_id})
+    assert stored["publish_status"] != "published"
+
+
+async def test_mark_posted_needs_the_post_to_be_in_review_and_a_real_link(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Manual Rules WS")
+    draft = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="Blog")
+
+    not_approved = await client.post(
+        f"/api/v1/content/pieces/{draft}/mark-posted", json={}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert not_approved.status_code == 400
+    assert "review" in not_approved.json()["detail"].lower()
+
+    approved = await _approved_twitter_piece(client, profile, ws_id)
+    bad_link = await client.post(
+        f"/api/v1/content/pieces/{approved}/mark-posted",
+        json={"post_url": "javascript:alert(1)"}, headers={"X-Workspace-Id": ws_id},
+    )
+    assert bad_link.status_code == 400

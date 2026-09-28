@@ -426,3 +426,30 @@ async def test_assets_are_invisible_across_workspaces(signup_user, stubs):
     ):
         res = await getattr(client, method)(path, headers=_h(other_ws))
         assert res.status_code == 404, (method, path)
+
+
+# ── Library list ─────────────────────────────────────────────────────────────
+
+async def test_list_returns_the_workspaces_images_with_a_preview(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    created = (await _generate(client, ws_id, brand_id)).json()
+
+    res = await client.get("/api/v1/image-assets/", headers=_h(ws_id))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 1
+    item = body["items"][0]
+    assert item["id"] == created["id"]
+    assert item["slide_count"] == 1
+    assert item["media"]["kind"] == "image"
+    assert "_id" not in item["media"]
+
+
+async def test_list_never_shows_another_workspaces_images(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    await _generate(client, ws_id, brand_id)
+
+    other = await create_workspace(client, "Other WS")
+    res = await client.get("/api/v1/image-assets/", headers=_h(other))
+    assert res.status_code == 200
+    assert res.json() == {"items": [], "total": 0}

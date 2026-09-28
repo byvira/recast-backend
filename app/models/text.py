@@ -572,6 +572,11 @@ class RegenerateRequest(BaseModel):
     content:   Optional[str] = None   # fallback if piece_id not provided
     tone:      Optional[str] = "brand"
     goal:      Optional[str] = None
+    # How `content` should be read (a pasted link is fetched, not treated as
+    # prose) and the section rules of the preset it came from. Both default to
+    # the old behaviour, so existing callers are unchanged.
+    source_type:     Optional[InputSourceType] = None
+    structure_rules: Optional[list[StructureRuleInput]] = None
  
  
 class RegenerateResponse(BaseModel):

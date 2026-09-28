@@ -269,13 +269,17 @@ async def get_calendar(
     request:       Request,
     year:          int  = Query(default=None),
     month:         int  = Query(default=None),
+    # JavaScript's Date.getTimezoneOffset(): minutes the viewer's clock is
+    # behind UTC (India is -330). Days are bucketed on the viewer's own clock,
+    # so a post scheduled for 11:30pm local shows on that day, not the next.
+    tz_offset_minutes: int = Query(default=0, ge=-840, le=840),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """
     Return all content pieces for a given month organized by date.
     Used by the calendar view on the Performance page.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     import calendar
 
     now   = datetime.now(timezone.utc)
@@ -283,8 +287,11 @@ async def get_calendar(
     month = month or now.month
 
     _, last_day = calendar.monthrange(year, month)
-    start = datetime(year, month, 1,        tzinfo=timezone.utc)
-    end   = datetime(year, month, last_day, hour=23, minute=59, second=59, tzinfo=timezone.utc)
+    offset = timedelta(minutes=tz_offset_minutes)
+    # The viewer's month runs midnight to midnight on their clock, which is
+    # shifted from UTC by their offset.
+    start = datetime(year, month, 1,        tzinfo=timezone.utc) + offset
+    end   = datetime(year, month, last_day, hour=23, minute=59, second=59, tzinfo=timezone.utc) + offset
 
     db = get_db()
 
@@ -297,8 +304,19 @@ async def get_calendar(
             "workspace_id": ctx.workspace_id,
             "deleted": {"$ne": True},
             "$or": [
-                {"publish_status": "published", "updated_at": {"$gte": start, "$lte": end}},
+                # A published post sits on the day it went live (published_at),
+                # not on the last day it was edited or archived. Older posts
+                # without published_at fall back to updated_at.
+                {"publish_status": "published", "published_at": {"$gte": start, "$lte": end}},
+                {
+                    "publish_status": "published",
+                    "published_at": {"$exists": False},
+                    "updated_at": {"$gte": start, "$lte": end},
+                },
                 {"publish_scheduled_at": {"$gte": start, "$lte": end}},
+                # Some paths store the schedule as an ISO string, which a
+                # date range never matches; ISO strings sort like dates.
+                {"publish_scheduled_at": {"$gte": start.isoformat(), "$lte": end.isoformat()}},
                 {
                     "publish_status": {"$in": ["pending", "failed"]},
                     "created_at":     {"$gte": start, "$lte": end},
@@ -325,14 +343,19 @@ async def get_calendar(
         publish_status = piece.get("publish_status", "pending")
 
         if publish_status == "published":
-            display_date = piece.get("updated_at") or piece["created_at"]
+            display_date = piece.get("published_at") or piece.get("updated_at") or piece["created_at"]
         elif piece.get("publish_scheduled_at"):
             display_date = piece["publish_scheduled_at"]
         else:
             display_date = piece["created_at"]
 
+        if isinstance(display_date, str):
+            try:
+                display_date = datetime.fromisoformat(display_date.replace("Z", "+00:00"))
+            except ValueError:
+                pass
         if isinstance(display_date, datetime):
-            date_key = display_date.strftime("%Y-%m-%d")
+            date_key = (display_date - offset).strftime("%Y-%m-%d")
         else:
             date_key = str(display_date)[:10]
 
@@ -347,7 +370,9 @@ async def get_calendar(
         platform_result = {
             "platform":     piece.get("platform", ""),
             "status":       publish_status,
-            "published_at": (piece.get("updated_at") if publish_status == "published" else None),
+            "published_at": (
+                (piece.get("published_at") or piece.get("updated_at")) if publish_status == "published" else None
+            ),
             "post_url":     piece.get("platform_post_url"),
             # Row 9 — same real publish outcome the Activity Log and the
             # piece's own media_dropped_reason field already carry.

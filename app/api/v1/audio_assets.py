@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
@@ -791,6 +791,45 @@ async def reject_audio_asset(
     )
     updated = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
     return AudioAsset(**updated)
+
+
+@router.get("/")
+@limiter.limit("60/minute")
+async def list_audio_assets(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The workspace's audio, newest first, each with its playable file, for
+    the Library's Audio tab. Read only."""
+    flt = {"workspace_id": ctx.workspace_id}
+    docs = await audio_assets.find(flt, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
+    total = await audio_assets.count_documents(flt)
+
+    media_ids = [m for m in ((d.get("approved_master_media_id") or d.get("media_id")) for d in docs) if m]
+    media_by_id: dict = {}
+    if media_ids:
+        found = await media_assets.find(
+            {"id": {"$in": media_ids}, "workspace_id": ctx.workspace_id}, {"_id": 0}
+        ).to_list(length=len(media_ids))
+        media_by_id = {m["id"]: m for m in found}
+
+    items = []
+    for d in docs:
+        media_id = d.get("approved_master_media_id") or d.get("media_id")
+        words = [w.get("word", "") for w in (d.get("transcript") or [])[:40]]
+        items.append({
+            "id": d["id"],
+            "title": d.get("title", ""),
+            "source_type": d.get("source_type"),
+            "created_at": d.get("created_at"),
+            "approval_status": d.get("approval_status"),
+            "language": d.get("language"),
+            "excerpt": " ".join(words).strip() or (d.get("script") or "")[:200],
+            "media": media_by_id.get(media_id) if media_id else None,
+        })
+    return {"items": items, "total": total}
 
 
 @router.get("/{audio_asset_id}/versions")

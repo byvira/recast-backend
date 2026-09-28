@@ -88,6 +88,13 @@ class ApprovePieceRequest(BaseModel):
 
 class SchedulePieceRequest(BaseModel):
     scheduled_at: str     # ISO datetime string
+    # A scheduled YouTube upload publishes with the title, description and
+    # tags the member reviewed, not ones made up at upload time.
+    youtube_metadata: Optional[dict] = None
+
+
+class MarkPostedRequest(BaseModel):
+    post_url: Optional[str] = None
 
 
 class ArchivePieceRequest(BaseModel):
@@ -327,6 +334,21 @@ async def schedule_piece(
             detail=f"Content validation failed: {'; '.join(issues)}",
         )
 
+    # Platforms that refuse a post with no media would fail at the scheduled
+    # time, when nobody is watching, so they are refused now instead.
+    kinds = {str(m.get("kind")) for m in (piece.get("media") or [])}
+    if slug == "instagram" and not kinds:
+        raise HTTPException(status_code=400, detail="Instagram posts need an image or video. Add one first.")
+    if slug == "youtube":
+        if "video" not in kinds:
+            raise HTTPException(status_code=400, detail="YouTube posts need a video. Add one first.")
+        if body.youtube_metadata is not None:
+            from app.pipelines.publish.youtube.metadata import YouTubeMetadata
+            try:
+                YouTubeMetadata(**body.youtube_metadata)
+            except Exception:
+                raise HTTPException(status_code=422, detail="The YouTube details aren't valid. Check the title, tags and category.")
+
     updated = await update_piece_status(
         piece_id=piece_id,
         workspace_id=ctx.workspace_id,
@@ -336,7 +358,76 @@ async def schedule_piece(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
+    if slug == "youtube" and body.youtube_metadata is not None:
+        await content_pieces.update_one(
+            {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+            {"$set": {"publish_youtube_metadata": body.youtube_metadata}},
+        )
+        updated["publish_youtube_metadata"] = body.youtube_metadata
     return updated
+
+
+@router.post("/pieces/{piece_id}/mark-posted")
+@limiter.limit("30/minute")
+async def mark_piece_posted(
+    request: Request,
+    piece_id: str,
+    body: MarkPostedRequest,
+    ctx: WorkspaceContext = Depends(require("publish_content")),
+) -> dict:
+    """
+    Record that the member posted this themselves, for a platform Recast has no
+    publisher for (Twitter/X, Blog, Newsletter). Without this those posts could
+    never reach Published, so they sat in Review forever and never showed up in
+    the calendar or history. A platform Recast can post to is refused, so this
+    can't be used to skip a real publish.
+    """
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+
+    platform = piece["platform"]
+    try:
+        get_publisher(platform)
+    except ValueError:
+        pass
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Recast can post to {platform} for you. Use Publish Now instead.",
+        )
+
+    if piece.get("publish_status") == "published":
+        raise HTTPException(status_code=400, detail="This post is already marked as published.")
+    if piece.get("approval_status") != "approved":
+        raise HTTPException(status_code=400, detail="Move this post to Review first.")
+
+    post_url = (body.post_url or "").strip()
+    if post_url and not post_url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="The link must start with https://")
+
+    now = datetime.now(timezone.utc)
+    updates: dict = {
+        "publish_status": "published",
+        "published_at": now,
+        "published_manually": True,
+        "publish_scheduled_at": "",
+        "last_error": None,
+        "updated_at": now,
+    }
+    if post_url:
+        updates["platform_post_url"] = post_url
+    await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$set": updates},
+    )
+
+    from app.shared.governance_events import emit_content_published
+    emit_content_published(
+        ctx.workspace_id, pipeline_type=piece.get("pipeline_type", "text"),
+        actor_user_id=ctx.user_id, actor_role=ctx.role,
+        content_id=piece_id, target=platform.lower(), external_url=post_url,
+    )
+    return await get_piece(piece_id, ctx.workspace_id)
 
 
 @router.post("/pieces/{piece_id}/cancel-schedule")
@@ -362,6 +453,11 @@ async def cancel_schedule_piece(
         publish_status="pending",
         publish_scheduled_at="",
         publish_target="",
+    )
+    # The reviewed YouTube details belonged to that schedule.
+    await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+        {"$unset": {"publish_youtube_metadata": ""}},
     )
     return updated
 

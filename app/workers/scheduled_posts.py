@@ -180,6 +180,9 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         platform=platform,
         content=piece["content"],
         media=[MediaAsset(**m) for m in piece.get("media") or []],
+        # The title, description and tags the member reviewed when scheduling a
+        # YouTube upload. Without them the publisher makes its own.
+        youtube_metadata=piece.get("publish_youtube_metadata"),
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
 

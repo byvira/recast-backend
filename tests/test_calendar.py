@@ -142,3 +142,71 @@ async def test_calendar_summary_uses_real_status_vocabulary(signup_user):
     assert set(summary.keys()) == {"total", "published", "queued", "pending", "failed"}
     assert summary["total"] == 1
     assert summary["pending"] == 1
+
+
+async def test_calendar_groups_days_on_the_viewers_own_clock(signup_user):
+    """A post scheduled for 11:30pm in India is 18:00 UTC the same day, but one
+    scheduled for 01:00 there is still the previous day in UTC. Bucketing on
+    UTC put late-night and early-morning posts on the wrong day."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Calendar TZ WS")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    # 01:00 on the 5th in India (UTC+5:30) is 19:30 on the 4th in UTC.
+    scheduled = datetime(2026, 9, 4, 19, 30, tzinfo=timezone.utc)
+    await content_pieces.update_one(
+        {"piece_id": piece_id},
+        {"$set": {"publish_status": "queued", "publish_scheduled_at": scheduled}},
+    )
+
+    utc = await client.get(
+        "/api/v1/analytics/calendar?year=2026&month=9&tz_offset_minutes=0",
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert list(utc.json()["days"].keys()) == ["2026-09-04"]
+
+    india = await client.get(
+        "/api/v1/analytics/calendar?year=2026&month=9&tz_offset_minutes=-330",
+        headers={"X-Workspace-Id": ws_id},
+    )
+    assert list(india.json()["days"].keys()) == ["2026-09-05"]
+
+
+async def test_calendar_reads_a_schedule_stored_as_an_iso_string(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Calendar ISO WS")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await content_pieces.update_one(
+        {"piece_id": piece_id},
+        {"$set": {
+            "publish_status": "queued",
+            "publish_scheduled_at": "2026-09-12T09:00:00+00:00",
+            # created outside the month so only the schedule can place it
+            "created_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        }},
+    )
+    res = await client.get(
+        "/api/v1/analytics/calendar?year=2026&month=9", headers={"X-Workspace-Id": ws_id},
+    )
+    assert list(res.json()["days"].keys()) == ["2026-09-12"]
+
+
+async def test_a_published_post_stays_on_the_day_it_went_live(signup_user):
+    """Editing or archiving a published post used to move it to the day it was
+    last touched, because the calendar placed it by updated_at."""
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Calendar Published WS")
+    piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await content_pieces.update_one(
+        {"piece_id": piece_id},
+        {"$set": {
+            "publish_status": "published",
+            "published_at": datetime(2026, 9, 3, 10, 0, tzinfo=timezone.utc),
+            "updated_at": datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc),
+        }},
+    )
+    res = await client.get(
+        "/api/v1/analytics/calendar?year=2026&month=9", headers={"X-Workspace-Id": ws_id},
+    )
+    body = res.json()
+    assert list(body["days"].keys()) == ["2026-09-03"]
+    assert body["days"]["2026-09-03"][0]["platform_results"][0]["published_at"] is not None

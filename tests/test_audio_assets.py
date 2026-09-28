@@ -544,3 +544,35 @@ async def test_assets_are_invisible_across_workspaces(signup_user, stubs):
     ):
         res = await getattr(client, method)(path, headers=_h(other_ws))
         assert res.status_code == 404, (method, path)
+
+
+# ── Library list ─────────────────────────────────────────────────────────────
+
+async def test_list_returns_the_workspaces_audio_newest_first_with_playable_media(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    first = (await _generate(client, ws_id, brand_id, title="First")).json()
+    second = (await _generate(client, ws_id, brand_id, title="Second")).json()
+
+    res = await client.get("/api/v1/audio-assets/", headers=_h(ws_id))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["total"] == 2
+    assert [i["title"] for i in body["items"]] == ["Second", "First"]
+
+    item = body["items"][0]
+    assert item["id"] == second["id"]
+    assert item["media"]["kind"] == "audio"
+    assert item["media"]["url"].startswith("https://")
+    assert item["excerpt"] == "Welcome to the show."
+    assert "_id" not in item["media"]
+    assert first["id"] != second["id"]
+
+
+async def test_list_never_shows_another_workspaces_audio(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    await _generate(client, ws_id, brand_id, title="Mine")
+
+    other = await create_workspace(client, "Other WS")
+    res = await client.get("/api/v1/audio-assets/", headers=_h(other))
+    assert res.status_code == 200
+    assert res.json() == {"items": [], "total": 0}

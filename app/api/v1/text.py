@@ -914,7 +914,7 @@ async def regenerate_content(
     # 6. Run pipeline for the single platform
     try:
         result = await run_text_pipeline(
-            source_type=InputSourceType.TEXT,
+            source_type=body.source_type or InputSourceType.TEXT,
             content=source_content,
             platforms=[platform_enum],
             brand_id=body.brand_id,
@@ -925,6 +925,20 @@ async def regenerate_content(
             tone=tone_enum,
             language=language,
             session_id=str(uuid4()),
+            # Section rules only exist on the repurpose path (that is where
+            # the enforced, per-section generation lives), so a regenerate
+            # that carries them takes that path, the same way the preset
+            # modal's first generation did.
+            **(
+                {
+                    "is_repurpose": True,
+                    "source_platform": Platform.BLOG,
+                    "intent": ContentIntent.AUTO,
+                    "structure_rules": [r.model_dump() for r in body.structure_rules],
+                }
+                if body.structure_rules
+                else {}
+            ),
         )
     except HTTPException:
         raise
