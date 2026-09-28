@@ -133,6 +133,9 @@ guest_voice_profiles: AsyncIOMotorCollection = get_client().get_default_database
 # Curated CC0 music library, shared across every workspace — see
 # app.models.audio_asset.MusicLibraryTrack, app.pipelines.media.music_library
 music_library_tracks: AsyncIOMotorCollection = get_client().get_default_database()["music_library_tracks"]
+# Real extracted soundbites — the Batch Approval Queue's real backing data,
+# see app.models.audio_asset.Soundbite
+soundbites: AsyncIOMotorCollection = get_client().get_default_database()["soundbites"]
 
 # ── Collection getter functions ───────────────────────────────────────────────
 
@@ -362,4 +365,6 @@ async def create_indexes() -> None:
     await shows.create_index([("workspace_id", 1), ("created_at", -1)])
     await guest_voice_profiles.create_index([("audio_asset_id", 1)])
     await music_library_tracks.create_index("source_track_id", unique=True)
+    await soundbites.create_index([("audio_asset_id", 1), ("created_at", 1)])
+    await soundbites.create_index([("workspace_id", 1), ("approval_status", 1)])
 

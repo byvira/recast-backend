@@ -429,3 +429,35 @@ class SuggestedClip(BaseModel):
 class SuggestClipsResponse(BaseModel):
     # Always labelled as suggestions, never applied automatically.
     suggestions: list[SuggestedClip]
+
+
+class SoundbiteStatus(str, Enum):
+    READY = "ready"
+    NEEDS_ATTENTION = "needs_attention"
+
+
+class Soundbite(BaseModel):
+    """A real, extracted short clip from an AudioAsset's real master audio —
+    the Batch Approval Queue's real backing data (was mock-only). Quality
+    status/confidence are real, measured values, not an AI-labeled guess:
+    derived from actual peak/loudness checks on the trimmed audio itself."""
+    id: str
+    audio_asset_id: str
+    workspace_id: str
+    media_id: str
+    quote: str
+    reason: str
+    start_s: float
+    end_s: float
+    duration_s: float
+    status: SoundbiteStatus
+    flag_message: Optional[str] = None
+    confidence: int  # 0-100, derived from real measured issues, see soundbite_extraction.py
+    measured_lufs: Optional[float] = None
+    approval_status: AudioApprovalStatus = AudioApprovalStatus.PENDING
+    created_by: str
+    created_at: datetime
+
+
+class SoundbiteOut(Soundbite):
+    url: str

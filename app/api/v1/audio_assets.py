@@ -41,10 +41,13 @@ from app.db.mongo import (
     member_lexicon,
     member_voice_settings,
     podcast_feed_settings,
+    soundbites,
     users,
 )
 from app.models.agent_events import ContentEventPayload, ContentRef, EventType
 from app.models.audio_asset import (
+    Soundbite,
+    SoundbiteOut,
     AudioApprovalStatus,
     AudioAsset,
     AudioAssetVersion,
@@ -88,6 +91,7 @@ from app.pipelines.media.audio_cleanup import CleanupError, CleanupSettings, app
 from app.pipelines.media.audio_enhance import concatenate_turns, enhance_audio, is_dsp_supported
 from app.pipelines.media.echo_reduction import EchoReductionError, reduce_echo
 from app.pipelines.media.music_library import list_library_tracks
+from app.pipelines.media.soundbite_extraction import SoundbiteExtractionError, evaluate_quality, trim_span
 from app.pipelines.media.tts_generation import is_language_supported, synthesize_speech, synthesize_speech_timed
 from app.pipelines.media.video_render import TranscriptWordLike, VideoRenderError, render_video
 from app.pipelines.media.transform import build_export_url
@@ -2200,25 +2204,16 @@ async def make_video_from_audio_asset(
     return AudioAsset(**updated)
 
 
-@router.post("/{audio_asset_id}/suggest-clips", response_model=SuggestClipsResponse)
-@limiter.limit("5/minute")
-async def suggest_clips_for_audio_asset(
-    request: Request,
-    audio_asset_id: str,
-    ctx: WorkspaceContext = Depends(require("edit_content")),
-) -> SuggestClipsResponse:
+async def _generate_clip_suggestions(doc: dict, workspace_id: str, audio_asset_id: str) -> list[SuggestedClip]:
     """One real, gated LLM call over the real transcript, proposing a few
-    quotable spans. Always suggestions to review, never applied by
-    themselves."""
-    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    quotable spans. Shared by /suggest-clips (review-only) and /soundbites
+    (which actually extracts them) — same real logic, not duplicated."""
     words = doc.get("transcript", [])
     if not words:
         raise HTTPException(status_code=400, detail="This recording has no transcript to find moments in yet.")
 
-    await assert_ai_budget_available(ctx.workspace_id)
-    set_usage_workspace(ctx.workspace_id)
+    await assert_ai_budget_available(workspace_id)
+    set_usage_workspace(workspace_id)
 
     prompt = load_prompt("audio/suggest_clips", words=[{"word": w["word"], "start_s": w["start_s"]} for w in words])
     try:
@@ -2240,4 +2235,127 @@ async def suggest_clips_for_audio_asset(
             start_s=start_s, end_s=end_s,
             quote=str(item.get("quote", ""))[:400], reason=str(item.get("reason", ""))[:200],
         ))
+    return suggestions
+
+
+@router.post("/{audio_asset_id}/suggest-clips", response_model=SuggestClipsResponse)
+@limiter.limit("5/minute")
+async def suggest_clips_for_audio_asset(
+    request: Request,
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> SuggestClipsResponse:
+    """Always suggestions to review, never applied by themselves."""
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    suggestions = await _generate_clip_suggestions(doc, ctx.workspace_id, audio_asset_id)
     return SuggestClipsResponse(suggestions=suggestions)
+
+
+@router.post("/{audio_asset_id}/soundbites", response_model=list[SoundbiteOut], status_code=201)
+@limiter.limit("5/minute")
+async def extract_soundbites(
+    request: Request,
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> list[SoundbiteOut]:
+    """Real extraction, for the Batch Approval Queue: gets real moment
+    suggestions from the real transcript, actually trims each one out of
+    the real master audio, measures it for real quality issues, and
+    stores each as a real, persisted Soundbite — not a mock list."""
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    if not doc.get("media_id"):
+        raise HTTPException(status_code=400, detail="This recording has no audio file to extract soundbites from.")
+
+    suggestions = await _generate_clip_suggestions(doc, ctx.workspace_id, audio_asset_id)
+    if not suggestions:
+        raise HTTPException(status_code=502, detail="Couldn't find any real soundbite moments in this recording.")
+
+    media = await media_assets.find_one({"id": doc["media_id"], "workspace_id": ctx.workspace_id})
+    if not media:
+        raise HTTPException(status_code=404, detail="The master recording's audio file is missing.")
+    master_bytes = await _download_media_bytes(media["url"])
+
+    created: list[SoundbiteOut] = []
+    now = datetime.now(timezone.utc)
+    for suggestion in suggestions:
+        try:
+            clip_bytes = trim_span(master_bytes, suggestion.start_s, suggestion.end_s)
+        except SoundbiteExtractionError as exc:
+            logger.warning("Soundbite trim skipped for %s: %s", audio_asset_id, exc)
+            continue
+        status, confidence, flag_message, measured_lufs = evaluate_quality(clip_bytes)
+
+        url = await upload_file(clip_bytes, UploadContentType.AUDIO, ctx.user_id)
+        clip_media = MediaAsset(
+            id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.AUDIO, url=url,
+            mime_type="audio/wav", source=MediaSource.EDITED, created_by=ctx.user_id, created_at=now,
+            size_bytes=len(clip_bytes), duration_s=round(suggestion.end_s - suggestion.start_s, 2),
+        )
+        await media_assets.insert_one(clip_media.model_dump())
+
+        soundbite = Soundbite(
+            id=uuid4().hex, audio_asset_id=audio_asset_id, workspace_id=ctx.workspace_id,
+            media_id=clip_media.id, quote=suggestion.quote, reason=suggestion.reason,
+            start_s=suggestion.start_s, end_s=suggestion.end_s,
+            duration_s=round(suggestion.end_s - suggestion.start_s, 2),
+            status=status, flag_message=flag_message, confidence=confidence, measured_lufs=measured_lufs,
+            created_by=ctx.user_id, created_at=now,
+        )
+        await soundbites.insert_one(soundbite.model_dump())
+        created.append(SoundbiteOut(**soundbite.model_dump(), url=url))
+
+    if not created:
+        raise HTTPException(status_code=502, detail="None of the suggested spans could be extracted. Try again.")
+    return created
+
+
+@router.get("/{audio_asset_id}/soundbites", response_model=list[SoundbiteOut])
+async def list_soundbites(
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> list[SoundbiteOut]:
+    docs = await soundbites.find(
+        {"audio_asset_id": audio_asset_id, "workspace_id": ctx.workspace_id},
+    ).sort("created_at", 1).to_list(length=100)
+    if not docs:
+        return []
+    media_ids = [d["media_id"] for d in docs]
+    found = await media_assets.find({"id": {"$in": media_ids}}).to_list(length=len(media_ids))
+    urls = {m["id"]: m["url"] for m in found}
+    return [SoundbiteOut(**d, url=urls[d["media_id"]]) for d in docs if d["media_id"] in urls]
+
+
+@router.patch("/soundbites/{soundbite_id}/approve", response_model=SoundbiteOut)
+async def approve_soundbite(
+    soundbite_id: str,
+    ctx: WorkspaceContext = Depends(require("approve_content")),
+) -> SoundbiteOut:
+    result = await soundbites.find_one_and_update(
+        {"id": soundbite_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"approval_status": AudioApprovalStatus.APPROVED.value}},
+        return_document=True,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Soundbite not found.")
+    media = await media_assets.find_one({"id": result["media_id"]})
+    return SoundbiteOut(**result, url=media["url"] if media else "")
+
+
+@router.patch("/soundbites/{soundbite_id}/reject", response_model=SoundbiteOut)
+async def reject_soundbite(
+    soundbite_id: str,
+    ctx: WorkspaceContext = Depends(require("approve_content")),
+) -> SoundbiteOut:
+    result = await soundbites.find_one_and_update(
+        {"id": soundbite_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"approval_status": AudioApprovalStatus.REJECTED.value}},
+        return_document=True,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Soundbite not found.")
+    media = await media_assets.find_one({"id": result["media_id"]})
+    return SoundbiteOut(**result, url=media["url"] if media else "")
