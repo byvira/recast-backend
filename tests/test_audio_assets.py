@@ -26,6 +26,7 @@ from app.db.mongo import (
 )
 from app.models.audio_asset import TranscriptWord
 from app.pipelines.media import tts_generation
+from app.pipelines.media.tts_generation import SpeechResult
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 from tests.conftest import create_workspace, invite_and_accept
 
@@ -45,12 +46,24 @@ def _wav(seconds: float = 0.5, noisy: bool = False) -> bytes:
 
 @pytest.fixture
 def stubs(monkeypatch):
-    """TTS, upload and transcription stubs. `record` captures every call."""
-    record = {"synth": [], "uploads": [], "tts_returns_none": False}
+    """TTS, upload and transcription stubs. `record` captures every call.
+
+    The timed path (used by generate/dialogue/localize) returns no word
+    timing by default, same as the real Deepgram fallback would — tests
+    that care about real timing use the `timed_words` fixture below to
+    opt into it deliberately, rather than every existing test having to
+    know about timing it never asked for."""
+    record = {"synth": [], "uploads": [], "tts_returns_none": False, "timed_words": None}
 
     async def _fake_synth(*, text, voice_settings, lexicon=None, workspace_id, user_id):
         record["synth"].append({"text": text, "voice": voice_settings.tts_voice, "lexicon": lexicon})
         return None if record["tts_returns_none"] else _wav(0.4)
+
+    async def _fake_synth_timed(*, text, voice_settings, lexicon=None, workspace_id, user_id):
+        record["synth"].append({"text": text, "voice": voice_settings.tts_voice, "lexicon": lexicon})
+        if record["tts_returns_none"]:
+            return None
+        return SpeechResult(audio=_wav(0.4), words=record["timed_words"])
 
     async def _fake_upload(data, content_type, user_id):
         record["uploads"].append(data)
@@ -61,6 +74,7 @@ def stubs(monkeypatch):
                 TranscriptWord(word="world", start_s=0.3, end_s=0.6)]
 
     monkeypatch.setattr(audio_module, "synthesize_speech", _fake_synth)
+    monkeypatch.setattr(audio_module, "synthesize_speech_timed", _fake_synth_timed)
     monkeypatch.setattr(audio_module, "upload_file", _fake_upload)
     monkeypatch.setattr(audio_module, "transcribe_audio_bytes", _fake_transcribe)
     return record
@@ -269,7 +283,8 @@ async def _upload(client, ws_id, brand_id, data: bytes, content_type="audio/wav"
 async def test_upload_runs_real_dsp_and_stores_the_transcript(signup_user, stubs):
     client, _, ws_id, brand_id = await _setup(signup_user)
 
-    res = await _upload(client, ws_id, brand_id, _wav(1.0, noisy=True))
+    original = _wav(1.0, noisy=True)
+    res = await _upload(client, ws_id, brand_id, original)
     assert res.status_code == 201, res.text
     asset = res.json()
 
@@ -280,10 +295,44 @@ async def test_upload_runs_real_dsp_and_stores_the_transcript(signup_user, stubs
     media = await media_assets.find_one({"id": asset["media_id"]})
     assert media["source"] == "enhanced"
     assert media["mime_type"] == "audio/wav"
-    # What got uploaded is the processed audio, not the untouched original.
-    assert stubs["uploads"][-1] != _wav(1.0, noisy=True)
-    processed, sr = sf.read(io.BytesIO(stubs["uploads"][-1]))
+    # The first thing stored is the processed audio, not the untouched original.
+    assert stubs["uploads"][0] != original
+    processed, sr = sf.read(io.BytesIO(stubs["uploads"][0]))
     assert len(processed) > 0 and sr > 0
+
+    # The original is kept as its own file so A/B can play the real "before".
+    assert asset["original_media_id"] and asset["original_media_id"] != asset["media_id"]
+    kept = await media_assets.find_one({"id": asset["original_media_id"]})
+    assert kept["source"] == "uploaded"
+    assert stubs["uploads"][1] == original
+
+
+async def test_no_original_is_kept_when_cleanup_did_not_change_the_file(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    monkeypatch.setattr(audio_module, "is_dsp_supported", lambda mime: False)
+
+    res = await _upload(client, ws_id, brand_id, _wav(0.5))
+    assert res.status_code == 201, res.text
+    assert res.json()["original_media_id"] is None
+    assert len(stubs["uploads"]) == 1
+
+
+async def test_a_failed_original_upload_never_blocks_the_upload(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    calls = {"n": 0}
+    real_upload = audio_module.upload_file
+
+    async def _second_fails(data, content_type, user_id):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("cloudinary down")
+        return await real_upload(data, content_type, user_id)
+
+    monkeypatch.setattr(audio_module, "upload_file", _second_fails)
+
+    res = await _upload(client, ws_id, brand_id, _wav(1.0, noisy=True))
+    assert res.status_code == 201, res.text
+    assert res.json()["media_id"] and res.json()["original_media_id"] is None
 
 
 async def test_an_uploaded_recordings_words_reach_the_agents(signup_user, stubs, monkeypatch):
@@ -321,6 +370,16 @@ async def test_a_dsp_failure_never_blocks_the_upload(signup_user, stubs, monkeyp
     media = await media_assets.find_one({"id": res.json()["media_id"]})
     assert media["source"] == "uploaded"
     assert stubs["uploads"][-1] == original  # the original recording, untouched
+
+
+async def test_upload_accepts_a_browser_mic_recordings_real_mime_type(signup_user, stubs):
+    # A real MediaRecorder reports "audio/webm;codecs=opus", not bare
+    # "audio/webm" -- the mic recording feature sends exactly this.
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    res = await _upload(client, ws_id, brand_id, _wav(0.4), content_type="audio/webm;codecs=opus", name="mic.webm")
+    assert res.status_code == 201, res.text
+    media = await media_assets.find_one({"id": res.json()["media_id"]})
+    assert media["mime_type"] == "audio/webm"
 
 
 async def test_upload_rejects_unsupported_types(signup_user, stubs):

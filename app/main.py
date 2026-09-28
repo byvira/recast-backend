@@ -316,10 +316,11 @@ app.include_router(campaigns_router.router, prefix="/api/v1/campaigns", tags=["C
 app.include_router(text.router,           prefix="/api/v1/text",       tags=["Text Pipeline"])
 app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Audio"])
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
-# app.api.v1.image's router is a confirmed dead decoy (every handler is a
-# placeholder — see pow/audio_image_pipeline/00-overview.md Finding #1) —
-# retired here, not deleted yet (its files go away once image_assets.router
-# below fully replaces it, a later phase).
+# The old app.api.v1.image decoy (every handler was a placeholder — see
+# pow/audio_image_pipeline/00-overview.md Finding #1) was never registered
+# here and its files (app/api/v1/image.py, app/pipelines/image/*,
+# app/agents/image/*) were deleted 2026-09-28 — image_assets.router below
+# is the real, only Image pipeline now.
 app.include_router(image_assets.router, prefix="/api/v1/image-assets", tags=["Image Assets"])
 app.include_router(audio_assets.router, prefix="/api/v1/audio-assets", tags=["Audio Assets"])
 app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["Analytics"])

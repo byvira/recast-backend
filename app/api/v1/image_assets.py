@@ -29,9 +29,13 @@ from app.db.mongo import (
     image_asset_versions,
     image_share_links,
     media_assets,
+    users,
 )
 from app.models.agent_events import ContentEventPayload, ContentRef, EventType
 from app.models.image_asset import (
+    CommentPin,
+    CommentPinCreate,
+    CommentPinUpdate,
     ImageAsset,
     ImageApprovalStatus,
     ImageAssetVersion,
@@ -41,15 +45,20 @@ from app.models.image_asset import (
     Slide,
 )
 from app.models.media import MediaAsset, MediaKind, MediaSource
+from app.models.workspace import WorkspaceRole
+from app.pipelines.media.contrast_check import ContrastResult, check_slide_contrast
 from app.pipelines.media.image_generation import _build_raw_prompt, generate_image_from_prompt
 from app.pipelines.media.image_render import (
+    _DEFAULT_FG,
     BrandTokens,
     LAYOUT_DIMS,
     SUPPORTED_LAYOUTS,
     SlideTextContent,
     render_slide,
 )
+from app.pipelines.media.pdf_export import generate_carousel_pdf
 from app.pipelines.media.transform import build_export_url
+from app.pipelines.media.zip_export import build_slides_zip
 from app.shared.events import emit_event_background
 from app.shared.llm import call_vision, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
@@ -524,7 +533,14 @@ async def upload_image_asset(
 
 
 class ExportImageAssetRequest(BaseModel):
-    export_format: str = "png"  # "png" | "webp" — see GAPS.md G-4 for svg/pdf/zip
+    export_format: str = "png"  # "png" | "webp" | "pdf" | "zip"
+
+
+async def _download_slide_bytes(url: str) -> bytes:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.content
 
 
 @router.post("/{image_asset_id}/export", response_model=MediaAsset, status_code=201)
@@ -535,16 +551,45 @@ async def export_image_asset(
     body: ExportImageAssetRequest,
     ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> MediaAsset:
-    """Format-conversion export of an ImageAsset's one Stage-2 slide via
-    Cloudinary URL params — same "create a real, distinct derivative"
-    convention media.py's transform_media uses, not a mutation of the
-    original render."""
+    """Format-conversion export (png/webp, via Cloudinary URL params — same
+    "create a real, distinct derivative" convention media.py's
+    transform_media uses) for a single slide, or a real multi-slide bundle
+    (pdf/zip, every real rendered slide, not just the first)."""
     doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
     if not asset.slides or not asset.slides[0].media_id:
         raise HTTPException(status_code=400, detail="This image asset has no rendered slide to export.")
+
+    if body.export_format in ("pdf", "zip"):
+        ids = [s.media_id for s in asset.slides if s.media_id]
+        found = await media_assets.find({"id": {"$in": ids}}).to_list(length=len(ids))
+        by_id = {m["id"]: m for m in found}
+        ordered = [by_id[i] for i in ids if i in by_id]
+        if not ordered:
+            raise HTTPException(status_code=404, detail="This asset's rendered slides are missing.")
+        try:
+            slide_bytes = [await _download_slide_bytes(m["url"]) for m in ordered]
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Couldn't fetch one of this asset's slides. Try again.") from exc
+
+        if body.export_format == "pdf":
+            bundle = generate_carousel_pdf(slide_bytes)
+            mime_type = "application/pdf"
+        else:
+            zip_entries = [(f"slide_{i + 1}.png", data) for i, data in enumerate(slide_bytes)]
+            bundle = build_slides_zip(zip_entries)
+            mime_type = "application/zip"
+
+        url = await upload_file(bundle, UploadContentType.EXPORT, ctx.user_id)
+        export_asset = MediaAsset(
+            id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.DOCUMENT, url=url,
+            mime_type=mime_type, source=MediaSource.EDITED, created_by=ctx.user_id,
+            created_at=datetime.now(timezone.utc), size_bytes=len(bundle),
+        )
+        await media_assets.insert_one(export_asset.model_dump())
+        return export_asset
 
     source_doc = await media_assets.find_one(
         {"id": asset.slides[0].media_id, "workspace_id": ctx.workspace_id}
@@ -757,6 +802,124 @@ async def reject_image_asset(
     )
     updated = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
     return ImageAsset(**updated)
+
+
+# ── Comment pins: a real point-on-a-slide review note, not a general note ───
+# Embedded on the ImageAsset doc (asset.comments), same as the plan's own
+# CommentPin model — mirrors audio_assets.py's comment endpoints' shape,
+# but a separate collection isn't needed here since Image never had one.
+
+@router.get("/{image_asset_id}/comments", response_model=list[CommentPin])
+async def list_image_comments(
+    image_asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> list[CommentPin]:
+    doc = await image_assets.find_one(
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"comments": 1},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    return [CommentPin(**c) for c in doc.get("comments", [])]
+
+
+@router.post("/{image_asset_id}/comments", response_model=CommentPin, status_code=201)
+@limiter.limit("60/minute")
+async def create_image_comment(
+    request: Request,
+    image_asset_id: str,
+    body: CommentPinCreate,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> CommentPin:
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    asset = ImageAsset(**doc)
+    if not any(s.slide_number == body.slide_number for s in asset.slides):
+        raise HTTPException(status_code=400, detail=f"Slide {body.slide_number} doesn't exist on this asset.")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Write something for the note.")
+    if len(text) > 1000:
+        raise HTTPException(status_code=400, detail="Keep the note under 1000 characters.")
+    if not (0 <= body.x <= 100) or not (0 <= body.y <= 100):
+        raise HTTPException(status_code=400, detail="The pin position must be within the slide.")
+
+    user = await users.find_one({"id": ctx.user_id}, {"name": 1, "email": 1})
+    pin = CommentPin(
+        id=uuid4().hex,
+        slide_number=body.slide_number,
+        author_id=ctx.user_id,
+        author_name=((user or {}).get("name") or (user or {}).get("email") or "Member"),
+        x=body.x,
+        y=body.y,
+        text=text,
+        created_at=datetime.now(timezone.utc),
+    )
+    await image_assets.update_one(
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id},
+        {"$push": {"comments": pin.model_dump()}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    return pin
+
+
+@router.patch("/{image_asset_id}/comments/{comment_id}", response_model=CommentPin)
+@limiter.limit("60/minute")
+async def update_image_comment(
+    request: Request,
+    image_asset_id: str,
+    comment_id: str,
+    body: CommentPinUpdate,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> CommentPin:
+    result = await image_assets.find_one_and_update(
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "comments.id": comment_id},
+        {"$set": {"comments.$.resolved": body.resolved, "updated_at": datetime.now(timezone.utc)}},
+        return_document=True,
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Comment not found.")
+    updated = next(c for c in result["comments"] if c["id"] == comment_id)
+    return CommentPin(**updated)
+
+
+@router.delete("/{image_asset_id}/comments/{comment_id}", status_code=204)
+@limiter.limit("60/minute")
+async def delete_image_comment(
+    request: Request,
+    image_asset_id: str,
+    comment_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> Response:
+    doc = await image_assets.find_one(
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "comments.id": comment_id}, {"comments": 1},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Comment not found.")
+    pin = next(c for c in doc["comments"] if c["id"] == comment_id)
+    if pin["author_id"] != ctx.user_id and ctx.role not in (WorkspaceRole.OWNER.value, WorkspaceRole.ADMIN.value):
+        raise HTTPException(status_code=403, detail="Only the author, or a workspace owner/admin, can delete this note.")
+    await image_assets.update_one(
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id},
+        {"$pull": {"comments": {"id": comment_id}}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    return Response(status_code=204)
+
+
+@router.get("/{image_asset_id}/contrast-check", response_model=list[ContrastResult])
+async def check_image_contrast(
+    image_asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> list[ContrastResult]:
+    """Real WCAG contrast check on the exact color pairs render_slide()
+    draws for this asset's brand — not a guessed or generic pair."""
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    brand = await brand_profiles.find_one({"id": doc["brand_id"], "workspace_id": ctx.workspace_id})
+    if not brand:
+        raise HTTPException(status_code=404, detail="This asset's brand no longer exists.")
+    tokens = _brand_tokens_from(brand)
+    return check_slide_contrast(_DEFAULT_FG, tokens.accent_hex, tokens.primary_hex)
 
 
 @router.get("/")

@@ -9,11 +9,13 @@ Markdown string, since this is a *persisted* url on the result, not a
 one-off HTTP response.
 """
 
+import io
 import os
 from datetime import datetime, timezone
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
+from PIL import Image
 
 from app.models.text import GeneratedPiece
 
@@ -85,5 +87,28 @@ def generate_pieces_pdf(pieces: list[GeneratedPiece], brand_name: str = "") -> b
             pdf.set_text_color(0, 0, 0)
 
         pdf.ln(6)
+
+    return bytes(pdf.output())
+
+
+def generate_carousel_pdf(slides: list[bytes]) -> bytes:
+    """Image-carousel PDF export — one real page per real rendered slide,
+    the slide's own image letterboxed to fit an A4 page (centered, aspect
+    preserved). Reuses this module's own fpdf2 setup/font bundling rather
+    than duplicating it in a second module."""
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=False)
+
+    for image_bytes in slides:
+        pdf.add_page()
+        img = Image.open(io.BytesIO(image_bytes))
+        page_w, page_h = pdf.w, pdf.h
+        img_ratio = img.width / img.height
+        page_ratio = page_w / page_h
+        if img_ratio > page_ratio:
+            w, h = page_w, page_w / img_ratio
+        else:
+            h, w = page_h, page_h * img_ratio
+        pdf.image(io.BytesIO(image_bytes), x=(page_w - w) / 2, y=(page_h - h) / 2, w=w, h=h)
 
     return bytes(pdf.output())

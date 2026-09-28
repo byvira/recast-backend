@@ -45,6 +45,11 @@ class MediaSource(str, Enum):
     RENDERED = "rendered"
     # Real TTS output (app.pipelines.media.tts_generation) for an AudioAsset.
     SYNTHESIZED = "synthesized"
+    # A curated, third-party CC0-licensed asset ingested once into the shared
+    # music/sfx library (app.pipelines.media.music_library) — not created by
+    # any one workspace, but referenced by every workspace's kit the same way
+    # a real uploaded asset would be.
+    LIBRARY = "library"
     # Post-DSP-cleanup output (denoise/loudness-normalize/EQ) of another
     # MediaAsset — a real, distinct derivative, same "never mutate the
     # source" convention as EDITED.
@@ -96,6 +101,11 @@ class MediaAsset(BaseModel):
     # preview-before-publish gate exists to catch before it goes out.
     qa_flagged: bool = False
     qa_flag_reason: Optional[str] = None
+    # The real file size in bytes — known for free at creation time (every
+    # writer already has the bytes in hand before upload). None for anything
+    # created before this existed; the podcast feed fetches it once with a
+    # HEAD request and caches it here rather than guessing at "0".
+    size_bytes: Optional[int] = None
 
     # ── Understanding of the recording itself (video/audio) ───────────────
     # Filled by POST /media/{id}/analyze. Until then the asset is just a file

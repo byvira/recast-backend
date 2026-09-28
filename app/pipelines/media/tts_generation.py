@@ -20,12 +20,16 @@ Follows the same defensive shape as image_generation.py's
 _generate_image_bytes: never raises, returns None on any failure.
 """
 
+import base64
 import logging
 from typing import Optional
 
 import httpx
 
+from pydantic import BaseModel
+
 from app.core.config import settings
+from app.models.audio_asset import TranscriptWord
 from app.models.lexicon import MemberLexicon
 from app.models.voice_settings import MemberVoiceSettings
 
@@ -184,26 +188,16 @@ async def sync_pronunciation_dictionary(
         return None
 
 
-async def _call_elevenlabs(
+def _build_elevenlabs_request(
     *,
     text: str,
     voice_settings: MemberVoiceSettings,
     workspace_id: str,
     pronunciation_dictionary_locators: Optional[list[dict]] = None,
-) -> bytes:
-    """Real ElevenLabs call. Maps MemberVoiceSettings' already-real,
-    already-persisted fields onto ElevenLabs' actual request shape
-    (confirmed live against ElevenLabs' API docs 2026-09-26):
-      - speech_speed (0.8-1.5, already validated on write) -> voice_settings.speed
-      - pitch_shift_semitones / emotional_tone -> no direct ElevenLabs
-        equivalent exists (their voice_settings has no pitch knob) — a
-        real, honest mapping gap, not silently faked. vocal_energy
-        loosely informs `style` (0.0-1.0) as the closest available knob.
-      - pause_cadence has no ElevenLabs equivalent at all — not mapped.
-    Raises on any failure — the caller (synthesize_speech) decides
-    whether to fall through to Deepgram, same contract as
-    image_generation.py's _call_cloudflare.
-    """
+    with_timestamps: bool = False,
+) -> tuple[str, dict, dict]:
+    """The request shared by the plain and the timed call: same voice, same
+    settings, same pronunciation locators, so the two produce the same speech."""
     voice_id = _resolve_elevenlabs_voice_id(voice_settings)
     if not voice_id:
         raise RuntimeError(
@@ -225,11 +219,92 @@ async def _call_elevenlabs(
         body["pronunciation_dictionary_locators"] = pronunciation_dictionary_locators
     headers = {"xi-api-key": settings.ELEVENLABS_API_KEY, "Content-Type": "application/json"}
     url = _ELEVENLABS_TTS_URL.format(voice_id=voice_id)
+    if with_timestamps:
+        url += "/with-timestamps"
+    return url, headers, body
 
+
+async def _call_elevenlabs(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    workspace_id: str,
+    pronunciation_dictionary_locators: Optional[list[dict]] = None,
+) -> bytes:
+    """Real ElevenLabs call. Maps MemberVoiceSettings' already-real,
+    already-persisted fields onto ElevenLabs' actual request shape
+    (confirmed live against ElevenLabs' API docs 2026-09-26):
+      - speech_speed (0.8-1.5, already validated on write) -> voice_settings.speed
+      - pitch_shift_semitones / emotional_tone -> no direct ElevenLabs
+        equivalent exists (their voice_settings has no pitch knob) — a
+        real, honest mapping gap, not silently faked. vocal_energy
+        loosely informs `style` (0.0-1.0) as the closest available knob.
+      - pause_cadence has no ElevenLabs equivalent at all — not mapped.
+    Raises on any failure — the caller (synthesize_speech) decides
+    whether to fall through to Deepgram, same contract as
+    image_generation.py's _call_cloudflare.
+    """
+    url, headers, body = _build_elevenlabs_request(
+        text=text, voice_settings=voice_settings, workspace_id=workspace_id,
+        pronunciation_dictionary_locators=pronunciation_dictionary_locators,
+    )
     async with httpx.AsyncClient(timeout=120.0) as client:
         response = await client.post(url, headers=headers, json=body)
         response.raise_for_status()
         return response.content
+
+
+def alignment_to_words(alignment: dict) -> list[TranscriptWord]:
+    """Turns ElevenLabs' per-character timing into per-word timing.
+
+    A word runs from the first letter's start to the last letter's end, and
+    keeps the punctuation attached to it (good for captions). Anything that
+    doesn't add up (missing arrays, mismatched lengths) yields no words at
+    all rather than guessed ones."""
+    chars = alignment.get("characters") or []
+    starts = alignment.get("character_start_times_seconds") or []
+    ends = alignment.get("character_end_times_seconds") or []
+    if not chars or not (len(chars) == len(starts) == len(ends)):
+        return []
+
+    words: list[TranscriptWord] = []
+    current: list[str] = []
+    w_start = w_end = 0.0
+    for ch, st, en in zip(chars, starts, ends):
+        if ch.isspace():
+            if current:
+                words.append(TranscriptWord(word="".join(current), start_s=round(w_start, 3), end_s=round(w_end, 3)))
+                current = []
+            continue
+        if not current:
+            w_start = float(st)
+        current.append(ch)
+        w_end = float(en)
+    if current:
+        words.append(TranscriptWord(word="".join(current), start_s=round(w_start, 3), end_s=round(w_end, 3)))
+    return words
+
+
+async def _call_elevenlabs_timed(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    workspace_id: str,
+    pronunciation_dictionary_locators: Optional[list[dict]] = None,
+) -> tuple[bytes, list[TranscriptWord]]:
+    """The same speech as _call_elevenlabs, plus the exact time each word is
+    spoken, from ElevenLabs' with-timestamps endpoint (same price, same
+    voice). Raises on any failure, like _call_elevenlabs."""
+    url, headers, body = _build_elevenlabs_request(
+        text=text, voice_settings=voice_settings, workspace_id=workspace_id,
+        pronunciation_dictionary_locators=pronunciation_dictionary_locators, with_timestamps=True,
+    )
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        data = response.json()
+    audio = base64.b64decode(data["audio_base64"])
+    return audio, alignment_to_words(data.get("alignment") or {})
 
 
 async def _call_deepgram(*, text: str, voice_settings: MemberVoiceSettings) -> bytes:
@@ -253,14 +328,22 @@ async def _call_deepgram(*, text: str, voice_settings: MemberVoiceSettings) -> b
         return response.content
 
 
-async def synthesize_speech(
+class SpeechResult(BaseModel):
+    """Synthesized audio, plus per-word timing when the provider reported it
+    (ElevenLabs does; the Deepgram fallback does not, so `words` is None)."""
+    audio: bytes
+    words: Optional[list[TranscriptWord]] = None
+
+
+async def _synthesize(
     *,
     text: str,
     voice_settings: MemberVoiceSettings,
-    lexicon: Optional[MemberLexicon] = None,
+    lexicon: Optional[MemberLexicon],
     workspace_id: str,
     user_id: str,
-) -> Optional[bytes]:
+    timed: bool,
+) -> Optional[SpeechResult]:
     """Tries ElevenLabs first (the real product decision); on any
     failure — no key, no real voice configured, the free-plan library-
     voice restriction, or the HTTP call itself failing — falls through to
@@ -285,12 +368,16 @@ async def synthesize_speech(
 
     if settings.ELEVENLABS_API_KEY:
         try:
-            return await _call_elevenlabs(
-                text=text,
-                voice_settings=voice_settings,
-                workspace_id=workspace_id,
+            if timed:
+                audio, words = await _call_elevenlabs_timed(
+                    text=text, voice_settings=voice_settings, workspace_id=workspace_id,
+                    pronunciation_dictionary_locators=pronunciation_locators,
+                )
+                return SpeechResult(audio=audio, words=words or None)
+            return SpeechResult(audio=await _call_elevenlabs(
+                text=text, voice_settings=voice_settings, workspace_id=workspace_id,
                 pronunciation_dictionary_locators=pronunciation_locators,
-            )
+            ))
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "ElevenLabs TTS failed for workspace %s, checking Deepgram fallback: %s",
@@ -306,7 +393,39 @@ async def synthesize_speech(
     try:
         audio = await _call_deepgram(text=text, voice_settings=voice_settings)
         logger.info("ElevenLabs unavailable — served this narration via the Deepgram fallback.")
-        return audio
+        return SpeechResult(audio=audio)
     except Exception as exc:  # noqa: BLE001
         logger.error("Deepgram TTS fallback also failed for workspace %s: %s", workspace_id, exc)
         return None
+
+
+async def synthesize_speech(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    lexicon: Optional[MemberLexicon] = None,
+    workspace_id: str,
+    user_id: str,
+) -> Optional[bytes]:
+    """Audio only. See _synthesize for the provider order and the lexicon."""
+    result = await _synthesize(
+        text=text, voice_settings=voice_settings, lexicon=lexicon,
+        workspace_id=workspace_id, user_id=user_id, timed=False,
+    )
+    return result.audio if result else None
+
+
+async def synthesize_speech_timed(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    lexicon: Optional[MemberLexicon] = None,
+    workspace_id: str,
+    user_id: str,
+) -> Optional[SpeechResult]:
+    """Audio plus the exact time of every word when the provider gives it, so
+    a recording made here has a real transcript from the start."""
+    return await _synthesize(
+        text=text, voice_settings=voice_settings, lexicon=lexicon,
+        workspace_id=workspace_id, user_id=user_id, timed=True,
+    )

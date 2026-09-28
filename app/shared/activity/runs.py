@@ -146,6 +146,22 @@ async def _write(workspace_id: str, run_id: str, run: dict) -> None:
         logger.warning("run registry write failed for %s: %s", run_id, exc)
 
 
+async def get_run(workspace_id: str, run_id: str) -> Optional[dict]:
+    """One in-flight run, or None once it has ended (or never existed)."""
+    try:
+        r = await get_redis()
+        raw = await r.hget(_key(workspace_id), run_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("run registry read failed for %s: %s", run_id, exc)
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return None
+
+
 async def median_run_seconds(workspace_id: str) -> Optional[float]:
     """Median of this workspace's recent text-run durations, or None with
     fewer than 3 runs on record (too little to predict from)."""

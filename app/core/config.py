@@ -111,6 +111,13 @@ class Settings(BaseSettings):
     CLOUDFLARE_API_TOKEN: str = ""
     CLOUDFLARE_ACCOUNT_ID: str = ""
 
+    # Cloudflare Turnstile — spam protection on the public share page's
+    # guest comment form (an anonymous form with no account behind it).
+    # Empty means Turnstile isn't checked yet: the honeypot field and the
+    # real rate limit still apply on their own, so the form works before
+    # a real site/secret key pair is set up, just without this extra layer.
+    TURNSTILE_SECRET_KEY: str = ""
+
     # ElevenLabs TTS — real, paid plan, product owner's own account, decided
     # 2026-09-25 specifically for the audio pipeline (see
     # pow/audio_image_pipeline/02-audio-pipeline-plan.md's TTS integration
@@ -134,6 +141,14 @@ class Settings(BaseSettings):
     # not a recurring free tier, standard billing applies once spent. Not
     # yet a decided pick — this is a live feasibility check only.
     DEEPGRAM_API_KEY: str = ""
+
+    # Jamendo — free, keyless-to-browse CC-licensed music catalog, used once
+    # (app.pipelines.media.music_library, scripts/seed_music_library.py) to
+    # seed a shared, CC0-only curated pack for the Music tab's bed picker.
+    # Get a free client_id at https://devportal.jamendo.com/ (no card).
+    # Empty until the user provides it — the seed script refuses to run
+    # without it rather than guessing/using an undisclosed shared key.
+    JAMENDO_CLIENT_ID: str = ""
 
     # Gemini Nano Banana (gemini-2.5-flash-image) as a PAID fallback for
     # image generation, only used once Cloudflare's free ~173/day is

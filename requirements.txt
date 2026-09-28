@@ -78,6 +78,14 @@ pyloudnorm>=0.1.1
 soundfile>=0.13.0
 
 # ─────────────────────────────────────────
+# Audio-to-video rendering — app/pipelines/media/video_render.py. A real,
+# static ffmpeg binary bundled in the wheel itself (no apt/Dockerfile
+# needed on Render's plain Python buildpack, which has no system package
+# manager access) rather than assuming a system `ffmpeg` is on PATH.
+# ─────────────────────────────────────────
+imageio-ffmpeg>=0.6.0
+
+# ─────────────────────────────────────────
 # Job Queue
 # ─────────────────────────────────────────
 arq>=0.25.0

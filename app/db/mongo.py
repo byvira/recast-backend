@@ -111,11 +111,17 @@ inbox_state: AsyncIOMotorCollection = get_client().get_default_database()["inbox
 image_assets: AsyncIOMotorCollection = get_client().get_default_database()["image_assets"]
 image_asset_versions: AsyncIOMotorCollection = get_client().get_default_database()["image_asset_versions"]
 image_share_links: AsyncIOMotorCollection = get_client().get_default_database()["image_share_links"]
+# Anonymous view/play/listen-through events for the public share page — one
+# real row per (token, event_type, day, visitor). Shared across audio and
+# image shares since the same public page serves both.
+share_view_events: AsyncIOMotorCollection = get_client().get_default_database()["share_view_events"]
 
 # ── Audio pipeline — see app.models.audio_asset, pow/audio_image_pipeline/02 ──
 audio_assets: AsyncIOMotorCollection = get_client().get_default_database()["audio_assets"]
 audio_asset_versions: AsyncIOMotorCollection = get_client().get_default_database()["audio_asset_versions"]
 audio_share_links: AsyncIOMotorCollection = get_client().get_default_database()["audio_share_links"]
+audio_comments: AsyncIOMotorCollection = get_client().get_default_database()["audio_comments"]
+audio_kits: AsyncIOMotorCollection = get_client().get_default_database()["audio_kits"]
 # One real podcast RSS feed per brand — see PodcastFeedSettings
 # (app.models.audio_asset). Separate from the generic Show model: a feed
 # is scoped by brand_id alone, with no "which episodes belong to this
@@ -124,6 +130,9 @@ podcast_feed_settings: AsyncIOMotorCollection = get_client().get_default_databas
 shows: AsyncIOMotorCollection = get_client().get_default_database()["shows"]
 # Multi-voice dialogue (2026-09-26, bugs/gaps sweep) — see app.models.audio_asset.GuestVoiceProfile
 guest_voice_profiles: AsyncIOMotorCollection = get_client().get_default_database()["guest_voice_profiles"]
+# Curated CC0 music library, shared across every workspace — see
+# app.models.audio_asset.MusicLibraryTrack, app.pipelines.media.music_library
+music_library_tracks: AsyncIOMotorCollection = get_client().get_default_database()["music_library_tracks"]
 
 # ── Collection getter functions ───────────────────────────────────────────────
 
@@ -339,8 +348,18 @@ async def create_indexes() -> None:
     )
     await audio_share_links.create_index("token", unique=True)
     await audio_share_links.create_index([("audio_asset_id", 1), ("revoked", 1)])
+    await audio_comments.create_index([("audio_asset_id", 1), ("time_s", 1)])
+    # A duplicate insert for the same (token, event_type, day, visitor) is a
+    # real re-view/re-play, not a new one to count — this index is what
+    # makes that "insert, ignore the duplicate" dedup real rather than best-effort.
+    await share_view_events.create_index(
+        [("token", 1), ("event_type", 1), ("day", 1), ("visitor_hash", 1)], unique=True,
+    )
+    await share_view_events.create_index("token")
+    await audio_kits.create_index([("workspace_id", 1), ("brand_id", 1)], unique=True)
     await podcast_feed_settings.create_index("brand_id", unique=True)
     await podcast_feed_settings.create_index("token", unique=True, sparse=True)
     await shows.create_index([("workspace_id", 1), ("created_at", -1)])
     await guest_voice_profiles.create_index([("audio_asset_id", 1)])
+    await music_library_tracks.create_index("source_track_id", unique=True)
 

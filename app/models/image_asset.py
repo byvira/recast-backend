@@ -72,6 +72,17 @@ class CommentPin(BaseModel):
     resolved: bool = False
 
 
+class CommentPinCreate(BaseModel):
+    slide_number: int
+    x: float
+    y: float
+    text: str
+
+
+class CommentPinUpdate(BaseModel):
+    resolved: bool
+
+
 class ImageAsset(BaseModel):
     """One ImageAsset = one carousel/single-image project."""
 
