@@ -263,6 +263,7 @@ _LLM_CONSUMER_MODULES = [
     "app.pipelines.text.orchestrator",  # call_llm_structured — batch mode's angle planning
     "app.pipelines.campaigns.suggest",  # call_llm_structured — campaign topic AI suggestions
     "app.agents.analytics.nodes",       # call_llm (analyze), call_llm_structured (recommend)
+    "app.api.v1.search",                # call_llm_structured — agentic search
 ]
 
 
