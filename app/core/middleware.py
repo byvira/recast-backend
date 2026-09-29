@@ -111,7 +111,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         method = request.method
         path = request.url.path
-        query_params = str(request.query_params)
+        # Support pages take search terms (member names, emails) in the query
+        # string, so those are never written to the logs.
+        query_params = (
+            "" if path.startswith(("/api/v1/support", "/api/v1/ops/support")) else str(request.query_params)
+        )
 
         client_ip = (
             request.client.host
