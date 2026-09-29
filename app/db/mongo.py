@@ -62,6 +62,9 @@ ops_llm_notes: AsyncIOMotorCollection = get_client().get_default_database()["ops
 # Real, workspace-scoped media references — see app.models.media.MediaAsset.
 media_assets: AsyncIOMotorCollection = get_client().get_default_database()["media_assets"]
 
+# Support tickets — see app.models.support.SupportTicket.
+support_tickets: AsyncIOMotorCollection = get_client().get_default_database()["support_tickets"]
+
 # One doc per UTC date ({"_id": "2026-09-25", "gemini_calls": N}), app-wide
 # (not per-workspace — mirrors Cloudflare's own single shared-account quota).
 # Atomically incremented to cap Gemini Nano Banana fallback spend once
@@ -210,6 +213,8 @@ async def create_indexes() -> None:
     await workspace_ai_usage_daily.create_index([("workspace_id", 1), ("date", 1)], unique=True)
     await ops_llm_notes.create_index([("status", 1), ("created_at", -1)])
     await media_assets.create_index([("workspace_id", 1), ("created_at", -1)])
+    await support_tickets.create_index([("workspace_id", 1), ("created_at", -1)])
+    await support_tickets.create_index([("status", 1), ("created_at", -1)])
 
     # ── Metrics ──────────────────────────────────────────────────────────
     await account_metrics.create_index([("workspace_id", 1), ("platform", 1)], unique=True)

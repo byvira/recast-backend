@@ -171,6 +171,10 @@ class UserProfileResponse(BaseModel):
     # every other permission flag here; the real gate is server-side
     # (app.core.workspace.require_ops_admin / app.core.auth.require_platform_staff).
     is_master_admin:     bool = False
+    # Unlocks staff-only Ops surfaces client-side (LLM Health, Support) —
+    # same UX-nicety-only caveat as is_master_admin above; the real gate is
+    # app.core.auth.require_platform_staff.
+    is_platform_staff:   bool = False
 
 
 class PublicProfileResponse(BaseModel):

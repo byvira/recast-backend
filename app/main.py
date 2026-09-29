@@ -43,6 +43,8 @@ from app.api.v1 import platforms as platforms_router
 from app.api.v1 import ops_platforms as ops_platforms_router
 from app.api.v1 import ops_cohorts as ops_cohorts_router
 from app.api.v1 import ops_ai_budget as ops_ai_budget_router
+from app.api.v1 import support as support_router
+from app.api.v1 import ops_support as ops_support_router
 
 setup_logging()
 
@@ -332,6 +334,8 @@ app.include_router(platforms_router.router, prefix="/api/v1/platforms", tags=["P
 app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
+app.include_router(support_router.router, prefix="/api/v1/support", tags=["Support"])
+app.include_router(ops_support_router.router, prefix="/api/v1/ops/support", tags=["Ops"])
 app.include_router(activity_router.router, prefix="/api/v1/activity", tags=["Activity"])
 app.include_router(
     text_stream.router,

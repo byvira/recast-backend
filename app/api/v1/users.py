@@ -64,6 +64,7 @@ async def _build_profile_response(
         last_active=user.get("last_active"),
         created_at=user["created_at"],
         is_master_admin=user.get("is_master_admin", False),
+        is_platform_staff=user.get("is_platform_staff", False),
     )
 
 
