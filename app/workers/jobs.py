@@ -29,6 +29,7 @@ from app.pipelines.analytics.checkpoints import capture_metric_checkpoints
 from app.pipelines.analytics.scheduler import refresh_analytics
 from app.workers.campaign_scheduler import run_due_campaign_batches
 from app.workers.scheduled_posts import process_scheduled_posts
+from app.workers.support_lifecycle import support_lifecycle_tick
 from app.workers.token_refresh import refresh_expiring_tokens
 
 
@@ -81,6 +82,8 @@ JOBS: list[Job] = [
         minute=frozenset({41}), hour=frozenset({2})),
     # Campaign cadence — stalled / behind checks, hourly at :37.
     Job("cadence_monitor", cadence_monitor, minute=frozenset({37})),
+    # Support tickets — reminders, auto-resolve, auto-close, snooze wake-up, every 5 min.
+    Job("support_lifecycle", _no_ctx(support_lifecycle_tick), minute=_every(5, offset=1)),
 ]
 
 

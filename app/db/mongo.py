@@ -64,6 +64,30 @@ media_assets: AsyncIOMotorCollection = get_client().get_default_database()["medi
 
 # Support tickets — see app.models.support.SupportTicket.
 support_tickets: AsyncIOMotorCollection = get_client().get_default_database()["support_tickets"]
+# Append-only audit trail for tickets — see app.shared.support.log_event.
+support_ticket_events: AsyncIOMotorCollection = get_client().get_default_database()["support_ticket_events"]
+# In-app notifications for tickets, for members and for staff.
+support_notifications: AsyncIOMotorCollection = get_client().get_default_database()["support_notifications"]
+# Context snapshot staff see beside a ticket — see app.shared.support_context.
+support_ticket_context: AsyncIOMotorCollection = get_client().get_default_database()["support_ticket_context"]
+# Support attachments (metadata only; the bytes live in private storage).
+support_files: AsyncIOMotorCollection = get_client().get_default_database()["support_files"]
+# Canned replies staff insert into a reply.
+support_canned_replies: AsyncIOMotorCollection = get_client().get_default_database()["support_canned_replies"]
+# Who is looking at a ticket right now (expires by itself).
+support_presence: AsyncIOMotorCollection = get_client().get_default_database()["support_presence"]
+# Admin-editable support settings, e.g. {"_id": "sla", ...}.
+support_settings: AsyncIOMotorCollection = get_client().get_default_database()["support_settings"]
+# Groups of tickets about the same problem.
+support_incidents: AsyncIOMotorCollection = get_client().get_default_database()["support_incidents"]
+# Every AI call made for support (drafts, category guesses), for cost and quality tracking.
+support_ai_usage: AsyncIOMotorCollection = get_client().get_default_database()["support_ai_usage"]
+# One row per email that was attempted and how it ended.
+support_email_log: AsyncIOMotorCollection = get_client().get_default_database()["support_email_log"]
+# A member's conversations with the support assistant.
+support_chats: AsyncIOMotorCollection = get_client().get_default_database()["support_chats"]
+# One counter doc ({"_id": "ticket_number", "seq": N}) for human-readable ticket numbers.
+support_counters: AsyncIOMotorCollection = get_client().get_default_database()["support_counters"]
 
 # One doc per UTC date ({"_id": "2026-09-25", "gemini_calls": N}), app-wide
 # (not per-workspace — mirrors Cloudflare's own single shared-account quota).
@@ -215,6 +239,28 @@ async def create_indexes() -> None:
     await media_assets.create_index([("workspace_id", 1), ("created_at", -1)])
     await support_tickets.create_index([("workspace_id", 1), ("created_at", -1)])
     await support_tickets.create_index([("status", 1), ("created_at", -1)])
+    await support_tickets.create_index([("created_by", 1), ("created_at", -1)])
+    await support_tickets.create_index([("status", 1), ("assignee_id", 1)])
+    # Tickets filed before numbering existed have no number; only index the ones that do.
+    await support_tickets.create_index(
+        "number", unique=True, partialFilterExpression={"number": {"$type": "int"}}
+    )
+    await support_ticket_events.create_index([("ticket_id", 1), ("created_at", 1)])
+    await support_notifications.create_index([("user_id", 1), ("audience", 1), ("read", 1), ("created_at", -1)])
+    await support_ticket_context.create_index("ticket_id", unique=True)
+    await support_files.create_index([("uploaded_by", 1), ("created_at", -1)])
+    await support_files.create_index("ticket_id")
+    await support_canned_replies.create_index([("owner_id", 1), ("title", 1)])
+    await support_presence.create_index("at", expireAfterSeconds=90)
+    await support_incidents.create_index([("status", 1), ("created_at", -1)])
+    await support_ai_usage.create_index([("created_at", -1)])
+    await support_chats.create_index([("user_id", 1), ("workspace_id", 1), ("updated_at", -1)])
+    await support_ai_usage.create_index([("staff_id", 1), ("created_at", -1)])
+    await support_email_log.create_index("at", expireAfterSeconds=90 * 24 * 3600)
+    await support_incidents.create_index([("category", 1), ("platform", 1), ("status", 1)])
+    await support_tickets.create_index("incident_id")
+    await support_presence.create_index([("ticket_id", 1), ("staff_id", 1)], unique=True)
+    await support_tickets.create_index("sla.first_response_due")
 
     # ── Metrics ──────────────────────────────────────────────────────────
     await account_metrics.create_index([("workspace_id", 1), ("platform", 1)], unique=True)

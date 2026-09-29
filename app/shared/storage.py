@@ -135,3 +135,50 @@ async def delete_file(public_id: str, content_type: ContentType) -> bool:
         resource_type=_get_resource_type(content_type)
     )
     return result.get("result") == "ok"
+
+
+# ── Private files (support attachments) ──────────────────────────────────────
+# Uploaded with delivery type "authenticated": the plain URL does not work, the
+# only way to read the file is a signed link that expires. The signing uses the
+# API secret, so no link can be built without this server.
+PRIVATE_FOLDER = "recast/private/support"
+
+
+def upload_private_file(file: bytes, folder_id: str, public_id: str) -> str:
+    """Upload bytes as a private (authenticated) raw file. Returns its
+    Cloudinary public_id, the only thing to store: never a URL. Blocking call;
+    run it in a thread from async code."""
+    _ensure_configured()
+    result = cloudinary.uploader.upload(
+        file,
+        folder=f"{PRIVATE_FOLDER}/{folder_id}",
+        resource_type="raw",
+        type="authenticated",
+        public_id=public_id,
+        unique_filename=True,
+        overwrite=False,
+    )
+    return result["public_id"]
+
+
+def signed_private_url(public_id: str, expires_in_seconds: int = 300) -> str:
+    """A time-limited download link for a private raw file. Pure signing, no
+    network call."""
+    import time
+
+    _ensure_configured()
+    return cloudinary.utils.private_download_url(
+        public_id,
+        "",
+        resource_type="raw",
+        type="authenticated",
+        expires_at=int(time.time()) + expires_in_seconds,
+    )
+
+
+def delete_private_file(public_id: str) -> bool:
+    """Blocking; run it in a thread from async code."""
+    _ensure_configured()
+    result = cloudinary.uploader.destroy(public_id, resource_type="raw", type="authenticated")
+    return result.get("result") == "ok"
+
