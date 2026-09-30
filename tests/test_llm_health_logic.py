@@ -158,3 +158,36 @@ def test_minute_usage_counts_only_the_last_minute_for_that_model():
     assert service.minute_usage("groq", "m") == {"calls_min": 2, "tokens_min": 500}
     assert service.minute_usage("groq", "missing") == {"calls_min": 0, "tokens_min": 0}
     recorder.recent.clear()
+
+
+def test_allowance_wording_is_its_own_kind_and_daily_free_allocation_is_daily():
+    from app.shared.llm_health.classifier import classify
+    from app.shared.llm_health.catalogue import KINDS
+
+    assert classify(http_status=401, error_class="HTTPStatusError", message='{"detail":{"status":"quota_exceeded"}}') == "quota_exhausted"
+    assert classify(http_status=429, error_class="HTTPStatusError", message="you have used your daily free allocation of 10,000 neurons") == "quota_daily"
+    assert "quota_exhausted" in KINDS
+
+
+def test_every_known_provider_is_listed_with_a_label_and_a_use():
+    for name in ("groq", "gemini", "cloudflare", "elevenlabs", "deepgram"):
+        assert health.PROVIDERS[name]["label"] and health.PROVIDERS[name]["used_for"]
+        assert name in health.DEFAULT_RESET
+
+
+def test_track_records_a_failure_and_lets_it_through():
+    import asyncio
+    from app.shared.llm_health.recorder import recorder
+    from app.shared.llm_health.track import track
+
+    async def run():
+        try:
+            async with track("deepgram", "aura", feature="text_to_speech"):
+                raise RuntimeError("boom")
+        except RuntimeError:
+            return True
+        return False
+
+    before = len(recorder.recent)
+    assert asyncio.run(run()) is True
+    assert len(recorder.recent) == before + 1

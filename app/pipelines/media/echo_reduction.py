@@ -11,6 +11,7 @@ re-scoped, with no further code changes needed — it fails with a clear,
 specific reason until then, never silently or with a generic error.
 """
 
+import time
 import httpx
 
 from app.core.config import settings
@@ -22,6 +23,9 @@ class EchoReductionError(Exception):
     """A message that is safe to show the member."""
 
 
+from app.shared.llm_health.track import log_attempt, log_http  # noqa: E402
+
+
 async def reduce_echo(audio_bytes: bytes, filename: str = "audio.wav") -> bytes:
     """Sends the real audio bytes to ElevenLabs' Audio Isolation endpoint
     and returns the real cleaned bytes. Raises EchoReductionError with a
@@ -31,6 +35,7 @@ async def reduce_echo(audio_bytes: bytes, filename: str = "audio.wav") -> bytes:
     if not settings.ELEVENLABS_API_KEY:
         raise EchoReductionError("Echo reduction needs an ElevenLabs API key, and none is configured yet.")
 
+    t0 = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
@@ -39,7 +44,9 @@ async def reduce_echo(audio_bytes: bytes, filename: str = "audio.wav") -> bytes:
                 files={"audio": (filename, audio_bytes, "audio/wav")},
             )
     except httpx.HTTPError as exc:
+        log_attempt("elevenlabs", "audio-isolation", t0, exc=exc, feature="echo_reduction")
         raise EchoReductionError("Could not reach the echo reduction service. Try again in a moment.") from exc
+    log_http("elevenlabs", "audio-isolation", t0, response, feature="echo_reduction")
 
     if response.status_code == 401:
         detail = (response.json() or {}).get("detail", {})

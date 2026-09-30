@@ -38,6 +38,7 @@ from groq import APIConnectionError, APIStatusError, AsyncGroq, RateLimitError
 
 from app.core.config import settings
 from app.core.tracing import add_run_metadata, traceable
+from app.shared.llm_health.track import log_attempt as _track_log, track as _track, usage_numbers as _usage_numbers
 from app.prompts.registry import load_prompt
 from app.utils.jsonparser import parse_llm_json
 
@@ -419,58 +420,12 @@ def _raw_text(response: Any) -> str:
     return response.choices[0].message.content or ""
 
 
-def _usage_numbers(usage: Any) -> tuple[int, int, int]:
-    """(prompt, completion, cached) tokens from a Groq or Gemini usage object; zeros when absent."""
-    if usage is None:
-        return 0, 0, 0
-    pt = getattr(usage, "prompt_tokens", None)
-    if pt is None:
-        return (int(getattr(usage, "prompt_token_count", 0) or 0), int(getattr(usage, "candidates_token_count", 0) or 0),
-                int(getattr(usage, "cached_content_token_count", 0) or 0))
-    return (int(pt or 0), int(getattr(usage, "completion_tokens", 0) or 0),
-            int(getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0))
-
-
 _in_fallback: contextvars.ContextVar[bool] = contextvars.ContextVar("_in_fallback", default=False)
 
 
 def _log_attempt(provider: str, model: str, t0: float, *, result: Any = None, exc: BaseException | None = None) -> None:
-    """Hands one attempt to the durable recorder. Never raises and never waits."""
-    try:
-        from app.shared.llm_health.recorder import Attempt, recorder
-        from app.shared.llm_health.scrub import scrub_message
-
-        elapsed = (time.perf_counter() - t0) * 1000
-        if exc is None:
-            usage = getattr(result, "usage", None) or getattr(result, "usage_metadata", None)
-            tin, tout, cached = _usage_numbers(usage)
-            fell_back = _in_fallback.get()
-            recorder.record(Attempt(
-                provider=provider, model=model, ok=True, latency_ms=elapsed, tokens_in=tin, tokens_out=tout, cached_tokens=cached,
-                outcome="fallback_success" if fell_back else None, fallback_to=f"{provider}:{model}" if fell_back else None,
-            ))
-            return
-        headers = None
-        response = getattr(exc, "response", None)
-        raw = getattr(response, "headers", None)
-        retry_after = None
-        if raw is not None:
-            try:
-                headers = {k: str(v) for k, v in raw.items() if str(k).lower().startswith(("x-ratelimit", "retry-after"))}
-                if raw.get("retry-after") is not None:
-                    retry_after = float(raw.get("retry-after"))
-            except Exception:  # noqa: BLE001
-                headers = None
-        status = getattr(exc, "status_code", None)
-        if status is None:
-            status = getattr(exc, "code", None)
-        recorder.record(Attempt(
-            provider=provider, model=model, ok=False, latency_ms=elapsed,
-            http_status=int(status) if isinstance(status, int) else None, error_class=exc.__class__.__name__,
-            error_message=scrub_message(str(exc), 500), retry_after_s=retry_after, rate_headers=headers or None,
-        ))
-    except Exception:  # noqa: BLE001
-        pass
+    """Hands one attempt to the durable recorder (see app/shared/llm_health/track.py). Never raises and never waits."""
+    _track_log(provider, model, t0, result=result, exc=exc, fallback=_in_fallback.get())
 
 
 async def _groq_create(client: AsyncGroq, *, reasoning_effort: str | None, **kwargs: Any) -> Any:
@@ -1094,13 +1049,14 @@ async def transcribe_audio(
     async with aiofiles.open(file_path, "rb") as f:
         audio_bytes = await f.read()
 
-    response = await client.audio.transcriptions.create(
-        model=GroqModel.WHISPER.value,
-        file=(file_path, audio_bytes),
-        language=language,
-        response_format="verbose_json",
-        timestamp_granularities=["segment"],
-    )
+    async with _track("groq", GroqModel.WHISPER.value, feature="transcription"):
+        response = await client.audio.transcriptions.create(
+            model=GroqModel.WHISPER.value,
+            file=(file_path, audio_bytes),
+            language=language,
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
 
     segments = [
         {"start": seg.start, "end": seg.end, "text": seg.text}

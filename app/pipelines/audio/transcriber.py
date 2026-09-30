@@ -17,6 +17,9 @@ from app.shared.llm import GroqModel, get_groq_client
 logger = logging.getLogger(__name__)
 
 
+from app.shared.llm_health.track import track
+
+
 async def transcribe_audio_detailed(
     audio_bytes: bytes, filename: str, language: Optional[str] = None,
 ) -> tuple[list[TranscriptWord], Optional[str]]:
@@ -29,13 +32,14 @@ async def transcribe_audio_detailed(
         kwargs: dict = {}
         if language:
             kwargs["language"] = language
-        response = await client.audio.transcriptions.create(
-            model=GroqModel.WHISPER.value,
-            file=(filename, audio_bytes),
-            response_format="verbose_json",
-            timestamp_granularities=["word"],
-            **kwargs,
-        )
+        async with track("groq", GroqModel.WHISPER.value, feature="transcription"):
+            response = await client.audio.transcriptions.create(
+                model=GroqModel.WHISPER.value,
+                file=(filename, audio_bytes),
+                response_format="verbose_json",
+                timestamp_granularities=["word"],
+                **kwargs,
+            )
         words = getattr(response, "words", None) or []
         return (
             [TranscriptWord(word=w.word, start_s=w.start, end_s=w.end) for w in words],

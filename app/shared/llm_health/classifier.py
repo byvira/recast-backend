@@ -17,6 +17,16 @@ import re
 APP_KINDS = {"empty_response", "unparseable_response", "content_blocked", "fallback_failed", "recorder_error"}
 
 
+# To teach the classifier a new kind of failure: (1) add a line here, first match wins, so put specific wording above
+# general wording; (2) add the kind to catalogue.py (title, cause, action, priority); (3) add a case to
+# tests/test_llm_health_logic.py. Nothing else needs to change. `statuses` empty means any status.
+# (kind, http statuses, lowercase wording to look for in the provider's message)
+RULES: list[tuple[str, tuple[int, ...], tuple[str, ...]]] = [
+    ("quota_daily", (), ("daily free allocation",)),
+    ("quota_exhausted", (), ("quota_exceeded", "out of credits", "insufficient credits", "credits remaining", "character limit", "free allocation")),
+]
+
+
 def _has(text: str, *needles: str) -> bool:
     return any(n in text for n in needles)
 
@@ -29,6 +39,10 @@ def classify(*, http_status: int | None, error_class: str | None, message: str |
     name = cls.lower()
     if retry_after_s is None:
         retry_after_s = retry_after_from_text(message)
+
+    for kind, statuses, needles in RULES:
+        if (not statuses or http_status in statuses) and _has(low, *needles):
+            return kind
 
     # authentication and access
     if http_status == 401 or _has(low, "invalid api key", "incorrect api key", "api key not valid", "api_key_invalid", "invalid_api_key", "unauthenticated"):

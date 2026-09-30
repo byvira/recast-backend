@@ -21,11 +21,33 @@ DEFAULT_LIMITS: dict[str, dict[str, dict[str, int]]] = {
         "whisper-large-v3": {"rpm": 20, "rpd": 2000},
     },
     "gemini": {},  # Google publishes no per-model numbers to copy; the owner enters them from the AI Studio rate limit page
+    # The earlier image work measured 10,000 neurons a day at about 57.6 neurons a picture, so about 173 pictures a day
+    # for the whole app. That is from the code notes, not checked against Cloudflare today.
+    "cloudflare": {"@cf/black-forest-labs/flux-1-schnell": {"rpd": 173}},
+    "elevenlabs": {},  # credits are monthly and counted in characters; not modelled here
+    "deepgram": {},
 }
 DEFAULT_RESET = {
     "groq": {"tz": "UTC", "hour": 0},
     "gemini": {"tz": "America/Los_Angeles", "hour": 0},  # Google resets daily requests at midnight Pacific
+    "cloudflare": {"tz": "UTC", "hour": 0},
+    "elevenlabs": {"tz": "UTC", "hour": 0},
+    "deepgram": {"tz": "UTC", "hour": 0},
 }
+
+# Every AI provider the product calls, with a plain description of what it is used for. A provider shows on the page
+# as soon as it is listed here, even before it has had any traffic.
+PROVIDERS: dict[str, dict[str, str]] = {
+    "groq": {"label": "Groq", "used_for": "Writing, hooks, analysis and speech to text"},
+    "gemini": {"label": "Gemini", "used_for": "Backup writing, images, video understanding and voice matching"},
+    "cloudflare": {"label": "Cloudflare Workers AI", "used_for": "Picture generation"},
+    "elevenlabs": {"label": "ElevenLabs", "used_for": "Voice narration and echo reduction"},
+    "deepgram": {"label": "Deepgram", "used_for": "Voice narration when ElevenLabs is not available"},
+}
+
+# Where the starting numbers came from, shown next to them. Anything not listed here was entered by the owner.
+DEFAULT_SOURCE = {"cloudflare": "from the code notes (10,000 neurons a day, about 58 per picture), not verified"}
+OWNER_SOURCE = "entered by owner, not verified"
 
 
 def last_reset(now: datetime, rule: dict[str, Any]) -> datetime:

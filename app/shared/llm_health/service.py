@@ -72,7 +72,7 @@ async def get_config() -> dict[str, Any]:
             seen.add((provider, model))
             rows.append({"provider": provider, "model": model, "limits": (doc or {}).get("limits", limits),
                          "warn_pct": (doc or {}).get("warn_pct", health.WARN_PCT), "critical_pct": (doc or {}).get("critical_pct", health.CRITICAL_PCT),
-                         "reset": (doc or {}).get("reset", health.DEFAULT_RESET[provider]), "source": "saved" if doc else "entered by owner, not verified"})
+                         "reset": (doc or {}).get("reset", health.DEFAULT_RESET[provider]), "source": "saved" if doc else health.DEFAULT_SOURCE.get(provider, health.OWNER_SOURCE)})
     for (provider, model), doc in saved.items():
         if (provider, model) not in seen:
             rows.append({"provider": provider, "model": model, "limits": doc.get("limits", {}), "warn_pct": doc.get("warn_pct", health.WARN_PCT),
@@ -148,7 +148,7 @@ async def provider_states(now: datetime | None = None) -> dict[str, dict[str, An
     quota = await quota_snapshot(now)
     recent = recent_provider_stats()
     open_issues = await llm_issues.find({"status": {"$in": ["open", "acknowledged"]}}).to_list(200)
-    names = set(health.DEFAULT_LIMITS) | set(recent)
+    names = set(health.PROVIDERS) | set(health.DEFAULT_LIMITS) | set(recent)
     out = {}
     for name in sorted(names):
         rows = [q for q in quota if q["provider"] == name]
@@ -159,7 +159,9 @@ async def provider_states(now: datetime | None = None) -> dict[str, dict[str, An
             auth_failed=r["auth_failed"], limit_reached=any((q["percent"] or 0) >= 100 for q in rows), fallback_used=r["fallback"],
         )
         busiest = max(rows, key=lambda q: q["percent"] or 0, default=None)
-        out[name] = {"status": state, "status_text": health.STATUS_TEXT[state], "recent": r, "quota": rows, "busiest": busiest}
+        meta = health.PROVIDERS.get(name, {"label": name.capitalize(), "used_for": ""})
+        out[name] = {"label": meta["label"], "used_for": meta["used_for"], "status": state, "status_text": health.STATUS_TEXT[state],
+                     "recent": r, "quota": rows, "busiest": busiest}
     return out
 
 

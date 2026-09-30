@@ -66,6 +66,7 @@ import httpx
 from PIL import Image
 from pymongo import ReturnDocument
 
+from app.shared.llm_health.track import fallback_scope, note_fallback_failed, track
 from app.core.config import settings
 from app.db.mongo import image_fallback_usage, media_assets
 from app.models.media import MediaAsset, MediaKind, MediaSource
@@ -290,6 +291,11 @@ async def _run_gates(raw_prompt: str, brand_profile: dict) -> Optional[str]:
 
 
 async def _call_cloudflare(prompt: str) -> bytes:
+    async with track("cloudflare", _CLOUDFLARE_MODEL, feature="image_generation"):
+        return await _call_cloudflare_raw(prompt=prompt)
+
+
+async def _call_cloudflare_raw(prompt: str) -> bytes:
     """Real, verified-live call to Cloudflare Workers AI's FLUX.1 [schnell].
     Raises on any failure (HTTP error, quota exhausted, malformed
     response) — the caller (generate_brand_image) catches broadly and
@@ -335,6 +341,11 @@ async def _gemini_fallback_slot_available() -> bool:
 
 
 async def _call_gemini(prompt: str) -> bytes:
+    async with track("gemini", GeminiModel.IMAGE.value, feature="image_generation"):
+        return await _call_gemini_raw(prompt=prompt)
+
+
+async def _call_gemini_raw(prompt: str) -> bytes:
     """Real Gemini Nano Banana (gemini-2.5-flash-image) call — paid,
     $0.039/image. Only ever reached via _generate_image_bytes's capped
     fallback path, never called directly elsewhere. Raises on any failure,
@@ -371,18 +382,22 @@ async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
 
     if not settings.GEMINI_API_KEY:
         _fail("The image service did not return a picture. It may be busy or out of free use for today.")
+        note_fallback_failed("gemini", GeminiModel.IMAGE.value, "image_generation", "Cloudflare failed and the Gemini image fallback could not cover for it.")
         return None
     if not await _gemini_fallback_slot_available():
         logger.info("Gemini fallback daily cap reached — no image generated today.")
         _fail("Today's image limit is used up.")
+        note_fallback_failed("gemini", GeminiModel.IMAGE.value, "image_generation", "Cloudflare failed and the Gemini image fallback could not cover for it.")
         return None
     try:
-        image_bytes = await _call_gemini(prompt)
+        with fallback_scope():
+            image_bytes = await _call_gemini(prompt)
         logger.info("Cloudflare exhausted — served this image via the capped Gemini fallback.")
         return image_bytes
     except Exception as exc:  # noqa: BLE001
         logger.error("Gemini fallback image generation also failed: %s", exc)
         _fail("The image service did not return a picture.")
+        note_fallback_failed("gemini", GeminiModel.IMAGE.value, "image_generation", "Cloudflare failed and the Gemini image fallback could not cover for it.")
         return None
 
 

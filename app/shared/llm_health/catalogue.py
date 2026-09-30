@@ -21,6 +21,7 @@ KINDS: dict[str, Kind] = {
     "rate_limit_minute": Kind("{provider} is busy right now", "Too many requests or too much text was sent in one minute.", "Nothing needed if it clears by itself.", "Pace or queue calls, or lower concurrency.", LOW),
     "quota_daily": Kind("{provider} ran out of free requests for today", "The daily free limit was used up.", "Wait for the reset, or rely on the fallback.", "Pace calls, move heavy features to another model, or consider a paid plan.", MEDIUM),
     "quota_tokens": Kind("{provider} text allowance reached", "Requests were too large or too many for the text allowance.", "Wait a minute, or for the daily reset.", "Shorten prompts or outputs, split large inputs, or lower concurrency.", MEDIUM),
+    "quota_exhausted": Kind("{provider} has used up its allowance", "The plan's allowance (credits, characters or pictures) is used up.", "Wait for the plan to renew, or rely on the fallback.", "Check the provider's dashboard. Reduce use, or move to a paid plan.", MEDIUM),
     "billing_or_access": Kind("{provider} access was refused", "The account, plan or project does not have permission.", "Ask an admin to check the account and plan with the provider.", "Check the provider console for the project or billing status.", HIGH),
     "auth_invalid_key": Kind("{provider} rejected our key", "The API key is missing, wrong or revoked.", "Ask an admin to replace the key in the server settings.", "Replace the key in the environment settings and redeploy.", CRITICAL),
     "model_unavailable": Kind("The model {model} is not available", "The model name changed or was retired.", "Tell the dev team.", "Update the model name in app/shared/llm.py.", HIGH),
@@ -40,6 +41,7 @@ KINDS: dict[str, Kind] = {
 
 # What to think about beyond the immediate fix, for the kinds where there is one.
 LONG_TERM: dict[str, str] = {
+    "quota_exhausted": "If this keeps happening, plan for a paid plan or a second provider before the allowance runs out.",
     "quota_daily": "If this keeps happening, spread heavy features across providers, pace background work, or move to a paid plan.",
     "quota_tokens": "If this keeps happening, shorten the prompts and outputs of the features that use the most text.",
     "rate_limit_minute": "If this keeps happening, queue or pace bursts of calls so they do not arrive together.",

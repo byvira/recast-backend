@@ -20,6 +20,7 @@ Follows the same defensive shape as image_generation.py's
 _generate_image_bytes: never raises, returns None on any failure.
 """
 
+from app.shared.llm_health.track import fallback_scope, note_fallback_failed, track
 import base64
 import logging
 from typing import Optional
@@ -35,6 +36,7 @@ from app.models.voice_settings import MemberVoiceSettings
 
 logger = logging.getLogger(__name__)
 
+_ELEVENLABS_MODEL_FOR_LOG = "text-to-speech"  # the health log groups ElevenLabs speech under one name
 _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 _ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 
@@ -231,6 +233,17 @@ async def _call_elevenlabs(
     workspace_id: str,
     pronunciation_dictionary_locators: Optional[list[dict]] = None,
 ) -> bytes:
+    async with track("elevenlabs", _ELEVENLABS_MODEL_FOR_LOG, feature="text_to_speech"):
+        return await _call_elevenlabs_raw(text=text, voice_settings=voice_settings, workspace_id=workspace_id, pronunciation_dictionary_locators=pronunciation_dictionary_locators)
+
+
+async def _call_elevenlabs_raw(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    workspace_id: str,
+    pronunciation_dictionary_locators: Optional[list[dict]] = None,
+) -> bytes:
     """Real ElevenLabs call. Maps MemberVoiceSettings' already-real,
     already-persisted fields onto ElevenLabs' actual request shape
     (confirmed live against ElevenLabs' API docs 2026-09-26):
@@ -292,6 +305,17 @@ async def _call_elevenlabs_timed(
     workspace_id: str,
     pronunciation_dictionary_locators: Optional[list[dict]] = None,
 ) -> tuple[bytes, list[TranscriptWord]]:
+    async with track("elevenlabs", _ELEVENLABS_MODEL_FOR_LOG, feature="text_to_speech"):
+        return await _call_elevenlabs_timed_raw(text=text, voice_settings=voice_settings, workspace_id=workspace_id, pronunciation_dictionary_locators=pronunciation_dictionary_locators)
+
+
+async def _call_elevenlabs_timed_raw(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    workspace_id: str,
+    pronunciation_dictionary_locators: Optional[list[dict]] = None,
+) -> tuple[bytes, list[TranscriptWord]]:
     """The same speech as _call_elevenlabs, plus the exact time each word is
     spoken, from ElevenLabs' with-timestamps endpoint (same price, same
     voice). Raises on any failure, like _call_elevenlabs."""
@@ -308,6 +332,11 @@ async def _call_elevenlabs_timed(
 
 
 async def _call_deepgram(*, text: str, voice_settings: MemberVoiceSettings) -> bytes:
+    async with track("deepgram", _resolve_deepgram_model(voice_settings), feature="text_to_speech"):
+        return await _call_deepgram_raw(text=text, voice_settings=voice_settings)
+
+
+async def _call_deepgram_raw(*, text: str, voice_settings: MemberVoiceSettings) -> bytes:
     """Real Deepgram Aura-2 call — REST API confirmed live 2026-09-26
     (own docs fetch + a real synthesis test, not assumed): `Authorization:
     Token <key>` auth, plain JSON body ({"text": ...}), model/encoding as
@@ -391,11 +420,14 @@ async def _synthesize(
         return None
 
     try:
-        audio = await _call_deepgram(text=text, voice_settings=voice_settings)
+        with fallback_scope():
+            audio = await _call_deepgram(text=text, voice_settings=voice_settings)
         logger.info("ElevenLabs unavailable — served this narration via the Deepgram fallback.")
         return SpeechResult(audio=audio)
     except Exception as exc:  # noqa: BLE001
         logger.error("Deepgram TTS fallback also failed for workspace %s: %s", workspace_id, exc)
+        if settings.ELEVENLABS_API_KEY:
+            note_fallback_failed("deepgram", "speech", "text_to_speech", "ElevenLabs failed and the Deepgram fallback failed too.")
         return None
 
 
