@@ -55,6 +55,7 @@ import asyncio
 import base64
 import logging
 import re
+from contextvars import ContextVar
 from io import BytesIO
 from datetime import datetime, timezone
 from enum import Enum
@@ -73,6 +74,20 @@ from app.shared.storage import ContentType as UploadContentType, upload_file
 
 logger = logging.getLogger(__name__)
 
+# Why the last picture could not be made, in plain words, for the caller to show. Set by
+# generate_image_from_prompt, which otherwise returns only None. A ContextVar so concurrent
+# requests never read each other's reason.
+_last_failure: ContextVar[Optional[str]] = ContextVar("image_last_failure", default=None)
+
+
+def last_failure_reason() -> Optional[str]:
+    return _last_failure.get()
+
+
+def _fail(reason: str) -> None:
+    _last_failure.set(reason)
+    logger.warning("Image generation fell back: %s", reason)
+
 
 class ImageProvider(str, Enum):
     CLOUDFLARE = "cloudflare"  # free, default — see module docstring
@@ -80,6 +95,7 @@ class ImageProvider(str, Enum):
 
 
 IMAGE_SIZE = (1024, 1024)
+_SAFETY_RETRY_WAIT_S = 1.5
 _MAX_POLISH_ATTEMPTS = 2  # 1 initial pass + 1 re-polish retry on gate failure
 _CLOUDFLARE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
@@ -192,24 +208,34 @@ async def _brand_fit_gate(prompt: str, brand_profile: dict) -> bool:
         return True
 
 
-async def _safety_gate(prompt: str) -> bool:
-    """Stage 4 — reject prompts that would generate unsafe or policy-
-    violating imagery before the provider call is made at all (also
-    protects the free tier's rate limit from a wasted call). Fails CLOSED
-    (treated as fail) on an LLM error — unlike brand-fit, a safety check
-    that can't run is not a safe default to skip."""
+async def _safety_verdict(prompt: str) -> str:
+    """"safe", "unsafe", or "error" when the check itself could not run (a busy or rate limited model)."""
     question = (
         f"Image prompt: {prompt}\n\n"
         "Would generating an image from this prompt risk unsafe, violent, "
         "sexual, hateful, or otherwise policy-violating content? Answer "
         "with exactly one word: YES or NO."
     )
-    try:
-        result = await call_llm(question, model=GroqModel.FAST, temperature=0, max_tokens=5)
-        return not result.strip().upper().startswith("Y")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Safety gate failed closed (treated as fail): %s", exc)
-        return False
+    # One more try after a short wait: a busy or rate limited model usually answers the second time, and
+    # a check that cannot run stops the picture (it fails closed).
+    for attempt in range(2):
+        try:
+            result = await call_llm(question, model=GroqModel.FAST, temperature=0, max_tokens=5)
+            return "unsafe" if result.strip().upper().startswith("Y") else "safe"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Safety gate could not run, attempt %d (treated as not safe if it stays so): %s", attempt + 1, exc)
+            if attempt == 0:
+                await asyncio.sleep(_SAFETY_RETRY_WAIT_S)
+    return "error"
+
+
+async def _safety_gate(prompt: str) -> bool:
+    """Stage 4 — reject prompts that would generate unsafe or policy-
+    violating imagery before the provider call is made at all (also
+    protects the free tier's rate limit from a wasted call). Fails CLOSED
+    (treated as fail) on an LLM error — unlike brand-fit, a safety check
+    that can't run is not a safe default to skip."""
+    return await _safety_verdict(prompt) == "safe"
 
 
 _TEXT_BEARING_WORDS = re.compile(
@@ -236,11 +262,15 @@ async def _run_gates(raw_prompt: str, brand_profile: dict) -> Optional[str]:
     image, Row 16's mascot prompt, or anything else built the same way),
     with one bounded re-polish retry if a gate rejects the first attempt.
     Returns None (never raises) if every attempt fails."""
+    safe_prompt: Optional[str] = None
+    verdict = "unsafe"
     for attempt in range(_MAX_POLISH_ATTEMPTS):
         polished = await _polish_prompt(raw_prompt)
-        if not await _safety_gate(polished):
-            logger.warning("Image prompt failed safety gate, attempt %d", attempt + 1)
+        verdict = await _safety_verdict(polished)
+        if verdict != "safe":
+            logger.warning("Image prompt failed safety gate (%s), attempt %d", verdict, attempt + 1)
             continue
+        safe_prompt = polished
         if not _anti_generic_gate(polished):
             logger.info("Image prompt failed anti-generic gate, attempt %d", attempt + 1)
             continue
@@ -249,6 +279,13 @@ async def _run_gates(raw_prompt: str, brand_profile: dict) -> Optional[str]:
             continue
         return enforce_no_text(polished)
 
+    # The safety gate is a hard stop. The two style gates are advice: a prompt that is safe but was
+    # judged generic or off style twice is still used, because the alternative is a flat colour card
+    # where the member asked for a picture.
+    if safe_prompt:
+        logger.info("Image prompt was safe but failed a style gate twice; using it so the post gets a picture.")
+        return enforce_no_text(safe_prompt)
+    _fail("The safety check could not run, so no picture was made." if verdict == "error" else "The picture description did not pass the safety check.")
     return None
 
 
@@ -333,9 +370,11 @@ async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
         logger.warning("Cloudflare image generation failed, checking Gemini fallback: %s", exc)
 
     if not settings.GEMINI_API_KEY:
+        _fail("The image service did not return a picture. It may be busy or out of free use for today.")
         return None
     if not await _gemini_fallback_slot_available():
         logger.info("Gemini fallback daily cap reached — no image generated today.")
+        _fail("Today's image limit is used up.")
         return None
     try:
         image_bytes = await _call_gemini(prompt)
@@ -343,6 +382,7 @@ async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
         return image_bytes
     except Exception as exc:  # noqa: BLE001
         logger.error("Gemini fallback image generation also failed: %s", exc)
+        _fail("The image service did not return a picture.")
         return None
 
 
@@ -499,6 +539,7 @@ async def generate_image_from_prompt(
     (app.pipelines.media.image_render), not this function's — documented
     rather than silently pretended.
     """
+    _last_failure.set(None)
     if provider == ImageProvider.GEMINI:
         logger.error(
             "Gemini image provider requested but has no opt-in mechanism "
@@ -508,6 +549,7 @@ async def generate_image_from_prompt(
 
     if not settings.CLOUDFLARE_API_TOKEN and not settings.GEMINI_API_KEY:
         logger.warning("No image generation provider configured — skipping AI image generation.")
+        _fail("No image service is set up.")
         return None
 
     try:
@@ -516,6 +558,7 @@ async def generate_image_from_prompt(
             return None
         return await _generate_image_bytes(polished)
     except Exception as exc:  # noqa: BLE001
+        _last_failure.set("The picture could not be made because of an unexpected error.")
         logger.error(
             "generate_image_from_prompt failed for workspace %s: %s", workspace_id, exc
         )

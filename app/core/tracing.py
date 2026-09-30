@@ -210,12 +210,21 @@ async def ainvoke_traced(
     if not tracing_enabled():
         return await graph.ainvoke(state, config=config), ""
 
+    # Where a failure happened decides what to do. Before the graph starts, tracing itself is broken:
+    # run the graph untraced. After the graph finished, only the trace bookkeeping failed: keep the
+    # result. If the graph itself raised, that is a real error: raise it. Running the graph a second
+    # time would repeat every model call (and every side effect) and fail the same way.
+    started = False
+    finished = False
+    result: Any = None
     try:
         from langsmith.run_helpers import trace, tracing_context
 
         with tracing_context(tags=tags, metadata=meta):
             with trace(name=run_name, run_type="chain", tags=tags, metadata=meta) as rt:
+                started = True
                 result = await graph.ainvoke(state, config=config)
+                finished = True
                 url = ""
                 try:
                     url = rt.get_url() or ""
@@ -223,7 +232,12 @@ async def ainvoke_traced(
                     logger.warning("tracing: could not resolve run url: %s", exc)
         return result, url
     except Exception as exc:  # noqa: BLE001
-        logger.error("tracing: traced invoke failed, retrying untraced: %s", exc)
+        if finished:
+            logger.error("tracing: the run finished but tracing failed afterwards: %s", exc)
+            return result, ""
+        if started:
+            raise
+        logger.error("tracing: could not start tracing, running untraced: %s", exc)
         return await graph.ainvoke(state, config=config), ""
 
 

@@ -89,7 +89,11 @@ def _ewma_vec(old: list[float], new: list[float], lam: float) -> list[float]:
     return [lam * o + (1.0 - lam) * n for o, n in zip(old, new)]
 
 
-def _ewma_scalar(old: float, new: float, lam: float, *, bootstrap: bool) -> float:
+def _ewma_scalar(old: float, new: float | None, lam: float, *, bootstrap: bool) -> float:
+    # A text too short to measure gives no value (the reading grade is None then). Keep what we had:
+    # float(None) here used to crash the whole voice update, and the queue retried it again and again.
+    if new is None:
+        return round(old, 4)
     if bootstrap or old == 0.0:
         return round(float(new), 4)
     return round(lam * old + (1.0 - lam) * new, 4)
@@ -214,7 +218,7 @@ def append_drift_history(persona: dict, *, signal_type: str, similarity: float, 
     hist = persona.setdefault("drift_history", [])
     hist.append({
         "at": now, "signal_type": signal_type,
-        "similarity": round(float(similarity), 4), "severity": severity, "resolved": False,
+        "similarity": round(float(similarity or 0.0), 4), "severity": severity, "resolved": False,
     })
     persona["drift_history"] = hist[-T.DRIFT_HISTORY_CAP:]
 

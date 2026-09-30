@@ -47,7 +47,7 @@ from app.models.image_asset import (
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.models.workspace import WorkspaceRole
 from app.pipelines.media.contrast_check import ContrastResult, check_slide_contrast
-from app.pipelines.media.image_generation import _build_raw_prompt, generate_image_from_prompt
+from app.pipelines.media.image_generation import _build_raw_prompt, generate_image_from_prompt, last_failure_reason
 from app.pipelines.media.image_render import (
     _DEFAULT_FG,
     BrandTokens,
@@ -118,6 +118,15 @@ async def _fetch_logo_bytes(logo_url: str) -> Optional[bytes]:
         return None
 
 
+
+def _fallback_note(background_bytes: Optional[bytes]) -> Optional[str]:
+    """When no AI picture was made the slide is a colour card with the headline on it. Say so, and why."""
+    if background_bytes:
+        return None
+    reason = last_failure_reason() or "The picture could not be made."
+    return f"No AI picture, so this is a text card. {reason}"
+
+
 async def _render_and_upload_slide(
     *,
     prompt: str,
@@ -161,6 +170,8 @@ async def _render_and_upload_slide(
         source=MediaSource.RENDERED,
         created_by=user_id,
         created_at=datetime.now(timezone.utc),
+        qa_flagged=_fallback_note(background_bytes) is not None,
+        qa_flag_reason=_fallback_note(background_bytes),
     )
     await media_assets.insert_one(media.model_dump())
     return media
@@ -409,6 +420,8 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
         source=MediaSource.RENDERED,
         created_by=ctx.user_id,
         created_at=now,
+        qa_flagged=_fallback_note(background_bytes) is not None,
+        qa_flag_reason=_fallback_note(background_bytes),
     )
     await media_assets.insert_one(media.model_dump())
 
