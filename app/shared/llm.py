@@ -15,7 +15,7 @@ Public surface
   call_llm_structured_fallback()   emergency JSON (Gemini)
   transcribe_audio()               Whisper transcription (Groq)
   llm_health_check()               ping both providers
-  get_usage_stats()                token/call counters for the current process
+  (every attempt is also recorded durably: see app/shared/llm_health)
 
 All JSON parsing is delegated to app.utils.jsonparser.parse_llm_json.
 No inline parsing logic exists in this file.
@@ -27,7 +27,6 @@ import asyncio
 import contextvars
 import logging
 import time
-from collections import defaultdict, deque
 from enum import Enum
 from typing import Any, AsyncIterator
 
@@ -92,12 +91,6 @@ EMBED_DIM = 768  # provisional — 768 keeps persona docs small; revisit if drif
 # Token / call usage tracking (in-process counters)
 # ─────────────────────────────────────────────────────────────
 
-_usage: dict[str, int] = defaultdict(int)
-# keys: "{provider}:{model_name}.prompt_tokens"
-#       "{provider}:{model_name}.completion_tokens"
-#       "{provider}:{model_name}.cached_tokens"
-#       "{provider}:{model_name}.calls"
-# Process-lifetime counters, not a durable history — see get_usage_stats().
 
 # Which workspace to attribute the *next* recorded call to, for the Ops
 # Dashboard's per-workspace AI usage (app/models/ai_usage.py's
@@ -121,7 +114,7 @@ class usage_workspace:
             await call_llm_structured(...)
 
     Safe to nest/omit — calls outside any usage_workspace() block still
-    count toward the process-lifetime totals in _usage, just not toward any
+    still run and are recorded by app.shared.llm_health, just not counted toward any
     workspace's daily rollup.
     """
 
@@ -217,76 +210,7 @@ def _record_usage(model_name: str, usage: Any, *, provider: str = "groq") -> Non
         cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
     completion_tokens = completion_tokens or 0
 
-    key = f"{provider}:{model_name}"
-    _usage[f"{key}.calls"]             += 1
-    _usage[f"{key}.prompt_tokens"]     += prompt_tokens
-    _usage[f"{key}.completion_tokens"] += completion_tokens
-    _usage[f"{key}.cached_tokens"]     += cached_tokens
-
     _record_workspace_usage(prompt_tokens + completion_tokens)
-
-
-def get_usage_stats() -> dict[str, int]:
-    """Return a snapshot of accumulated token / call counters.
-
-    Divide ``{provider}:{model}.cached_tokens`` by ``.prompt_tokens`` for a
-    per-model cache hit rate — near-zero on a model with a large, mostly-
-    static prompt (e.g. Odette's supervisor reasoning) means something
-    upstream is breaking the shared prefix (build_odette_system / TOOL_SPECS
-    must stay byte-identical across calls for the same language to keep
-    hitting cache).
-    """
-    return dict(_usage)
-
-
-# ─────────────────────────────────────────────────────────────
-# Latency + recent-error tracking — process-lifetime, for the Ops
-# Dashboard's LLM health page. Bounded (deque maxlen) so this never grows
-# unbounded on a long-running process.
-# ─────────────────────────────────────────────────────────────
-
-_LATENCY_WINDOW = 200
-_latency: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=_LATENCY_WINDOW))
-
-_ERROR_LOG_SIZE = 50
-_recent_errors: deque[dict[str, Any]] = deque(maxlen=_ERROR_LOG_SIZE)
-
-
-def _record_latency(provider: str, model_name: str, elapsed_ms: float) -> None:
-    _latency[f"{provider}:{model_name}"].append(elapsed_ms)
-
-
-def _record_error(provider: str, model_name: str, kind: str, message: str) -> None:
-    _recent_errors.appendleft({
-        "at": time.time(),
-        "provider": provider,
-        "model": model_name,
-        "kind": kind,
-        "message": message[:300],
-    })
-
-
-def get_latency_stats() -> dict[str, dict[str, float]]:
-    """Per-{provider}:{model} count/avg/p95 latency (ms), over the last
-    _LATENCY_WINDOW calls. p95 is a simple sorted-index estimate — fine at
-    this sample size, not a claim of statistical rigor."""
-    stats: dict[str, dict[str, float]] = {}
-    for key, samples in _latency.items():
-        if not samples:
-            continue
-        ordered = sorted(samples)
-        p95_idx = min(len(ordered) - 1, int(len(ordered) * 0.95))
-        stats[key] = {
-            "count": len(ordered),
-            "avg_ms": round(sum(ordered) / len(ordered), 1),
-            "p95_ms": round(ordered[p95_idx], 1),
-        }
-    return stats
-
-
-def get_recent_errors() -> list[dict[str, Any]]:
-    """Most-recent-first, up to _ERROR_LOG_SIZE entries."""
-    return list(_recent_errors)
 
 
 def get_circuit_breaker_status() -> dict[str, Any]:
@@ -495,6 +419,60 @@ def _raw_text(response: Any) -> str:
     return response.choices[0].message.content or ""
 
 
+def _usage_numbers(usage: Any) -> tuple[int, int, int]:
+    """(prompt, completion, cached) tokens from a Groq or Gemini usage object; zeros when absent."""
+    if usage is None:
+        return 0, 0, 0
+    pt = getattr(usage, "prompt_tokens", None)
+    if pt is None:
+        return (int(getattr(usage, "prompt_token_count", 0) or 0), int(getattr(usage, "candidates_token_count", 0) or 0),
+                int(getattr(usage, "cached_content_token_count", 0) or 0))
+    return (int(pt or 0), int(getattr(usage, "completion_tokens", 0) or 0),
+            int(getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0))
+
+
+_in_fallback: contextvars.ContextVar[bool] = contextvars.ContextVar("_in_fallback", default=False)
+
+
+def _log_attempt(provider: str, model: str, t0: float, *, result: Any = None, exc: BaseException | None = None) -> None:
+    """Hands one attempt to the durable recorder. Never raises and never waits."""
+    try:
+        from app.shared.llm_health.recorder import Attempt, recorder
+        from app.shared.llm_health.scrub import scrub_message
+
+        elapsed = (time.perf_counter() - t0) * 1000
+        if exc is None:
+            usage = getattr(result, "usage", None) or getattr(result, "usage_metadata", None)
+            tin, tout, cached = _usage_numbers(usage)
+            fell_back = _in_fallback.get()
+            recorder.record(Attempt(
+                provider=provider, model=model, ok=True, latency_ms=elapsed, tokens_in=tin, tokens_out=tout, cached_tokens=cached,
+                outcome="fallback_success" if fell_back else None, fallback_to=f"{provider}:{model}" if fell_back else None,
+            ))
+            return
+        headers = None
+        response = getattr(exc, "response", None)
+        raw = getattr(response, "headers", None)
+        retry_after = None
+        if raw is not None:
+            try:
+                headers = {k: str(v) for k, v in raw.items() if str(k).lower().startswith(("x-ratelimit", "retry-after"))}
+                if raw.get("retry-after") is not None:
+                    retry_after = float(raw.get("retry-after"))
+            except Exception:  # noqa: BLE001
+                headers = None
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            status = getattr(exc, "code", None)
+        recorder.record(Attempt(
+            provider=provider, model=model, ok=False, latency_ms=elapsed,
+            http_status=int(status) if isinstance(status, int) else None, error_class=exc.__class__.__name__,
+            error_message=scrub_message(str(exc), 500), retry_after_s=retry_after, rate_headers=headers or None,
+        ))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _groq_create(client: AsyncGroq, *, reasoning_effort: str | None, **kwargs: Any) -> Any:
     """
     client.chat.completions.create(), with reasoning_effort applied when a
@@ -535,15 +513,25 @@ async def _groq_create(client: AsyncGroq, *, reasoning_effort: str | None, **kwa
                     else:
                         raise
     except Exception as exc:
-        _record_error("groq", str(model_name), exc.__class__.__name__, str(exc))
+        _log_attempt("groq", str(model_name), t0, exc=exc)
         raise
-    _record_latency("groq", str(model_name), (time.perf_counter() - t0) * 1000)
+    _log_attempt("groq", str(model_name), t0, result=result)
     return result
 
 
 # ─────────────────────────────────────────────────────────────
 # Exponential backoff for rate limits
 # ─────────────────────────────────────────────────────────────
+
+def _note_retry_success(label: str) -> None:
+    """A call that only worked after waiting and trying again is worth a record, without counting the call twice."""
+    try:
+        from app.shared.llm_health.recorder import Attempt, recorder
+
+        recorder.record(Attempt(provider="groq", model=label, ok=True, latency_ms=0.0, outcome="success_after_retry", count_in_rollup=False))
+    except Exception:  # noqa: BLE001
+        pass
+
 
 async def _backoff_retry(
     coro_factory,
@@ -560,7 +548,10 @@ async def _backoff_retry(
     """
     for attempt in range(1, attempts + 1):
         try:
-            return await coro_factory()
+            result = await coro_factory()
+            if attempt > 1:
+                _note_retry_success(label)
+            return result
         except RateLimitError as exc:
             if attempt == attempts:
                 raise
@@ -954,10 +945,8 @@ async def _chat_complete(
 # ─────────────────────────────────────────────────────────────
 
 def _record_gemini_usage(response: Any, model_name: str = "unknown") -> None:
-    """Attach Gemini token counts to the current LangSmith run, if any, and
-    to the same process-lifetime _usage counters Groq calls feed (provider
-    "gemini") — previously Gemini calls (vision, embeddings, fallback) were
-    entirely invisible to get_usage_stats()."""
+    """Attach Gemini token counts to the current LangSmith run, if any, and to the
+    per-workspace daily usage Groq calls feed."""
     um = getattr(response, "usage_metadata", None)
     if um is None:
         return
@@ -977,9 +966,9 @@ async def _gemini_generate(model_name: str, fn) -> Any:
     try:
         result = await fn()
     except Exception as exc:
-        _record_error("gemini", model_name, exc.__class__.__name__, str(exc))
+        _log_attempt("gemini", model_name, t0, exc=exc)
         raise
-    _record_latency("gemini", model_name, (time.perf_counter() - t0) * 1000)
+    _log_attempt("gemini", model_name, t0, result=result)
     return result
 
 
@@ -1129,6 +1118,19 @@ async def transcribe_audio(
 # 6. Gemini plain-text fallback (severe Groq rate limits only)
 # ─────────────────────────────────────────────────────────────
 
+def _note_fallback_failed(model: str) -> None:
+    """Every provider that was tried failed: people are seeing the failure. Recorded as its own kind, without counting a call twice."""
+    try:
+        from app.shared.llm_health.recorder import Attempt, recorder
+
+        recorder.record(Attempt(
+            provider="gemini", model=model, ok=False, latency_ms=0.0, error_class="fallback_failed",
+            error_message="Groq failed and the Gemini fallback failed too.", outcome="failed", count_in_rollup=False,
+        ))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @traceable(run_type="llm", name="gemini.fallback")
 async def call_llm_fallback(
     prompt: str,
@@ -1144,6 +1146,7 @@ async def call_llm_fallback(
     full_prompt = f"{system}\n\n{prompt}" if system else prompt
     add_run_metadata(gemini_model=model.value)
 
+    flag = _in_fallback.set(True)  # the Gemini attempt below is recorded as "the fallback that worked"
     try:
         response = await _gemini_generate(model.value, lambda: loop.run_in_executor(
             None,
@@ -1157,7 +1160,10 @@ async def call_llm_fallback(
 
     except Exception as exc:
         logger.error("Gemini fallback failed: %s", exc)
+        _note_fallback_failed(model.value)
         raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    finally:
+        _in_fallback.reset(flag)
 
 
 # ─────────────────────────────────────────────────────────────

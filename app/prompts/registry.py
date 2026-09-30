@@ -54,7 +54,15 @@ def load_prompt(name: str, /, **variables) -> str:
         jinja2.exceptions.TemplateNotFound: No template exists at that path.
     """
     template = _env.get_template(f"{name}.jinja")
-    return template.render(**variables)
+    rendered = template.render(**variables)
+    # The model call that follows this render is for this prompt: the health log records it with the call.
+    try:
+        from app.shared.llm_health.context import set_prompt_path
+
+        set_prompt_path(name)
+    except Exception:  # noqa: BLE001 - never let logging context break a render
+        pass
+    return rendered
 
 
 @lru_cache(maxsize=None)

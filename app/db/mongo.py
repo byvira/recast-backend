@@ -55,8 +55,9 @@ workspace_cohorts: AsyncIOMotorCollection     = get_client().get_default_databas
 workspace_ai_budgets: AsyncIOMotorCollection  = get_client().get_default_database()["workspace_ai_budgets"]
 workspace_ai_usage_daily: AsyncIOMotorCollection = get_client().get_default_database()["workspace_ai_usage_daily"]
 
-# Ops LLM Health page's manually-logged issue/security audit trail — see
-# app.models.ai_usage.OpsLLMNote.
+# The old Ops LLM notes list. Its rows were copied into llm_issues by a startup migration
+# (app/shared/llm_health/issues.py::merge_legacy_notes). Nothing writes to it any more.
+# REMOVE this line, its index and that migration after one production deploy has run.
 ops_llm_notes: AsyncIOMotorCollection = get_client().get_default_database()["ops_llm_notes"]
 
 # Real, workspace-scoped media references — see app.models.media.MediaAsset.
@@ -88,6 +89,17 @@ support_email_log: AsyncIOMotorCollection = get_client().get_default_database()[
 support_chats: AsyncIOMotorCollection = get_client().get_default_database()["support_chats"]
 # One counter doc ({"_id": "ticket_number", "seq": N}) for human-readable ticket numbers.
 support_counters: AsyncIOMotorCollection = get_client().get_default_database()["support_counters"]
+# LLM health: failures and notable calls (30 day TTL), hourly counts, per prompt daily counts, grouped issues.
+llm_events: AsyncIOMotorCollection = get_client().get_default_database()["llm_events"]
+llm_rollups: AsyncIOMotorCollection = get_client().get_default_database()["llm_rollups"]
+llm_prompt_daily: AsyncIOMotorCollection = get_client().get_default_database()["llm_prompt_daily"]
+llm_issues: AsyncIOMotorCollection = get_client().get_default_database()["llm_issues"]
+llm_counters: AsyncIOMotorCollection = get_client().get_default_database()["llm_counters"]
+llm_provider_config: AsyncIOMotorCollection = get_client().get_default_database()["llm_provider_config"]
+llm_alert_rules: AsyncIOMotorCollection = get_client().get_default_database()["llm_alert_rules"]
+llm_alert_log: AsyncIOMotorCollection = get_client().get_default_database()["llm_alert_log"]
+# Who changed limits, alert settings, issues or shared a report. Kept, not expired.
+llm_audit: AsyncIOMotorCollection = get_client().get_default_database()["llm_audit"]
 
 # One doc per UTC date ({"_id": "2026-09-25", "gemini_calls": N}), app-wide
 # (not per-workspace — mirrors Cloudflare's own single shared-account quota).
@@ -205,6 +217,26 @@ def get_workspace_connections_collection() -> AsyncIOMotorCollection:
     return get_db()["workspace_connections"]
 
 
+async def _create_llm_health_indexes() -> None:
+    """The LLM health log is optional: if its indexes cannot be made, the app still starts."""
+    try:
+        await llm_events.create_index("at", expireAfterSeconds=30 * 24 * 3600)
+        await llm_events.create_index([("issue_id", 1), ("at", -1)])
+        await llm_events.create_index([("provider", 1), ("error_type", 1), ("at", -1)])
+        await llm_rollups.create_index("hour", expireAfterSeconds=90 * 24 * 3600)
+        await llm_prompt_daily.create_index("day", expireAfterSeconds=90 * 24 * 3600)
+        await llm_prompt_daily.create_index([("prompt_path", 1), ("day", -1)])
+        await llm_issues.create_index("fingerprint", unique=True)
+        await llm_issues.create_index([("status", 1), ("last_seen", -1)])
+        await llm_issues.create_index("number", unique=True)
+        await llm_alert_log.create_index("at", expireAfterSeconds=30 * 24 * 3600)
+        await llm_audit.create_index([("at", -1)])
+    except Exception as exc:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).error("LLM health indexes not created (the log keeps working without them): %s", exc)
+
+
 async def create_indexes() -> None:
     """
     Create all MongoDB indexes on startup.
@@ -257,6 +289,7 @@ async def create_indexes() -> None:
     await support_chats.create_index([("user_id", 1), ("workspace_id", 1), ("updated_at", -1)])
     await support_ai_usage.create_index([("staff_id", 1), ("created_at", -1)])
     await support_email_log.create_index("at", expireAfterSeconds=90 * 24 * 3600)
+    await _create_llm_health_indexes()
     await support_incidents.create_index([("category", 1), ("platform", 1), ("status", 1)])
     await support_tickets.create_index("incident_id")
     await support_presence.create_index([("ticket_id", 1), ("staff_id", 1)], unique=True)

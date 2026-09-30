@@ -43,6 +43,7 @@ from app.api.v1 import platforms as platforms_router
 from app.api.v1 import ops_platforms as ops_platforms_router
 from app.api.v1 import ops_cohorts as ops_cohorts_router
 from app.api.v1 import ops_ai_budget as ops_ai_budget_router
+from app.api.v1 import ops_llm_health as ops_llm_health_router
 from app.api.v1 import support as support_router
 from app.api.v1 import support_assistant as support_assistant_router
 from app.api.v1 import ops_support as ops_support_router
@@ -165,12 +166,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     scheduler.start()
     logger.info("Background workers started")
+    try:
+        from app.shared.llm_health.recorder import recorder as llm_recorder
+        llm_recorder.start()
+    except Exception as exc:  # noqa: BLE001 - the health log must never stop the app from starting
+        logger.error("LLM health recorder did not start: %s", exc)
 
     yield
 
     logger.info("Shutting down application...")
     scheduler.shutdown()
     await agent_workers.stop()
+    try:
+        from app.shared.llm_health.recorder import recorder as llm_recorder
+        await llm_recorder.stop()
+    except Exception:  # noqa: BLE001
+        pass
     from app.shared.activity import live as activity_live
     await activity_live.stop()
     from app.agents.text import session_relay
@@ -337,6 +348,7 @@ app.include_router(platforms_router.router, prefix="/api/v1/platforms", tags=["P
 app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
+app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"])
 app.include_router(support_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(support_assistant_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(ops_support_router.router, prefix="/api/v1/ops/support", tags=["Ops"])

@@ -120,12 +120,22 @@ async def _purge_bad_localized_strings(db) -> None:
     )
 
 
+async def _merge_legacy_llm_notes(db) -> None:
+    """The Ops LLM notes and the LLM health issues were two lists for the same thing. Copy the notes into issues."""
+    from app.shared.llm_health import issues
+
+    copied = await issues.merge_legacy_notes()
+    if copied:
+        logger.info("Copied %d Ops LLM notes into LLM health issues", copied)
+
+
 async def run_startup_migrations() -> None:
     db = get_db()
     for migration in (
         _backfill_content_pieces_pipeline_type,
         _backfill_workspace_is_personal_and_language,
         _purge_bad_localized_strings,
+        _merge_legacy_llm_notes,
     ):
         try:
             await migration(db)
