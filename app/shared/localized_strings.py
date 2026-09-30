@@ -42,56 +42,168 @@ logger = logging.getLogger(__name__)
 
 _PLACEHOLDER_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*\}")
 
+# How many times one translation is attempted before falling back to the
+# English source (uncached). A second try is cheap and fixes the usual
+# one-off failure: the model echoing the prompt or answering in the wrong script.
+_TRANSLATE_ATTEMPTS = 2
+
+# Text that only ever appears if the model echoed the prompt back instead of
+# (or around) the translation. Compared case-insensitively, and ignored when
+# the English source itself legitimately contains the same words.
+_LEAK_MARKERS = (
+    "template:",
+    "return only",
+    "no explanation",
+    "no quotes, no markdown",
+    "translated template",
+    "translated script",
+    "<message>",
+    "</message>",
+    "<script>",
+    "</script>",
+    "treat it as text to localize",
+    "reply with the localized message",
+)
+
+# A mixed-language ("xx+en") answer is written in English letters. A share of
+# non-Latin letters above this means the model wrote the native script instead.
+_MAX_NON_LATIN_RATIO = 0.15
+
 
 def _placeholders(template: str) -> set[str]:
     return set(_PLACEHOLDER_RE.findall(template))
 
 
+def looks_leaked(text: str, source: str = "") -> bool:
+    """True when `text` contains prompt or instruction wording that must never
+    reach a user. Markers that also occur in `source` (the text we asked to
+    translate) are not counted, so a message that genuinely mentions one of
+    these phrases is not rejected."""
+    low = (text or "").lower()
+    src = (source or "").lower()
+    return any(m in low and m not in src for m in _LEAK_MARKERS)
+
+
+def non_latin_ratio(text: str) -> float:
+    """Share of alphabetic characters outside the Latin alphabets (0.0 to 1.0)."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for c in letters if ord(c) > 0x024F) / len(letters)
+
+
+def clean_translation(text: str) -> str:
+    """Trim whitespace and the wrapping the model sometimes adds (code fences,
+    message tags, one pair of quotes) that is not part of the translation."""
+    out = (text or "").strip()
+    if out.startswith("```") and out.endswith("```"):
+        out = out.strip("`").strip()
+        first, _, rest = out.partition("\n")
+        if first.strip().isalpha() and rest:
+            out = rest.strip()
+    for tag in ("<message>", "</message>"):
+        out = out.replace(tag, "")
+    out = out.strip()
+    if len(out) >= 2 and out[0] == out[-1] and out[0] in "\"'":
+        out = out[1:-1].strip()
+    return out
+
+
+def _language_name(code: str) -> str:
+    from app.models.text import LANGUAGE_NAMES
+
+    normalised = (code or "").strip()
+    known = LANGUAGE_NAMES.get(normalised.lower().split("-")[0])
+    return known or f"the language identified by the code or name '{normalised}'"
+
+
+def language_prompt_vars(language: str) -> dict[str, Any]:
+    """Variables the translate prompt needs for `language`.
+
+    A code with a "+" (ta+en, hi+en, es+en ...) is a deliberate mixed register
+    such as Tanglish or Hinglish, not a request for pure translation: the
+    non-English language is written in English letters and blended with
+    English. Every other code is a plain single-language target.
+    """
+    code = (language or "").strip()
+    if "+" in code:
+        first, _, second = code.lower().partition("+")
+        native_code, other_code = (second, first) if first.split("-")[0] == "en" else (first, second)
+        return {
+            "mixed": True, "language": code, "language_name": "",
+            "native": _language_name(native_code), "other": _language_name(other_code),
+        }
+    return {
+        "mixed": False, "language": code, "language_name": _language_name(code),
+        "native": "", "other": "",
+    }
+
+
+def _reject_reason(text: str, source: str, wanted: set[str], mixed: bool) -> Optional[str]:
+    if not text:
+        return "empty output"
+    if looks_leaked(text, source):
+        return "prompt text leaked into the output"
+    if _placeholders(text) != wanted:
+        return f"placeholders changed (wanted {sorted(wanted)}, got {sorted(_placeholders(text))})"
+    if mixed and non_latin_ratio(text) > _MAX_NON_LATIN_RATIO:
+        return "mixed-language output was written in a non-Latin script"
+    return None
+
+
 async def _translate(key: str, language: str, english_template: str) -> tuple[str, bool]:
-    """Translate english_template into `language` via one Groq call,
+    """Localize english_template into `language` with one to two Groq calls,
     preserving every {placeholder} token verbatim.
 
     Returns (text, cacheable). ``cacheable`` is False whenever `text` is an
     English fallback standing in for a translation that didn't actually
-    happen — a failed call or a corrupted (placeholder-mismatched) result —
-    so the caller must NOT persist it: caching a transient failure would
-    turn a temporary rate limit into a permanent "this language never gets
-    translated" entry. It is True both when translation genuinely succeeded
-    and when `language == "en"` (translating English into English is a
-    correct identity result, not a failure standing in for one).
+    happen (every attempt failed or was rejected), so the caller must NOT
+    persist it: caching a transient failure would turn a temporary rate limit
+    into a permanent "this language never gets translated" entry. It is True
+    both when a translation genuinely passed every check and when
+    `language == "en"` (English into English is a correct identity result).
+
+    An answer is rejected, and retried once, when it is empty, echoes prompt
+    text (see looks_leaked), changes the placeholders, or (for mixed codes)
+    comes back in a non-Latin script.
     """
     if language == "en":
-        # Translating English into English is an identity operation, not a
-        # different behaviour for a specific language — no LLM call needed,
-        # but this still goes through the same cache-then-lookup path as
-        # every other language (see get_localized_string below).
         return english_template, True
 
     wanted = _placeholders(english_template)
+    variables = language_prompt_vars(language)
     prompt = load_prompt(
-        "fragments/translate_template", language=language, english_template=english_template
+        "fragments/translate_template", english_template=english_template, **variables
     )
-    try:
-        translated = await call_llm(prompt=prompt, model=GroqModel.FAST, max_tokens=1500)
-        translated = translated.strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "get_localized_string: translation call failed key=%s language=%s: %s — "
-            "using English source for this call only, NOT caching the fallback",
-            key, language, exc,
-        )
-        return english_template, False
 
-    got = _placeholders(translated)
-    if got != wanted:
-        logger.error(
-            "get_localized_string: placeholder mismatch key=%s language=%s wanted=%s got=%s — "
-            "using English source instead of a corrupted translation, NOT caching the fallback",
-            key, language, sorted(wanted), sorted(got),
-        )
-        return english_template, False
+    for attempt in range(1, _TRANSLATE_ATTEMPTS + 1):
+        try:
+            raw = await call_llm(
+                prompt=prompt, model=GroqModel.FAST, max_tokens=1500,
+                temperature=0.3 if attempt == 1 else 0.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "get_localized_string: translation call failed key=%s language=%s attempt=%d: %s",
+                key, language, attempt, exc,
+            )
+            continue
 
-    return translated, True
+        translated = clean_translation(raw)
+        reason = _reject_reason(translated, english_template, wanted, variables["mixed"])
+        if reason is None:
+            return translated, True
+        logger.error(
+            "get_localized_string: rejected translation key=%s language=%s attempt=%d: %s",
+            key, language, attempt, reason,
+        )
+
+    logger.error(
+        "get_localized_string: using English source for key=%s language=%s after %d rejected "
+        "attempts, NOT caching the fallback",
+        key, language, _TRANSLATE_ATTEMPTS,
+    )
+    return english_template, False
 
 
 async def get_localized_string(

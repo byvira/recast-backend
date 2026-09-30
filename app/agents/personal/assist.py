@@ -17,7 +17,7 @@ from app.agents.personal import style as style_mod
 from app.agents.personal import thresholds as T
 from app.core.tracing import traced_agent
 from app.db.mongo import personal_signals
-from app.pipelines.text.generator import resolve_language_name
+from app.pipelines.text.generator import resolve_language_directive_name
 from app.platforms.base import import_all as import_all_platforms, resolve_platform_by_display_value
 from app.prompts.registry import load_localized, load_prompt
 from app.shared.language import first_present, user_language, workspace_language
@@ -181,7 +181,7 @@ async def _align_draft_impl(
             platform_tone_profile=target_platform.tone_profile if target_platform else None,
             platform_policy_constraints=target_platform.policy_constraints if target_platform else [],
             draft_text=draft_text[:1800],
-            language_name=resolve_language_name(language),
+            language_name=resolve_language_directive_name(language),
         )
         # max_tokens raised — same reasoning-token-exhaustion risk as generator.py's
         # GENERATION_MAX_TOKENS for non-English requests.

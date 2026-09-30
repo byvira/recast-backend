@@ -293,7 +293,7 @@ app.add_middleware(
 
 # Outermost middleware — runs before CORS/rate-limiting/logging, so an
 # oversized body is rejected before any of that work happens.
-app.add_middleware(MaxBodySizeMiddleware)
+app.add_middleware(MaxBodySizeMiddleware, allowed_origins=origins)
 
 
 # --- Exception Handlers ---

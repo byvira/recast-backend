@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
@@ -56,6 +56,8 @@ from app.pipelines.media.image_render import (
     SlideTextContent,
     render_slide,
 )
+from app.pipelines.media import image_pack
+from app.pipelines.media.icons import is_known_icon, list_icons
 from app.pipelines.media.pdf_export import generate_carousel_pdf
 from app.pipelines.media.transform import build_export_url
 from app.pipelines.media.zip_export import build_slides_zip
@@ -258,7 +260,15 @@ class GenerateImageAssetRequest(BaseModel):
     headline: str
     accent_keyword: str = ""
     author: Optional[str] = None
+    # A Lucide icon name from GET /image-assets/icons, drawn above the headline.
+    icon_name: Optional[str] = None
+    # A large, faint icon behind the text (the chosen icon, or a default one).
+    illustration_accent: bool = False
     source_piece_id: Optional[str] = None
+    # How many images to make in one run (1 to 10). Each is a real generation and uses provider
+    # quota. The first uses the prompt as written; the rest are varied takes on it, added as
+    # more slides of the same image set.
+    count: int = Field(1, ge=1, le=image_pack.MAX_PACK_SIZE)
     # Real logo compositing (G-3, resolved 2026-09-26) — opt-in: a brand
     # with a logo set doesn't automatically get it stamped onto every
     # image, since that's a real visual change the user should choose,
@@ -274,6 +284,20 @@ async def get_layouts(request: Request, ctx: WorkspaceContext = Depends(require(
     plan). All 9 layouts now have a real, confirmed target size (widened
     2026-09-26 — see image_render.LAYOUT_DIMS's own comment)."""
     return {layout.value: {"width": w, "height": h} for layout, (w, h) in LAYOUT_DIMS.items()}
+
+
+@router.get("/icons")
+@limiter.limit("60/minute")
+async def get_icons(request: Request, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
+    """Every icon that can be drawn on an image: {name, cp, tags}. `cp` is the
+    character code of the icon in the bundled icon font, which the browser can
+    load too, so the picker shows exactly what will be rendered."""
+    return {"icons": list_icons()}
+
+
+def _check_icon(name: Optional[str]) -> None:
+    if name and not is_known_icon(name):
+        raise HTTPException(status_code=400, detail="That icon isn't available. Pick one from the list.")
 
 
 @router.post("/generate", response_model=ImageAsset, status_code=201)
@@ -299,6 +323,12 @@ async def generate_image_asset(
     check has something to compare against later. If `prompt` IS given,
     it's used verbatim — an explicit edit always wins over auto-derivation.
     """
+    return await create_image_asset(body, ctx)
+
+
+async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceContext) -> ImageAsset:
+    """The work behind POST /generate, callable without a request (campaign runs use it)."""
+    _check_icon(body.icon_name)
     await assert_generation_allowed(ctx.workspace_id)
 
     if body.active_layout not in SUPPORTED_LAYOUTS:
@@ -359,7 +389,8 @@ async def generate_image_asset(
         base_image_bytes=background_bytes,
         brand_tokens=brand_tokens,
         text_content=SlideTextContent(
-            headline=body.headline, accent_keyword=body.accent_keyword, author=body.author
+            headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
+            icon_name=body.icon_name, illustration_accent=body.illustration_accent,
         ),
         logo_bytes=logo_bytes,
     )
@@ -404,7 +435,8 @@ async def generate_image_asset(
                 layout=body.active_layout,
                 media_id=media.id,
                 text_content=SlideTextContent(
-                    headline=body.headline, accent_keyword=body.accent_keyword, author=body.author
+                    headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
+            icon_name=body.icon_name, illustration_accent=body.illustration_accent,
                 ).model_dump(),
             )
         ],
@@ -413,6 +445,37 @@ async def generate_image_asset(
         source_content_hash=source_content_hash,
     )
     await image_assets.insert_one(asset.model_dump())
+
+    # The rest of a pack: one more real image each, in order. If one fails (quota, provider) the
+    # run stops and the set keeps what was made, so the member gets "3 of 4" and not nothing.
+    if body.count > 1:
+        extra_prompts = image_pack.pack_prompts(prompt, body.count)[1:]
+        made = list(asset.slides)
+        for position, extra_prompt in enumerate(extra_prompts, start=2):
+            try:
+                extra_media = await _render_and_upload_slide(
+                    prompt=extra_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+                    layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
+                    text_content=SlideTextContent(
+                        headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
+                        icon_name=body.icon_name, illustration_accent=body.illustration_accent,
+                    ),
+                    show_logo=body.show_logo,
+                )
+            except Exception as exc:  # noqa: BLE001 - keep what was made
+                logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
+                break
+            made.append(Slide(
+                slide_number=position, title=f"{body.title} ({position})", slide_type=body.active_layout.value,
+                layout=body.active_layout, media_id=extra_media.id,
+                text_content=SlideTextContent(
+                    headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
+                    icon_name=body.icon_name, illustration_accent=body.illustration_accent,
+                ).model_dump(),
+            ))
+        if len(made) > len(asset.slides):
+            updated_doc = await _bump_version(asset_id, ctx.workspace_id, made, "pack_generated", ctx.user_id)
+            asset = ImageAsset(**updated_doc)
 
     # file 04 Part 2 — first-class Phase 1 scope, not deferred: this is
     # what makes Odette's digest and Remy's signal history see Image
@@ -634,6 +697,8 @@ class AddSlideRequest(BaseModel):
     headline: str
     accent_keyword: str = ""
     author: Optional[str] = None
+    icon_name: Optional[str] = None
+    illustration_accent: bool = False
     show_logo: bool = False
 
 
@@ -653,6 +718,7 @@ async def add_slide(
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
+    _check_icon(body.icon_name)
 
     if body.active_layout not in SUPPORTED_LAYOUTS:
         raise HTTPException(
@@ -665,7 +731,8 @@ async def add_slide(
         raise HTTPException(status_code=400, detail="prompt is required.")
 
     text_content = SlideTextContent(
-        headline=body.headline, accent_keyword=body.accent_keyword, author=body.author
+        headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
+            icon_name=body.icon_name, illustration_accent=body.illustration_accent,
     )
     media = await _render_and_upload_slide(
         prompt=prompt,
@@ -960,6 +1027,7 @@ async def list_image_assets(
             "created_at": d.get("created_at"),
             "approval_status": d.get("approval_status"),
             "slide_count": len(d.get("slides") or []),
+            "brand_id": d.get("brand_id"),
             "media": media_by_id.get(media_id) if media_id else None,
         })
     return {"items": items, "total": total}

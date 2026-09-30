@@ -26,6 +26,12 @@ class LayoutPreset(str, Enum):
     # Added per pow/audio_image_pipeline/06-full-workflow-and-localization.md
     # step 6 — Apple Podcasts' and Spotify's real minimum cover-art size.
     PODCAST_COVER = "podcast_cover"
+    # Platform-sized canvases (same card style, the platform's own recommended pixel size).
+    INSTAGRAM_SQUARE = "instagram_square"      # 1080x1080
+    LINKEDIN_POST = "linkedin_post"            # 1200x627
+    X_POST = "x_post"                          # 1600x900
+    SOCIAL_SHARE = "social_share"              # 1200x630, Facebook link share and Open Graph
+    YOUTUBE_THUMBNAIL = "youtube_thumbnail"    # 1280x720
 
 
 class ImageApprovalStatus(str, Enum):  # mirrors ApprovalStatus in app.models.text

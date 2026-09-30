@@ -50,7 +50,16 @@ async def get_persona(workspace_id: str, user_id: str) -> dict:
             status_code=404,
             detail="No persona yet — create some content and Remy will start learning your voice.",
         )
-    return _public_persona(doc)
+    public = _public_persona(doc)
+    # Label each drift-history entry in the member's language, like the signal feed.
+    from app.shared.activity.projector import member_language, remy_label
+
+    language = await member_language(user_id, workspace_id)
+    public["drift_history"] = [
+        {**entry, "title": await remy_label(entry.get("signal_type"), language)}
+        for entry in public["drift_history"]
+    ]
+    return public
 
 
 async def list_signals(
@@ -60,9 +69,14 @@ async def list_signals(
     if status:
         query["status"] = status
     cursor = personal_signals.find(query).sort("created_at", -1).limit(min(limit, 200))
+    from app.shared.activity.projector import member_language, remy_label
+
+    language = await member_language(user_id, workspace_id)
     items = []
     async for doc in cursor:
         doc["id"] = doc.pop("_id")
+        # Same language the message was written in, so title and message match.
+        doc["title"] = await remy_label(doc.get("signal_type"), doc.get("language") or language)
         items.append(doc)
     return {"items": items, "total": len(items)}
 

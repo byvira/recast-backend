@@ -5,6 +5,7 @@ Only runs when hookVariations is True.
 """
 
 import logging
+from app.prompts.safe import hook_fits
 from app.models.text import AgentTask, AgentResult
 from app.pipelines.text.generator import GENERIC_OPENINGS
 from app.prompts.registry import load_prompt
@@ -86,7 +87,7 @@ def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: i
         if i < 0 or i >= len(hooks):
             continue
         text = hooks[i].get("text", "") if isinstance(hooks[i], dict) else ""
-        if text and not _starts_with_generic_opening(text):
+        if text and hook_fits(content, text) and not _starts_with_generic_opening(text):
             recommended = text
             break
 

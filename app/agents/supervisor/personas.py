@@ -5,7 +5,7 @@ the whole workspace: crisp, senior chief-of-staff, signal-over-noise, always
 quantifies, always ends on a recommended action. Never a generic system alert.
 """
 
-from app.pipelines.text.generator import resolve_language_name
+from app.pipelines.text.generator import resolve_language_directive_name
 from app.prompts.registry import load_localized, load_prompt
 
 ODETTE_NAME = "Odette"
@@ -35,7 +35,7 @@ def build_odette_system(language: str = "en") -> str:
     `if name == "English": ...` branch — every language, "en" included, gets
     the identical rendered shape.
     """
-    name = resolve_language_name(language)
+    name = resolve_language_directive_name(language)
     return load_prompt("supervisor/odette_system", name=name)
 
 

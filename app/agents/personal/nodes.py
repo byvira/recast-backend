@@ -22,7 +22,7 @@ from app.agents.personal import style as style_mod
 from app.agents.personal import thresholds as T
 from app.agents.personal.history import iter_member_content, known_pipeline
 from app.agents.personal.state import PersonaState
-from app.pipelines.text.generator import resolve_language_name
+from app.pipelines.text.generator import resolve_language_directive_name
 from app.prompts.registry import load_prompt
 from app.shared.llm import GroqModel, call_llm_structured, cosine_similarity, embed_text
 
@@ -314,7 +314,7 @@ async def judge_drift_node(state: PersonaState) -> dict:
             "personal/judge_drift",
             exemplars=[t[:1200] for t in exemplars],
             content_text=state["content_text"][:1800],
-            language_name=resolve_language_name(language),
+            language_name=resolve_language_directive_name(language),
         )
         try:
             # max_tokens raised — same reasoning-token-exhaustion risk as

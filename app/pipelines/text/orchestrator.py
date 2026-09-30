@@ -649,6 +649,7 @@ async def _run_single_repurpose(
             required_phrases=enforcement.get("required_phrases", []),
             approved_openers=enforcement["approved_openers"],
             approved_closers=enforcement["approved_closers"],
+            language=(metadata or {}).get("language", "en"),
         )
 
     def _sections_from_output(output: dict) -> tuple[Optional[list[GeneratedSection]], str]:

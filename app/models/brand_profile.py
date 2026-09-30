@@ -368,6 +368,8 @@ class BrandProfile(BaseModel):
     positioning_data: Optional[dict] = None
     completed_steps: list[str] = []
     platforms: list[str] = []
+    # The one platform this brand posts to by default; always one of `platforms`.
+    default_platform: Optional[str] = None
     blueprint_version: str = "2.0"
     is_complete: bool = False
     onboarding_step: int = 1
@@ -390,3 +392,7 @@ class BrandProfile(BaseModel):
     visual_identity: VisualIdentity = Field(default_factory=VisualIdentity)
     created_at: datetime
     updated_at: datetime
+    # Worked out by the server on every read: how filled in each section is (see profile_sections).
+    completeness: dict = Field(default_factory=dict)
+    # Changes on every save. Sent back as the X-Brand-Version header so a stale edit is refused.
+    version: str = ""

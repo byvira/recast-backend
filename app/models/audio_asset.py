@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AudioSourceType(str, Enum):
@@ -97,6 +97,9 @@ class AudioAsset(BaseModel):
     show_id: Optional[str] = None
     qa_flagged: bool = False
     qa_flag_reason: Optional[str] = None
+    # Chapters found in the transcript: [{title, start_s}], sorted, the first at 0. Empty until
+    # the member asks for them; each set replaces the last.
+    chapters: list[dict] = Field(default_factory=list)
     # Added 2026-09-26 (localization slice, bugs/gaps sweep) — per
     # PROGRESS.md's Decisions Log: "per-language AudioAsset variants
     # (source_audio_asset_id + language fields) with their own approval

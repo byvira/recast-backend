@@ -89,7 +89,8 @@ async def get_post_metrics(
     piece_by_id: dict[str, dict] = {}
     if piece_ids:
         pieces = await db["content_pieces"].find(
-            {"piece_id": {"$in": piece_ids}},
+            # Scoped to this workspace: a post id must never pull in another workspace's text.
+            {"piece_id": {"$in": piece_ids}, "workspace_id": ctx.workspace_id},
             {"piece_id": 1, "content": 1, "publish_status": 1, "updated_at": 1},
         ).to_list(length=len(piece_ids))
         piece_by_id = {p["piece_id"]: p for p in pieces}

@@ -20,7 +20,7 @@ from uuid import uuid4
 import httpx
 import soundfile as sf
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
@@ -89,10 +89,16 @@ from app.pipelines.audio.transcriber import transcribe_audio_bytes
 from app.pipelines.media.audio_assemble import AssembleError, AssemblePlan, assemble_episode
 from app.pipelines.media.audio_cleanup import CleanupError, CleanupSettings, apply_cleanup
 from app.pipelines.media.audio_enhance import concatenate_turns, enhance_audio, is_dsp_supported
+from app.pipelines.media import chapters as chapter_rules
+from app.pipelines.text.generator import resolve_language_directive_name
+from app.shared.language import workspace_language
+from app.pipelines.media import duration as spoken_length
+from app.pipelines.media import fit_script as script_fitting
 from app.pipelines.media.echo_reduction import EchoReductionError, reduce_echo
 from app.pipelines.media.music_library import list_library_tracks
 from app.pipelines.media.soundbite_extraction import SoundbiteExtractionError, evaluate_quality, trim_span
 from app.pipelines.media.tts_generation import is_language_supported, synthesize_speech, synthesize_speech_timed
+from app.shared.localized_strings import clean_translation, looks_leaked
 from app.pipelines.media.video_render import TranscriptWordLike, VideoRenderError, render_video
 from app.pipelines.media.transform import build_export_url
 from app.prompts.registry import load_prompt
@@ -208,6 +214,72 @@ class GenerateAudioAssetRequest(BaseModel):
     brand_id: str
     script: Optional[str] = None
     source_piece_id: Optional[str] = None
+    # Speaking pace in words a minute (100 to 200). Left out, the member's saved
+    # narration speed and the standard pace are used.
+    words_per_minute: Optional[int] = Field(None, ge=spoken_length.MIN_WORDS_PER_MINUTE, le=spoken_length.MAX_WORDS_PER_MINUTE)
+
+
+class LengthPreviewRequest(BaseModel):
+    script: str = ""
+    # A length the member chose (seconds). Left out, one written in the script is used if there is one.
+    target_seconds: Optional[int] = Field(None, ge=1, le=36000)
+    words_per_minute: Optional[int] = Field(None, ge=1, le=1000)
+
+
+class FitScriptRequest(BaseModel):
+    script: str = Field(..., min_length=1, max_length=script_fitting.MAX_SCRIPT_CHARS)
+    target_seconds: int = Field(..., ge=1, le=36000)
+    words_per_minute: Optional[int] = Field(None, ge=1, le=1000)
+
+
+@router.post("/fit-script")
+@limiter.limit("10/minute")
+async def fit_script(
+    request: Request,
+    body: FitScriptRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """Rewrites a script to run about the chosen length (Expand to fit, Trim to fit). Nothing is
+    saved and no narration is made: the member reads the result and keeps it or not. One AI call."""
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+    language = await workspace_language(ctx.workspace_id) or "en"
+
+    async def ask(prompt: str) -> str:
+        return await call_llm(prompt, temperature=0.5, max_tokens=4000)
+
+    return await script_fitting.fit_script(
+        body.script, body.target_seconds, body.words_per_minute, resolve_language_directive_name(language), ask,
+    )
+
+
+@router.post("/length-preview")
+@limiter.limit("60/minute")
+async def length_preview(
+    request: Request,
+    body: LengthPreviewRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """How long this script will run, before any narration quota is spent.
+
+    Returns the estimate, the target (the member's choice, or a length written in
+    the script such as "a 2 minute intro"), whether the script is short, long or
+    about right for that target, and the allowed range. No provider is called.
+    """
+    detected = spoken_length.detect_requested_seconds(body.script)
+    target = spoken_length.clamp_target_seconds(body.target_seconds) if body.target_seconds else detected
+    result: dict = {
+        "estimated_seconds": spoken_length.estimate_seconds(body.script, body.words_per_minute),
+        "words": spoken_length.count_words(body.script),
+        "words_per_minute": spoken_length.clamp_words_per_minute(body.words_per_minute),
+        "detected_seconds": detected,
+        "target_seconds": target,
+        "fit": spoken_length.fit_assessment(body.script, target, body.words_per_minute) if target else None,
+        "min_seconds": spoken_length.MIN_TARGET_SECONDS,
+        "max_seconds": spoken_length.MAX_TARGET_SECONDS,
+        "presets_seconds": list(spoken_length.PRESETS_SECONDS),
+    }
+    return result
 
 
 @router.post("/generate", response_model=AudioAsset, status_code=201)
@@ -224,6 +296,12 @@ async def generate_audio_asset(
     short reformatting pass" is a real Phase-2 enhancement, deliberately
     skipped here to keep this slice minimal but real, not faked.
     """
+    return await create_audio_from_script(body, ctx, run)
+
+
+async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: WorkspaceContext, run) -> AudioAsset:
+    """The work behind POST /generate, callable without a request (campaign runs use it).
+    `run` only needs an async `step(label)`."""
     await assert_generation_allowed(ctx.workspace_id)
     await run.step("Voicing your script")
 
@@ -247,6 +325,12 @@ async def generate_audio_asset(
         )
 
     voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
+    if body.words_per_minute:
+        # The pace control is real: 150 words a minute is normal speed, and the provider
+        # accepts 0.8x to 1.5x, so the chosen pace maps onto that range.
+        voice_settings = voice_settings.model_copy(update={
+            "speech_speed": round(min(1.5, max(0.8, body.words_per_minute / spoken_length.DEFAULT_WORDS_PER_MINUTE)), 2)
+        })
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
     speech = await synthesize_speech_timed(
         text=script,
@@ -279,6 +363,9 @@ async def generate_audio_asset(
         created_by=ctx.user_id,
         created_at=now,
         size_bytes=len(audio_bytes),
+        # The real length: from the audio file itself, else from the provider's word timings.
+        # Never the browser's guess, which is what made every recording read as a fixed length.
+        duration_s=spoken_length.audio_duration_seconds(audio_bytes) or spoken_length.duration_from_words(speech.words or []),
     )
     await media_assets.insert_one(media.model_dump())
 
@@ -435,6 +522,7 @@ async def generate_dialogue(
         created_by=ctx.user_id,
         created_at=now,
         size_bytes=len(combined_bytes),
+        duration_s=spoken_length.audio_duration_seconds(combined_bytes),
     )
     await media_assets.insert_one(media.model_dump())
 
@@ -539,8 +627,14 @@ async def _translate_with_quality_gate(source_text: str, target_language: str) -
         translate_prompt = load_prompt(
             "audio/localize/translate_script", target_language=target_language, script=source_text
         )
-        candidate = (await call_llm(translate_prompt)).strip()
+        candidate = clean_translation(await call_llm(translate_prompt))
         if not candidate:
+            continue
+        if looks_leaked(candidate, source_text):
+            logger.warning(
+                "Translation attempt %d/%d for target_language=%s echoed prompt text - discarded",
+                attempt, _TRANSLATION_MAX_ATTEMPTS, target_language,
+            )
             continue
 
         score_prompt = load_prompt(
@@ -644,6 +738,7 @@ async def localize_audio_asset(
         created_by=ctx.user_id,
         created_at=now,
         size_bytes=len(audio_bytes),
+        duration_s=spoken_length.audio_duration_seconds(audio_bytes),
     )
     await media_assets.insert_one(media.model_dump())
 
@@ -788,6 +883,7 @@ async def _ingest_audio(
         created_by=ctx.user_id,
         created_at=now,
         size_bytes=len(media_bytes),
+        duration_s=spoken_length.audio_duration_seconds(media_bytes),
     )
     await media_assets.insert_one(media.model_dump())
 
@@ -1027,6 +1123,7 @@ async def list_audio_assets(
             "created_at": d.get("created_at"),
             "approval_status": d.get("approval_status"),
             "language": d.get("language"),
+            "brand_id": d.get("brand_id"),
             "excerpt": " ".join(words).strip() or (d.get("script") or "")[:200],
             "media": media_by_id.get(media_id) if media_id else None,
         })
@@ -2236,6 +2333,61 @@ async def _generate_clip_suggestions(doc: dict, workspace_id: str, audio_asset_i
             quote=str(item.get("quote", ""))[:400], reason=str(item.get("reason", ""))[:200],
         ))
     return suggestions
+
+
+class ChaptersResponse(BaseModel):
+    chapters: list[dict]
+    # Why there are none, when there are none (too short, no transcript, nothing usable).
+    reason: Optional[str] = None
+
+
+@router.post("/{audio_asset_id}/chapters", response_model=ChaptersResponse)
+@limiter.limit("10/minute")
+async def generate_chapters(
+    request: Request,
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> ChaptersResponse:
+    """Finds where the topic changes in the real transcript and saves the chapters on the
+    recording. One AI call. Every time and title is checked against the recording before it
+    is kept, so nothing made up is ever saved; a set with nothing usable is not saved."""
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    words = doc.get("transcript") or []
+    if not words:
+        raise HTTPException(status_code=400, detail="This recording has no transcript yet. Transcribe it first.")
+
+    duration = max((float(w.get("end_s") or 0) for w in words), default=0.0)
+    if duration < chapter_rules.MIN_AUDIO_SECONDS:
+        return ChaptersResponse(chapters=[], reason="This recording is under a minute, so it is not split into chapters.")
+
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+
+    language = doc.get("language") or await workspace_language(ctx.workspace_id) or "en"
+    prompt = load_prompt(
+        "audio/chapters",
+        lines=chapter_rules.transcript_for_prompt(words),
+        min_chapters=2 if duration < 300 else 3,
+        max_chapters=min(chapter_rules.MAX_CHAPTERS, max(3, int(duration // 120) + 2)),
+        language_name=resolve_language_directive_name(language),
+    )
+    try:
+        result = await call_llm_structured(prompt)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Chapter generation failed for %s: %s", audio_asset_id, exc)
+        raise HTTPException(status_code=502, detail="Couldn't find chapters right now. Try again.")
+
+    chapters = chapter_rules.normalize_chapters((result or {}).get("chapters"), duration)
+    if len(chapters) < 2:
+        return ChaptersResponse(chapters=[], reason="Couldn't find clear chapters in this recording.")
+
+    await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"chapters": chapters, "updated_at": datetime.now(timezone.utc)}},
+    )
+    return ChaptersResponse(chapters=chapters)
 
 
 @router.post("/{audio_asset_id}/suggest-clips", response_model=SuggestClipsResponse)
