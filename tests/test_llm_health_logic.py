@@ -191,3 +191,33 @@ def test_track_records_a_failure_and_lets_it_through():
     before = len(recorder.recent)
     assert asyncio.run(run()) is True
     assert len(recorder.recent) == before + 1
+
+
+def test_key_check_skips_providers_without_a_key_and_uses_no_network(monkeypatch):
+    import asyncio
+    from app.core.config import settings
+    from app.shared.llm_health import keycheck
+
+    for name in ("CLOUDFLARE_API_TOKEN", "ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY"):
+        monkeypatch.setattr(settings, name, "")
+    out = asyncio.run(keycheck.check_keys())
+    assert {k: v["status"] for k, v in out.items()} == {"cloudflare": "not_set", "elevenlabs": "not_set", "deepgram": "not_set"}
+
+
+def test_key_check_reports_a_rejected_key(monkeypatch):
+    import asyncio
+    import httpx
+    from app.core.config import settings
+    from app.shared.llm_health import keycheck
+
+    monkeypatch.setattr(settings, "CLOUDFLARE_API_TOKEN", "")
+    monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "")
+    monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", "bad")
+    real = httpx.AsyncClient
+
+    def client(*a, **k):
+        return real(transport=httpx.MockTransport(lambda req: httpx.Response(401, json={"detail": "invalid_api_key"})), **k)
+
+    monkeypatch.setattr(keycheck.httpx, "AsyncClient", client)
+    out = asyncio.run(keycheck.check_keys())
+    assert out["elevenlabs"]["status"] == "error" and out["elevenlabs"]["http_status"] == 401

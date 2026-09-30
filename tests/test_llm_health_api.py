@@ -242,3 +242,17 @@ async def test_a_failed_fallback_opens_a_critical_issue_and_turns_the_banner_red
     banner = (await client.get(f"{B}/health")).json()["banner"]
     assert banner["state"] == "not_working"
     await client.patch(f"{B}/issues/{mine[0]['number']}", json={"status": "fixed", "reason": "test cleanup"})
+
+
+async def test_the_bell_lists_serious_issues_and_lists_every_provider_on_the_health_page(make_client):
+    client, _ = await _staff(make_client)
+    model = "bell-" + datetime.now().strftime("%H%M%S%f")
+    await _fail_and_flush("groq", model, "Rate limit on requests per day (RPD): Limit 1000")
+    number = await _issue_number(client, model)
+    await client.patch(f"{B}/issues/{number}", json={"priority": "critical", "reason": "test"})
+    items = (await client.get(f"{B}/notifications")).json()["items"]
+    mine = [n for n in items if n["href"] == f"/ops/llm/issues/{number}"]
+    assert mine and mine[0]["id"].startswith("llm-issue-") and "priority" in mine[0]["detail"]
+    providers = (await client.get(f"{B}/providers")).json()["providers"]
+    assert {"groq", "gemini", "cloudflare", "elevenlabs", "deepgram"} <= set(providers)
+    assert providers["cloudflare"]["label"] == "Cloudflare Workers AI" and providers["cloudflare"]["used_for"]

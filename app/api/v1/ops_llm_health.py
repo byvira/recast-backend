@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from app.core.auth import require_platform_staff
 from app.core.config import settings
 from app.core.middleware import limiter
-from app.shared.llm_health import alerts, catalogue, health, issues, reports, service
+from app.shared.llm_health import alerts, catalogue, health, issues, keycheck, reports, service
 from app.shared.llm_health.recorder import Attempt, recorder
 from app.shared.llm_health.scrub import scrub_message
 
@@ -116,19 +116,53 @@ async def get_providers(request: Request, user: dict = Depends(require_platform_
 @router.post("/providers/ping")
 @limiter.limit("6/minute")
 async def ping(request: Request, user: dict = Depends(require_platform_staff)) -> dict:
-    """One tiny real call to each provider. It uses free quota, so it is rate limited and only runs on a click."""
+    """Groq and Gemini get one tiny real call; the other providers only have their key checked, which uses none of their allowance. Rate limited and only runs on a click."""
     from app.shared.llm import llm_health_check
 
     t0 = time.perf_counter()
     result = await llm_health_check()
-    for provider in ("groq", "gemini"):
+    result.update(await keycheck.check_keys())
+    for provider in ("groq", "gemini", "cloudflare", "elevenlabs", "deepgram"):
         r = result.get(provider) or {}
+        if r.get("status") == "not_set":
+            continue  # nothing was tried, so nothing is recorded
         ok = r.get("status") == "ok"
         recorder.record(Attempt(
             provider=provider, model="ping", ok=ok, latency_ms=float(r.get("latency_ms") or (time.perf_counter() - t0) * 1000),
-            error_class=None if ok else "PingFailed", error_message=None if ok else scrub_message(r.get("detail")), feature="provider_ping",
+            error_class=None if ok else "PingFailed", http_status=r.get("http_status"),
+            error_message=None if ok else scrub_message(r.get("detail")), feature="provider_ping", count_in_rollup=provider in ("groq", "gemini"),
         ))
     return result
+
+
+@router.get("/notifications")
+@limiter.limit("60/minute")
+async def notifications(request: Request, user: dict = Depends(require_platform_staff)) -> dict:
+    """What the Ops bell shows for the LLM area: open serious issues and providers that are down or out of allowance.
+    Worked out from the current state, so nothing is missed; the front end remembers what a person dismissed."""
+    from app.db.mongo import llm_issues
+
+    out: list[dict[str, Any]] = []
+    docs = await llm_issues.find({"status": {"$in": ["open", "acknowledged"]}, "priority": {"$in": ["critical", "high"]}}).sort([("last_seen", -1)]).to_list(20)
+    for d in docs:
+        seen = d.get("last_seen")
+        stamp = seen.isoformat() if hasattr(seen, "isoformat") else str(seen or "")
+        manual = d.get("source") == "manual"
+        out.append({
+            "id": f"llm-issue-{d.get('number')}-{stamp}", "kind": "llm_issue", "at": stamp,
+            "title": (d.get("title") if manual else issues.title_for(d)) or "AI problem",
+            "detail": f"{issues.issue_number_label(int(d.get('number', 0)))}, {d.get('priority')} priority",
+            "href": f"/ops/llm/issues/{d.get('number')}",
+        })
+    states = await service.provider_states()
+    now = _now().isoformat()
+    for name, info in states.items():
+        if info["status"] in ("down", "limit_reached"):
+            out.append({
+                "id": f"llm-provider-{name}-{info['status']}-{now[:13]}", "kind": "llm_provider", "at": now,
+                "title": f"{info.get('label', name)}: {info['status_text'].lower()}", "detail": info.get("used_for", ""), "href": "/ops/llm",
+            })
+    return {"items": out}
 
 
 @router.get("/status-summary")
