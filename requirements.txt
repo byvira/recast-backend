@@ -68,6 +68,7 @@ aiofiles>=23.0.0
 Pillow>=10.0.0
 pygments>=2.18.0
 fpdf2>=2.7.9
+python-docx>=1.1.0  # campaign and library exports (app/pipelines/export/*)
 
 # ─────────────────────────────────────────
 # Audio DSP cleanup — app/pipelines/media/audio_enhance.py's real
