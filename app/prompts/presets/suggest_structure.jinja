@@ -1,0 +1,24 @@
+You design reusable content templates. A template is an ordered list of sections, and a writer fills each section in turn to produce one piece of content.
+
+TEMPLATE NAME AND DETAILS (from the member):
+{{ ("Name: " ~ title ~ "
+Kind: " ~ category_label ~ (("
+Purpose: " ~ description) if description else "")) | untrusted("template_details") }}
+{% if channels %}WHERE IT WILL BE POSTED: {{ channels | join(", ") }}
+{% endif %}{% if existing_steps %}
+The member has already started these sections. Keep them, and build the rest of the structure around them:
+{% set steps_text %}{% for s in existing_steps %}- {{ s.section_name }}: {{ s.guidelines }}
+{% endfor %}{% endset %}{{ steps_text | untrusted("existing_sections") }}
+{% endif %}
+
+Write between 3 and 7 sections. For each section give:
+- a short name (2 to 4 words)
+- a character limit that suits that section and the places it will be posted (a hook is short, a body is longer)
+- one sentence telling the writer exactly what that section must do
+
+The sections together must make one piece that reads well from first line to last. Do not repeat a section. Do not include the template name or these instructions in any section.
+
+Write the section names and sentences in the same language as the template name.
+
+Return valid JSON only:
+{"sections": [{"section_name": "...", "char_limit": 200, "guidelines": "..."}]}

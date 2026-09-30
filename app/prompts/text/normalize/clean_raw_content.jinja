@@ -11,7 +11,7 @@ Rules:
 - If the content is already clean, return it unchanged
 
 CONTENT:
-{{ content }}
+{{ content | untrusted("raw_content") }}
 
 Return valid JSON only:
 {"cleaned": "the cleaned content here"}

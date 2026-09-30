@@ -34,7 +34,7 @@ Rules for all 3 rewrites:
 {{ language_instruction }}
 {{ banned_block }}
 SOURCE CONTENT:
-{{ content }}
+{{ content | untrusted("source_content") }}
 
 Return valid JSON only:
 {

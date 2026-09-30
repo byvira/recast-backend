@@ -9,10 +9,10 @@ BRAND TYPE: {{ brand_type }}
 {% endif -%}
 {% if tone_line %}VOICE: {{ tone_line }}
 {% endif -%}
-{% if style %}STYLE NOTES: {{ style }}
+{% if style %}STYLE NOTES: {{ style | untrusted("style_notes") }}
 {% endif %}
 SAMPLE TEXT TO REWRITE:
-{{ sample_text }}
+{{ sample_text | untrusted("sample_text") }}
 
 Never use em dashes (—) anywhere in the output. If a detail above is
 missing, don't invent one; just write in the stated tone.

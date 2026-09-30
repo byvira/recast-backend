@@ -6,7 +6,7 @@ REPURPOSING TASK: {{ instruction }}
 SOURCE PLATFORM: {{ source_platform }}
 
 SOURCE CONTENT:
-{{ content }}
+{{ content | untrusted("source_content") }}
 
 {{ platform_rules }}
 

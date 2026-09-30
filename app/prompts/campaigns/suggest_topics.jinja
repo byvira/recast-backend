@@ -3,7 +3,7 @@
 The user is setting up a content campaign around this topic cluster / brief:
 
 TOPIC CLUSTER:
-{{ topic_cluster }}
+{{ topic_cluster | untrusted("topic") }}
 
 {% if existing_topics %}
 They've already listed these specific angles/topics to cover:

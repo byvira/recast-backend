@@ -4,7 +4,8 @@ A member typed a plain-language instruction for cleaning up a batch of short aud
 - "remove_filler_pauses": cut filler words (um, uh, like) and long silent gaps.
 - "recheck_quality": re-measure the clip's real audio quality after other changes.
 
-Member's instruction: "{{ instruction }}"
+Member's instruction:
+{{ instruction | untrusted("member_instruction") }}
 
 Return ONLY a JSON object shaped exactly like this, no explanation, no markdown:
 {"actions": ["prevent_clipping"]}

@@ -15,8 +15,8 @@ If you are about to write a banned word — STOP and use brand vocabulary instea
 
 PLATFORM: {{ platform }}
 
-REFINEMENT INSTRUCTION:
-{{ instruction }}
+REFINEMENT INSTRUCTION (from the member):
+{{ instruction | untrusted("member_instruction") }}
 
 RULES:
 - Apply the instruction above faithfully
@@ -26,6 +26,6 @@ RULES:
 - Return only the refined content — no explanation, no JSON, no preamble
 
 ORIGINAL CONTENT:
-{{ content }}
+{{ content | untrusted("original_content") }}
 
 Output the refined content only.

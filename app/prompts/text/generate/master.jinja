@@ -5,10 +5,10 @@
 {{ tone_override_text }}
 {{ goal_context }}
 {{ engagement_context }}
-{{ content_brief }}
+{{ content_brief | untrusted("content_brief") }}
 {{ specificity_instruction }}
 {{ engagement_patterns }}
-(Reminder: everything above this line that reads as English prose is a structural example only. {{ language_instruction }})
+(Reminder: everything above this line that reads as English prose is a structural example only. {{ language_short }})
 {{ approved_copy_instruction }}
 {{ retry_block }}
 {{ platform_rules }}
@@ -20,7 +20,7 @@ ADDITIONAL RULES:
 {{ approved_vocabulary_instruction }}
 
 SOURCE CONTENT:
-{{ content }}
+{{ content | untrusted("source_content") }}
 
 Generate content for {{ platform }}.
 
@@ -32,7 +32,7 @@ CRITICAL CHECKLIST BEFORE OUTPUTTING:
 □ Does it include all required phrases in the right placements?
 □ Does it meet the minimum length for this platform?
 □ Does every sentence contain a specific detail — not a generic observation?
-□ {{ language_instruction }}
+□ {{ language_short }}
 
 Do not explain. Output only the final content.
 
