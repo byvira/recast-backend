@@ -291,7 +291,8 @@ async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> 
         return {}
     query = {"workspace_id": workspace_id, "source_piece_id": {"$in": piece_ids}}
     audio = await audio_assets.find(query).to_list(length=None)
-    images = await image_assets.find(query).to_list(length=None)
+    # a picture that was made again is replaced: the old one stays in the library but is not shown on the post
+    images = await image_assets.find({**query, "replaced_by": {"$exists": False}}).to_list(length=None)
     media_ids = {a.get("media_id") for a in audio if a.get("media_id")}
     for doc in images:
         media_ids.update(s.get("media_id") for s in doc.get("slides", []) if s.get("media_id"))
@@ -310,7 +311,11 @@ async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> 
             m = by_id.get(slide.get("media_id") or "")
             if m and m.get("url"):
                 found.setdefault(doc["source_piece_id"], []).append(
-                    {"kind": "image", "url": m["url"], "mime_type": m.get("mime_type"), "title": doc.get("title")}
+                    {
+                        "kind": "image", "url": m["url"], "mime_type": m.get("mime_type"), "title": doc.get("title"),
+                        # a text card because no AI picture could be made, and why
+                        "flagged": bool(m.get("qa_flagged")), "flag_reason": m.get("qa_flag_reason"),
+                    }
                 )
     return found
 
@@ -367,6 +372,29 @@ async def retry_post_media(
         doc, piece_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
     )
     return {"status": states}
+
+
+@router.post("/{campaign_id}/pieces/{piece_id}/regenerate-media")
+@limiter.limit("5/minute")
+async def regenerate_post_image(
+    request: Request,
+    campaign_id: str,
+    piece_id: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict[str, Any]:
+    """Make one post's picture again. Uses one real image generation. The new picture replaces the old one
+    unless it came out as a text card while the old one was a real picture."""
+    doc = await get_campaigns_collection().find_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    result = await campaign_media_module.regenerate_image_for_piece(
+        doc, piece_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+    )
+    if result["state"] == "missing":
+        raise HTTPException(status_code=404, detail=result.get("note") or "Post not found in this campaign.")
+    return result
 
 
 @router.get("/{campaign_id}/export")

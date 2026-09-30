@@ -63,6 +63,19 @@ async def _context(workspace_id: str, user_id: str) -> WorkspaceContext:
     return WorkspaceContext(workspace, member, user)
 
 
+def _image_request(campaign: dict[str, Any], piece: dict):
+    from app.api.v1.image_assets import GenerateImageAssetRequest
+
+    plan = campaign.get("media_plan") or {}
+    count = int(plan.get("count_per_post", 1))
+    layout = (plan.get("image") or {}).get("layout") or "quote_1_1"
+    title = _headline((piece.get("content") or "").strip())
+    return GenerateImageAssetRequest(
+        title=title, brand_id=campaign["brand_id"], headline=title,
+        source_piece_id=piece["piece_id"], count=min(count, 5), active_layout=layout,
+    )
+
+
 async def _make_for_piece(
     campaign: dict[str, Any], piece: dict, kinds: list[str], ctx: WorkspaceContext,
 ) -> dict[str, str]:
@@ -80,13 +93,7 @@ async def _make_for_piece(
     states: dict[str, str] = {}
     if "image" in kinds:
         try:
-            await create_image_asset(
-                GenerateImageAssetRequest(
-                    title=title, brand_id=campaign["brand_id"], headline=title,
-                    source_piece_id=piece["piece_id"], count=min(count, 5), active_layout=layout,
-                ),
-                ctx,
-            )
+            await create_image_asset(_image_request(campaign, piece), ctx)
             states["image"] = "ready"
         except Exception as exc:  # noqa: BLE001 - media must never fail the text
             states["image"] = "failed"
@@ -146,6 +153,54 @@ async def generate_media_for_pieces(
         outcome["audio"] += 1 if states.get("audio") == "ready" else 0
         outcome["failed"] += sum(1 for v in states.values() if v == "failed")
     return outcome
+
+
+async def regenerate_image_for_piece(
+    campaign: dict[str, Any], piece_id: str, *, workspace_id: str, user_id: str,
+) -> dict[str, Any]:
+    """Make this post's picture again, even though one exists. The new picture replaces the old one on the
+    post; the old one is kept in the media library, marked as replaced. A new card with no AI picture never
+    replaces a real picture: the old one stays and the reason is returned.
+
+    Returns {"state": "missing" | "failed" | "kept" | "card" | "ready", "note": str | None}."""
+    from app.api.v1.image_assets import create_image_asset
+    from app.db.mongo import image_assets, media_assets
+
+    piece = await content_pieces.find_one({"workspace_id": workspace_id, "piece_id": piece_id, "deleted": {"$ne": True}})
+    if not piece or piece.get("campaign_id") != campaign["id"] or not (piece.get("content") or "").strip():
+        return {"state": "missing", "note": None}
+    if "image" not in wanted_kinds(campaign.get("media_plan")):
+        return {"state": "missing", "note": "This campaign is not set up to make pictures."}
+
+    ctx = await _context(workspace_id, user_id)
+    current = {"workspace_id": workspace_id, "source_piece_id": piece_id, "replaced_by": {"$exists": False}}
+    old = await image_assets.find(current).to_list(length=None)
+    old_ids = [d["id"] for d in old]
+    old_media = [s["media_id"] for d in old for s in d.get("slides", []) if s.get("media_id")]
+    old_real = bool(old_media) and await media_assets.count_documents({"id": {"$in": old_media}, "qa_flagged": {"$ne": True}}) > 0
+
+    try:
+        new = await create_image_asset(_image_request(campaign, piece), ctx)
+    except Exception as exc:  # noqa: BLE001 - never fail the post
+        logger.warning("Campaign %s: regenerate image for piece %s failed: %s", campaign["id"], piece_id, exc)
+        if not old_ids:
+            await _record_status(workspace_id, piece_id, {"image": "failed"})
+        return {"state": "failed", "note": "The picture could not be made. Try again in a moment."}
+
+    new_media = [s.media_id for s in new.slides if s.media_id]
+    flagged_docs = await media_assets.find({"id": {"$in": new_media}, "qa_flagged": True}).to_list(length=None)
+    new_real = not flagged_docs
+    note = (flagged_docs[0].get("qa_flag_reason") if flagged_docs else None)
+
+    if old_real and not new_real:
+        # keep the real picture; hide the card that was just made
+        await image_assets.update_one({"id": new.id}, {"$set": {"replaced_by": "kept_previous"}})
+        return {"state": "kept", "note": note}
+
+    if old_ids:
+        await image_assets.update_many({"id": {"$in": old_ids}}, {"$set": {"replaced_by": new.id}})
+    await _record_status(workspace_id, piece_id, {"image": "ready"})
+    return {"state": "ready" if new_real else "card", "note": note}
 
 
 async def retry_media_for_piece(
