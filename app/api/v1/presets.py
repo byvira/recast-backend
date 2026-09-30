@@ -12,11 +12,13 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import presets
-from app.models.preset import CreatePresetRequest, Preset, UpdatePresetRequest
+from app.models.preset import CreatePresetRequest, Preset, PresetStepRule, UpdatePresetRequest
+from app.pipelines import presets_suggest
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -24,6 +26,34 @@ logger = logging.getLogger(__name__)
 
 def _doc_to_preset(doc: dict) -> Preset:
     return Preset(**{k: v for k, v in doc.items() if k != "_id" and k != "deleted"})
+
+
+class SuggestStructureRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    category_label: str = Field("", max_length=80)
+    description: str = Field("", max_length=600)
+    target_channels: list[str] = Field(default_factory=list)
+    # Sections the member already wrote; the suggestion builds around them.
+    existing_steps: list[PresetStepRule] = Field(default_factory=list)
+
+
+@router.post("/suggest-structure")
+@limiter.limit("20/minute")
+async def suggest_structure(
+    request: Request,
+    body: SuggestStructureRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict[str, Any]:
+    """Suggested sections for a template, from its name, kind and channels. Read-only: nothing is
+    saved. An empty list means no usable suggestion, and the member can build by hand as before."""
+    sections = await presets_suggest.suggest_structure(
+        title=body.title,
+        category_label=body.category_label,
+        description=body.description,
+        channels=body.target_channels,
+        existing_steps=[s.model_dump() for s in body.existing_steps],
+    )
+    return {"sections": sections}
 
 
 @router.post("/", response_model=Preset, status_code=201)

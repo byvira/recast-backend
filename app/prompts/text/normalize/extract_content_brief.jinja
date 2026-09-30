@@ -12,7 +12,7 @@ Rules:
   you answer in English here, the final content will start in English too.
 
 CONTENT:
-{{ content }}
+{{ content | untrusted("source_content") }}
 
 Return valid JSON only, with every string value written in {{ language_name }}:
 {

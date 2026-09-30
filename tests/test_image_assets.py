@@ -86,14 +86,19 @@ def _h(ws_id: str) -> dict:
 
 # ── layouts + generate ───────────────────────────────────────────────────────
 
-async def test_layouts_lists_all_nine_with_real_dimensions(signup_user):
+async def test_layouts_lists_every_layout_with_real_dimensions(signup_user):
     client, _, ws_id, _ = await _setup(signup_user)
 
     res = await client.get("/api/v1/image-assets/layouts", headers=_h(ws_id))
     assert res.status_code == 200
     body = res.json()
     assert set(body) == {layout.value for layout in LayoutPreset}
-    assert len(body) == 9
+    assert len(body) == len(LayoutPreset)
+    assert body["linkedin_post"] == {"width": 1200, "height": 627}
+    assert body["x_post"] == {"width": 1600, "height": 900}
+    assert body["social_share"] == {"width": 1200, "height": 630}
+    assert body["youtube_thumbnail"] == {"width": 1280, "height": 720}
+    assert body["instagram_square"] == {"width": 1080, "height": 1080}
     for layout, (w, h) in LAYOUT_DIMS.items():
         assert body[layout.value] == {"width": w, "height": h}
 
@@ -453,3 +458,37 @@ async def test_list_never_shows_another_workspaces_images(signup_user, stubs):
     res = await client.get("/api/v1/image-assets/", headers=_h(other))
     assert res.status_code == 200
     assert res.json() == {"items": [], "total": 0}
+
+
+# ── Icons ────────────────────────────────────────────────────────────────────
+
+async def test_icons_endpoint_lists_the_available_icons(signup_user):
+    client, _, ws_id, _ = await _setup(signup_user)
+
+    res = await client.get("/api/v1/image-assets/icons", headers=_h(ws_id))
+    assert res.status_code == 200
+    icons_list = res.json()["icons"]
+    assert len(icons_list) > 1000
+    assert {"name", "cp", "tags"} <= set(icons_list[0])
+
+
+async def test_generate_with_an_icon_stores_it_and_renders_it(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    plain = await _generate(client, ws_id, brand_id)
+    with_icon = await _generate(client, ws_id, brand_id, icon_name="rocket", illustration_accent=True)
+    assert plain.status_code == 201 and with_icon.status_code == 201
+
+    text = with_icon.json()["slides"][0]["text_content"]
+    assert text["icon_name"] == "rocket"
+    assert text["illustration_accent"] is True
+    assert stubs["uploads"][0] != stubs["uploads"][1], "the icon must change the rendered image"
+
+
+async def test_generate_rejects_an_unknown_icon_before_rendering(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    res = await _generate(client, ws_id, brand_id, icon_name="definitely-not-an-icon")
+    assert res.status_code == 400
+    assert "icon" in res.json()["detail"].lower()
+    assert stubs["uploads"] == [], "nothing may be rendered or uploaded on a rejected request"

@@ -16,6 +16,8 @@ from typing import Any
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
+from app.prompts.fence import fence as _fence
+
 _PROMPTS_DIR = Path(__file__).resolve().parent
 
 _env = Environment(
@@ -26,6 +28,9 @@ _env = Environment(
     lstrip_blocks=True,
     keep_trailing_newline=True,
 )
+
+# `{{ pasted_text | untrusted("tag") }}` puts outside text in a labelled block it cannot break out of.
+_env.filters["untrusted"] = _fence
 
 
 def load_prompt(name: str, /, **variables) -> str:

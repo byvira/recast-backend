@@ -66,6 +66,68 @@ _INSIGHT_DECIDED = {"actioned": "accepted", "dismissed": "dismissed"}
 _FLAG_DECIDED = {"resolved": "accepted", "muted": "dismissed"}
 
 
+async def localized_title(kind: str, key: str, english: str, language: Optional[str]) -> str:
+    """`english` translated into `language` (cached per title and language), so a
+    row's title reads in the same language as its description. English, an
+    unset language, or any failure returns the English title unchanged."""
+    if not language or language == "en":
+        return english
+    try:
+        from app.shared.localized_strings import get_localized_string
+
+        return await get_localized_string(f"activity.title.{kind}.{key}", language, english)
+    except Exception as exc:  # noqa: BLE001 - a title must never break projection
+        logger.warning("localized_title failed for %s.%s (%s): %s", kind, key, language, exc)
+        return english
+
+
+async def member_language(user_id: Optional[str], workspace_id: Optional[str]) -> str:
+    """Same precedence Remy uses when it writes a member's message: the
+    member's own language, then the workspace's, then English."""
+    from app.shared.language import first_present, user_language, workspace_language
+
+    return first_present(await user_language(user_id), await workspace_language(workspace_id))
+
+
+async def workspace_admin_language(workspace_id: Optional[str]) -> str:
+    """Same precedence Odette uses: the workspace language, then its owner's,
+    then English."""
+    from app.db.mongo import workspaces
+    from app.shared.language import first_present, user_language, workspace_language
+
+    owner_id = None
+    try:
+        doc = await workspaces.find_one({"id": workspace_id}, {"owner_id": 1}) if workspace_id else None
+        owner_id = (doc or {}).get("owner_id")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("workspace_admin_language lookup failed for %s: %s", workspace_id, exc)
+    return first_present(await workspace_language(workspace_id), await user_language(owner_id))
+
+
+# Short labels the Remy page shows for a signal type. English text matches what
+# the page always displayed; other languages go through the same translation
+# path as the message beside them.
+_REMY_LABELS = {
+    "voice_drift": "Voice Drift Detected",
+    "voice_drift_trend": "Voice Drift Trend",
+    "volume_drop": "Volume Drop",
+    "platform_volume_drop": "Platform-Specific Volume Drop",
+    "volume_spike": "Volume Spike",
+    "topic_shift": "Topic Shift",
+    "quality_regression": "Quality Regression",
+}
+
+
+async def remy_label(signal_type: Optional[str], language: Optional[str]) -> str:
+    english = _REMY_LABELS.get(signal_type) or (signal_type or "signal").replace("_", " ").title()
+    return await localized_title("remy_label", signal_type or "__fallback__", english, language)
+
+
+async def remy_title(signal_type: Optional[str], language: Optional[str]) -> str:
+    english = _REMY_TITLES.get(signal_type, "Remy flagged something on your content")
+    return await localized_title("remy", signal_type or "__fallback__", english, language)
+
+
 def _as_dt(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
@@ -315,7 +377,10 @@ async def project_remy_signal(signal: dict) -> None:
             "source": {"kind": "remy_signal", "id": signal["_id"], "type": signal.get("signal_type")},
             "actor": dict(actors.REMY),
             "category": CATEGORY_RECOMMENDATION,
-            "title": _REMY_TITLES.get(signal.get("signal_type"), "Remy flagged something on your content"),
+            "title": await remy_title(
+                signal.get("signal_type"),
+                signal.get("language") or await member_language(signal.get("user_id"), signal.get("workspace_id")),
+            ),
             "description": signal.get("member_message") or "",
             "target_id": target_id,
             "target_type": "Draft Post" if target_id else None,
@@ -397,7 +462,11 @@ async def project_odette_flag(flag: dict) -> None:
             "source": {"kind": "odette_flag", "id": flag["_id"], "type": flag.get("flag_type")},
             "actor": dict(actors.ODETTE),
             "category": CATEGORY_WORKSPACE_ALERT,
-            "title": _FLAG_TITLES.get(flag.get("flag_type"), _humanize(flag.get("flag_type")) or "Workspace alert"),
+            "title": await localized_title(
+                "flag", flag.get("flag_type") or "__fallback__",
+                _FLAG_TITLES.get(flag.get("flag_type"), _humanize(flag.get("flag_type")) or "Workspace alert"),
+                flag.get("language") or await workspace_admin_language(flag.get("workspace_id")),
+            ),
             "description": flag.get("summary_persona") or "",
             "href": "/dashboard/odette",
             "status": "success" if outcome else ("failed" if flag.get("severity") == "critical" else "warning"),

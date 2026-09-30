@@ -4,7 +4,7 @@ You are an SEO specialist. Analyse the content and generate a complete SEO packa
 {{ platform_instruction }}
 
 CONTENT:
-{{ content }}
+{{ content | untrusted("source_content") }}
 
 Return valid JSON only:
 {

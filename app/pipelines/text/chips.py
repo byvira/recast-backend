@@ -14,6 +14,7 @@ Usage:
 import logging
 from typing import Optional
 from app.prompts.registry import load_prompt
+from app.prompts.safe import contains_banned, guard_output
 from app.pipelines.text.brand_context import build_tone_override
 from app.pipelines.text.generator import build_language_instruction
 from app.shared.llm import call_llm, GroqModel
@@ -185,8 +186,26 @@ async def apply_chip(
         tone_override=build_tone_override(default_tone, language),
     )
 
-    refined = await call_llm(prompt, model=GroqModel.BALANCED)
-    refined = refined.strip()
+    raw = await call_llm(prompt, model=GroqModel.BALANCED)
+    # The answer must be real text: no wrapper, no preamble, none of our instructions, no banned word.
+    # Otherwise the original is kept and the member is told, instead of being handed something broken.
+    refined = guard_output(raw, source=f"{content}\n{instruction}")
+    problem = None
+    if refined is None:
+        problem = "The refinement came back unusable. Your text is unchanged. Try again."
+    elif contains_banned(refined, banned_words):
+        problem = "The refinement used a word on your banned list. Your text is unchanged. Try again."
+    if problem:
+        return {
+            "original": content,
+            "refined": content,
+            "chip": chip_name,
+            "platform": platform,
+            "word_count": len(content.split()),
+            "char_count": len(content),
+            "changed": False,
+            "error": problem,
+        }
 
     return {
         "original": content,

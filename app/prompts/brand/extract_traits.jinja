@@ -10,7 +10,7 @@ vague enough to describe almost any writing, e.g. "Clear and engaging",
 "Well-structured", "Professional tone" — never return traits like these.
 
 WRITING SAMPLE:
-{{ content }}
+{{ content | untrusted("sample") }}
 
 Return exactly this shape: {"traits": ["...", "...", "..."]}
 Each trait under 60 characters. If the sample is too short or too generic

@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ContentType(str, Enum):
@@ -70,6 +70,70 @@ class CampaignCadence(BaseModel):
     next_run_at: Optional[datetime] = None
 
 
+class CampaignAudioOptions(BaseModel):
+    """Narration settings for every post of a campaign. A post is voiced as written; if a maximum
+    length is set and the post would run longer, it is cut at a sentence end to fit."""
+
+    max_seconds: Optional[int] = Field(None, ge=15, le=600)
+    words_per_minute: Optional[int] = Field(None, ge=100, le=200)
+
+
+class CampaignImageOptions(BaseModel):
+    """Image settings for every post. `layout` is one of the image pipeline's sizes."""
+
+    layout: str = "quote_1_1"
+
+    @model_validator(mode="after")
+    def _known_layout(self) -> "CampaignImageOptions":
+        from app.models.image_asset import LayoutPreset
+
+        if self.layout not in {l.value for l in LayoutPreset}:
+            raise ValueError(f"Unknown image size: {self.layout}")
+        return self
+
+
+class CampaignVideoOptions(BaseModel):
+    """Video settings. Saved now so video can be switched on later; nothing is made from them yet."""
+
+    duration_seconds: int = Field(30, ge=5, le=180)
+    aspect: str = "9:16"
+
+    @model_validator(mode="after")
+    def _known_aspect(self) -> "CampaignVideoOptions":
+        if self.aspect not in ("9:16", "16:9", "1:1"):
+            raise ValueError("Video shape must be 9:16, 16:9 or 1:1")
+        return self
+
+
+class CampaignMediaPlan(BaseModel):
+    """Whether each post of a campaign also gets media, and what kind. Off by default: a campaign
+    makes text only, and nothing is generated (or paid for) until the member asks for it.
+    `kinds` are any of "image", "audio", "video" (video is accepted and stored so it can be
+    switched on later, but is not generated yet). `count_per_post` is how many of EACH chosen
+    kind are made for every post."""
+
+    enabled: bool = False
+    kinds: list[str] = Field(default_factory=list)
+    count_per_post: int = Field(1, ge=1, le=5)
+    audio: CampaignAudioOptions = Field(default_factory=CampaignAudioOptions)
+    image: CampaignImageOptions = Field(default_factory=CampaignImageOptions)
+    video: CampaignVideoOptions = Field(default_factory=CampaignVideoOptions)
+
+    @model_validator(mode="after")
+    def _normalise(self) -> "CampaignMediaPlan":
+        seen: list[str] = []
+        for kind in self.kinds:
+            kind = str(kind).lower()
+            if kind not in ("image", "audio", "video"):
+                raise ValueError(f"Unknown media kind: {kind}")
+            if kind not in seen:
+                seen.append(kind)
+        self.kinds = seen
+        if not seen:
+            self.enabled = False
+        return self
+
+
 class Campaign(BaseModel):
     """A content campaign grouping multiple generation runs under one
     tracked entity, with real aggregate progress across its pieces."""
@@ -89,6 +153,7 @@ class Campaign(BaseModel):
     # already relies on.
     platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
+    media_plan: CampaignMediaPlan = Field(default_factory=CampaignMediaPlan)
     status: CampaignStatus = CampaignStatus.DRAFT
     # Cloudinary secure_url, set via POST /{campaign_id}/thumbnail. User-
     # uploaded only — there is no real image-generation pipeline to derive
@@ -116,6 +181,7 @@ class CreateCampaignRequest(BaseModel):
     platforms: list[str]
     platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
+    media_plan: CampaignMediaPlan = Field(default_factory=CampaignMediaPlan)
 
 
 class UpdateCampaignRequest(BaseModel):
@@ -125,3 +191,4 @@ class UpdateCampaignRequest(BaseModel):
     platforms_by_day: Optional[list[list[str]]] = None
     status: Optional[CampaignStatus] = None
     cadence: Optional[CampaignCadence] = None
+    media_plan: Optional[CampaignMediaPlan] = None

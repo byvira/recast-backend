@@ -6,13 +6,14 @@ require ``edit_content``; approve / reject / schedule / approve-all require
 ``approve_content`` (owner or admin only).
 """
 
+import asyncio
 import csv
 import io
 import logging
-import zipfile
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -20,8 +21,9 @@ from pydantic import BaseModel
 from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import content_pieces, media_assets, users
+from app.db.mongo import audio_assets, content_pieces, image_assets, media_assets, users
 from app.models.media import MediaAsset
+from app.pipelines.export import library_archive
 from app.pipelines.publish.registry import get_publisher
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.validators import validate_for_platform
@@ -610,15 +612,51 @@ def _pieces_to_csv(pieces: list[dict]) -> str:
     return buf.getvalue()
 
 
-def _pieces_to_zip(pieces: list[dict]) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in pieces:
-            slug = (p.get("piece_id") or "piece")[:12]
-            filename = f"{p.get('platform', 'piece')}_{slug}.md"
-            body = f"# {_piece_header(p)}\n\n{p.get('content', '')}\n"
-            zf.writestr(filename, body)
-    return buf.getvalue()
+
+async def _fetch_media(url: str, client: httpx.AsyncClient, limit: asyncio.Semaphore) -> Optional[bytes]:
+    """One stored media file, or None if it cannot be downloaded (never raises)."""
+    async with limit:
+        try:
+            res = await client.get(url)
+            res.raise_for_status()
+            return res.content
+        except httpx.HTTPError as exc:
+            logger.warning("Library export: couldn't download %s: %s", url, exc)
+            return None
+
+
+async def _build_library_zip(pieces: list[dict], workspace_id: str, brand_id: Optional[str]) -> bytes:
+    """Posts as individual .txt files in text/, and every audio recording, image and attached media
+    in media/ in its real format. Files that cannot be downloaded are listed in README.txt, never
+    silently dropped, and never make the whole export fail."""
+    query: dict = {"workspace_id": workspace_id}
+    if brand_id:
+        query["brand_id"] = brand_id
+    audio_docs = await audio_assets.find(query).sort("created_at", -1).to_list(length=500)
+    image_docs = await image_assets.find(query).sort("created_at", -1).to_list(length=500)
+
+    media_ids = {a.get("media_id") for a in audio_docs if a.get("media_id")}
+    for doc in image_docs:
+        media_ids.update(s.get("media_id") for s in doc.get("slides", []) if s.get("media_id"))
+    media_docs = await media_assets.find({"id": {"$in": list(media_ids)}, "workspace_id": workspace_id}).to_list(length=None)
+    media_by_id = {m["id"]: m for m in media_docs}
+
+    planned = library_archive.plan_library_export(pieces, audio_docs, image_docs, media_by_id)
+    planned, skipped = library_archive.within_limits(planned)
+
+    to_fetch = [f for f in planned if f.folder == "media" and f.url]
+    fetched: dict[str, bytes] = {}
+    failed: list[str] = []
+    if to_fetch:
+        limit = asyncio.Semaphore(6)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            results = await asyncio.gather(*(_fetch_media(f.url, client, limit) for f in to_fetch))
+        for f, data in zip(to_fetch, results):
+            if data is None:
+                failed.append(f.label or f.name)
+            else:
+                fetched[f.name] = data
+    return library_archive.build_zip(planned, fetched, failed, skipped)
 
 
 _EXPORT_CONTENT_TYPES = {
@@ -647,7 +685,7 @@ async def export_pieces(
     elif format == "csv":
         body = _pieces_to_csv(pieces)
     else:
-        body = _pieces_to_zip(pieces)
+        body = await _build_library_zip(pieces, ctx.workspace_id, brand_id)
 
     return Response(
         content=body,

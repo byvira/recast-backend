@@ -3,7 +3,7 @@
 import re
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Literal, Any, Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 from enum import Enum as PyEnum
 
@@ -289,10 +289,15 @@ class AngleVariant(BaseModel):
 
 
 class GenerateAnglesRequest(BaseModel):
-    content: str
+    # Written content to rewrite. Left empty when `asset_kind` and `asset_id` name
+    # an audio recording or an image: the server then builds the text from that
+    # asset (its script or transcript, or its headline and description).
+    content: str = ""
     platform: Platform
     brand_id: str
     piece_id: Optional[str] = None
+    asset_kind: Optional[Literal["audio", "image"]] = None
+    asset_id: Optional[str] = None
 
 
 class GenerateAnglesResponse(BaseModel):

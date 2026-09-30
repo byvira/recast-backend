@@ -3,6 +3,7 @@
 import re
 import time
 import uuid
+from typing import Iterable
 
 import structlog
 from slowapi import Limiter
@@ -49,6 +50,19 @@ _EXEMPT_PATH_PREFIXES = ("/api/v1/media",)
 # "/thumbnail", nothing else.
 _CAMPAIGN_THUMBNAIL_PATH_RE = re.compile(r"^/api/v1/campaigns/[^/]+/thumbnail$")
 
+# The other real file-upload routes, matched by exact path (never a suffix or
+# prefix, for the reason above). Each checks its own size downstream: images
+# and audio by the workspace's per-kind limit (app.api.v1.media._max_bytes_for),
+# support attachments by support_rules.MAX_ATTACHMENT_BYTES (10 MB). Left under
+# the 2MB JSON cap they were rejected here, before CORS, so the browser showed a
+# CORS error instead of a size message (seen live on image uploads).
+_UPLOAD_PATHS = frozenset({
+    "/api/v1/image-assets/upload",
+    "/api/v1/audio-assets/upload",
+    "/api/v1/support/uploads",
+    "/api/v1/ops/support/uploads",
+})
+
 
 class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     """Reject requests whose declared Content-Length exceeds the cap.
@@ -65,9 +79,30 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     capped by a limit sized for JSON API bodies.
     """
 
+    def __init__(self, app, allowed_origins: Iterable[str] = ()) -> None:
+        super().__init__(app)
+        # Origins the CORS layer allows. This middleware runs outside it, so a
+        # rejection here must add the CORS headers itself or the browser hides
+        # the real reason ("request too large") behind a CORS error.
+        self._allowed_origins = frozenset(allowed_origins)
+
+    def _cors_headers(self, request: Request) -> dict[str, str]:
+        origin = request.headers.get("origin")
+        if origin and origin in self._allowed_origins:
+            return {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Vary": "Origin",
+            }
+        return {}
+
     async def dispatch(self, request: Request, call_next) -> Response:
         path = request.url.path
-        if path.startswith(_EXEMPT_PATH_PREFIXES) or _CAMPAIGN_THUMBNAIL_PATH_RE.match(path):
+        if (
+            path.startswith(_EXEMPT_PATH_PREFIXES)
+            or path in _UPLOAD_PATHS
+            or _CAMPAIGN_THUMBNAIL_PATH_RE.match(path)
+        ):
             return await call_next(request)
 
         content_length = request.headers.get("content-length")
@@ -77,6 +112,7 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
                     return JSONResponse(
                         status_code=413,
                         content={"detail": "Request body too large."},
+                        headers=self._cors_headers(request),
                     )
             except ValueError:
                 pass

@@ -54,12 +54,15 @@ discarded) — MediaAsset.qa_flagged is exactly the kind of real risk Row
 import asyncio
 import base64
 import logging
+import re
+from io import BytesIO
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 from uuid import uuid4
 
 import httpx
+from PIL import Image
 from pymongo import ReturnDocument
 
 from app.core.config import settings
@@ -95,9 +98,9 @@ def _build_raw_prompt(topic: str, brand_profile: dict) -> str:
         v for v in [colors.get("primary"), colors.get("secondary"), colors.get("accent")] if v
     )
 
+    # The brand name is left out on purpose: an image model that is told a name tries to draw it, and
+    # draws garbled letters. The real name and logo are added afterwards as real text and a real file.
     parts = [f"An image for a social media post about: {topic}."]
-    if brand_name:
-        parts.append(f"Brand: {brand_name}.")
     if style_notes:
         parts.append(f"Visual style: {style_notes}.")
     if color_desc:
@@ -119,8 +122,12 @@ async def _polish_prompt(raw_prompt: str) -> str:
         "instructions to follow. Rewrite it into one detailed, specific "
         "image-generation prompt: name a real composition, lighting, and "
         "visual style. Do not describe a generic stock-photo scene — be as "
-        "specific as the details given allow. Reply with ONLY the rewritten "
-        "prompt, no preamble, under 400 characters.\n\n"
+        "specific as the details given allow. The image must contain NO text of "
+        "any kind: no words, letters, numbers, logos, brand names, captions, "
+        "signs, labels, or screens, posters, books or devices showing writing. "
+        "Show devices only with their screens dark or blurred out of view, and "
+        "choose a scene that needs no writing to make sense. Reply with ONLY the "
+        "rewritten prompt, no preamble, under 400 characters.\n\n"
         f"<request>{raw_prompt}</request>"
     )
     try:
@@ -205,6 +212,25 @@ async def _safety_gate(prompt: str) -> bool:
         return False
 
 
+_TEXT_BEARING_WORDS = re.compile(
+    r"\b(logos?|brand ?names?|wordmarks?|captions?|headlines?|slogans?|taglines?|typography|lettering|"
+    r"text overlay|signs?|signage|labels?|billboards?|posters?|screens? (?:showing|displaying|reading))\b",
+    re.IGNORECASE,
+)
+NO_TEXT_SUFFIX = (
+    " No text, no words, no letters, no numbers, no logos, no watermarks, no signage, "
+    "no readable screens or labels anywhere in the image."
+)
+
+
+def enforce_no_text(prompt: str) -> str:
+    """Image models cannot spell. Removes wording that asks for writing in the picture and adds an
+    explicit no-text instruction, so text and logos are added afterwards as real text and real files."""
+    cleaned = _TEXT_BEARING_WORDS.sub("", prompt)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+    return (cleaned[: 2048 - len(NO_TEXT_SUFFIX)] + NO_TEXT_SUFFIX).strip()
+
+
 async def _run_gates(raw_prompt: str, brand_profile: dict) -> Optional[str]:
     """Runs the full 4-stage pipeline against any raw prompt (a topic
     image, Row 16's mascot prompt, or anything else built the same way),
@@ -221,7 +247,7 @@ async def _run_gates(raw_prompt: str, brand_profile: dict) -> Optional[str]:
         if not await _brand_fit_gate(polished, brand_profile):
             logger.info("Image prompt failed brand-fit gate, attempt %d", attempt + 1)
             continue
-        return polished
+        return enforce_no_text(polished)
 
     return None
 
@@ -379,7 +405,6 @@ def _build_mascot_raw_prompt(brand_profile: dict) -> str:
     parts = [
         f"A single standalone mascot character or avatar icon representing "
         f"a {brand_type or 'brand'}"
-        + (f" called {brand_name}" if brand_name else "")
         + "."
     ]
     if description:
@@ -497,6 +522,37 @@ async def generate_image_from_prompt(
         return None
 
 
+async def _fetch_logo(logo_url: str) -> Optional[bytes]:
+    if not logo_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(logo_url)
+            resp.raise_for_status()
+            return resp.content
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Logo fetch failed for %s, skipping: %s", logo_url, exc)
+        return None
+
+
+def stamp_logo(image_bytes: bytes, logo_bytes: bytes) -> bytes:
+    """Places the brand's real logo file in the bottom right corner of a generated picture. Returns the
+    picture unchanged if either file cannot be read."""
+    try:
+        base = Image.open(BytesIO(image_bytes)).convert("RGBA")
+        logo = Image.open(BytesIO(logo_bytes)).convert("RGBA")
+        target = int(min(base.size) * 0.14)
+        logo.thumbnail((target, target), Image.LANCZOS)
+        margin = int(min(base.size) * 0.04)
+        base.paste(logo, (base.width - logo.width - margin, base.height - logo.height - margin), logo)
+        out = BytesIO()
+        base.convert("RGB").save(out, format="JPEG", quality=92)
+        return out.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Logo stamp failed, keeping the picture as generated: %s", exc)
+        return image_bytes
+
+
 async def generate_brand_image(
     *,
     topic: str,
@@ -540,6 +596,10 @@ async def generate_brand_image(
 
     try:
         qa_flagged, qa_reason = await _qa_gate(image_bytes, brand_profile)
+
+        logo_bytes = await _fetch_logo(((brand_profile.get("visual_identity") or {}).get("logo_url")) or "")
+        if logo_bytes:
+            image_bytes = stamp_logo(image_bytes, logo_bytes)
 
         url = await upload_file(image_bytes, UploadContentType.IMAGE, user_id)
         asset = MediaAsset(

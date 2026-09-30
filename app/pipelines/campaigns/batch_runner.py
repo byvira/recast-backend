@@ -22,6 +22,8 @@ from app.shared.activity.runs import brand_label, run_label, tracked_run, update
 from app.pipelines.text.storage import save_pipeline_result
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 
+from app.pipelines.campaigns import media as campaign_media
+
 logger = logging.getLogger(__name__)
 
 _CADENCE_DELTA = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
@@ -35,8 +37,8 @@ async def generate_campaign_batch(
     every business-rule failure (unsupported content type, incomplete
     brand, invalid stored platform) — never an HTTPException, since the
     scheduler has no request to attach one to."""
-    if campaign.get("content_types") != ["text"]:
-        raise ValueError("Only text campaigns are supported right now.")
+    if "text" not in (campaign.get("content_types") or ["text"]):
+        raise ValueError("A campaign always makes text; media is added on top of it.")
 
     brand = await brand_profiles.find_one({"id": campaign["brand_id"], "workspace_id": workspace_id})
     if not brand or not brand.get("is_complete"):
@@ -68,6 +70,16 @@ async def generate_campaign_batch(
             new_piece_ids.extend(piece_ids)
         except Exception as e:
             logger.error("Failed to save campaign %s day %d: %s", campaign["id"], day_index + 1, e)
+            piece_ids = []
+        # Media is an extra on top of the saved text: it only runs when the campaign asked for it,
+        # and a failure there is logged and never undoes the day's text.
+        if piece_ids and campaign_media.wanted_kinds(campaign.get("media_plan")):
+            try:
+                await campaign_media.generate_media_for_pieces(
+                    campaign, piece_ids, workspace_id=workspace_id, user_id=user_id,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error("Campaign %s day %d media failed: %s", campaign["id"], day_index + 1, e)
         # Autonomous run — attributed to the campaign scheduler in the
         # Activity Log, with the member who owns the campaign as the subject.
         await emit_run_completed(

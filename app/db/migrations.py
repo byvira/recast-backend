@@ -92,11 +92,40 @@ async def _backfill_workspace_is_personal_and_language(db) -> None:
     )
 
 
+async def _purge_bad_localized_strings(db) -> None:
+    """Delete cached translations produced by the old translate prompt.
+
+    Two kinds are wrong and would otherwise be served forever:
+    every mixed-language row (a code with "+", such as ta+en) was translated
+    into the pure native language instead of the blend, and any row whose text
+    contains echoed prompt wording (TEMPLATE:, Return ONLY ...). Deleting them
+    is safe: get_localized_string() simply translates again on next use.
+    """
+    migration_id = "2026-09-30_purge_bad_localized_strings"
+    if await _already_applied(db, migration_id):
+        return
+
+    coll = db["localized_strings"]
+    mixed = await coll.delete_many({"language": {"$regex": r"\+"}})
+    leaked = await coll.delete_many({
+        "template": {"$regex": r"TEMPLATE:|Return ONLY|No explanation, no quotes", "$options": "i"},
+    })
+    logger.info(
+        "migration %s: removed %d mixed-language and %d leaked cached translations",
+        migration_id, mixed.deleted_count, leaked.deleted_count,
+    )
+    await _mark_applied(
+        db, migration_id,
+        {"mixed_deleted": mixed.deleted_count, "leaked_deleted": leaked.deleted_count},
+    )
+
+
 async def run_startup_migrations() -> None:
     db = get_db()
     for migration in (
         _backfill_content_pieces_pipeline_type,
         _backfill_workspace_is_personal_and_language,
+        _purge_bad_localized_strings,
     ):
         try:
             await migration(db)

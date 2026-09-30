@@ -9,7 +9,7 @@ BRAND TYPE: {{ brand_type }}
 {% endif -%}
 {% if tone_line %}VOICE: {{ tone_line }}
 {% endif -%}
-{% if style %}STYLE NOTES: {{ style }}
+{% if style %}STYLE NOTES: {{ style | untrusted("style_notes") }}
 {% endif %}
 Draft:
 - 3 to 5 openers (the first line of a post — a hook, not a greeting).

@@ -35,7 +35,7 @@ Rules for all hooks:
 - Use only specific details from the brand story — never invented statistics
 {{ banned_openings_block }}{{ banned_hashtag_block }}
 CONTENT:
-{{ content }}
+{{ content | untrusted("source_content") }}
 
 Return valid JSON only:
 {

@@ -1,5 +1,6 @@
 
-Generate a detailed content brief for the topic: "{{ topic }}"
+Generate a detailed content brief for the topic given here:
+{{ topic | untrusted("topic") }}
 Language: {{ language }}
 
 Include:

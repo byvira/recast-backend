@@ -20,7 +20,7 @@ from app.pipelines.analytics.aggregator import (
     fetch_post_metrics_all,
 )
 from app.pipelines.publish.token_store import get_all_tokens
-from app.pipelines.text.generator import resolve_language_name
+from app.pipelines.text.generator import resolve_language_directive_name
 from app.prompts.registry import load_fixture, load_localized, load_prompt
 from app.shared.llm import call_llm, call_llm_structured, GroqModel
 from app.shared.localized_strings import get_localized_string
@@ -203,7 +203,7 @@ async def analyze_node(state: AnalyticsAgentState) -> dict:
         question=state["question"],
         account_summary=account_summary,
         post_summary=post_summary,
-        language_name=resolve_language_name(language),
+        language_name=resolve_language_directive_name(language),
     )
 
     try:
@@ -244,7 +244,7 @@ async def recommend_node(state: AnalyticsAgentState) -> dict:
         "analytics/recommend",
         question=state["question"],
         analysis=state["analysis"],
-        language_name=resolve_language_name(language),
+        language_name=resolve_language_directive_name(language),
         example_line=load_fixture("analytics_recommend_example")["example_line"],
     )
 

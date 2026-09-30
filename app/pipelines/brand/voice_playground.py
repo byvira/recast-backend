@@ -11,6 +11,8 @@ estimate instead of a constant. Read-only — never persists anything.
 
 from __future__ import annotations
 
+from app.prompts.safe import guard_output
+
 import logging
 from typing import Any, Optional
 
@@ -69,6 +71,11 @@ async def preview_rewrite_in_voice(
 
     if not result or not str(result.get("rewritten", "")).strip():
         return None
+    # The rewrite must not repeat our own instructions.
+    rewritten_clean = guard_output(str(result["rewritten"]), source=sample_text)
+    if rewritten_clean is None:
+        return None
+    result["rewritten"] = rewritten_clean
 
     score = result.get("tone_match_score", 0)
     try:

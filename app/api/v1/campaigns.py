@@ -14,12 +14,14 @@ generation itself already uses — a campaign is a coordination layer on
 top of pipelines that already exist, not a new generation engine).
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+import httpx
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel
 
 from app.core.middleware import limiter
@@ -34,7 +36,9 @@ from app.models.campaign import (
     UpdateCampaignRequest,
 )
 from app.models.text import Platform
+from app.pipelines.campaigns import media as campaign_media_module
 from app.pipelines.campaigns.batch_runner import generate_campaign_batch
+from app.pipelines.export import campaign_archive
 from app.pipelines.campaigns.suggest import suggest_campaign_topics
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.scraper import scrape_url
@@ -46,6 +50,13 @@ ALLOWED_THUMBNAIL_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _content_types(media_plan: dict) -> list[str]:
+    """Text always, plus each media kind that is switched on and can be generated today. Video is
+    kept in the media plan (set up, inactive) but is not generated yet, so it is not listed here."""
+    kinds = media_plan.get("kinds") or [] if media_plan.get("enabled") else []
+    return ["text"] + [k for k in ("audio", "image") if k in kinds]
 
 
 def _doc_to_campaign(doc: dict) -> Campaign:
@@ -155,10 +166,11 @@ async def create_campaign(
         "topic_cluster": topic_cluster,
         "source_type": body.source_type.value,
         "source_url": source_url,
-        "content_types": ["text"],  # text-only — see module docstring
+        "content_types": _content_types(body.media_plan.model_dump()),
         "platforms": [p.value for p in platforms],
         "platforms_by_day": body.platforms_by_day,
         "cadence": cadence,
+        "media_plan": body.media_plan.model_dump(),
         "status": CampaignStatus.DRAFT.value,
         "piece_ids": [],
         "last_generated_at": None,
@@ -235,6 +247,10 @@ async def update_campaign(
         if field in payload and payload[field] is not None:
             update[field] = payload[field]
 
+    if payload.get("media_plan") is not None:
+        update["media_plan"] = payload["media_plan"]
+        update["content_types"] = _content_types(payload["media_plan"])
+
     if "cadence" in update:
         # Same server-computed-only rule as create_campaign — recompute
         # next_run_at from the new frequency rather than trust the client.
@@ -265,6 +281,130 @@ async def delete_campaign(
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Campaign not found.")
+
+
+async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> dict[str, list[dict]]:
+    """Each post's generated audio and images (found by source_piece_id), keyed by piece id."""
+    from app.db.mongo import audio_assets, image_assets, media_assets
+
+    if not piece_ids:
+        return {}
+    query = {"workspace_id": workspace_id, "source_piece_id": {"$in": piece_ids}}
+    audio = await audio_assets.find(query).to_list(length=None)
+    images = await image_assets.find(query).to_list(length=None)
+    media_ids = {a.get("media_id") for a in audio if a.get("media_id")}
+    for doc in images:
+        media_ids.update(s.get("media_id") for s in doc.get("slides", []) if s.get("media_id"))
+    docs = await media_assets.find({"id": {"$in": list(media_ids)}, "workspace_id": workspace_id}).to_list(length=None)
+    by_id = {m["id"]: m for m in docs}
+
+    found: dict[str, list[dict]] = {}
+    for a in audio:
+        m = by_id.get(a.get("media_id") or "")
+        if m and m.get("url"):
+            found.setdefault(a["source_piece_id"], []).append(
+                {"kind": "audio", "url": m["url"], "mime_type": m.get("mime_type"), "title": a.get("title")}
+            )
+    for doc in images:
+        for slide in doc.get("slides", []):
+            m = by_id.get(slide.get("media_id") or "")
+            if m and m.get("url"):
+                found.setdefault(doc["source_piece_id"], []).append(
+                    {"kind": "image", "url": m["url"], "mime_type": m.get("mime_type"), "title": doc.get("title")}
+                )
+    return found
+
+
+async def _attach_generated_media(pieces: list[dict], workspace_id: str) -> None:
+    """Add each post's generated audio and images to its media list (for the export)."""
+    found = await _generated_media_by_piece([p["piece_id"] for p in pieces if p.get("piece_id")], workspace_id)
+    for p in pieces:
+        p["media"] = list(p.get("media") or []) + [
+            {"url": m["url"], "mime_type": m["mime_type"], "kind": m["kind"]} for m in found.get(p.get("piece_id"), [])
+        ]
+
+
+@router.get("/{campaign_id}/media")
+@limiter.limit("60/minute")
+async def campaign_media(
+    request: Request,
+    campaign_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict[str, Any]:
+    """The audio and images made for this campaign's posts.
+    {"items": {piece_id: [{kind, url, mime_type, title}]}, "status": {piece_id: {"image"|"audio": "ready"|"failed"}}}"""
+    doc = await get_campaigns_collection().find_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    pieces = await content_pieces.find(
+        {"workspace_id": ctx.workspace_id, "campaign_id": campaign_id, "deleted": {"$ne": True}},
+        {"piece_id": 1, "media_status": 1},
+    ).to_list(length=None)
+    ids = [p["piece_id"] for p in pieces if p.get("piece_id")]
+    return {
+        "items": await _generated_media_by_piece(ids, ctx.workspace_id),
+        "status": {p["piece_id"]: p["media_status"] for p in pieces if p.get("piece_id") and p.get("media_status")},
+    }
+
+
+@router.post("/{campaign_id}/pieces/{piece_id}/retry-media")
+@limiter.limit("10/minute")
+async def retry_post_media(
+    request: Request,
+    campaign_id: str,
+    piece_id: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict[str, Any]:
+    """Try again the media that failed for one post. Only the failed kinds are made again."""
+    doc = await get_campaigns_collection().find_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    states = await campaign_media_module.retry_media_for_piece(
+        doc, piece_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+    )
+    return {"status": states}
+
+
+@router.get("/{campaign_id}/export")
+@limiter.limit("10/minute")
+async def export_campaign(
+    request: Request,
+    campaign_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> Response:
+    """One ZIP: a .docx with every post's text (each naming where its media is) and a media/
+    folder per post. Media that cannot be downloaded is marked in the document, not fatal."""
+    from app.api.v1.content import _fetch_media  # same downloader the library export uses
+
+    doc = await get_campaigns_collection().find_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    pieces = await content_pieces.find(
+        {"workspace_id": ctx.workspace_id, "campaign_id": campaign_id, "deleted": {"$ne": True}},
+    ).sort("created_at", 1).to_list(length=1000)
+
+    await _attach_generated_media(pieces, ctx.workspace_id)
+    posts = campaign_archive.plan_campaign_export(pieces)
+    items = [m for p in posts for m in p.media][:200]
+    media_bytes: dict[str, bytes] = {}
+    if items:
+        limit = asyncio.Semaphore(6)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            results = await asyncio.gather(*(_fetch_media(m.url, client, limit) for m in items))
+        media_bytes = {m.path: data for m, data in zip(items, results) if data is not None}
+
+    body = campaign_archive.build_zip(doc.get("name") or "Campaign", posts, media_bytes)
+    return Response(
+        content=body,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="recast-campaign.zip"'},
+    )
 
 
 @router.post("/{campaign_id}/generate-next-batch")

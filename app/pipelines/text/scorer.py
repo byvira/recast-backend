@@ -17,6 +17,7 @@ Readability scoring:
 
 import logging
 import re
+from app.prompts.safe import hook_fits
 from app.pipelines.text.quality import flesch_reading_ease, is_latin_script
 from app.prompts.registry import load_fixture, load_prompt
 from app.shared.llm import call_llm_structured, GroqModel
@@ -203,7 +204,8 @@ async def score_hook(
     recommended_content = content
     if alternatives and recommended_idx < len(alternatives):
         recommended_hook_text = alternatives[recommended_idx].get("text", "")
-        if recommended_hook_text:
+        # A hook is only applied when it is a real single line in the same script as the piece.
+        if recommended_hook_text and hook_fits(content, recommended_hook_text):
             recommended_content = _apply_hook_to_content(content, recommended_hook_text)
 
     return {

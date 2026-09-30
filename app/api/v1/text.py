@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.middleware import limiter
 from app.shared.activity.runs import brand_label, run_label, tracked_run
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import brand_profiles
+from app.db.mongo import audio_assets, brand_profiles, image_assets
 from app.models.text import (
     BatchGenerateRequest,
     GenerateTextRequest,
@@ -51,6 +51,7 @@ from app.pipelines.text.scorer import score_hook, score_readability
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.chips import apply_chip, get_chips_for_platform, CHIP_PROMPTS
 from app.pipelines.text.angles import run_angles_agent
+from app.pipelines.text.angle_sources import NO_TEXT_MESSAGE, text_for_angles
 from app.pipelines.text.repurpose_suggest import suggest_repurpose_targets
 from app.pipelines.text.storage import save_pipeline_result, update_piece_content
 from app.agents.text.nodes import _extract_enforcement_data
@@ -700,11 +701,23 @@ async def generate_angles(
     brand_context = build_brand_context(brand_profile)
     enforcement = _extract_enforcement_data(brand_profile)
 
+    source_text = body.content.strip()
+    if not source_text:
+        if not (body.asset_kind and body.asset_id):
+            raise HTTPException(status_code=400, detail="Add some content to build angles from.")
+        collection = audio_assets if body.asset_kind == "audio" else image_assets
+        doc = await collection.find_one({"id": body.asset_id, "workspace_id": ctx.workspace_id})
+        if not doc:
+            raise HTTPException(status_code=404, detail="That item wasn't found.")
+        source_text = text_for_angles(body.asset_kind, doc) or ""
+        if not source_text:
+            raise HTTPException(status_code=400, detail=NO_TEXT_MESSAGE[body.asset_kind])
+
     result = await run_angles_agent(
         AgentTask(
             agent="angles",
             platform=body.platform,
-            content=body.content,
+            content=source_text,
             brand_context=brand_context,
             session_id=body.piece_id or "angles-preview",
             metadata={"banned_words": enforcement.get("banned_words", [])},

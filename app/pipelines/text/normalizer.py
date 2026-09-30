@@ -161,8 +161,8 @@ async def extract_content_brief(content: str, language: str = "en") -> str:
     if not content or len(content.strip()) < 50:
         return ""
 
-    from app.pipelines.text.generator import resolve_language_name
-    language_name = resolve_language_name(language)
+    from app.pipelines.text.generator import resolve_language_directive_name
+    language_name = resolve_language_directive_name(language)
 
     prompt = load_prompt(
         "text/normalize/extract_content_brief", language_name=language_name, content=content[:2000]

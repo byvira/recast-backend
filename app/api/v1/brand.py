@@ -12,10 +12,11 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import brand_profiles, users
+from app.db.mongo import audio_assets, brand_profiles, content_pieces, get_campaigns_collection, image_assets, presets, users
 from app.models.brand_profile import (
     AddTrainingSampleBody,
     BrandProfile,
@@ -31,6 +32,7 @@ from app.models.brand_profile import (
     UpdateVisualIdentityBody,
     UpdateVoiceBody,
 )
+from app.pipelines.brand import profile_sections
 from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggestions
 from app.pipelines.brand.voice_playground import preview_rewrite_in_voice
 from app.pipelines.brand.trait_extraction import extract_sample_traits
@@ -77,6 +79,27 @@ def normalise_brand_keys(data: dict) -> dict:
     return _normalise(data)
 
 
+def _version_of(doc: dict) -> str:
+    """Changes on every save (milliseconds since 1970 of updated_at)."""
+    value = doc.get("updated_at")
+    if not isinstance(value, datetime):
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return str(int(value.timestamp() * 1000))
+
+
+def _assert_version(request: Request, doc: dict) -> None:
+    """The profile page sends the version it loaded. If the profile has been saved since, refuse
+    the edit instead of silently overwriting someone else's change. No header means no check."""
+    sent = (request.headers.get("x-brand-version") or "").strip()
+    if sent and sent != _version_of(doc):
+        raise HTTPException(
+            status_code=409,
+            detail="This profile was changed by someone else since you opened it. Reload to see the latest, then make your change again.",
+        )
+
+
 def _doc_to_brand_profile(doc: dict) -> BrandProfile:
     """Convert a raw MongoDB document to a BrandProfile model instance."""
     from app.models.brand_profile import AudienceProfile, VisualIdentity, VoiceCalibration, VoiceTone
@@ -97,6 +120,7 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         positioning_data=doc.get("positioning_data"),
         completed_steps=doc.get("completed_steps", []),
         platforms=doc.get("platforms", []),
+        default_platform=doc.get("default_platform"),
         blueprint_version=doc.get("blueprint_version", "2.0"),
         is_complete=doc.get("is_complete", False),
         onboarding_step=doc.get("onboarding_step", 1),
@@ -118,6 +142,8 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         visual_identity=VisualIdentity(**doc["visual_identity"]) if doc.get("visual_identity") else VisualIdentity(),
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
+        completeness=profile_sections.compute_completeness(doc),
+        version=_version_of(doc),
     )
 
 
@@ -315,6 +341,32 @@ async def list_brand_profiles(
     }
 
 
+@router.get("/identity-fields")
+@limiter.limit("100/minute")
+async def get_identity_fields(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict[str, Any]:
+    """The fields each brand type has on its profile, and the choices for the pickers. The profile
+    page builds its forms from this, so the rules live in one place."""
+    return {
+        "types": profile_sections.IDENTITY_FIELDS,
+        "reading_levels": profile_sections.READING_LEVELS,
+        "knowledge_levels": profile_sections.KNOWLEDGE_LEVELS,
+        "phrase_placements": profile_sections.PHRASE_PLACEMENTS,
+        "limits": {
+            "short": profile_sections.SHORT_MAX,
+            "long": profile_sections.LONG_MAX,
+            "list_items": profile_sections.LIST_MAX_ITEMS,
+            "list_item_chars": profile_sections.LIST_ITEM_MAX,
+            "pain_point": profile_sections.PAIN_POINT_MAX,
+            "openers": profile_sections.MAX_OPENERS,
+            "banned_words": profile_sections.MAX_BANNED,
+            "synonyms": profile_sections.MAX_SYNONYMS,
+        },
+    }
+
+
 @router.get("/{brand_id}")
 @limiter.limit("100/minute")
 async def get_brand_profile(
@@ -410,6 +462,130 @@ async def update_brand_type(
     return {"brand_id": brand_id, "brand_type": body.brand_type.value}
 
 
+class SaveSectionBody(BaseModel):
+    data: Any
+
+
+def _invalid(errors: dict[str, str]) -> HTTPException:
+    return HTTPException(status_code=422, detail={"message": "Some fields need another look.", "errors": errors})
+
+
+@router.patch("/{brand_id}/sections/{section}")
+@limiter.limit("60/minute")
+async def save_profile_section(
+    request: Request,
+    brand_id: str,
+    section: str,
+    body: SaveSectionBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, Any]:
+    """Saves one section of the profile page: identity, audience, platforms or onboarding_answers.
+    Each section is cleaned and checked before it is stored, and an edit made on an out-of-date
+    copy is refused (409). Unlike PUT /step, this never changes the onboarding progress."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    _assert_version(request, doc)
+
+    data = body.data if isinstance(body.data, dict) else {}
+    brand_type = doc.get("brand_type") or ""
+    update: dict[str, Any] = {"updated_at": datetime.now(timezone.utc)}
+
+    if section == "identity":
+        identity, errors = profile_sections.sanitize_identity(brand_type, data, doc.get("identity") or {})
+        if errors:
+            raise _invalid(errors)
+        update["identity"] = identity
+    elif section == "audience":
+        audience, errors = profile_sections.sanitize_audience(data)
+        if errors:
+            raise _invalid(errors)
+        update["audience"] = audience
+    elif section == "platforms":
+        platforms, errors = profile_sections.sanitize_platforms(data.get("platforms"))
+        if errors:
+            raise _invalid(errors)
+        update["platforms"] = platforms
+        update["default_platform"] = profile_sections.resolve_default_platform(
+            platforms, data.get("default_platform"), doc.get("default_platform"),
+        )
+    elif section == "onboarding_answers":
+        field = profile_sections.onboarding_field_for(brand_type)
+        if not field:
+            raise HTTPException(status_code=400, detail="This kind of brand has no extra onboarding answers.")
+        import json
+
+        if len(json.dumps(data, default=str)) > 20000:
+            raise _invalid({"onboarding_answers": "These answers are too long to save."})
+        update[field] = data
+    else:
+        raise HTTPException(status_code=404, detail="Unknown section.")
+
+    await brand_profiles.update_one({"id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": update})
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated).model_dump()
+
+
+@router.get("/{brand_id}/counts")
+@limiter.limit("60/minute")
+async def get_brand_counts(
+    request: Request,
+    brand_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict[str, Any]:
+    """What is linked to this brand by its id: posts (with how many are at each stage), images,
+    audio, campaigns, and templates bound to this voice."""
+    from app.pipelines.text.storage import KANBAN_STAGES, compute_kanban_stage
+
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id}, {"id": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    scope = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
+
+    pieces = await content_pieces.find(
+        {**scope, "brand_id": brand_id}, {"archived": 1, "publish_status": 1, "approval_status": 1},
+    ).to_list(length=None)
+    stages = {stage: 0 for stage in KANBAN_STAGES}
+    for p in pieces:
+        stage = compute_kanban_stage(p)
+        stages[stage] = stages.get(stage, 0) + 1
+
+    return {
+        "posts": {"total": len(pieces), "by_stage": stages},
+        "images": await image_assets.count_documents({**scope, "brand_id": brand_id}),
+        "audio": await audio_assets.count_documents({**scope, "brand_id": brand_id}),
+        "campaigns": await get_campaigns_collection().count_documents({**scope, "brand_id": brand_id}),
+        "presets": await presets.count_documents({**scope, "voice_binding_id": brand_id}),
+    }
+
+
+@router.post("/{brand_id}/duplicate", status_code=201)
+@limiter.limit("10/minute")
+async def duplicate_brand_profile(
+    request: Request,
+    brand_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, str]:
+    """A copy of this profile (never the default), named '<name> (copy)'. Linked content is not copied."""
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    if await brand_profiles.count_documents({"workspace_id": ctx.workspace_id}) >= MAX_BRAND_PROFILES_PER_WORKSPACE:
+        raise HTTPException(status_code=400, detail="Maximum of 10 brand profiles per workspace reached.")
+
+    now = datetime.now(timezone.utc)
+    copy = {k: v for k, v in doc.items() if k != "_id"}
+    copy.update({"id": str(uuid4()), "user_id": ctx.user_id, "is_default": False, "created_at": now, "updated_at": now})
+    identity = dict(copy.get("identity") or {})
+    for key in ("name", "company_name", "product_name"):
+        if identity.get(key):
+            identity[key] = f"{str(identity[key])[:100]} (copy)"
+            break
+    copy["identity"] = identity
+    await brand_profiles.insert_one(copy)
+    return {"brand_profile_id": copy["id"]}
+
+
 @router.patch("/{brand_id}/voice")
 @limiter.limit("30/minute")
 async def update_brand_voice(
@@ -428,6 +604,7 @@ async def update_brand_voice(
     doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
+    _assert_version(request, doc)
 
     update: dict[str, Any] = {"updated_at": datetime.now(timezone.utc)}
     changed_fields: list[str] = []
@@ -435,7 +612,10 @@ async def update_brand_voice(
         update["voice_tone"] = body.voice_tone.model_dump()
         changed_fields.append("voice_tone")
     if body.manual_data is not None:
-        update["manual_data"] = body.manual_data.model_dump()
+        manual, word_errors = profile_sections.validate_words(body.manual_data.model_dump())
+        if word_errors:
+            raise _invalid(word_errors)
+        update["manual_data"] = manual
         changed_fields.append("manual_data")
     if body.default_tone is not None:
         update["default_tone"] = body.default_tone.value
@@ -542,6 +722,7 @@ async def update_brand_calibration(
     doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
+    _assert_version(request, doc)
 
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": ctx.workspace_id},
@@ -569,6 +750,7 @@ async def update_brand_visual_identity(
     doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
+    _assert_version(request, doc)
 
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": ctx.workspace_id},

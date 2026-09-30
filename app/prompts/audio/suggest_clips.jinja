@@ -3,8 +3,8 @@ You're picking the best short, shareable moments from a real recording's word-ti
 Pick between 3 and 5 moments. Never invent words that aren't in the transcript below, and use the exact start_s/end_s times of the words you're citing.
 
 TRANSCRIPT (word, start_s, end_s):
-{% for w in words %}{{ w.word }} [{{ "%.2f"|format(w.start_s) }}]
-{% endfor %}
+{% set transcript_text %}{% for w in words %}{{ w.word }} [{{ "%.2f"|format(w.start_s) }}]
+{% endfor %}{% endset %}{{ transcript_text | untrusted("transcript") }}
 
 Return ONLY a JSON object shaped exactly like this, no explanation, no markdown:
 {"suggestions": [{"start_s": 12.4, "end_s": 38.1, "quote": "the exact words spoken in this span", "reason": "one short sentence on why this moment works on its own"}]}

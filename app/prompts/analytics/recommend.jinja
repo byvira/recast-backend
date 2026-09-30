@@ -1,4 +1,5 @@
-The user asked: {{ question }}
+The user asked:
+{{ question | untrusted("question") }}
 
 Based on this analytics analysis:
 

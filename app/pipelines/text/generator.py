@@ -25,6 +25,7 @@ from typing import Dict, List, Tuple
 
 from app.models.text import AgentTask, AgentResult, Platform, LANGUAGE_NAMES
 from app.prompts.registry import load_fixture, load_prompt
+from app.prompts.safe import contains_banned, guard_output, is_english
 from app.shared.llm import GroqModel, call_llm, call_llm_structured
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,29 @@ def resolve_language_name(code: str) -> str:
     return f"the language identified by the code or name '{normalised}'"
 
 
+def resolve_language_directive_name(code: str) -> str:
+    """Like resolve_language_name(), for prompts that say "write in {name}".
+
+    A single language behaves exactly as resolve_language_name(). A mixed code
+    ("ta+en", "hi+en", "ml+en" ...) is spelled out as the blend people really
+    type (Tanglish, Hinglish, Manglish): the non-English words are written in
+    English (Latin) letters and mixed with English, never in the native script.
+    Without this, "Tamil and English (Tanglish)" was read as "Tamil" and the
+    model answered in Tamil script.
+    """
+    normalised = (code or "").strip().lower()
+    if "+" not in normalised:
+        return resolve_language_name(code)
+    first, _, second = normalised.partition("+")
+    native_code, other_code = (second, first) if first.split("-")[0] == "en" else (first, second)
+    native = resolve_language_name(native_code)
+    other = resolve_language_name(other_code)
+    return (
+        f"a natural blend of {native} and {other}, with the {native} words written in "
+        f"English (Latin) letters the way people type them in chat, never in {native} script"
+    )
+
+
 def build_language_instruction(language_code: str) -> str:
     """One unambiguous block telling the model what language to write in.
 
@@ -104,6 +128,8 @@ def build_language_instruction(language_code: str) -> str:
             "text/generate/mixed_language_instruction",
             lang1=resolve_language_name(lang1_code),
             lang2=resolve_language_name(lang2_code),
+            # Says which half is written in English (Latin) letters, so the model does not answer in the native script.
+            blend=resolve_language_directive_name(language_code),
         )
 
     name = resolve_language_name(language_code)
@@ -270,6 +296,7 @@ def validate_content(
     required_phrases: List[Dict],
     approved_openers: List[str],
     approved_closers: List[str],
+    language: str = "en",
 ) -> Tuple[bool, List[str]]:
     """
     Validate generated content against all brand rules.
@@ -285,10 +312,12 @@ def validate_content(
     char_count = len(content)
 
     # ── Hard gate 1 — banned words (word boundary match) ─────────────────
-    for word in banned_words:
-        pattern = r'\b' + re.escape(word.strip().lower()) + r'\b'
-        if re.search(pattern, content_lower):
-            hard_issues.append(f"Banned word found: '{word}'")
+    for word in contains_banned(content, banned_words):
+        hard_issues.append(f"Banned word found: '{word}'")
+
+    # The opening, closing and filler-word checks below are English wording. They only make sense for
+    # English output, so a Tamil, Hindi or Tanglish piece is not judged by them.
+    english = is_english(language)
 
     # ── Hard gate 2 — minimum length ──────────────────────────────────────
     min_words = {
@@ -323,7 +352,7 @@ def validate_content(
 
     # ── Hard gate 4 — generic openings ────────────────────────────────────
     first_200 = content_lower[:200]
-    for generic in GENERIC_OPENINGS:
+    for generic in (GENERIC_OPENINGS if english else []):
         if first_200.startswith(generic) or first_200.startswith(f"\n{generic}"):
             hard_issues.append(f"Generic opening detected: '{generic}'")
             break
@@ -339,7 +368,7 @@ def validate_content(
         "feel free to reach out",
     ]
     last_200 = content_lower[-200:]
-    for generic in generic_closings:
+    for generic in (generic_closings if english else []):
         if generic in last_200:
             hard_issues.append(f"Generic closing detected: '{generic}'")
             break
@@ -350,7 +379,7 @@ def validate_content(
         "significant", "substantial", "various", "numerous",
     ]
     found_weasels = []
-    for weasel in weasel_words:
+    for weasel in (weasel_words if english else []):
         pattern = r'\b' + re.escape(weasel) + r'\b'
         if re.search(pattern, content_lower):
             found_weasels.append(weasel)
@@ -360,7 +389,9 @@ def validate_content(
         )
 
     # ── Hard gate 7 — required phrases present ────────────────────────────
-    for phrase_obj in required_phrases:
+    # Required phrases are written in English by the member and translated by the model for other languages,
+    # so the exact-text check only applies to English output.
+    for phrase_obj in (required_phrases if english else []):
         phrase = (phrase_obj.get("text") or "").strip()
         if phrase and phrase.lower() not in content_lower:
             hard_issues.append(f"Required brand phrase missing: '{phrase}'")
@@ -532,6 +563,7 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
     prompt = load_prompt(
         "text/generate/master",
         language_instruction=language_instruction,
+        language_short=f"Write the whole output in {resolve_language_directive_name(language_code)}.",
         brand_context=task.brand_context,
         tone_override_text=tone_override_text,
         goal_context=goal_context,
@@ -583,7 +615,9 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
             "Output only the final content. No JSON. No explanation."
         )
         plain = await call_llm(fallback_prompt, model=GroqModel.BALANCED, max_tokens=GENERATION_MAX_TOKENS)
-        content = plain.strip()
+        # Strip a code fence, JSON wrapper or preamble, and refuse an empty or leaked answer: an empty piece
+        # then fails the length check and is retried, instead of showing the member a wrapper or our instructions.
+        content = guard_output(plain, source=prompt) or ""
         result = {
             "content": content,
             "platform": task.platform.value,
@@ -602,6 +636,7 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         required_phrases=required_phrases,
         approved_openers=approved_openers,
         approved_closers=approved_closers,
+        language=language_code,
     )
 
     result["quality_passed"] = is_valid

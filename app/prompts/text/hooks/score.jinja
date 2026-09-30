@@ -73,10 +73,10 @@ HOOK QUALITY RULES:
 You are scoring the hook quality of this {{ platform }} content.
 
 CURRENT CONTENT:
-{{ content }}
+{{ content | untrusted("source_content") }}
 
 CURRENT HOOK (first line):
-"{{ current_hook }}"
+{{ current_hook | untrusted("current_hook") }}
 
 TASK:
 1. Score the current hook 1-10 for scroll-stopping power

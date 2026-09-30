@@ -29,6 +29,7 @@ from fastapi import HTTPException
 
 from app.db.mongo import support_ai_usage
 from app.prompts.registry import load_prompt
+from app.shared.localized_strings import looks_leaked
 from app.shared import support_guides
 from app.shared.llm import GroqModel, call_llm, usage_workspace
 
@@ -156,6 +157,15 @@ async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
 _DASHES = re.compile(r"\s*[—–]\s*")
 
 
+_TICKET_TAG = re.compile(r"<\s*/?\s*ticket_data\s*>", re.IGNORECASE)
+
+
+def _safe(text: str) -> str:
+    """Member text made ready for the prompt: private details masked, and any copy of the prompt's own
+    fence tag removed so the text cannot close the fence and speak as the instructions."""
+    return _TICKET_TAG.sub("", redact(text or ""))
+
+
 def _clean_output(text: str) -> str:
     text = text.strip()
     text = re.sub(r"^```[a-z]*\n?|```$", "", text).strip()
@@ -168,7 +178,7 @@ def _thread_for_prompt(ticket: dict) -> list[dict]:
     rows: list[dict] = []
     for m in [m for m in ticket.get("messages", []) if not m.get("is_internal") and not m.get("is_deleted")][-MAX_THREAD_MESSAGES:]:
         who = "Recast" if m.get("sender") == "staff" else "Member"
-        rows.append({"who": who, "text": redact(m.get("text", ""))[:MAX_MESSAGE_CHARS]})
+        rows.append({"who": who, "text": _safe(m.get("text", ""))[:MAX_MESSAGE_CHARS]})
     return rows
 
 
@@ -183,8 +193,8 @@ async def draft_reply(ticket: dict, snapshot: Optional[dict], staff_id: str) -> 
 
     prompt = load_prompt(
         DRAFT_PROMPT,
-        first_name=redact(first_name),
-        subject=redact(ticket.get("subject", "")),
+        first_name=_safe(first_name),
+        subject=_safe(ticket.get("subject", "")),
         category=ticket.get("category", ""),
         thread=thread,
         findings=[f["text"] for f in findings],
@@ -205,6 +215,9 @@ async def draft_reply(ticket: dict, snapshot: Optional[dict], staff_id: str) -> 
         raise HTTPException(status_code=503, detail="The drafting help isn't available right now. You can write the reply by hand.")
 
     draft = _clean_output(raw or "")
+    # A reply that repeats our own instructions is never shown.
+    if draft and looks_leaked(draft, latest):
+        draft = ""
     ok = bool(draft)
     await _log("draft", ticket["id"], staff_id, DRAFT_PROMPT_VERSION, GroqModel.FAST.value, ok, len(prompt), len(draft))
     if not ok:
@@ -227,8 +240,8 @@ async def ai_category(ticket: dict) -> Optional[str]:
         prompt = load_prompt(
             CATEGORY_PROMPT,
             areas=CATEGORIES,
-            subject=redact(ticket.get("subject", "")),
-            body=redact(first_text)[:MAX_MESSAGE_CHARS],
+            subject=_safe(ticket.get("subject", "")),
+            body=_safe(first_text)[:MAX_MESSAGE_CHARS],
         )
         async with usage_workspace(USAGE_BUCKET):
             raw = await call_llm(prompt, model=GroqModel.FAST, temperature=0, max_tokens=MAX_OUTPUT_TOKENS_CATEGORY)

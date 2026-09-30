@@ -5,7 +5,7 @@ OBSERVED DIFFERENCES IN THIS DRAFT: {{ deltas or "none detected" }}
 DRAFT ({{ target or "general" }}):
 {% if platform_tone_profile %}This platform's typical register: {{ platform_tone_profile }}.{% endif %}
 {% if platform_policy_constraints %}Platform rules to respect: {{ platform_policy_constraints | join("; ") }}.{% endif %}
-{{ draft_text }}
+{{ draft_text | untrusted("draft") }}
 
 Write suggested_openers and rewrite_hint in {{ language_name }} — that is the language the author reads.
 Return: {"suggested_openers": ["...","...","..."], "rewrite_hint": "<=40 words, specific, how to pull it back toward their voice"}

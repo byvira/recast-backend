@@ -635,3 +635,79 @@ async def test_list_never_shows_another_workspaces_audio(signup_user, stubs):
     res = await client.get("/api/v1/audio-assets/", headers=_h(other))
     assert res.status_code == 200
     assert res.json() == {"items": [], "total": 0}
+
+
+# ── spoken length: real duration, pace, preview ──────────────────────────────
+
+async def test_generate_stores_the_real_length_of_the_audio(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    res = await _generate(client, ws_id, brand_id)
+    assert res.status_code == 201, res.text
+    media = await media_assets.find_one({"id": res.json()["media_id"]})
+    # The stub audio is 0.4 s long; the stored length must be that, not a fixed default.
+    assert media["duration_s"] == pytest.approx(0.4, abs=0.05)
+
+
+async def test_a_chosen_pace_reaches_the_voice_settings(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    res = await _generate(client, ws_id, brand_id, words_per_minute=180)
+    assert res.status_code == 201, res.text
+    assert res.json()["voice_settings_snapshot"]["speech_speed"] == 1.2
+
+
+async def test_pace_outside_the_allowed_range_is_rejected(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    assert (await _generate(client, ws_id, brand_id, words_per_minute=50)).status_code == 422
+    assert (await _generate(client, ws_id, brand_id, words_per_minute=400)).status_code == 422
+    assert stubs["synth"] == [], "nothing may be synthesized for a rejected request"
+
+
+async def test_length_preview_estimates_without_calling_a_provider(signup_user, stubs):
+    client, _, ws_id, _ = await _setup(signup_user)
+
+    res = await client.post(
+        "/api/v1/audio-assets/length-preview",
+        json={"script": "word " * 75, "target_seconds": 60}, headers=_h(ws_id),
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["estimated_seconds"] == 30.0
+    assert body["target_seconds"] == 60
+    assert body["fit"]["status"] == "short"
+    assert body["fit"]["words_needed"] == 150
+    assert (body["min_seconds"], body["max_seconds"]) == (15, 600)
+    assert stubs["synth"] == []
+
+
+async def test_length_preview_picks_up_a_length_written_in_the_script(signup_user, stubs):
+    client, _, ws_id, _ = await _setup(signup_user)
+
+    res = await client.post(
+        "/api/v1/audio-assets/length-preview",
+        json={"script": "Write a 2 minute intro about focus."}, headers=_h(ws_id),
+    )
+    body = res.json()
+    assert body["detected_seconds"] == 120
+    assert body["target_seconds"] == 120
+
+
+async def test_an_explicit_target_beats_a_length_in_the_script(signup_user, stubs):
+    client, _, ws_id, _ = await _setup(signup_user)
+
+    res = await client.post(
+        "/api/v1/audio-assets/length-preview",
+        json={"script": "a 2 minute intro", "target_seconds": 30}, headers=_h(ws_id),
+    )
+    assert res.json()["target_seconds"] == 30
+    assert res.json()["detected_seconds"] == 120
+
+
+async def test_length_preview_with_no_target_has_no_fit(signup_user, stubs):
+    client, _, ws_id, _ = await _setup(signup_user)
+
+    res = await client.post("/api/v1/audio-assets/length-preview", json={"script": "hello there"}, headers=_h(ws_id))
+    assert res.status_code == 200
+    assert res.json()["target_seconds"] is None and res.json()["fit"] is None

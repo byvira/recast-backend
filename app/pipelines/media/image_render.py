@@ -34,10 +34,11 @@ import os
 from io import BytesIO
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 from pydantic import BaseModel
 
 from app.models.image_asset import LayoutPreset
+from app.pipelines.media.icons import DEFAULT_ACCENT_ICON, icon_char, is_known_icon, load_icon_font
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,13 @@ LAYOUT_DIMS: dict[LayoutPreset, tuple[int, int]] = {
     LayoutPreset.INFOGRAPHIC: (1080, 1920),
     LayoutPreset.CHART: (1200, 900),
     LayoutPreset.CODE_SNIPPET: (1200, 800),
+    # Platform sizes (the platforms' commonly published recommendations; recheck each
+    # platform's help page before release, they change).
+    LayoutPreset.INSTAGRAM_SQUARE: (1080, 1080),
+    LayoutPreset.LINKEDIN_POST: (1200, 627),
+    LayoutPreset.X_POST: (1600, 900),
+    LayoutPreset.SOCIAL_SHARE: (1200, 630),
+    LayoutPreset.YOUTUBE_THUMBNAIL: (1280, 720),
 }
 
 # All 9 layouts now have a real pixel target (widened 2026-09-26, bugs/gaps
@@ -156,6 +164,11 @@ class SlideTextContent(BaseModel):
     headline: str
     accent_keyword: str = ""
     author: Optional[str] = None
+    # A Lucide icon name (see pipelines/media/icons.py) drawn above the headline
+    # in the accent colour. None draws no icon.
+    icon_name: Optional[str] = None
+    # A large, faint copy of the icon (or a default one) behind the text.
+    illustration_accent: bool = False
 
 
 def _hex_or_default(value: str, fallback: str) -> str:
@@ -167,6 +180,12 @@ def _hex_or_default(value: str, fallback: str) -> str:
         return value
     except ValueError:
         return fallback
+
+
+def _rgb(color: str) -> tuple[int, int, int]:
+    """(r, g, b) for any colour Pillow accepts ("#rrggbb", "red", "rgb(...)")."""
+    r, g, b = ImageColor.getrgb(color)[:3]
+    return r, g, b
 
 
 def _wrap_text(draw: "ImageDraw.ImageDraw", text: str, font, max_width: int) -> list[str]:
@@ -261,11 +280,28 @@ def render_slide(
     lines = _wrap_text(draw, headline, font, max_text_width)
     line_height = int(headline_font_size * 1.3)
     text_block_height = len(lines) * line_height
-    scrim_top = target_size[1] - margin - text_block_height - margin // 2
+    # An icon sits just above the headline, inside the scrim so it stays legible.
+    icon_name = text_content.icon_name if is_known_icon(text_content.icon_name) else None
+    icon_size = int(min(target_size) * 0.12) if icon_name else 0
+    icon_gap = margin // 3 if icon_name else 0
+    scrim_top = target_size[1] - margin - text_block_height - margin // 2 - icon_size - icon_gap
+
     draw.rectangle(
         [(0, max(0, scrim_top)), (target_size[0], target_size[1])],
         fill=(0, 0, 0, 140),
     )
+
+    # Illustration accent: a big, faint glyph in the corner, drawn after the dark strip behind the text, so it runs through it without a hard edge.
+    if text_content.illustration_accent:
+        accent_icon = icon_name or DEFAULT_ACCENT_ICON
+        # Big enough to read as an illustration, placed so most of the icon is
+        # visible with only its far edge running off the corner.
+        art_size = int(min(target_size) * 0.6)
+        art_font = load_icon_font(art_size)
+        r, g, b = _rgb(accent)
+        art_x = target_size[0] - int(art_size * 0.92)
+        art_y = int(margin * 0.4)
+        draw.text((art_x, art_y), icon_char(accent_icon), font=art_font, fill=(r, g, b, 46))
 
     img = img.convert("RGBA")
     img = Image.alpha_composite(img, overlay)
@@ -285,6 +321,15 @@ def render_slide(
             logger.warning("Logo composite failed, skipping: %s", exc)
 
     draw = ImageDraw.Draw(img)
+
+    if icon_name:
+        icon_font = load_icon_font(icon_size)
+        draw.text(
+            (margin, target_size[1] - margin - text_block_height - icon_gap - icon_size),
+            icon_char(icon_name),
+            font=icon_font,
+            fill=accent,
+        )
 
     accent_keyword = (text_content.accent_keyword or "").strip()
     y = target_size[1] - margin - text_block_height

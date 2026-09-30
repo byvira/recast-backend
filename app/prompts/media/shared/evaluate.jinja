@@ -8,13 +8,13 @@ Return JSON with keys: 'brand_alignment' (0-1), 'visual_quality' (0-1), 'composi
 {%- elif domain == "audio" %}
 Evaluate this audio content output for brand '{{ brand_name }}':
 
-{{ content }}
+{{ content | untrusted("content") }}
 
 Return JSON with keys: 'completeness' (0-1), 'brand_alignment' (0-1), 'accuracy' (0-1), 'overall' (0-1).
 {%- elif domain == "video" %}
 Evaluate this video content for brand '{{ brand_name }}' on {{ platform }}:
 
-{{ content }}
+{{ content | untrusted("content") }}
 
 Return JSON with keys: 'platform_fit' (0-1), 'brand_alignment' (0-1), 'engagement_potential' (0-1), 'overall' (0-1).
 {%- endif -%}

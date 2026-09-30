@@ -1,3 +1,46 @@
+{#- Writing style from the voice calibration. Only settings moved away from the middle are written, so
+    a profile left at its defaults produces exactly the prompt it always did. -#}
+{%- macro writing_style(calibration) -%}
+{%- set c = calibration or {} -%}
+{%- set ns = namespace(lines=[]) -%}
+{%- set formality = c.get("formality", 50) | int -%}
+{%- if formality <= 30 %}{% set _ = ns.lines.append("Casual and relaxed, like talking to someone you know.") %}{% elif formality >= 70 %}{% set _ = ns.lines.append("Formal and polished.") %}{% endif -%}
+{%- set directness = c.get("directness", 50) | int -%}
+{%- if directness <= 30 %}{% set _ = ns.lines.append("Gentle and indirect. Soften the message rather than stating it bluntly.") %}{% elif directness >= 70 %}{% set _ = ns.lines.append("Direct. Say it plainly, with no hedging.") %}{% endif -%}
+{%- set optimism = c.get("optimism", 50) | int -%}
+{%- if optimism <= 30 %}{% set _ = ns.lines.append("Measured and realistic. Do not oversell.") %}{% elif optimism >= 70 %}{% set _ = ns.lines.append("Upbeat and positive.") %}{% endif -%}
+{%- set energy = c.get("energy", 50) | int -%}
+{%- if energy <= 30 %}{% set _ = ns.lines.append("Calm and steady in pace.") %}{% elif energy >= 70 %}{% set _ = ns.lines.append("High energy, punchy rhythm.") %}{% endif -%}
+{%- set hook = c.get("hook_aggressiveness", 50) | int -%}
+{%- if hook <= 30 %}{% set _ = ns.lines.append("Open softly, with curiosity rather than a loud claim.") %}{% elif hook >= 70 %}{% set _ = ns.lines.append("Open with a bold, attention-grabbing first line.") %}{% endif -%}
+{%- if c.get("sentence_length") == "short" %}{% set _ = ns.lines.append("Short sentences.") %}{% elif c.get("sentence_length") == "flowing" %}{% set _ = ns.lines.append("Longer, flowing sentences.") %}{% endif -%}
+{%- if c.get("paragraph_spacing") == "double" %}{% set _ = ns.lines.append("A blank line between paragraphs.") %}{% elif c.get("paragraph_spacing") == "dense" %}{% set _ = ns.lines.append("Dense paragraphs with little white space.") %}{% endif -%}
+{%- if c.get("vocabulary_level") == "technical" %}{% set _ = ns.lines.append("Use precise technical vocabulary.") %}{% elif c.get("vocabulary_level") == "academic" %}{% set _ = ns.lines.append("Use an academic register.") %}{% endif -%}
+{%- if c.get("signature_phrases") %}{% set _ = ns.lines.append("Signature phrases to use naturally where they fit, never forced: " ~ (c.get("signature_phrases") | join(", "))) %}{% endif -%}
+{%- for platform, rule in (c.get("channel_rules") or {}).items() %}{% if rule %}{% set _ = ns.lines.append("For " ~ platform ~ ": " ~ rule) %}{% endif %}{% endfor -%}
+{%- if ns.lines %}
+Writing style:
+{% for line in ns.lines -%}
+- {{ line }}
+{% endfor %}
+{% endif -%}
+{%- endmacro -%}
+{#- Optional extra details about the brand, per brand type. -#}
+{%- macro identity_extras(identity, brand_type) -%}
+{%- set labels = {"headline": "Headline", "location": "Based in", "website": "Website", "goals": "Goals", "niche": "Niche", "core_message": "Core message", "content_pillars": "Content pillars", "monetization": "Earns money through", "tagline": "Tagline", "mission": "Mission", "company_size": "Company size", "target_market": "Target market", "competitors": "Competitors", "one_liner": "In one line", "problem_solved": "Problem it solves", "key_features": "Key features", "pricing": "Pricing", "stage": "Stage", "name": "Name", "description": "Description"} -%}
+{%- set wanted = {"Person": ["headline", "location", "website", "goals"], "Personal Brand": ["niche", "core_message", "content_pillars", "monetization"], "Business": ["tagline", "mission", "company_size", "target_market", "competitors"], "Product": ["one_liner", "problem_solved", "key_features", "pricing", "stage"], "Shop": ["name", "tagline", "description"], "Entertainment": ["name", "tagline", "description"]} -%}
+{%- set ns = namespace(lines=[]) -%}
+{%- for key in wanted.get(brand_type, []) -%}
+{%- set value = (identity or {}).get(key) -%}
+{%- if value %}{% set _ = ns.lines.append(labels[key] ~ ": " ~ ((value | join(", ")) if value is not string else value)) %}{% endif -%}
+{%- endfor -%}
+{%- if ns.lines %}
+More about the brand:
+{% for line in ns.lines -%}
+- {{ line }}
+{% endfor %}
+{% endif -%}
+{%- endmacro -%}
 {% if document_shape == "text_pipeline" %}
 {#- Mirrors app/pipelines/text/brand_context.py::build_brand_context(brand_profile) exactly. #}
 {%- set identity = brand_profile.get("identity", {}) %}
@@ -166,6 +209,7 @@ Style directives: {{ voice_tone["style"] }}
 {% endif %}
 
 {% endif -%}
+{{ writing_style(brand_profile.get("calibration")) }}{{ identity_extras(identity, brand_type) }}
 {%- if not (voice_tone and (voice_tone.get("tones") or voice_tone.get("style"))) %}
 No tone/style has been explicitly configured for this brand yet — default to
 natural, direct, conversational phrasing, like a real person writing to
@@ -373,6 +417,7 @@ Emoji: {{ emoji }}
 {%- if style %}
 Style directives: {{ style }}
 {% endif %}
+{{ writing_style(brand_profile.get("calibration")) }}{{ identity_extras(identity, brand_type) }}
 {%- if not (tones or style) %}
 No tone/style has been explicitly configured for this brand yet — default to
 natural, direct, conversational phrasing, like a real person writing to
