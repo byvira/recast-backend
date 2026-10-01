@@ -260,7 +260,7 @@ def test_open_image_fallback_needs_a_real_image_and_tries_the_next_provider(monk
 
     def handler(req):
         if "huggingface" in req.url.host:
-            return httpx.Response(200, headers={"content-type": "application/json"}, content=b"{}")
+            return httpx.Response(200, json={"data": [{}]})
         return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=b"\xff\xd8jpeg")
 
     real = httpx.AsyncClient
@@ -275,3 +275,23 @@ def test_new_providers_are_listed_and_pollinations_needs_no_key():
     for name in ("mistral", "openrouter", "huggingface", "pollinations"):
         assert health.PROVIDERS[name]["label"] and name in health.DEFAULT_RESET
     assert isinstance(health.is_configured("pollinations"), bool)
+
+
+def test_huggingface_picture_is_decoded_from_the_provider_reply(monkeypatch):
+    import asyncio
+    import base64
+    import httpx
+    from app.core.config import settings
+    from app.shared import open_fallbacks as of
+
+    monkeypatch.setattr(settings, "HUGGINGFACE_API_TOKEN", "t")
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(b"PNGDATA").decode()}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(of.httpx, "AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(handler), **k))
+    assert asyncio.run(of._huggingface("a cat")) == b"PNGDATA"
+    assert seen["url"].endswith("/nscale/v1/images/generations")

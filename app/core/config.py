@@ -114,11 +114,13 @@ class Settings(BaseSettings):
     # Open-model fallbacks for when Gemini and Cloudflare are not answering (app/shared/open_fallbacks.py).
     # Each one is skipped when its key is empty. Model names are settings because free model lists change often.
     MISTRAL_API_KEY: str = ""
-    MISTRAL_MODEL: str = "mistral-small-latest"
+    MISTRAL_MODEL: str = "open-mistral-nemo"  # checked live 2026-10-01; mistral-small-latest was rate limited on the free plan
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_MODEL: str = "openai/gpt-oss-120b:free"
+    OPENROUTER_MODEL: str = "qwen/qwen3.8-27b:free"  # checked live 2026-10-01; openai/gpt-oss-120b:free had been retired
     HUGGINGFACE_API_TOKEN: str = ""
     HUGGINGFACE_IMAGE_MODEL: str = "black-forest-labs/FLUX.1-schnell"
+    # The old hf-inference route is gone (410). Pictures go through a provider Hugging Face routes to; nscale was checked live.
+    HUGGINGFACE_IMAGE_PROVIDER: str = "nscale"
     # Pollinations needs no key. Turn it off here if you would rather show "no picture" than a free-service picture.
     POLLINATIONS_ENABLED: bool = True
 

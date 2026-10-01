@@ -9,6 +9,7 @@ health page as a fallback and a failed attempt opens an issue like any other. Mo
 model lists change often; if one is retired, change the setting, not the code."""
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from dataclasses import dataclass
@@ -73,13 +74,15 @@ async def _huggingface(prompt: str) -> bytes:
     async with track("huggingface", model, feature="image_generation"):
         async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT_S) as client:
             r = await client.post(
-                f"https://router.huggingface.co/hf-inference/models/{model}",
-                headers={"Authorization": f"Bearer {settings.HUGGINGFACE_API_TOKEN}"}, json={"inputs": prompt},
+                f"https://router.huggingface.co/{settings.HUGGINGFACE_IMAGE_PROVIDER}/v1/images/generations",
+                headers={"Authorization": f"Bearer {settings.HUGGINGFACE_API_TOKEN}"},
+                json={"model": model, "prompt": prompt, "response_format": "b64_json", "size": "1024x1024"},
             )
             r.raise_for_status()
-        if not r.headers.get("content-type", "").startswith("image/") or not r.content:
+        encoded = ((r.json().get("data") or [{}])[0]).get("b64_json")
+        if not encoded:
             raise RuntimeError("Hugging Face did not return a picture.")
-        return r.content
+        return base64.b64decode(encoded)
 
 
 async def _pollinations(prompt: str) -> bytes:
