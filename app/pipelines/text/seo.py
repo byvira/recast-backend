@@ -8,6 +8,7 @@ import logging
 import re
 from slugify import slugify
 from app.models.text import AgentTask, AgentResult, Platform
+from app.pipelines.text.generator import build_language_instruction
 from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_structured
 
@@ -29,7 +30,8 @@ async def run_seo_agent(task: AgentTask, content: str) -> AgentResult:
     platform_instruction = load_prompt("text/seo/platform_focus", platform=task.platform.name)
 
     prompt = load_prompt(
-        "text/seo/master", platform_instruction=platform_instruction, content=content[:2000]
+        "text/seo/master", platform_instruction=platform_instruction, content=content[:2000],
+        language_line=build_language_instruction(task.metadata.get("language", "en")),
     )
 
     result = await call_llm_structured(prompt)

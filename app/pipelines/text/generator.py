@@ -289,6 +289,10 @@ def build_approved_vocabulary_instruction(approved_vocabulary: List[str]) -> str
 # ─────────────────────────────────────────────────────────────────────────────
 # POST-GENERATION VALIDATION
 # ─────────────────────────────────────────────────────────────────────────────
+# Square bracket labels such as [LINK] or [Name], double braces, "lorem ipsum" and runs of X: left over from a template
+_PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Za-z0-9 _/'-]{1,40}\]|\{\{[^}]{1,40}\}\}|(?i:lorem ipsum)|\bXXX+\b")
+
+
 def validate_content(
     content: str,
     platform: Platform,
@@ -345,6 +349,21 @@ def validate_content(
             hard_issues.append(
                 f"Content too short for Twitter: {char_count} chars (minimum 200)"
             )
+
+    # ── Hard gate — every tweet of a thread fits in 280 characters ─────────
+    if platform == Platform.TWITTER_THREAD:
+        marks = list(re.finditer(r"(?m)^[ \t]*(\d{1,2})[ \t]*/[ \t]*", content))
+        for i, mark in enumerate(marks):
+            end = marks[i + 1].start() if i + 1 < len(marks) else len(content)
+            length = len(content[mark.end():end].strip())
+            if length > 280:
+                hard_issues.append(f"Thread tweet {mark.group(1)} is {length} characters, the limit is 280")
+
+    # ── Advisory — placeholder text left in the post ───────────────────────
+    placeholders = _PLACEHOLDER_RE.findall(content)
+    if placeholders:
+        shown = ", ".join(dict.fromkeys(placeholders[:4]))
+        advisory_issues.append(f"Advisory: Placeholder text left in the post: {shown}. Replace it before publishing.")
 
     # ── Hard gate 3 — Twitter char limit ──────────────────────────────────
     if platform == Platform.TWITTER and char_count > 280:

@@ -7,7 +7,7 @@ Only runs when hookVariations is True.
 import logging
 from app.prompts.safe import hook_fits
 from app.models.text import AgentTask, AgentResult
-from app.pipelines.text.generator import GENERIC_OPENINGS
+from app.pipelines.text.generator import GENERIC_OPENINGS, build_language_instruction
 from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_structured
 
@@ -29,6 +29,7 @@ async def run_hook_agent(task: AgentTask) -> AgentResult:
         banned_openings=task.metadata.get("banned_openings", []),
         banned_words=task.metadata.get("banned_words", []),
         content=task.content[:600],
+        language_line=build_language_instruction(task.metadata.get("language", "en")),
     )
 
     result = await call_llm_structured(prompt)

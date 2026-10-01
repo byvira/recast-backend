@@ -15,10 +15,26 @@ import logging
 from app.models.text import AgentTask, AgentResult
 from app.pipelines.text.generator import build_language_instruction
 from app.prompts.registry import load_prompt
+from app.prompts.safe import contains_banned, guard_output
 from app.shared.language import detect_language
 from app.shared.llm import call_llm_structured
 
 logger = logging.getLogger(__name__)
+
+
+def _usable_angles(result: dict, source: str, banned_words: list) -> list[dict]:
+    """The angles that are real rewrites: a dict with text that is not empty, not wrapped in JSON or a code fence, not a
+    leaked instruction and free of the brand's banned words. Anything else is dropped, never shown to the member."""
+    raw = result.get("angles")
+    out: list[dict] = []
+    for index, angle in enumerate(raw if isinstance(raw, list) else [], start=1):
+        if not isinstance(angle, dict):
+            continue
+        content = guard_output(angle.get("content"), source=source)
+        if not content or contains_banned(content, banned_words):
+            continue
+        out.append({**angle, "name": str(angle.get("name") or f"Angle {index}").strip()[:80], "content": content})
+    return out
 
 
 async def run_angles_agent(task: AgentTask) -> AgentResult:
@@ -53,7 +69,10 @@ async def run_angles_agent(task: AgentTask) -> AgentResult:
     # likely truncate mid-JSON on a long platform like Blog or Newsletter.
     result = await call_llm_structured(prompt, max_tokens=5000)
 
-    if not result or "angles" not in result or len(result.get("angles", [])) == 0:
+    usable = _usable_angles(result, task.content, task.metadata.get("banned_words", [])) if isinstance(result, dict) else []
+    if usable:
+        result = {**result, "angles": usable}
+    if not usable:
         logger.warning(
             "Angles agent failed for session %s — returning empty angles",
             task.session_id,

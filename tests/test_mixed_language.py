@@ -26,7 +26,7 @@ def test_build_language_instruction_renders_mixed_mode_not_single_language():
     out = build_language_instruction("ta+en")
     assert "Tamil" in out
     assert "English" in out
-    assert "natural, fluid blend" in out
+    assert "natural mix" in out and "not a translation exercise" in out
     assert "Respond entirely in" not in out
 
 
@@ -41,7 +41,7 @@ def test_build_language_instruction_mixed_mode_still_warns_against_literal_copyi
 def test_build_language_instruction_mixed_mode_works_for_every_configured_pair():
     for code in ("ta+en", "hi+en", "te+en", "kn+en", "ml+en", "bn+en", "es+en", "tl+en"):
         out = build_language_instruction(code)
-        assert "natural, fluid blend" in out, f"failed for {code}"
+        assert "natural mix" in out, f"failed for {code}"
         assert "the language identified by the code" not in out, f"failed for {code}"
 
 
@@ -68,7 +68,7 @@ def test_tone_override_formal_tones_also_skip_the_addition_for_mixed_mode():
 def test_single_language_codes_are_unaffected():
     out = build_language_instruction("ta")
     assert "Respond entirely in Tamil" in out
-    assert "natural, fluid blend" not in out
+    assert "not a translation exercise" not in out
 
 
 def test_english_is_unaffected():

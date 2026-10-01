@@ -100,8 +100,10 @@ def test_angles_with_nothing_usable_fail_cleanly(monkeypatch):
 def _thread(tweets):
     from app.pipelines.text.generator import validate_content
 
-    content = "\n".join(f"{i}/ {t}" for i, t in enumerate(tweets, start=1))
-    return validate_content(content=content + " " + " ".join(["word"] * 200), platform=Platform.TWITTER_THREAD,
+    # enough short extra tweets to reach the thread's length minimum, each one well inside the limit
+    padding = [" ".join(["word"] * 30)] * 8
+    content = "\n".join(f"{i}/ {t}" for i, t in enumerate([*tweets, *padding], start=1))
+    return validate_content(content=content, platform=Platform.TWITTER_THREAD,
                             banned_words=[], required_phrases=[], approved_openers=[], approved_closers=[], language="ta")
 
 

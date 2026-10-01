@@ -60,6 +60,27 @@ def guard_output(
     return out
 
 
+def clamp_score(value: object, default: float = 0.5) -> float:
+    """A model's score as a number from 0 to 1. A percentage (87) is read as 0.87, anything above 100 is 1.0, below 0 is 0.0,
+    and text that is not a number, nothing, or NaN becomes `default` (the middle), so one odd answer never crashes a run
+    or shows as a wild score."""
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:  # NaN
+        return default
+    if number < 0:
+        return 0.0
+    if number <= 1:
+        return number
+    if number <= 100:
+        return number / 100
+    return 1.0
+
+
 def is_english(code: object) -> bool:
     """True for plain English only. A mixed code such as ta+en is not English for these purposes:
     the English-only style checks do not apply to it."""

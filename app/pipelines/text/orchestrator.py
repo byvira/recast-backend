@@ -30,7 +30,7 @@ from app.models.text import (
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.normalizer import normalise_input
 from app.pipelines.text.repurpose import run_repurpose_agent, run_structured_repurpose_agent
-from app.pipelines.text.generator import GENERIC_OPENINGS, validate_content, validate_structured_sections
+from app.pipelines.text.generator import GENERIC_OPENINGS, build_language_instruction, validate_content, validate_structured_sections
 from app.shared.llm import call_llm_structured, set_usage_workspace
 from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
@@ -967,7 +967,7 @@ async def run_batch_pipeline(
     if emitter:
         await emitter.emit_log(f"Planning {days} days of content angles for this topic…")
 
-    angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster)
+    angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster, language_line=build_language_instruction(language))
     angle_result = await call_llm_structured(angle_prompt)
     planned_angles = angle_result.get("angles") if angle_result else None
     # PAR-014: this used to fall back to [topic_cluster] * days silently on

@@ -1,5 +1,6 @@
 """Nodes for the audio pipeline LangGraph agent."""
 
+from app.prompts.safe import clamp_score
 from datetime import datetime
 from app.agents.base import BaseAgentState
 from app.prompts.registry import load_prompt
@@ -121,10 +122,10 @@ async def evaluate_node(state: BaseAgentState) -> dict:
     scores_raw = await call_llm_structured(prompt=prompt, system=brand_ctx)
 
     quality_scores = {
-        "completeness": float(scores_raw.get("completeness", 0.5)),
-        "brand_alignment": float(scores_raw.get("brand_alignment", 0.5)),
-        "accuracy": float(scores_raw.get("accuracy", 0.5)),
-        "content": float(scores_raw.get("overall", 0.5)),
+        "completeness": clamp_score(scores_raw.get("completeness")),
+        "brand_alignment": clamp_score(scores_raw.get("brand_alignment")),
+        "accuracy": clamp_score(scores_raw.get("accuracy")),
+        "content": clamp_score(scores_raw.get("overall")),
     }
 
     return {
