@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     OPENROUTER_VISION_MODEL: str = "qwen/qwen3.8-27b:free"
     OPENROUTER_VISION_MODEL_2: str = "google/gemma-4-31b-it:free"
     OPENROUTER_VISION_MODEL_3: str = "openrouter/free"  # OpenRouter picks whichever free model is available; free models are often busy
+    OPENROUTER_MODEL_2: str = "openrouter/free"  # tried when the first free model is busy; OpenRouter picks any free model that is up
     OPENROUTER_MODEL: str = "qwen/qwen3.8-27b:free"  # checked live 2026-10-01; openai/gpt-oss-120b:free had been retired
     HUGGINGFACE_API_TOKEN: str = ""
     HUGGINGFACE_IMAGE_MODEL: str = "black-forest-labs/FLUX.1-schnell"

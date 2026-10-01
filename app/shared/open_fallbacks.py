@@ -40,7 +40,9 @@ def text_providers() -> list[TextProvider]:
     if settings.MISTRAL_API_KEY:
         out.append(TextProvider("mistral", "https://api.mistral.ai/v1/chat/completions", settings.MISTRAL_API_KEY, settings.MISTRAL_MODEL))
     if settings.OPENROUTER_API_KEY:
-        out.append(TextProvider("openrouter", "https://openrouter.ai/api/v1/chat/completions", settings.OPENROUTER_API_KEY, settings.OPENROUTER_MODEL))
+        for model in (settings.OPENROUTER_MODEL, settings.OPENROUTER_MODEL_2):
+            if model:
+                out.append(TextProvider("openrouter", "https://openrouter.ai/api/v1/chat/completions", settings.OPENROUTER_API_KEY, model))
     return out
 
 
