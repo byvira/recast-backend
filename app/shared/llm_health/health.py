@@ -26,6 +26,10 @@ DEFAULT_LIMITS: dict[str, dict[str, dict[str, int]]] = {
     "cloudflare": {"@cf/black-forest-labs/flux-1-schnell": {"rpd": 173}},
     "elevenlabs": {},  # credits are monthly and counted in characters; not modelled here
     "deepgram": {},
+    "mistral": {},  # the owner enters these from the provider's own limits page; none are invented here
+    "openrouter": {},
+    "huggingface": {},
+    "pollinations": {},
 }
 DEFAULT_RESET = {
     "groq": {"tz": "UTC", "hour": 0},
@@ -33,6 +37,10 @@ DEFAULT_RESET = {
     "cloudflare": {"tz": "UTC", "hour": 0},
     "elevenlabs": {"tz": "UTC", "hour": 0},
     "deepgram": {"tz": "UTC", "hour": 0},
+    "mistral": {"tz": "UTC", "hour": 0},
+    "openrouter": {"tz": "UTC", "hour": 0},
+    "huggingface": {"tz": "UTC", "hour": 0},
+    "pollinations": {"tz": "UTC", "hour": 0},
 }
 
 # Every AI provider the product calls, with a plain description of what it is used for. A provider shows on the page
@@ -43,7 +51,27 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "cloudflare": {"label": "Cloudflare Workers AI", "used_for": "Picture generation"},
     "elevenlabs": {"label": "ElevenLabs", "used_for": "Voice narration and echo reduction"},
     "deepgram": {"label": "Deepgram", "used_for": "Voice narration when ElevenLabs is not available"},
+    "mistral": {"label": "Mistral", "used_for": "Backup writing when Groq and Gemini are not answering"},
+    "openrouter": {"label": "OpenRouter", "used_for": "Second backup writing, on free open models"},
+    "huggingface": {"label": "Hugging Face", "used_for": "Backup pictures when Cloudflare and Gemini are not answering"},
+    "pollinations": {"label": "Pollinations", "used_for": "Last backup for pictures (free, no key)"},
 }
+
+# The setting that holds each provider's key. A provider whose key is empty is "not set up", not "down".
+KEY_SETTING = {
+    "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY", "cloudflare": "CLOUDFLARE_API_TOKEN", "elevenlabs": "ELEVENLABS_API_KEY",
+    "deepgram": "DEEPGRAM_API_KEY", "mistral": "MISTRAL_API_KEY", "openrouter": "OPENROUTER_API_KEY", "huggingface": "HUGGINGFACE_API_TOKEN",
+}
+
+
+def is_configured(provider: str) -> bool:
+    from app.core.config import settings
+
+    if provider == "pollinations":
+        return bool(settings.POLLINATIONS_ENABLED)  # needs no key
+    name = KEY_SETTING.get(provider)
+    return True if name is None else bool(getattr(settings, name, ""))
+
 
 # Where the starting numbers came from, shown next to them. Anything not listed here was entered by the owner.
 DEFAULT_SOURCE = {"cloudflare": "from the code notes (10,000 neurons a day, about 58 per picture), not verified"}

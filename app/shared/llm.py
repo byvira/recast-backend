@@ -1087,6 +1087,24 @@ def _note_fallback_failed(model: str) -> None:
         pass
 
 
+_gemini_skip_until = 0.0  # time.monotonic() until which Gemini is not tried (it said no for a reason retrying will not fix)
+GEMINI_SKIP_SECONDS = 600.0
+
+
+def _skip_gemini_if_refused(exc: BaseException) -> None:
+    """A refused key, denied project or retired model will not fix itself in the next minute, so stop trying for a while."""
+    global _gemini_skip_until
+    try:
+        from app.shared.llm_health.classifier import classify
+        from app.shared.llm_health.track import _message_of, _status_of
+
+        kind = classify(http_status=_status_of(exc), error_class=exc.__class__.__name__, message=_message_of(exc))
+        if kind in ("auth_invalid_key", "billing_or_access", "model_unavailable"):
+            _gemini_skip_until = time.monotonic() + GEMINI_SKIP_SECONDS
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @traceable(run_type="llm", name="gemini.fallback")
 async def call_llm_fallback(
     prompt: str,
@@ -1097,29 +1115,39 @@ async def call_llm_fallback(
     Emergency plain-text generation via Gemini.
     Not used in normal flow — only when Groq is fully unavailable.
     """
-    client      = get_gemini_client()
-    loop        = asyncio.get_running_loop()
-    full_prompt = f"{system}\n\n{prompt}" if system else prompt
     add_run_metadata(gemini_model=model.value)
 
-    flag = _in_fallback.set(True)  # the Gemini attempt below is recorded as "the fallback that worked"
-    try:
-        response = await _gemini_generate(model.value, lambda: loop.run_in_executor(
-            None,
-            lambda: client.models.generate_content(
-                model=model.value,
-                contents=full_prompt,
-            ),
-        ))
-        _record_gemini_usage(response, model.value)
-        return response.text or ""
+    # 1. Gemini, unless it was just refused outright (key, access or model problem): then it is skipped for a while
+    #    so every request does not wait on a provider that is known to say no.
+    if settings.GEMINI_API_KEY and time.monotonic() >= _gemini_skip_until:
+        client      = get_gemini_client()
+        loop        = asyncio.get_running_loop()
+        full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        flag = _in_fallback.set(True)  # the Gemini attempt below is recorded as "the fallback that worked"
+        try:
+            response = await _gemini_generate(model.value, lambda: loop.run_in_executor(
+                None,
+                lambda: client.models.generate_content(
+                    model=model.value,
+                    contents=full_prompt,
+                ),
+            ))
+            _record_gemini_usage(response, model.value)
+            return response.text or ""
+        except Exception as exc:
+            logger.error("Gemini fallback failed: %s", exc)
+            _skip_gemini_if_refused(exc)
+        finally:
+            _in_fallback.reset(flag)
 
-    except Exception as exc:
-        logger.error("Gemini fallback failed: %s", exc)
-        _note_fallback_failed(model.value)
-        raise HTTPException(status_code=503, detail="LLM service unavailable.")
-    finally:
-        _in_fallback.reset(flag)
+    # 2. Open models on free plans (Mistral, then OpenRouter), each skipped when it has no key.
+    from app.shared.open_fallbacks import open_text_fallback
+
+    text = await open_text_fallback(prompt, system)
+    if text is not None:
+        return text
+    _note_fallback_failed(model.value)
+    raise HTTPException(status_code=503, detail="LLM service unavailable.")
 
 
 # ─────────────────────────────────────────────────────────────

@@ -198,10 +198,10 @@ def test_key_check_skips_providers_without_a_key_and_uses_no_network(monkeypatch
     from app.core.config import settings
     from app.shared.llm_health import keycheck
 
-    for name in ("CLOUDFLARE_API_TOKEN", "ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY"):
+    for name in ("CLOUDFLARE_API_TOKEN", "ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "HUGGINGFACE_API_TOKEN"):
         monkeypatch.setattr(settings, name, "")
     out = asyncio.run(keycheck.check_keys())
-    assert {k: v["status"] for k, v in out.items()} == {"cloudflare": "not_set", "elevenlabs": "not_set", "deepgram": "not_set"}
+    assert {k: v["status"] for k, v in out.items()} == {k: "not_set" for k in ("cloudflare", "elevenlabs", "deepgram", "mistral", "openrouter", "huggingface")}
 
 
 def test_key_check_reports_a_rejected_key(monkeypatch):
@@ -221,3 +221,57 @@ def test_key_check_reports_a_rejected_key(monkeypatch):
     monkeypatch.setattr(keycheck.httpx, "AsyncClient", client)
     out = asyncio.run(keycheck.check_keys())
     assert out["elevenlabs"]["status"] == "error" and out["elevenlabs"]["http_status"] == 401
+
+
+def test_open_text_fallback_skips_unset_providers_and_returns_the_first_answer(monkeypatch):
+    import asyncio
+    import httpx
+    from app.core.config import settings
+    from app.shared import open_fallbacks as of
+
+    for name in ("MISTRAL_API_KEY", "OPENROUTER_API_KEY"):
+        monkeypatch.setattr(settings, name, "")
+    assert asyncio.run(of.open_text_fallback("hi")) is None
+
+    monkeypatch.setattr(settings, "MISTRAL_API_KEY", "k1")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "k2")
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.host)
+        if req.url.host == "api.mistral.ai":
+            return httpx.Response(429, json={"message": "rate limit"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "answer from openrouter"}}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(of.httpx, "AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(handler), **k))
+    assert asyncio.run(of.open_text_fallback("hi", "sys")) == "answer from openrouter"
+    assert seen == ["api.mistral.ai", "openrouter.ai"]
+
+
+def test_open_image_fallback_needs_a_real_image_and_tries_the_next_provider(monkeypatch):
+    import asyncio
+    import httpx
+    from app.core.config import settings
+    from app.shared import open_fallbacks as of
+
+    monkeypatch.setattr(settings, "HUGGINGFACE_API_TOKEN", "t")
+    monkeypatch.setattr(settings, "POLLINATIONS_ENABLED", True)
+
+    def handler(req):
+        if "huggingface" in req.url.host:
+            return httpx.Response(200, headers={"content-type": "application/json"}, content=b"{}")
+        return httpx.Response(200, headers={"content-type": "image/jpeg"}, content=b"\xff\xd8jpeg")
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(of.httpx, "AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(handler), **k))
+    assert asyncio.run(of.open_image_fallback("a cat")) == b"\xff\xd8jpeg"
+    monkeypatch.setattr(settings, "HUGGINGFACE_API_TOKEN", "")
+    monkeypatch.setattr(settings, "POLLINATIONS_ENABLED", False)
+    assert asyncio.run(of.open_image_fallback("a cat")) is None
+
+
+def test_new_providers_are_listed_and_pollinations_needs_no_key():
+    for name in ("mistral", "openrouter", "huggingface", "pollinations"):
+        assert health.PROVIDERS[name]["label"] and name in health.DEFAULT_RESET
+    assert isinstance(health.is_configured("pollinations"), bool)

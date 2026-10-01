@@ -52,6 +52,7 @@ discarded) — MediaAsset.qa_flagged is exactly the kind of real risk Row
 """
 
 import asyncio
+import time
 import base64
 import logging
 import re
@@ -380,25 +381,45 @@ async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Cloudflare image generation failed, checking Gemini fallback: %s", exc)
 
-    if not settings.GEMINI_API_KEY:
-        _fail("The image service did not return a picture. It may be busy or out of free use for today.")
-        note_fallback_failed("gemini", GeminiModel.IMAGE.value, "image_generation", "Cloudflare failed and the Gemini image fallback could not cover for it.")
-        return None
-    if not await _gemini_fallback_slot_available():
-        logger.info("Gemini fallback daily cap reached — no image generated today.")
-        _fail("Today's image limit is used up.")
-        note_fallback_failed("gemini", GeminiModel.IMAGE.value, "image_generation", "Cloudflare failed and the Gemini image fallback could not cover for it.")
-        return None
-    try:
-        with fallback_scope():
-            image_bytes = await _call_gemini(prompt)
-        logger.info("Cloudflare exhausted — served this image via the capped Gemini fallback.")
+    reason = "The image service did not return a picture. It may be busy or out of free use for today."
+    if settings.GEMINI_API_KEY and time.monotonic() >= _gemini_skip_until:
+        if not await _gemini_fallback_slot_available():
+            logger.info("Gemini fallback daily cap reached, trying the open-model fallbacks.")
+            reason = "Today's image limit is used up."
+        else:
+            try:
+                with fallback_scope():
+                    image_bytes = await _call_gemini(prompt)
+                logger.info("Cloudflare exhausted — served this image via the capped Gemini fallback.")
+                return image_bytes
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Gemini fallback image generation also failed: %s", exc)
+                _skip_gemini_for_a_while(exc)
+
+    from app.shared.open_fallbacks import open_image_fallback
+
+    image_bytes = await open_image_fallback(prompt)
+    if image_bytes is not None:
         return image_bytes
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Gemini fallback image generation also failed: %s", exc)
-        _fail("The image service did not return a picture.")
-        note_fallback_failed("gemini", GeminiModel.IMAGE.value, "image_generation", "Cloudflare failed and the Gemini image fallback could not cover for it.")
-        return None
+    _fail(reason)
+    note_fallback_failed("pollinations", "flux", "image_generation", "Cloudflare failed and no fallback could make the picture.")
+    return None
+
+
+_gemini_skip_until = 0.0  # time.monotonic() until which the Gemini picture fallback is not tried (it said no outright)
+
+
+def _skip_gemini_for_a_while(exc: BaseException) -> None:
+    global _gemini_skip_until
+    try:
+        from app.shared.llm_health.classifier import classify
+        from app.shared.llm_health.track import _message_of, _status_of
+
+        kind = classify(http_status=_status_of(exc), error_class=exc.__class__.__name__, message=_message_of(exc))
+        if kind in ("auth_invalid_key", "billing_or_access", "model_unavailable"):
+            _gemini_skip_until = time.monotonic() + 600.0
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def _qa_gate(image_bytes: bytes, brand_profile: dict) -> tuple[bool, Optional[str]]:

@@ -1,0 +1,113 @@
+"""Extra fallbacks for when Gemini (text, pictures) and Cloudflare (pictures) are not answering, so the product keeps
+working until the paid tiers are switched on. All of them run open models on free plans.
+
+Text, tried in order after Gemini: Mistral, then OpenRouter's free models. Pictures, tried in order after Cloudflare
+and Gemini: Hugging Face FLUX.1 schnell, then Pollinations (no key needed).
+
+A provider without a key is skipped, never an error. Every attempt goes through `track`, so each one shows on the LLM
+health page as a fallback and a failed attempt opens an issue like any other. Model names are settings, because free
+model lists change often; if one is retired, change the setting, not the code."""
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from urllib.parse import quote
+
+import httpx
+
+from app.core.config import settings
+from app.shared.llm_health.track import fallback_scope, track
+
+logger = logging.getLogger(__name__)
+
+TEXT_TIMEOUT_S = 45.0
+IMAGE_TIMEOUT_S = 90.0
+
+
+@dataclass(frozen=True)
+class TextProvider:
+    name: str
+    url: str
+    key: str
+    model: str
+
+
+def text_providers() -> list[TextProvider]:
+    """The configured open-model text fallbacks, in the order they are tried."""
+    out: list[TextProvider] = []
+    if settings.MISTRAL_API_KEY:
+        out.append(TextProvider("mistral", "https://api.mistral.ai/v1/chat/completions", settings.MISTRAL_API_KEY, settings.MISTRAL_MODEL))
+    if settings.OPENROUTER_API_KEY:
+        out.append(TextProvider("openrouter", "https://openrouter.ai/api/v1/chat/completions", settings.OPENROUTER_API_KEY, settings.OPENROUTER_MODEL))
+    return out
+
+
+async def _chat(p: TextProvider, prompt: str, system: str) -> str:
+    messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    async with track(p.name, p.model, feature=None):
+        async with httpx.AsyncClient(timeout=TEXT_TIMEOUT_S) as client:
+            r = await client.post(p.url, headers={"Authorization": f"Bearer {p.key}"}, json={"model": p.model, "messages": messages, "temperature": 0.7})
+            r.raise_for_status()
+            text = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if not text.strip():
+            raise RuntimeError("The provider returned an empty answer.")
+        return text
+
+
+async def open_text_fallback(prompt: str, system: str = "") -> str | None:
+    """The first open-model provider that answers, or None when none is set up or all of them fail."""
+    for p in text_providers():
+        try:
+            with fallback_scope():
+                text = await _chat(p, prompt, system)
+            logger.info("Served this answer via the %s fallback.", p.name)
+            return text
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s text fallback failed: %s", p.name, exc)
+    return None
+
+
+async def _huggingface(prompt: str) -> bytes:
+    model = settings.HUGGINGFACE_IMAGE_MODEL
+    async with track("huggingface", model, feature="image_generation"):
+        async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT_S) as client:
+            r = await client.post(
+                f"https://router.huggingface.co/hf-inference/models/{model}",
+                headers={"Authorization": f"Bearer {settings.HUGGINGFACE_API_TOKEN}"}, json={"inputs": prompt},
+            )
+            r.raise_for_status()
+        if not r.headers.get("content-type", "").startswith("image/") or not r.content:
+            raise RuntimeError("Hugging Face did not return a picture.")
+        return r.content
+
+
+async def _pollinations(prompt: str) -> bytes:
+    async with track("pollinations", "flux", feature="image_generation"):
+        async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT_S, follow_redirects=True) as client:
+            r = await client.get(
+                f"https://image.pollinations.ai/prompt/{quote(prompt[:900])}",
+                params={"model": "flux", "width": 1024, "height": 1024, "nologo": "true", "seed": int(time.time()) % 100000},
+            )
+            r.raise_for_status()
+        if not r.headers.get("content-type", "").startswith("image/") or not r.content:
+            raise RuntimeError("Pollinations did not return a picture.")
+        return r.content
+
+
+async def open_image_fallback(prompt: str) -> bytes | None:
+    """A picture from the first open-model provider that answers, or None."""
+    steps = []
+    if settings.HUGGINGFACE_API_TOKEN:
+        steps.append(("huggingface", _huggingface))
+    if settings.POLLINATIONS_ENABLED:
+        steps.append(("pollinations", _pollinations))
+    for name, fn in steps:
+        try:
+            with fallback_scope():
+                data = await fn(prompt)
+            logger.info("Served this image via the %s fallback.", name)
+            return data
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s image fallback failed: %s", name, exc)
+    return None

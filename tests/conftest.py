@@ -50,6 +50,10 @@ os.environ.setdefault("ENVIRONMENT", "development")
 # Never report test runs to the real Sentry project, and skip its background
 # worker thread (which otherwise logs noisily on interpreter shutdown).
 os.environ["SENTRY_DSN"] = ""
+# Tests never call the open-model fallbacks: no keys, and the keyless picture service is off.
+for _name in ("MISTRAL_API_KEY", "OPENROUTER_API_KEY", "HUGGINGFACE_API_TOKEN"):
+    os.environ[_name] = ""
+os.environ["POLLINATIONS_ENABLED"] = "false"
 
 import httpx  # noqa: E402
 

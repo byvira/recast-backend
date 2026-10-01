@@ -111,6 +111,17 @@ class Settings(BaseSettings):
     CLOUDFLARE_API_TOKEN: str = ""
     CLOUDFLARE_ACCOUNT_ID: str = ""
 
+    # Open-model fallbacks for when Gemini and Cloudflare are not answering (app/shared/open_fallbacks.py).
+    # Each one is skipped when its key is empty. Model names are settings because free model lists change often.
+    MISTRAL_API_KEY: str = ""
+    MISTRAL_MODEL: str = "mistral-small-latest"
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "openai/gpt-oss-120b:free"
+    HUGGINGFACE_API_TOKEN: str = ""
+    HUGGINGFACE_IMAGE_MODEL: str = "black-forest-labs/FLUX.1-schnell"
+    # Pollinations needs no key. Turn it off here if you would rather show "no picture" than a free-service picture.
+    POLLINATIONS_ENABLED: bool = True
+
     # Cloudflare Turnstile — spam protection on the public share page's
     # guest comment form (an anonymous form with no account behind it).
     # Empty means Turnstile isn't checked yet: the honeypot field and the

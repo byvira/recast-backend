@@ -122,7 +122,7 @@ async def ping(request: Request, user: dict = Depends(require_platform_staff)) -
     t0 = time.perf_counter()
     result = await llm_health_check()
     result.update(await keycheck.check_keys())
-    for provider in ("groq", "gemini", "cloudflare", "elevenlabs", "deepgram"):
+    for provider in ("groq", "gemini", "cloudflare", "elevenlabs", "deepgram", "mistral", "openrouter", "huggingface"):
         r = result.get(provider) or {}
         if r.get("status") == "not_set":
             continue  # nothing was tried, so nothing is recorded

@@ -48,6 +48,19 @@ async def check_keys() -> dict[str, dict[str, Any]]:
         jobs["deepgram"] = ("https://api.deepgram.com/v1/projects", {"Authorization": f"Token {settings.DEEPGRAM_API_KEY}"})
     else:
         out["deepgram"] = {"status": "not_set", "detail": "No Deepgram key is set on the server."}
+    if settings.MISTRAL_API_KEY:
+        jobs["mistral"] = ("https://api.mistral.ai/v1/models", {"Authorization": f"Bearer {settings.MISTRAL_API_KEY}"})
+    else:
+        out["mistral"] = {"status": "not_set", "detail": "No Mistral key is set on the server."}
+    if settings.OPENROUTER_API_KEY:
+        jobs["openrouter"] = ("https://openrouter.ai/api/v1/key", {"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"})
+    else:
+        out["openrouter"] = {"status": "not_set", "detail": "No OpenRouter key is set on the server."}
+    if settings.HUGGINGFACE_API_TOKEN:
+        jobs["huggingface"] = ("https://huggingface.co/api/whoami-v2", {"Authorization": f"Bearer {settings.HUGGINGFACE_API_TOKEN}"})
+    else:
+        out["huggingface"] = {"status": "not_set", "detail": "No Hugging Face token is set on the server."}
+    # Pollinations has no key to check, so it is left out of the test on purpose.
     if jobs:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
             results = await asyncio.gather(*(_get(client, url, headers) for url, headers in jobs.values()))

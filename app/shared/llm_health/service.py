@@ -160,7 +160,7 @@ async def provider_states(now: datetime | None = None) -> dict[str, dict[str, An
         )
         busiest = max(rows, key=lambda q: q["percent"] or 0, default=None)
         meta = health.PROVIDERS.get(name, {"label": name.capitalize(), "used_for": ""})
-        out[name] = {"label": meta["label"], "used_for": meta["used_for"], "status": state, "status_text": health.STATUS_TEXT[state],
+        out[name] = {"configured": health.is_configured(name), "label": meta["label"], "used_for": meta["used_for"], "status": state, "status_text": health.STATUS_TEXT[state],
                      "recent": r, "quota": rows, "busiest": busiest}
     return out
 
