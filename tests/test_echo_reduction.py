@@ -147,7 +147,9 @@ async def test_cleanup_calls_echo_reduction_first_and_records_it(signup_user, st
     assert res.json()["dsp_settings"]["cleanup"]["remove_echo"] is True
 
 
-async def test_cleanup_surfaces_the_real_echo_reduction_error_as_a_400(signup_user, stubs, monkeypatch):
+async def test_when_elevenlabs_cannot_do_it_basic_cleanup_is_used_and_labelled(signup_user, stubs, monkeypatch):
+    """ElevenLabs refusing (free plan, no key, switched off) no longer fails the request: basic cleanup does what it honestly can
+    and the saved settings say it was only basic cleanup, with the reason, so nobody thinks the echo was removed."""
     client, _, ws_id, brand_id = await _setup(signup_user)
     asset = (await _generate(client, ws_id, brand_id)).json()
 
@@ -159,6 +161,31 @@ async def test_cleanup_surfaces_the_real_echo_reduction_error_as_a_400(signup_us
 
     monkeypatch.setattr(audio_module, "_download_media_bytes", _download)
     monkeypatch.setattr(audio_module, "reduce_echo", _fake_reduce)
+
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/cleanup", json={"remove_echo": True}, headers=_h(ws_id),
+    )
+    assert res.status_code == 200, res.text
+    cleanup = res.json()["dsp_settings"]["cleanup"]
+    assert cleanup["remove_echo"] == "basic" and "cannot remove a true room echo" in cleanup["remove_echo_note"]
+
+
+async def test_if_basic_cleanup_cannot_run_either_the_real_echo_reduction_error_is_a_400(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()
+
+    async def _download(url):
+        return _wav(1.0)
+
+    async def _fake_reduce(audio_bytes, filename="audio.wav"):
+        raise EchoReductionError("Echo reduction needs a paid ElevenLabs plan with the audio_isolation permission.")
+
+    async def _fake_basic(audio_bytes):
+        raise EchoReductionError("Basic cleanup could not process this recording.")
+
+    monkeypatch.setattr(audio_module, "_download_media_bytes", _download)
+    monkeypatch.setattr(audio_module, "reduce_echo", _fake_reduce)
+    monkeypatch.setattr(audio_module, "basic_cleanup", _fake_basic)
 
     res = await client.post(
         f"/api/v1/audio-assets/{asset['id']}/cleanup", json={"remove_echo": True}, headers=_h(ws_id),
