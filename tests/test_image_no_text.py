@@ -26,7 +26,7 @@ def test_enforce_no_text_strips_writing_words_and_adds_the_rule():
     assert "logo" not in low.replace("no logos", "")
     assert "caption" not in low
     assert "poster" not in low
-    assert out.endswith(NO_TEXT_SUFFIX.strip())
+    assert NO_TEXT_SUFFIX.strip() in out  # a prompt that mentions a screen also gets the soft-screen sentence after it
     assert len(out) <= 2048
 
 

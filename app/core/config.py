@@ -110,12 +110,18 @@ class Settings(BaseSettings):
     # that didn't account for the real per-image neuron cost at this size.
     CLOUDFLARE_API_TOKEN: str = ""
     CLOUDFLARE_ACCOUNT_ID: str = ""
+    # Denoising steps for Cloudflare FLUX schnell (1 to 8). 4 costs about 57.6 neurons a picture (about 173 a day on the
+    # free allowance); 8 looks cleaner, costs about 96 (about 104 a day). Leave at 4 on the free plan.
+    CLOUDFLARE_IMAGE_STEPS: int = 4
 
     # Open-model fallbacks for when Gemini and Cloudflare are not answering (app/shared/open_fallbacks.py).
     # Each one is skipped when its key is empty. Model names are settings because free model lists change often.
     MISTRAL_API_KEY: str = ""
     MISTRAL_MODEL: str = "open-mistral-nemo"  # checked live 2026-10-01; mistral-small-latest was rate limited on the free plan
     OPENROUTER_API_KEY: str = ""
+    # NVIDIA's free hosted models (OpenAI compatible, email signup, no card). Third writing backup; skipped when empty.
+    NVIDIA_API_KEY: str = ""
+    NVIDIA_MODEL: str = "meta/llama-3.3-70b-instruct"
     # Picture understanding when Gemini is not answering: free OpenRouter models that accept images (checked 2026-10-01).
     OPENROUTER_VISION_MODEL: str = "qwen/qwen3.8-27b:free"
     OPENROUTER_VISION_MODEL_2: str = "google/gemma-4-31b-it:free"

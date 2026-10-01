@@ -60,6 +60,10 @@ async def check_keys() -> dict[str, dict[str, Any]]:
         jobs["mistral"] = ("https://api.mistral.ai/v1/models", {"Authorization": f"Bearer {settings.MISTRAL_API_KEY}"})
     else:
         out["mistral"] = {"status": "not_set", "detail": "No Mistral key is set on the server."}
+    if settings.NVIDIA_API_KEY:
+        jobs["nvidia"] = ("https://integrate.api.nvidia.com/v1/models", {"Authorization": f"Bearer {settings.NVIDIA_API_KEY}"})
+    else:
+        out["nvidia"] = {"status": "not_set", "detail": "No NVIDIA key is set on the server."}
     if settings.OPENROUTER_API_KEY:
         jobs["openrouter"] = ("https://openrouter.ai/api/v1/key", {"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"})
     else:

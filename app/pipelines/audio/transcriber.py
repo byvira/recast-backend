@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 from app.shared.llm_health.track import fallback_scope, track
+from app.pipelines.audio import deepgram_stt
 
 
 async def transcribe_audio_detailed(
@@ -51,7 +52,14 @@ async def transcribe_audio_detailed(
                 failure = exc
                 logger.warning("Whisper (%s) failed: %s", whisper.value, exc)
         if response is None:
-            raise failure  # type: ignore[misc]
+            # Both Whisper models failed (same Groq account). Deepgram is the real backup.
+            if not deepgram_stt.available():
+                raise failure  # type: ignore[misc]
+            result = await deepgram_stt.listen(audio_bytes, filename, language, utterances=False)
+            return (
+                [TranscriptWord(word=w, start_s=s, end_s=e) for w, s, e in deepgram_stt.words_from(result)],
+                deepgram_stt.detected_language(result) or language,
+            )
         words = getattr(response, "words", None) or []
         return (
             [TranscriptWord(word=w.word, start_s=w.start, end_s=w.end) for w in words],

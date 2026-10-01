@@ -26,6 +26,7 @@ DEFAULT_LIMITS: dict[str, dict[str, dict[str, int]]] = {
     "cloudflare": {"@cf/black-forest-labs/flux-1-schnell": {"rpd": 173}},
     "elevenlabs": {},  # credits are monthly and counted in characters; not modelled here
     "deepgram": {},
+    "nvidia": {},
     "mistral": {},  # the owner enters these from the provider's own limits page; none are invented here
     "openrouter": {},
     "huggingface": {},
@@ -38,6 +39,7 @@ DEFAULT_RESET = {
     "elevenlabs": {"tz": "UTC", "hour": 0},
     "deepgram": {"tz": "UTC", "hour": 0},
     "mistral": {"tz": "UTC", "hour": 0},
+    "nvidia": {"tz": "UTC", "hour": 0},
     "openrouter": {"tz": "UTC", "hour": 0},
     "huggingface": {"tz": "UTC", "hour": 0},
     "pollinations": {"tz": "UTC", "hour": 0},
@@ -51,6 +53,7 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "cloudflare": {"label": "Cloudflare Workers AI", "used_for": "Picture generation"},
     "elevenlabs": {"label": "ElevenLabs", "used_for": "Voice narration and echo reduction"},
     "deepgram": {"label": "Deepgram", "used_for": "Voice narration when ElevenLabs is not available"},
+    "nvidia": {"label": "NVIDIA", "used_for": "Third backup writing, on free hosted models"},
     "mistral": {"label": "Mistral", "used_for": "Backup writing when Groq and Gemini are not answering"},
     "openrouter": {"label": "OpenRouter", "used_for": "Second backup writing, on free open models"},
     "huggingface": {"label": "Hugging Face", "used_for": "Backup pictures when Cloudflare and Gemini are not answering"},
@@ -60,7 +63,7 @@ PROVIDERS: dict[str, dict[str, str]] = {
 # The setting that holds each provider's key. A provider whose key is empty is "not set up", not "down".
 KEY_SETTING = {
     "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY", "cloudflare": "CLOUDFLARE_API_TOKEN", "elevenlabs": "ELEVENLABS_API_KEY",
-    "deepgram": "DEEPGRAM_API_KEY", "mistral": "MISTRAL_API_KEY", "openrouter": "OPENROUTER_API_KEY", "huggingface": "HUGGINGFACE_API_TOKEN",
+    "deepgram": "DEEPGRAM_API_KEY", "mistral": "MISTRAL_API_KEY", "nvidia": "NVIDIA_API_KEY", "openrouter": "OPENROUTER_API_KEY", "huggingface": "HUGGINGFACE_API_TOKEN",
 }
 
 

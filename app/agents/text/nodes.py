@@ -465,6 +465,16 @@ async def quality_check_node(state: TextAgentState) -> dict:
         grammar_check=state["extras"].get("grammar_check", False),
     )
 
+    # Figures, prices and "last Thursday" stories that nothing supplied backs up. Advisory only: it never blocks or
+    # rewrites, it asks the member to confirm before publishing. Compared against what the model was given.
+    from app.pipelines.text.claims import unsupported_claims
+
+    claim_warnings = unsupported_claims(
+        state["generated_content"],
+        [state.get("normalised_content") or "", state.get("raw_input") or "", state.get("brand_context") or "", state.get("content_brief") or ""],
+    )
+    quality.issues = [*quality.issues, *(f"Advisory: {w}" for w in claim_warnings)]
+
     if emitter:
         readability_level = getattr(quality, "readability_level", "Standard") or "Standard"
         hook_score = state.get("hooks", [{}])[0].get("score", 0) if state.get("hooks") and isinstance(state["hooks"][0], dict) else 0
@@ -666,6 +676,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
                 batch_mode=state.get("batch_mode", False),
                 schedule_mode=state.get("schedule_mode", "now"),
                 scheduled_at=state.get("scheduled_at"),
+                input_text=state.get("raw_input"),
             )
             piece_id = await save_live_piece(
                 session_id=state["session_id"],

@@ -408,8 +408,11 @@ class VideoClip(BaseModel):
     start_s: float
     end_s: float
     style: str   # cover | solid | waveform | cover_wave
-    size: str    # square | vertical | landscape
+    size: str    # square | vertical | landscape | portrait
     title: str = ""
+    # where it is meant to be posted, and plain advice about size and length for that place (empty when none chosen)
+    platform: Optional[str] = None
+    notes: list[str] = []
     created_by: str
     created_at: datetime
 
@@ -420,6 +423,12 @@ class MakeVideoRequest(BaseModel):
     style: str = "cover"
     size: str = "square"
     title: Optional[str] = None
+    # a preset id from GET /audio-assets/video-presets; only used to give advice, never to block
+    platform: Optional[str] = None
+    show_title: bool = True
+    # None means automatic: the brand's logo goes on when the brand has one
+    show_logo: Optional[bool] = None
+    show_progress: bool = True
 
 
 class SuggestedClip(BaseModel):

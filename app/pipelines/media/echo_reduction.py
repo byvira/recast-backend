@@ -25,6 +25,44 @@ class EchoReductionError(Exception):
 
 from app.shared.llm_health.track import log_attempt, log_http  # noqa: E402
 
+BASIC_CLEANUP_NOTE = (
+    "Basic cleanup was used: it lowers steady background noise and low rumble. It cannot remove a true room echo, "
+    "which needs the paid ElevenLabs plan."
+)
+# a gentle high-pass for rumble, then broadband noise reduction; loudness is left to the later steps
+_BASIC_FILTER = "highpass=f=80,afftdn=nr=12:nf=-28:tn=1"
+
+
+async def basic_cleanup(audio_bytes: bytes) -> bytes:
+    """Steady noise and rumble reduction with ffmpeg, on our own server. It is honest about what it is: not echo removal.
+    Raises EchoReductionError if ffmpeg cannot process the file."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    import imageio_ffmpeg
+
+    tmp = tempfile.mkdtemp(prefix="recast-cleanup-")
+    try:
+        src, dst = Path(tmp) / "in.audio", Path(tmp) / "out.wav"
+        src.write_bytes(audio_bytes)
+        proc = await asyncio.create_subprocess_exec(
+            imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src), "-af", _BASIC_FILTER, "-ar", "44100", str(dst),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise EchoReductionError("Basic cleanup took too long and was stopped. Try a shorter recording.")
+        if proc.returncode != 0 or not dst.exists():
+            raise EchoReductionError("Basic cleanup could not process this recording.")
+        return dst.read_bytes()
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 async def reduce_echo(audio_bytes: bytes, filename: str = "audio.wav") -> bytes:
     """Sends the real audio bytes to ElevenLabs' Audio Isolation endpoint

@@ -14,7 +14,7 @@ time; audio/video/image support has no real pipeline behind it yet
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -82,6 +82,12 @@ class CampaignImageOptions(BaseModel):
     """Image settings for every post. `layout` is one of the image pipeline's sizes."""
 
     layout: str = "quote_1_1"
+    # What is written on the picture: a short headline (default) or nothing at all.
+    text: Literal["headline", "none"] = "headline"
+    # The brand's logo on every picture (default on; only does anything when the brand has a logo).
+    logo: bool = True
+    # The brand's mascot in a corner of every picture (off unless asked; only does anything when the brand has one).
+    mascot: bool = False
 
     @model_validator(mode="after")
     def _known_layout(self) -> "CampaignImageOptions":

@@ -1080,7 +1080,18 @@ async def transcribe_audio(
             failure = exc
             logger.warning("Whisper (%s) failed: %s", whisper.value, exc)
     if response is None:
-        raise failure  # type: ignore[misc]
+        # Both Whisper models failed (they share the Groq account). Deepgram, with the same key as the narration backup, is next.
+        from app.pipelines.audio import deepgram_stt
+
+        if not deepgram_stt.available():
+            raise failure  # type: ignore[misc]
+        try:
+            result = await deepgram_stt.listen(audio_bytes, file_path, language)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Deepgram transcription backup failed: %s", exc)
+            raise failure  # type: ignore[misc]
+        text, segments = deepgram_stt.text_and_segments(result)
+        return {"text": text, "segments": segments, "duration_s": segments[-1]["end"] if segments else 0.0}
 
     segments = [
         {"start": seg.start, "end": seg.end, "text": seg.text}
@@ -1134,6 +1145,7 @@ async def call_llm_fallback(
     prompt: str,
     system: str = "",
     model: GeminiModel = GeminiModel.FLASH,
+    json_mode: bool = False,
 ) -> str:
     """
     Emergency plain-text generation via Gemini.
@@ -1167,7 +1179,7 @@ async def call_llm_fallback(
     # 2. Open models on free plans (Mistral, then OpenRouter), each skipped when it has no key.
     from app.shared.open_fallbacks import open_text_fallback
 
-    text = await open_text_fallback(prompt, system)
+    text = await open_text_fallback(prompt, system, json_mode)
     if text is not None:
         return text
     _note_fallback_failed(model.value)
@@ -1189,8 +1201,20 @@ async def call_llm_structured_fallback(
     Returns {} on failure — never raises.
     """
     system_with_json = f"{system}\n\n{_JSON_SYSTEM_SUFFIX}" if system else _JSON_SYSTEM_SUFFIX
-    raw = await call_llm_fallback(prompt=prompt, system=system_with_json, model=model)
-    return parse_llm_json(raw)
+    raw = await call_llm_fallback(prompt=prompt, system=system_with_json, model=model, json_mode=True)
+    parsed = parse_llm_json(raw)
+    if parsed:
+        return parsed
+    # The backup models follow strict JSON less reliably than Groq. One more try, quoting what came back and asking for
+    # the JSON only, before giving up.
+    repair = (
+        f"{prompt}\n\nYour previous answer could not be read as JSON:\n{(raw or '')[:1500]}\n\n"
+        "Answer again with ONLY the valid JSON object for the task above. No explanation, no code fence."
+    )
+    try:
+        return parse_llm_json(await call_llm_fallback(prompt=repair, system=system_with_json, model=model, json_mode=True))
+    except HTTPException:
+        return {}
 
 
 # ─────────────────────────────────────────────────────────────

@@ -39,6 +39,8 @@ def text_providers() -> list[TextProvider]:
     out: list[TextProvider] = []
     if settings.MISTRAL_API_KEY:
         out.append(TextProvider("mistral", "https://api.mistral.ai/v1/chat/completions", settings.MISTRAL_API_KEY, settings.MISTRAL_MODEL))
+    if settings.NVIDIA_API_KEY:
+        out.append(TextProvider("nvidia", "https://integrate.api.nvidia.com/v1/chat/completions", settings.NVIDIA_API_KEY, settings.NVIDIA_MODEL))
     if settings.OPENROUTER_API_KEY:
         for model in (settings.OPENROUTER_MODEL, settings.OPENROUTER_MODEL_2):
             if model:
@@ -46,11 +48,18 @@ def text_providers() -> list[TextProvider]:
     return out
 
 
-async def _chat(p: TextProvider, prompt: str, system: str) -> str:
+# providers whose chat endpoint is known to accept a JSON mode (OpenRouter's free models differ by model, so it is left out)
+_JSON_MODE = {"mistral", "nvidia"}
+
+
+async def _chat(p: TextProvider, prompt: str, system: str, json_mode: bool = False) -> str:
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+    body: dict = {"model": p.model, "messages": messages, "temperature": 0.7}
+    if json_mode and p.name in _JSON_MODE:
+        body["response_format"] = {"type": "json_object"}
     async with track(p.name, p.model, feature=None):
         async with httpx.AsyncClient(timeout=TEXT_TIMEOUT_S) as client:
-            r = await client.post(p.url, headers={"Authorization": f"Bearer {p.key}"}, json={"model": p.model, "messages": messages, "temperature": 0.7})
+            r = await client.post(p.url, headers={"Authorization": f"Bearer {p.key}"}, json=body)
             r.raise_for_status()
             text = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if not text.strip():
@@ -58,12 +67,12 @@ async def _chat(p: TextProvider, prompt: str, system: str) -> str:
         return text
 
 
-async def open_text_fallback(prompt: str, system: str = "") -> str | None:
+async def open_text_fallback(prompt: str, system: str = "", json_mode: bool = False) -> str | None:
     """The first open-model provider that answers, or None when none is set up or all of them fail."""
     for p in text_providers():
         try:
             with fallback_scope():
-                text = await _chat(p, prompt, system)
+                text = await _chat(p, prompt, system, json_mode)
             logger.info("Served this answer via the %s fallback.", p.name)
             return text
         except Exception as exc:  # noqa: BLE001

@@ -34,7 +34,7 @@ import os
 from io import BytesIO
 from typing import Optional
 
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont
 from pydantic import BaseModel
 
 from app.models.image_asset import LayoutPreset
@@ -71,6 +71,17 @@ _GOOGLE_FONTS: dict[str, dict[str, str]] = {
 # sans that's a reasonable default for any visual profile, not a random
 # pick.
 _DEFAULT_FONT_KEY = "inter"
+
+
+def caption_font_family(font_name: Optional[str]) -> str:
+    """The family name video captions should ask for: the brand's own font when it is one of the bundled ones, otherwise
+    Inter (also bundled). The same bundled files are handed to the renderer, so the name always resolves."""
+    key = (font_name or "").strip().lower()
+    return (key if key in _GOOGLE_FONTS else _DEFAULT_FONT_KEY).title()
+
+
+def fonts_dir() -> str:
+    return _FONTS_DIR
 
 
 def _resolve_font_path(font_name: Optional[str], *, bold: bool) -> str:
@@ -169,6 +180,36 @@ class SlideTextContent(BaseModel):
     icon_name: Optional[str] = None
     # A large, faint copy of the icon (or a default one) behind the text.
     illustration_accent: bool = False
+    # False draws the picture with no headline, no icon and no band over it.
+    show_text: bool = True
+
+
+def _fit_headline(draw, headline: str, font_name: Optional[str], max_width: int, target_size: tuple[int, int]):
+    """The biggest size at which the headline fits in at most 3 lines and about a quarter of the picture, shrinking before
+    it ever cuts anything. If it still does not fit at the smallest size, whole words are dropped from the end and an
+    ellipsis is added, so a word is never cut in half. Returns (font, lines, font_size)."""
+    biggest = max(28, target_size[0] // 24)
+    smallest = max(20, target_size[0] // 40)
+    max_block = int(target_size[1] * 0.26)
+    size = biggest
+    while True:
+        font = _load_font(font_name, size, bold=True)
+        lines = _wrap_text(draw, headline, font, max_width)
+        if (len(lines) <= 3 and len(lines) * int(size * 1.3) <= max_block) or size <= smallest:
+            break
+        size -= 2
+    if len(lines) > 3:
+        words = headline.split()
+        while words and len(lines) > 3:
+            words.pop()
+            lines = _wrap_text(draw, " ".join(words) + "…", font, max_width)
+    return font, lines, size
+
+
+def _brand_band_color(brand_tokens: "BrandTokens") -> tuple[int, int, int]:
+    """A dark shade of the brand's own colour for the band behind the text, instead of flat black."""
+    r, g, b = _rgb(_hex_or_default(brand_tokens.secondary_hex or brand_tokens.primary_hex, _DEFAULT_BG))
+    return int(r * 0.35), int(g * 0.35), int(b * 0.35)
 
 
 def _hex_or_default(value: str, fallback: str) -> str:
@@ -226,7 +267,13 @@ def _fit_background(base_image_bytes: bytes, target_size: tuple[int, int]) -> Im
         top = (src_h - new_h) // 2
         img = img.crop((0, top, src_w, top + new_h))
 
-    return img.resize(target_size, Image.LANCZOS)
+    scale = target_w / img.width
+    img = img.resize(target_size, Image.LANCZOS)
+    if scale > 1.08:
+        # the free picture models make about 1024 pixels, so most layouts enlarge them; a light unsharp mask gives back some of
+        # the crispness the enlargement softens (it is skipped when the picture is not enlarged)
+        img = img.filter(ImageFilter.UnsharpMask(radius=1.4, percent=70, threshold=3))
+    return img
 
 
 def render_slide(
@@ -236,6 +283,7 @@ def render_slide(
     brand_tokens: BrandTokens,
     text_content: SlideTextContent,
     logo_bytes: Optional[bytes] = None,
+    mascot_bytes: Optional[bytes] = None,
 ) -> bytes:
     """Composites one real PNG for any of the 9 layouts (see module
     docstring) at its real pixel target. `LAYOUT_DIMS` is the true source
@@ -273,23 +321,37 @@ def render_slide(
 
     margin = int(min(target_size) * _MARGIN_FRACTION)
     max_text_width = target_size[0] - margin * 2
-    headline_font_size = max(28, target_size[0] // 18)
-    font = _load_font(brand_tokens.heading_font, headline_font_size, bold=True)
-
-    headline = text_content.headline.strip() or "Recast"
-    lines = _wrap_text(draw, headline, font, max_text_width)
+    show_text = text_content.show_text
+    headline_font_size = max(24, target_size[0] // 24)
+    font = None
+    lines: list[str] = []
+    if show_text:
+        headline = text_content.headline.strip()
+        if headline:
+            font, lines, headline_font_size = _fit_headline(draw, headline, brand_tokens.heading_font, max_text_width, target_size)
+        else:
+            show_text = False  # nothing to say means no band and no words, never a placeholder
     line_height = int(headline_font_size * 1.3)
     text_block_height = len(lines) * line_height
-    # An icon sits just above the headline, inside the scrim so it stays legible.
-    icon_name = text_content.icon_name if is_known_icon(text_content.icon_name) else None
+    # An icon sits just above the headline, inside the band so it stays legible.
+    icon_name = text_content.icon_name if show_text and is_known_icon(text_content.icon_name) else None
     icon_size = int(min(target_size) * 0.12) if icon_name else 0
     icon_gap = margin // 3 if icon_name else 0
-    scrim_top = target_size[1] - margin - text_block_height - margin // 2 - icon_size - icon_gap
+    bar_height = max(4, target_size[1] // 200) if show_text and not icon_name else 0
+    bar_gap = margin // 3 if bar_height else 0
 
-    draw.rectangle(
-        [(0, max(0, scrim_top)), (target_size[0], target_size[1])],
-        fill=(0, 0, 0, 140),
-    )
+    if show_text:
+        # A soft band in a dark shade of the brand colour, fading in from the picture, so the words are readable
+        # without a hard black block across the picture.
+        block = text_block_height + icon_size + icon_gap + bar_height + bar_gap
+        band_top = max(0, target_size[1] - margin - block - margin // 2)
+        fade = margin * 2
+        r, g, b = _brand_band_color(brand_tokens)
+        total = target_size[1] - max(0, band_top - fade)
+        for y in range(max(0, band_top - fade), target_size[1]):
+            progress = (y - max(0, band_top - fade)) / max(1, total)
+            alpha = int(215 * min(1.0, progress * 1.6) ** 1.2)
+            draw.line([(0, y), (target_size[0], y)], fill=(r, g, b, alpha))
 
     # Illustration accent: a big, faint glyph in the corner, drawn after the dark strip behind the text, so it runs through it without a hard edge.
     if text_content.illustration_accent:
@@ -320,7 +382,20 @@ def render_slide(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Logo composite failed, skipping: %s", exc)
 
+    if mascot_bytes:
+        try:
+            mascot = Image.open(BytesIO(mascot_bytes)).convert("RGBA")
+            mascot_target = int(min(target_size) * 0.2)
+            mascot.thumbnail((mascot_target, mascot_target), Image.LANCZOS)
+            img.paste(mascot, (target_size[0] - mascot.width - margin // 2, margin // 2), mascot)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Mascot composite failed, skipping: %s", exc)
+
     draw = ImageDraw.Draw(img)
+
+    if bar_height:
+        bar_top = target_size[1] - margin - text_block_height - bar_gap - bar_height
+        draw.rectangle([(margin, bar_top), (margin + int(target_size[0] * 0.09), bar_top + bar_height)], fill=accent)
 
     if icon_name:
         icon_font = load_icon_font(icon_size)

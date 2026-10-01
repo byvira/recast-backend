@@ -55,6 +55,11 @@ def _hook_line(content: str) -> str:
     return ""
 
 
+def _scene_topic(content: str) -> str:
+    """What the post is about, for the picture prompt: its opening lines (up to 600 characters), not only the first sentence."""
+    return " ".join(ln.strip() for ln in (content or "").splitlines() if ln.strip())[:600]
+
+
 def _safe_color(value: str, fallback: str) -> str:
     value = (value or "").strip()
     if not value:
@@ -95,19 +100,40 @@ def render_quote_card(hook_text: str, visual_identity: dict) -> bytes:
     isn't actually the brand's — tracked as a follow-up, not a blocker to
     shipping a real default visual today.
     """
+    from app.pipelines.media.contrast_check import contrast_ratio
+    from app.pipelines.media.image_render import _load_font
+
     colors = (visual_identity or {}).get("colors") or {}
+    fonts = (visual_identity or {}).get("fonts") or {}
     bg = _safe_color(colors.get("primary", ""), _DEFAULT_BG)
     fg = _safe_color(colors.get("accent", ""), _DEFAULT_FG)
+    try:
+        if contrast_ratio(fg, bg) < 4.5:  # the brand's accent can be too close to its background to read
+            fg = "#FFFFFF" if contrast_ratio("#FFFFFF", bg) >= contrast_ratio("#111111", bg) else "#111111"
+    except Exception:  # noqa: BLE001
+        fg = _DEFAULT_FG
 
     img = Image.new("RGB", CARD_SIZE, bg)
     draw = ImageDraw.Draw(img)
-    font = ImageFont.load_default(size=64)
-
     margin = 120
     max_width = CARD_SIZE[0] - margin * 2
-    lines = _wrap_text(draw, hook_text or "Recast", font, max_width)
+    text = (hook_text or "").strip()
+    font = _load_font(fonts.get("heading"), 72, bold=True)
+    lines: list[str] = []
+    size = 72
+    while text:
+        font = _load_font(fonts.get("heading"), size, bold=True)
+        lines = _wrap_text(draw, text, font, max_width)
+        if (len(lines) <= 6 and len(lines) * int(size * 1.25) <= CARD_SIZE[1] * 0.7) or size <= 36:
+            break
+        size -= 4
+    if len(lines) > 6:
+        words = text.split()
+        while words and len(lines) > 6:
+            words.pop()
+            lines = _wrap_text(draw, " ".join(words) + "…", font, max_width)
 
-    line_height = 80
+    line_height = int(size * 1.25)
     total_height = len(lines) * line_height
     y = (CARD_SIZE[1] - total_height) // 2
 
@@ -155,7 +181,7 @@ async def pick_default_image(
         logger.error("Brand-asset match failed for workspace %s: %s", workspace_id, exc)
 
     try:
-        topic = _hook_line(piece_content)
+        topic = _scene_topic(piece_content)
         ai_asset = await generate_brand_image(
             topic=topic, brand_profile=brand_profile,
             workspace_id=workspace_id, user_id=user_id,

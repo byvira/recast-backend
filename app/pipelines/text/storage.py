@@ -56,6 +56,9 @@ logger = logging.getLogger(__name__)
 # approve/refine/rescore/versions — not the empty string every SSE-driven
 # card carried before this.
 
+MAX_INPUT_TEXT = 8000
+
+
 async def ensure_session_exists(
     session_id: str,
     workspace_id: str,
@@ -68,6 +71,7 @@ async def ensure_session_exists(
     batch_mode: bool = False,
     schedule_mode: str = "now",
     scheduled_at: Optional[str] = None,
+    input_text: Optional[str] = None,
 ) -> None:
     """Idempotent — safe to call once per platform. Platforms for one
     generation run finish concurrently and each calls this before saving its
@@ -93,6 +97,8 @@ async def ensure_session_exists(
                 "schedule_mode": schedule_mode or "now",
                 "scheduled_at": str(scheduled_at) if scheduled_at else None,
                 "pieces_count": 0,
+                # What the member typed or pasted, kept (capped) so History can open this work again with the input filled in
+                "input_text": (input_text or "")[:MAX_INPUT_TEXT],
                 "created_at": now,
             },
             "$set": {"updated_at": now},
@@ -372,6 +378,8 @@ async def get_workspace_sessions(
 
     for s in sessions:
         s.pop("_id", None)
+        # the list carries only a short preview; the full input comes with the single session
+        s["preview"] = " ".join((s.pop("input_text", "") or "").split())[:160]
 
     return {
         "items": sessions,

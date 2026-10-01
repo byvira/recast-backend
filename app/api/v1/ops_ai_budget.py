@@ -17,7 +17,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.auth import require_platform_staff
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, require_ops_admin
-from app.db.mongo import workspace_ai_budgets, workspace_ai_usage_daily
+from app.db.mongo import (
+    audio_assets,
+    content_pieces,
+    image_assets,
+    workspace_ai_budgets,
+    workspace_ai_usage_daily,
+    workspace_insights,
+)
+from app.shared import ai_credits
 from app.models.ai_usage import (
     WorkspaceAIBudget,
     WorkspaceAIBudgetWrite,
@@ -86,4 +94,49 @@ async def get_usage(request: Request, ctx: WorkspaceContext = Depends(_OWNER)) -
             "analytics", "personal.assistant", "supervisor.reason", "supervisor.synthesize",
         ],
         "enforced": True,
+    }
+
+
+@router.get("/credits")
+@limiter.limit("30/minute")
+async def get_credits(request: Request, ctx: WorkspaceContext = Depends(_OWNER)) -> dict:
+    """Everything the AI Credits panel shows, from what this workspace really did in the last 30 days (the same window the
+    cap is enforced over): tokens against the cap, how many things were made in each area, and one sentence about how AI is
+    being used. Nothing is a fixed sample; with no activity every count is zero."""
+    now = datetime.now(timezone.utc)
+    since_dt = now - timedelta(days=ai_credits.WINDOW_DAYS)
+    since = since_dt.strftime("%Y-%m-%d")
+    ws = ctx.workspace_id
+
+    rows = await workspace_ai_usage_daily.find({"workspace_id": ws, "date": {"$gte": since}}, {"_id": 0}).to_list(ai_credits.WINDOW_DAYS + 1)
+    budget_doc = await workspace_ai_budgets.find_one({"workspace_id": ws}, {"monthly_token_budget": 1})
+    cap = (budget_doc or {}).get("monthly_token_budget")
+    facts = ai_credits.window_facts(rows, now.date())
+
+    video_pipeline = [
+        {"$match": {"workspace_id": ws, "video_clips.created_at": {"$gte": since_dt}}},
+        {"$unwind": "$video_clips"},
+        {"$match": {"video_clips.created_at": {"$gte": since_dt}}},
+        {"$count": "n"},
+    ]
+    video_rows = await audio_assets.aggregate(video_pipeline).to_list(1)
+    counts = {
+        "voice_audio": await audio_assets.count_documents({"workspace_id": ws, "created_at": {"$gte": since_dt}}),
+        "video": int(video_rows[0]["n"]) if video_rows else 0,
+        "posts": await content_pieces.count_documents({"workspace_id": ws, "created_at": {"$gte": since_dt}, "deleted": {"$ne": True}}),
+        "images": await image_assets.count_documents({"workspace_id": ws, "created_at": {"$gte": since_dt}}),
+        "insights": await workspace_insights.count_documents({"workspace_id": ws, "created_at": {"$gte": since_dt}}),
+    }
+    used_percent = min(100, round(100 * facts["tokens"] / cap)) if cap else None
+    return {
+        "window_days": ai_credits.WINDOW_DAYS,
+        "tokens_used": facts["tokens"],
+        "calls": facts["calls"],
+        "cap": cap,
+        "used_percent": used_percent,
+        "oldest_drops_off_in_days": facts["oldest_drops_off_in_days"],
+        "categories": ai_credits.category_rows(counts),
+        "insight": ai_credits.insight(cap=cap, tokens=facts["tokens"], pace=facts["daily_pace"], counts=counts),
+        # tokens are only spent by writing and analysis; pictures, voice and video are counted as things made
+        "note": "Pictures, voice and video do not use AI tokens, so they are counted as things made, not as tokens.",
     }

@@ -49,7 +49,7 @@ async def test_a_pack_makes_that_many_real_images(signup_user, stubs):  # noqa: 
     slides = res.json()["slides"]
     assert [s["slide_number"] for s in slides] == [1, 2, 3]
     assert len({s["media_id"] for s in slides}) == 3
-    assert len(stubs["uploads"]) == 3
+    assert len(stubs["uploads"]) == 6  # a clean picture and a finished picture for each of the 3 images
     # The background prompts really differ, so the pictures are not copies.
     assert len({b["prompt"] for b in stubs["backgrounds"]}) == 3
     assert stubs["backgrounds"][0]["prompt"] == "a calm sunrise over hills"
@@ -59,7 +59,7 @@ async def test_the_default_is_one_image(signup_user, stubs):  # noqa: F811
     client, ws_id, brand_id = await _setup(signup_user)
     res = await _generate(client, ws_id, brand_id)
     assert len(res.json()["slides"]) == 1
-    assert len(stubs["uploads"]) == 1
+    assert len(stubs["uploads"]) == 2  # the clean picture and the finished picture
 
 
 async def test_a_count_outside_the_range_is_rejected_before_any_work(signup_user, stubs):  # noqa: F811
@@ -73,7 +73,7 @@ async def test_a_failure_partway_keeps_what_was_made(signup_user, stubs, monkeyp
     client, ws_id, brand_id = await _setup(signup_user)
     calls = {"n": 0}
 
-    async def flaky(*, prompt, workspace_id, user_id, target_size, brand_profile):
+    async def flaky(*, prompt, workspace_id, user_id, target_size, brand_profile, avoid=None):
         calls["n"] += 1
         if calls["n"] == 3:
             raise RuntimeError("provider quota used up")

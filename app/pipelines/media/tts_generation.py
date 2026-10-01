@@ -365,6 +365,20 @@ class SpeechResult(BaseModel):
     words: Optional[list[TranscriptWord]] = None
 
 
+def respell(text: str, lexicon: Optional[MemberLexicon]) -> str:
+    """Replaces each pronunciation term with its respelling (for example "Zendly" with "zen-dlee"), whole words only and
+    ignoring case, so a provider that cannot take a pronunciation dictionary still says the word the member's way."""
+    if not lexicon or not lexicon.pronunciations:
+        return text
+    import re
+
+    for entry in sorted(lexicon.pronunciations, key=lambda e: len(e.term), reverse=True):
+        term, spoken = (entry.term or "").strip(), (entry.ipa or "").strip()
+        if term and spoken:
+            text = re.sub(rf"(?<!\w){re.escape(term)}(?!\w)", lambda _m, s=spoken: s, text, flags=re.IGNORECASE)
+    return text
+
+
 _elevenlabs_skip_until = 0.0  # time.monotonic() until which ElevenLabs is not tried after a plan or key refusal
 
 
@@ -430,7 +444,8 @@ async def _synthesize(
 
     try:
         with fallback_scope():
-            audio = await _call_deepgram(text=text, voice_settings=voice_settings)
+            # Deepgram has no pronunciation dictionary, so the member's pronunciations are applied as plain respelling
+            audio = await _call_deepgram(text=respell(text, lexicon), voice_settings=voice_settings)
         logger.info("ElevenLabs unavailable — served this narration via the Deepgram fallback.")
         return SpeechResult(audio=audio)
     except Exception as exc:  # noqa: BLE001

@@ -94,12 +94,13 @@ from app.pipelines.text.generator import resolve_language_directive_name
 from app.shared.language import workspace_language
 from app.pipelines.media import duration as spoken_length
 from app.pipelines.media import fit_script as script_fitting
-from app.pipelines.media.echo_reduction import EchoReductionError, reduce_echo
+from app.pipelines.media.echo_reduction import BASIC_CLEANUP_NOTE, EchoReductionError, basic_cleanup, reduce_echo
 from app.pipelines.media.music_library import list_library_tracks
 from app.pipelines.media.soundbite_extraction import SoundbiteExtractionError, evaluate_quality, trim_span
 from app.pipelines.media.tts_generation import is_language_supported, synthesize_speech, synthesize_speech_timed
 from app.shared.localized_strings import clean_translation, looks_leaked
 from app.pipelines.media.video_render import TranscriptWordLike, VideoRenderError, render_video
+from app.pipelines.media import video_presets
 from app.pipelines.media.transform import build_export_url
 from app.prompts.registry import load_prompt
 from app.shared.activity.runs import end_run, get_run, start_run, update_run
@@ -251,6 +252,42 @@ async def fit_script(
     return await script_fitting.fit_script(
         body.script, body.target_seconds, body.words_per_minute, resolve_language_directive_name(language), ask,
     )
+
+
+@router.get("/video-clips")
+@limiter.limit("60/minute")
+async def list_video_clips(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Every video made from a recording in this workspace, newest first, each with its playable file and the recording
+    it came from. This is the Video pipeline's history."""
+    docs = await audio_assets.find(
+        {"workspace_id": ctx.workspace_id, "video_clips.0": {"$exists": True}},
+        {"_id": 0, "id": 1, "title": 1, "brand_id": 1, "video_clips": 1},
+    ).to_list(length=500)
+    clips = [
+        {"audio_asset_id": d["id"], "audio_title": d.get("title", ""), "brand_id": d.get("brand_id"), **{k: v for k, v in dict(c).items()}}
+        for d in docs for c in (d.get("video_clips") or [])
+    ]
+    clips.sort(key=lambda c: str(c.get("created_at") or ""), reverse=True)
+    total = len(clips)
+    clips = clips[skip:skip + limit]
+    media_ids = [c["media_id"] for c in clips if c.get("media_id")]
+    media_by_id: dict = {}
+    if media_ids:
+        found = await media_assets.find({"id": {"$in": media_ids}, "workspace_id": ctx.workspace_id}, {"_id": 0}).to_list(length=len(media_ids))
+        media_by_id = {m["id"]: m for m in found}
+    return {"items": [{**c, "media": media_by_id.get(c.get("media_id"))} for c in clips], "total": total}
+
+
+@router.get("/video-presets")
+@limiter.limit("60/minute")
+async def video_presets_list(request: Request, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
+    """Where a video is usually posted and what works there (best shape, longest length, length that holds attention)."""
+    return {"presets": video_presets.presets_payload(), "note": video_presets.DISCLAIMER}
 
 
 @router.post("/length-preview")
@@ -1861,11 +1898,17 @@ async def cleanup_audio_asset(
     await run.step("Loading the recording")
     source_bytes = await _download_media_bytes(media["url"])
 
+    echo_note: Optional[str] = None
     if body.remove_echo:
         try:
             source_bytes = await reduce_echo(source_bytes)
         except EchoReductionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            # ElevenLabs cannot do it (no key, free plan, or switched off): do the honest basic cleanup instead and say so
+            try:
+                source_bytes = await basic_cleanup(source_bytes)
+                echo_note = BASIC_CLEANUP_NOTE
+            except EchoReductionError:
+                raise HTTPException(status_code=400, detail=str(exc))
 
     transcript = [dict(w) for w in doc.get("transcript", [])]
     await run.step("Applying your changes")
@@ -1874,7 +1917,9 @@ async def cleanup_audio_asset(
     except CleanupError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if body.remove_echo:
-        applied["remove_echo"] = True
+        applied["remove_echo"] = "basic" if echo_note else True
+        if echo_note:
+            applied["remove_echo_note"] = echo_note
 
     await run.step("Saving the new version")
     try:
@@ -2229,8 +2274,10 @@ async def make_video_from_audio_asset(
         raise HTTPException(status_code=404, detail="Audio asset not found.")
     if body.style not in ("cover", "solid", "waveform", "cover_wave"):
         raise HTTPException(status_code=400, detail="style must be one of: cover, solid, waveform, cover_wave.")
-    if body.size not in ("square", "vertical", "landscape"):
-        raise HTTPException(status_code=400, detail="size must be one of: square, vertical, landscape.")
+    if body.size not in ("square", "vertical", "landscape", "portrait"):
+        raise HTTPException(status_code=400, detail="size must be one of: square, vertical, landscape, portrait.")
+    if body.platform is not None and body.platform not in video_presets.PRESETS:
+        raise HTTPException(status_code=400, detail="platform must be one of: " + ", ".join(video_presets.PRESETS) + ".")
 
     voice_media_id = doc.get("approved_master_media_id") or doc.get("media_id")
     voice = await media_assets.find_one({"id": voice_media_id, "workspace_id": ctx.workspace_id}) if voice_media_id else None
@@ -2244,6 +2291,14 @@ async def make_video_from_audio_asset(
     brand = await brand_profiles.find_one({"id": doc["brand_id"], "workspace_id": ctx.workspace_id})
     visual_identity = (brand or {}).get("visual_identity") or {}
     colors = visual_identity.get("colors") or {}
+
+    # brand assets go on by default: the logo when the brand has one, the title, the brand colours and font
+    from app.api.v1.image_assets import _fetch_logo_bytes
+    from app.pipelines.media.headline import trim_headline
+
+    use_logo = body.show_logo if body.show_logo is not None else True
+    logo_bytes = await _fetch_logo_bytes(visual_identity.get("logo_url") or "") if use_logo else None
+    on_screen_title = trim_headline(body.title or doc.get("title", ""), max_words=10, max_chars=64) if body.show_title else ""
 
     cover_bytes = None
     if body.style in ("cover", "cover_wave"):
@@ -2264,7 +2319,8 @@ async def make_video_from_audio_asset(
             audio_bytes=audio_bytes, words=words, start_s=body.start_s, end_s=end_s,
             style=body.style, size=body.size,
             background_hex=colors.get("secondary") or "", accent_hex=colors.get("accent") or "",
-            cover_bytes=cover_bytes,
+            cover_bytes=cover_bytes, font_name=(visual_identity.get("fonts") or {}).get("heading") or None,
+            primary_hex=colors.get("primary") or "", title=on_screen_title, logo_bytes=logo_bytes, progress=body.show_progress,
         )
     except VideoRenderError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2291,6 +2347,7 @@ async def make_video_from_audio_asset(
     clip = VideoClip(
         id=uuid4().hex, media_id=media.id, start_s=body.start_s, end_s=end_s,
         style=body.style, size=body.size, title=(body.title or doc.get("title", ""))[:200],
+        platform=body.platform, notes=video_presets.advice(body.platform, body.size, end_s - body.start_s),
         created_by=ctx.user_id, created_at=now,
     )
     await audio_assets.update_one(
@@ -2616,3 +2673,18 @@ async def refine_soundbites(
         updated.append(SoundbiteOut(**refreshed, url=url))
 
     return updated
+
+
+@router.get("/{audio_asset_id}", response_model=AudioAsset)
+@limiter.limit("120/minute")
+async def get_audio_asset(
+    request: Request,
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> AudioAsset:
+    """One audio project with everything the Audio pipeline needs to open it again (script, transcript, versions in use,
+    video clips). Used by "Open in Audio pipeline" and the History tab. Defined last so it never shadows a fixed path."""
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    return AudioAsset(**doc)

@@ -7,13 +7,15 @@ conventions.
 """
 
 import asyncio
+import io
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 from uuid import uuid4
 
 import httpx
+from PIL import Image
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
@@ -33,6 +35,7 @@ from app.db.mongo import (
 )
 from app.models.agent_events import ContentEventPayload, ContentRef, EventType
 from app.models.image_asset import (
+    Layer,
     CommentPin,
     CommentPinCreate,
     CommentPinUpdate,
@@ -54,9 +57,9 @@ from app.pipelines.media.image_render import (
     LAYOUT_DIMS,
     SUPPORTED_LAYOUTS,
     SlideTextContent,
-    render_slide,
 )
 from app.pipelines.media import image_pack
+from app.pipelines.media.image_layers import MAX_LAYERS, default_layers, layer_assets_needed, render_layers
 from app.pipelines.media.icons import is_known_icon, list_icons
 from app.pipelines.media.pdf_export import generate_carousel_pdf
 from app.pipelines.media.transform import build_export_url
@@ -127,9 +130,69 @@ def _fallback_note(background_bytes: Optional[bytes]) -> Optional[str]:
     return f"No AI picture, so this is a text card. {reason}"
 
 
+class _Rendered(NamedTuple):
+    media: MediaAsset                     # the finished picture, drawn from the layers
+    background_media_id: Optional[str]    # the clean picture (no words on it), kept so edits never need a new AI picture
+    layers: list[Layer]
+
+
+def _image_mime(data: bytes) -> str:
+    try:
+        return "image/png" if (Image.open(io.BytesIO(data)).format or "").upper() == "PNG" else "image/jpeg"
+    except Exception:  # noqa: BLE001
+        return "image/jpeg"
+
+
+async def _store_image(data: bytes, *, workspace_id: str, user_id: str, size: tuple[int, int], mime: str, source: MediaSource,
+                       flagged_reason: Optional[str] = None) -> MediaAsset:
+    url = await upload_file(data, UploadContentType.IMAGE, user_id)
+    media = MediaAsset(
+        id=str(uuid4()), workspace_id=workspace_id, kind=MediaKind.IMAGE, url=url, mime_type=mime,
+        width=size[0], height=size[1], source=source, created_by=user_id, created_at=datetime.now(timezone.utc),
+        qa_flagged=flagged_reason is not None, qa_flag_reason=flagged_reason,
+    )
+    await media_assets.insert_one(media.model_dump())
+    return media
+
+
+async def _media_bytes(media_id: Optional[str], workspace_id: str) -> Optional[bytes]:
+    """The bytes of a file in this workspace's library, or None. Only files the workspace owns can be read this way."""
+    if not media_id:
+        return None
+    doc = await media_assets.find_one({"id": media_id, "workspace_id": workspace_id})
+    return await _fetch_logo_bytes(doc.get("url") or "") if doc else None
+
+
+async def _fetch_layer_assets(layers: list[Layer], brand: dict, workspace_id: str) -> dict[str, bytes]:
+    """The pictures the layers need: the brand's logo and mascot, and uploaded images from this workspace's library. A
+    layer can never name an outside address, so nothing outside the brand and the workspace library is ever fetched."""
+    visual_identity = brand.get("visual_identity") or {}
+    wanted = layer_assets_needed(layers)
+
+    async def one(layer: Layer) -> tuple[str, Optional[bytes]]:
+        if layer.type == "logo":
+            return layer.id, await _fetch_logo_bytes(visual_identity.get("logo_url") or "")
+        if layer.type == "mascot":
+            return layer.id, await _fetch_logo_bytes(visual_identity.get("mascot_url") or "")
+        return layer.id, await _media_bytes(layer.media_id, workspace_id)
+
+    return {lid: data for lid, data in await asyncio.gather(*(one(layer) for layer in wanted)) if data}
+
+
+async def _draw_and_store(
+    *, size: tuple[int, int], background_bytes: Optional[bytes], layers: list[Layer], brand: dict, brand_tokens: BrandTokens,
+    workspace_id: str, user_id: str,
+) -> MediaAsset:
+    assets = await _fetch_layer_assets(layers, brand, workspace_id)
+    png = await asyncio.to_thread(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets)
+    note = _fallback_note(background_bytes)
+    return await _store_image(png, workspace_id=workspace_id, user_id=user_id, size=size, mime="image/png", source=MediaSource.RENDERED, flagged_reason=note)
+
+
 async def _render_and_upload_slide(
     *,
     prompt: str,
+    avoid: Optional[str] = None,
     workspace_id: str,
     user_id: str,
     layout: LayoutPreset,
@@ -137,44 +200,30 @@ async def _render_and_upload_slide(
     brand_tokens: BrandTokens,
     text_content: SlideTextContent,
     show_logo: bool,
-) -> MediaAsset:
-    """Shared generate+render+upload core, factored out of the original
-    `/generate` body so `add_slide` (real multi-slide carousel CRUD) reuses
-    the exact same real path rather than a second, drifting copy."""
+    show_mascot: bool = False,
+) -> _Rendered:
+    """Shared generate and draw core for `/generate`, the rest of a pack and `add_slide`. The AI picture is kept clean
+    (nothing drawn on it) and the headline, band, logo and so on become editable layers over it; the finished picture is
+    drawn from those layers, so the editor and the saved file always agree."""
+    size = LAYOUT_DIMS[layout]
     background_bytes = await generate_image_from_prompt(
-        prompt=prompt,
-        workspace_id=workspace_id,
-        user_id=user_id,
-        target_size=LAYOUT_DIMS[layout],
-        brand_profile=brand,
+        prompt=prompt, workspace_id=workspace_id, user_id=user_id, target_size=size, brand_profile=brand, avoid=avoid,
     )
     visual_identity = brand.get("visual_identity") or {}
-    logo_bytes = await _fetch_logo_bytes(visual_identity.get("logo_url") or "") if show_logo else None
-    png_bytes = render_slide(
-        layout=layout,
-        base_image_bytes=background_bytes,
-        brand_tokens=brand_tokens,
-        text_content=text_content,
-        logo_bytes=logo_bytes,
+    background_media_id: Optional[str] = None
+    if background_bytes:
+        background = await _store_image(background_bytes, workspace_id=workspace_id, user_id=user_id, size=size,
+                                        mime=_image_mime(background_bytes), source=MediaSource.AI_GENERATED)
+        background_media_id = background.id
+    layers = default_layers(
+        size=size, brand=brand_tokens, headline=text_content.headline, show_text=text_content.show_text,
+        accent_keyword=text_content.accent_keyword, author=text_content.author,
+        has_logo=bool(show_logo and visual_identity.get("logo_url")), has_mascot=bool(show_mascot and visual_identity.get("mascot_url")),
+        icon_name=text_content.icon_name, illustration_accent=text_content.illustration_accent,
     )
-    width, height = LAYOUT_DIMS[layout]
-    url = await upload_file(png_bytes, UploadContentType.IMAGE, user_id)
-    media = MediaAsset(
-        id=str(uuid4()),
-        workspace_id=workspace_id,
-        kind=MediaKind.IMAGE,
-        url=url,
-        mime_type="image/png",
-        width=width,
-        height=height,
-        source=MediaSource.RENDERED,
-        created_by=user_id,
-        created_at=datetime.now(timezone.utc),
-        qa_flagged=_fallback_note(background_bytes) is not None,
-        qa_flag_reason=_fallback_note(background_bytes),
-    )
-    await media_assets.insert_one(media.model_dump())
-    return media
+    media = await _draw_and_store(size=size, background_bytes=background_bytes, layers=layers, brand=brand, brand_tokens=brand_tokens,
+                                  workspace_id=workspace_id, user_id=user_id)
+    return _Rendered(media, background_media_id, layers)
 
 
 def _brand_tokens_from(brand: dict) -> BrandTokens:
@@ -242,15 +291,10 @@ async def _bump_version(
 
 
 def _piece_topic(piece: dict) -> str:
-    """First non-empty line of a piece's real content, capped — same
-    technique app.pipelines.media.default_image._hook_line uses, so a
-    repurposed image starts from the piece's actual hook, not an invented
-    caption."""
-    for line in (piece.get("content") or "").splitlines():
-        line = line.strip()
-        if line:
-            return line[:180]
-    return ""
+    """The opening of a piece's real content (its first lines, up to 600 characters), so the picture is made from what the
+    post is about and not only from its first sentence."""
+    lines = [ln.strip() for ln in (piece.get("content") or "").splitlines() if ln.strip()]
+    return " ".join(lines)[:600]
 
 
 class GenerateImageAssetRequest(BaseModel):
@@ -284,7 +328,13 @@ class GenerateImageAssetRequest(BaseModel):
     # with a logo set doesn't automatically get it stamped onto every
     # image, since that's a real visual change the user should choose,
     # not one this build silently defaults on.
-    show_logo: bool = False
+    # None means "automatic": a picture made from a post gets the brand's logo when the brand has one; a picture made by
+    # hand keeps the old behaviour (off unless asked). True or False is always obeyed.
+    show_logo: Optional[bool] = None
+    # False makes a picture with no headline or band on it.
+    show_text: bool = True
+    # The brand's mascot in a corner of the picture. Off unless asked.
+    show_mascot: bool = False
 
 
 @router.get("/layouts")
@@ -385,45 +435,17 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
         body_font=fonts.get("body") or None,
     )
 
-    background_bytes = await generate_image_from_prompt(
-        prompt=prompt,
-        workspace_id=ctx.workspace_id,
-        user_id=ctx.user_id,
-        target_size=LAYOUT_DIMS[body.active_layout],
-        brand_profile=brand,
-    )
-
-    logo_bytes = await _fetch_logo_bytes(visual_identity.get("logo_url") or "") if body.show_logo else None
-
-    png_bytes = render_slide(
-        layout=body.active_layout,
-        base_image_bytes=background_bytes,
-        brand_tokens=brand_tokens,
+    use_logo = body.show_logo if body.show_logo is not None else bool(body.source_piece_id)
+    rendered = await _render_and_upload_slide(
+        prompt=prompt, avoid=body.negative_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id, layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
         text_content=SlideTextContent(
             headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
-            icon_name=body.icon_name, illustration_accent=body.illustration_accent,
+            icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
         ),
-        logo_bytes=logo_bytes,
+        show_logo=use_logo, show_mascot=body.show_mascot,
     )
-
-    width, height = LAYOUT_DIMS[body.active_layout]
-    url = await upload_file(png_bytes, UploadContentType.IMAGE, ctx.user_id)
+    media = rendered.media
     now = datetime.now(timezone.utc)
-    media = MediaAsset(
-        id=str(uuid4()),
-        workspace_id=ctx.workspace_id,
-        kind=MediaKind.IMAGE,
-        url=url,
-        mime_type="image/png",
-        width=width,
-        height=height,
-        source=MediaSource.RENDERED,
-        created_by=ctx.user_id,
-        created_at=now,
-        qa_flagged=_fallback_note(background_bytes) is not None,
-        qa_flag_reason=_fallback_note(background_bytes),
-    )
-    await media_assets.insert_one(media.model_dump())
 
     asset_id = str(uuid4())
     asset = ImageAsset(
@@ -447,9 +469,11 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 slide_type=body.active_layout.value,
                 layout=body.active_layout,
                 media_id=media.id,
+                background_media_id=rendered.background_media_id,
+                layers=rendered.layers,
                 text_content=SlideTextContent(
                     headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
-            icon_name=body.icon_name, illustration_accent=body.illustration_accent,
+            icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
                 ).model_dump(),
             )
         ],
@@ -466,24 +490,24 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
         made = list(asset.slides)
         for position, extra_prompt in enumerate(extra_prompts, start=2):
             try:
-                extra_media = await _render_and_upload_slide(
+                extra = await _render_and_upload_slide(
                     prompt=extra_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
                     layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
                     text_content=SlideTextContent(
                         headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
-                        icon_name=body.icon_name, illustration_accent=body.illustration_accent,
+                        icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
                     ),
-                    show_logo=body.show_logo,
+                    show_logo=use_logo,
                 )
             except Exception as exc:  # noqa: BLE001 - keep what was made
                 logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
                 break
             made.append(Slide(
                 slide_number=position, title=f"{body.title} ({position})", slide_type=body.active_layout.value,
-                layout=body.active_layout, media_id=extra_media.id,
+                layout=body.active_layout, media_id=extra.media.id, background_media_id=extra.background_media_id, layers=extra.layers,
                 text_content=SlideTextContent(
                     headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
-                    icon_name=body.icon_name, illustration_accent=body.illustration_accent,
+                    icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
                 ).model_dump(),
             ))
         if len(made) > len(asset.slides):
@@ -747,7 +771,7 @@ async def add_slide(
         headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
             icon_name=body.icon_name, illustration_accent=body.illustration_accent,
     )
-    media = await _render_and_upload_slide(
+    rendered = await _render_and_upload_slide(
         prompt=prompt,
         workspace_id=ctx.workspace_id,
         user_id=ctx.user_id,
@@ -764,13 +788,96 @@ async def add_slide(
         title=body.headline[:80] or asset.title,
         slide_type=body.active_layout.value,
         layout=body.active_layout,
-        media_id=media.id,
+        media_id=rendered.media.id,
+        background_media_id=rendered.background_media_id,
+        layers=rendered.layers,
         text_content=text_content.model_dump(),
     )
     updated_doc = await _bump_version(
         image_asset_id, ctx.workspace_id, asset.slides + [new_slide], "slide_added", ctx.user_id
     )
     return ImageAsset(**updated_doc)
+
+
+class SaveLayersRequest(BaseModel):
+    layers: list[Layer] = Field(max_length=MAX_LAYERS)
+
+
+async def _slide_for_editing(image_asset_id: str, slide_number: int, workspace_id: str) -> tuple[ImageAsset, Slide, dict]:
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    asset = ImageAsset(**doc)
+    slide = next((sl for sl in asset.slides if sl.slide_number == slide_number), None)
+    if slide is None:
+        raise HTTPException(status_code=404, detail="Slide not found.")
+    if slide.layout is None:
+        raise HTTPException(status_code=400, detail="This picture was uploaded, not designed here, so it has no layers to edit.")
+    brand = await _get_brand_profile(asset.brand_id, workspace_id)
+    return asset, slide, brand
+
+
+async def _redraw_slide(asset: ImageAsset, slide: Slide, layers: list[Layer], brand: dict, ctx: WorkspaceContext, action: str) -> ImageAsset:
+    """Draws the given layers over the slide's clean picture, stores the result and saves it as a new version. Slides made
+    before the editor existed have no clean picture, so their finished picture (words and all) is used as the backdrop."""
+    assert slide.layout is not None
+    size = LAYOUT_DIMS[slide.layout]
+    background = await _media_bytes(slide.background_media_id or slide.media_id, ctx.workspace_id)
+    brand_tokens = _brand_tokens_from(brand)
+    media = await _draw_and_store(size=size, background_bytes=background, layers=layers, brand=brand, brand_tokens=brand_tokens,
+                                  workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+    updated = [
+        sl.model_copy(update={"media_id": media.id, "layers": layers}) if sl.slide_number == slide.slide_number else sl
+        for sl in asset.slides
+    ]
+    doc = await _bump_version(asset.id, ctx.workspace_id, updated, action, ctx.user_id)
+    return ImageAsset(**doc)
+
+
+@router.put("/{image_asset_id}/slides/{slide_number}/layers", response_model=ImageAsset)
+@limiter.limit("30/minute")
+async def save_slide_layers(
+    request: Request,
+    image_asset_id: str,
+    slide_number: int,
+    body: SaveLayersRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> ImageAsset:
+    """Saves the member's edits: the picture is drawn again from these layers, over the same clean AI picture, and kept as
+    a new version. No AI call is made, so editing is free."""
+    asset, slide, brand = await _slide_for_editing(image_asset_id, slide_number, ctx.workspace_id)
+    ids = [layer.id for layer in body.layers]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=400, detail="Two layers share the same id.")
+    for layer in body.layers:
+        if layer.type == "image":
+            if not layer.media_id or not await media_assets.find_one({"id": layer.media_id, "workspace_id": ctx.workspace_id, "kind": MediaKind.IMAGE.value}):
+                raise HTTPException(status_code=400, detail="An image layer must use a picture from this workspace's library.")
+    return await _redraw_slide(asset, slide, body.layers, brand, ctx, "design_edited")
+
+
+@router.post("/{image_asset_id}/slides/{slide_number}/layers/reset", response_model=ImageAsset)
+@limiter.limit("20/minute")
+async def reset_slide_layers(
+    request: Request,
+    image_asset_id: str,
+    slide_number: int,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> ImageAsset:
+    """Goes back to the design the picture started with (headline, band, accent bar, logo), rebuilt from the slide's own
+    text settings. Kept as a new version, so the edited design can be restored."""
+    asset, slide, brand = await _slide_for_editing(image_asset_id, slide_number, ctx.workspace_id)
+    if not slide.background_media_id:
+        raise HTTPException(status_code=400, detail="This picture was made before the editor existed, so there is no clean picture to rebuild from.")
+    tc = slide.text_content or {}
+    visual_identity = brand.get("visual_identity") or {}
+    layers = default_layers(
+        size=LAYOUT_DIMS[slide.layout], brand=_brand_tokens_from(brand), headline=str(tc.get("headline") or ""), show_text=bool(tc.get("show_text", True)),
+        accent_keyword=str(tc.get("accent_keyword") or ""), author=tc.get("author") or None,
+        has_logo=bool(visual_identity.get("logo_url")), has_mascot=False,
+        icon_name=tc.get("icon_name") or None, illustration_accent=bool(tc.get("illustration_accent", False)),
+    )
+    return await _redraw_slide(asset, slide, layers, brand, ctx, "design_reset")
 
 
 @router.delete("/{image_asset_id}/slides/{slide_number}", response_model=ImageAsset)
@@ -1044,6 +1151,21 @@ async def list_image_assets(
             "media": media_by_id.get(media_id) if media_id else None,
         })
     return {"items": items, "total": total}
+
+
+@router.get("/{image_asset_id}", response_model=ImageAsset)
+@limiter.limit("120/minute")
+async def get_image_asset(
+    request: Request,
+    image_asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> ImageAsset:
+    """One image project with everything the Image pipeline needs to open it again: prompt, avoid list, headline settings,
+    every slide and its layers. Used by "Open in Image pipeline" and the History tab."""
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    return ImageAsset(**doc)
 
 
 @router.get("/{image_asset_id}/versions")

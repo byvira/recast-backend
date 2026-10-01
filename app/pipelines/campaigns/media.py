@@ -63,15 +63,21 @@ async def _context(workspace_id: str, user_id: str) -> WorkspaceContext:
     return WorkspaceContext(workspace, member, user)
 
 
-def _image_request(campaign: dict[str, Any], piece: dict):
+async def _image_request(campaign: dict[str, Any], piece: dict):
     from app.api.v1.image_assets import GenerateImageAssetRequest
+    from app.pipelines.media.headline import make_headline
 
     plan = campaign.get("media_plan") or {}
     count = int(plan.get("count_per_post", 1))
-    layout = (plan.get("image") or {}).get("layout") or "quote_1_1"
-    title = _headline((piece.get("content") or "").strip())
+    image_plan = plan.get("image") or {}
+    layout = image_plan.get("layout") or "quote_1_1"
+    content = (piece.get("content") or "").strip()
+    title = _headline(content)  # the asset's name in the library
+    show_text = image_plan.get("text", "headline") != "none"
+    headline = (await make_headline(content)) if show_text else ""
     return GenerateImageAssetRequest(
-        title=title, brand_id=campaign["brand_id"], headline=title,
+        title=title, brand_id=campaign["brand_id"], headline=headline, show_text=show_text,
+        show_logo=image_plan.get("logo", True), show_mascot=bool(image_plan.get("mascot", False)),
         source_piece_id=piece["piece_id"], count=min(count, 5), active_layout=layout,
     )
 
@@ -93,7 +99,7 @@ async def _make_for_piece(
     states: dict[str, str] = {}
     if "image" in kinds:
         try:
-            await create_image_asset(_image_request(campaign, piece), ctx)
+            await create_image_asset(await _image_request(campaign, piece), ctx)
             states["image"] = "ready"
         except Exception as exc:  # noqa: BLE001 - media must never fail the text
             states["image"] = "failed"
@@ -180,7 +186,7 @@ async def regenerate_image_for_piece(
     old_real = bool(old_media) and await media_assets.count_documents({"id": {"$in": old_media}, "qa_flagged": {"$ne": True}}) > 0
 
     try:
-        new = await create_image_asset(_image_request(campaign, piece), ctx)
+        new = await create_image_asset(await _image_request(campaign, piece), ctx)
     except Exception as exc:  # noqa: BLE001 - never fail the post
         logger.warning("Campaign %s: regenerate image for piece %s failed: %s", campaign["id"], piece_id, exc)
         if not old_ids:

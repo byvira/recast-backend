@@ -37,7 +37,7 @@ def stubs(monkeypatch):
     Pillow render)."""
     record = {"backgrounds": [], "uploads": [], "vision_calls": 0, "vision_reply": "A blue square on a plain background."}
 
-    async def _fake_background(*, prompt, workspace_id, user_id, target_size, brand_profile):
+    async def _fake_background(*, prompt, workspace_id, user_id, target_size, brand_profile, avoid=None):
         record["backgrounds"].append({"prompt": prompt, "size": target_size})
         return _png(target_size)
 
@@ -122,9 +122,11 @@ async def test_generate_persists_a_real_rendered_asset(signup_user, stubs):
     assert media["source"] == "rendered"
     assert media["workspace_id"] == ws_id
 
-    # The uploaded bytes are the real composited render at the layout's size.
-    assert len(stubs["uploads"]) == 1
-    rendered = Image.open(io.BytesIO(stubs["uploads"][0]))
+    # Two files are stored: the clean AI picture (no words on it, kept so edits never need a new one) and the
+    # finished picture drawn from the layers. The finished one is the real render at the layout's size.
+    assert len(stubs["uploads"]) == 2
+    assert asset["slides"][0]["background_media_id"] and len(asset["slides"][0]["layers"]) >= 2
+    rendered = Image.open(io.BytesIO(stubs["uploads"][-1]))
     assert rendered.size == LAYOUT_DIMS[LayoutPreset.QUOTE_1_1]
     assert (media["width"], media["height"]) == LAYOUT_DIMS[LayoutPreset.QUOTE_1_1]
 
@@ -482,7 +484,8 @@ async def test_generate_with_an_icon_stores_it_and_renders_it(signup_user, stubs
     text = with_icon.json()["slides"][0]["text_content"]
     assert text["icon_name"] == "rocket"
     assert text["illustration_accent"] is True
-    assert stubs["uploads"][0] != stubs["uploads"][1], "the icon must change the rendered image"
+    # each generation stores the clean picture then the finished one: compare the two finished pictures
+    assert stubs["uploads"][1] != stubs["uploads"][3], "the icon must change the rendered image"
 
 
 async def test_generate_rejects_an_unknown_icon_before_rendering(signup_user, stubs):

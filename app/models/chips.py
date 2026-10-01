@@ -26,6 +26,8 @@ class ApplyChipResponse(BaseModel):
     char_count: int
     changed: bool
     error: Optional[str] = None
+    # Figures, prices or events in the new text that the original text and brand facts do not back up. Advice only.
+    claim_warnings: list[str] = []
 
 
 class GetChipsResponse(BaseModel):

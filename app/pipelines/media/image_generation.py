@@ -118,11 +118,13 @@ def _build_raw_prompt(topic: str, brand_profile: dict) -> str:
 
     # The brand name is left out on purpose: an image model that is told a name tries to draw it, and
     # draws garbled letters. The real name and logo are added afterwards as real text and a real file.
-    parts = [f"An image for a social media post about: {topic}."]
+    parts = [f"An image for a social media post about: {topic}. Show the idea behind the post as a scene or visual metaphor, not a literal picture of its sentences."]
     if style_notes:
         parts.append(f"Visual style: {style_notes}.")
+    else:
+        parts.append("Visual style: clean, modern and editorial, soft natural light, a restrained palette, generous negative space.")
     if color_desc:
-        parts.append(f"Brand colors to favor: {color_desc}.")
+        parts.append(f"Use the brand colors as the dominant palette: {color_desc}.")
     return " ".join(parts)
 
 
@@ -144,7 +146,11 @@ async def _polish_prompt(raw_prompt: str) -> str:
         "any kind: no words, letters, numbers, logos, brand names, captions, "
         "signs, labels, or screens, posters, books or devices showing writing. "
         "Show devices only with their screens dark or blurred out of view, and "
-        "choose a scene that needs no writing to make sense. Reply with ONLY the "
+        "choose a scene that needs no writing to make sense. Image generators draw faces and hands badly, so "
+        "prefer environments, objects, symbolic or illustrated scenes; avoid close-up faces, hands, crowds and "
+        "anything that depends on a precise facial expression. If a person must appear, show them small, from "
+        "behind or in silhouette. If the request lists things the member does not want, leave every one of them out. "
+        "Reply with ONLY the "
         "rewritten prompt, no preamble, under 400 characters.\n\n"
         f"<request>{raw_prompt}</request>"
     )
@@ -251,15 +257,47 @@ NO_TEXT_SUFFIX = (
 )
 
 
+# A device "showing a dashboard" is the commonest way a picture ends up with garbled, made-up interface text, because image
+# models draw convincing screens full of nonsense letters. These clauses are replaced with a softly glowing blurred screen.
+_UI_NOUN = (r"dashboards?|interfaces?|UIs?|UX|apps?|applications?|websites?|webpages?|web pages?|landing pages?|charts?|graphs?|analytics|metrics|"
+            r"spreadsheets?|slides?|presentations?|menus?|cards?|widgets?|panels?|feeds?|timelines?|calendars?|code|terminals?|chat|messages?|emails?")
+_UI_CLAUSE = re.compile(
+    rf"\b(?:showing|displaying|shows|displays|with|featuring|running|reading|reads|filled with|full of)\s+(?:an?|the|some)?\s*(?:[\w-]+\s+){{0,5}}?(?:{_UI_NOUN})\b[^,.;]*",
+    re.IGNORECASE,
+)
+_SCREEN_WORD = re.compile(r"\b(?:monitors?|screens?|laptops?|tablets?|phones?|smartphones?|displays?|televisions?|TVs?|computers?)\b", re.IGNORECASE)
+SOFT_SCREEN = "a softly glowing, out-of-focus screen with only abstract blurred colour shapes"
+SCREEN_SUFFIX = " Any screen shows only soft, blurred, abstract glowing colour, with no interface, no charts, no readable letters or numbers."
+
+
+def soften_screens(prompt: str) -> str:
+    """If the picture includes a screen, anything it is meant to be showing (a dashboard, an app, a chart) is replaced by a
+    soft abstract glow, so the model does not draw an interface full of invented letters."""
+    if not _SCREEN_WORD.search(prompt):
+        return prompt
+    softened = _UI_CLAUSE.sub(f"showing {SOFT_SCREEN}", prompt)
+    return re.sub(r"\s{2,}", " ", softened).strip()
+
+
+def _avoid_clause(avoid: Optional[str]) -> str:
+    """The member's "avoid in the image" list as a positive instruction. FLUX has no negative prompt, so it is given to the
+    prompt writer, which must leave those things out."""
+    avoid = (avoid or "").strip()
+    return f" The member does not want any of this in the image: {avoid[:400]}." if avoid else ""
+
+
 def enforce_no_text(prompt: str) -> str:
     """Image models cannot spell. Removes wording that asks for writing in the picture and adds an
     explicit no-text instruction, so text and logos are added afterwards as real text and real files."""
+    has_screen = bool(_SCREEN_WORD.search(prompt))
+    prompt = soften_screens(prompt)
     cleaned = _TEXT_BEARING_WORDS.sub("", prompt)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-    return (cleaned[: 2048 - len(NO_TEXT_SUFFIX)] + NO_TEXT_SUFFIX).strip()
+    suffix = NO_TEXT_SUFFIX + (SCREEN_SUFFIX if has_screen else "")
+    return (cleaned[: 2048 - len(suffix)] + suffix).strip()
 
 
-async def _run_gates(raw_prompt: str, brand_profile: dict) -> Optional[str]:
+async def _run_gates(raw_prompt: str, brand_profile: dict, avoid: Optional[str] = None) -> Optional[str]:
     """Runs the full 4-stage pipeline against any raw prompt (a topic
     image, Row 16's mascot prompt, or anything else built the same way),
     with one bounded re-polish retry if a gate rejects the first attempt.
@@ -267,7 +305,7 @@ async def _run_gates(raw_prompt: str, brand_profile: dict) -> Optional[str]:
     safe_prompt: Optional[str] = None
     verdict = "unsafe"
     for attempt in range(_MAX_POLISH_ATTEMPTS):
-        polished = await _polish_prompt(raw_prompt)
+        polished = await _polish_prompt(raw_prompt + _avoid_clause(avoid))
         verdict = await _safety_verdict(polished)
         if verdict != "safe":
             logger.warning("Image prompt failed safety gate (%s), attempt %d", verdict, attempt + 1)
@@ -306,7 +344,7 @@ async def _call_cloudflare_raw(prompt: str) -> bytes:
         f"{settings.CLOUDFLARE_ACCOUNT_ID}/ai/run/{_CLOUDFLARE_MODEL}"
     )
     headers = {"Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"}
-    body = {"prompt": prompt[:2048], "steps": 4}
+    body = {"prompt": prompt[:2048], "steps": settings.CLOUDFLARE_IMAGE_STEPS}
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(url, headers=headers, json=body)
@@ -552,6 +590,7 @@ async def generate_image_from_prompt(
     target_size: tuple[int, int],
     provider: ImageProvider = ImageProvider.CLOUDFLARE,
     brand_profile: Optional[dict] = None,
+    avoid: Optional[str] = None,
 ) -> Optional[bytes]:
     """The provider-agnostic entry point for "generate real image bytes from
     an already-specific prompt" — factored out of generate_brand_image (which
@@ -589,7 +628,7 @@ async def generate_image_from_prompt(
         return None
 
     try:
-        polished = await _run_gates(prompt, brand_profile or {})
+        polished = await _run_gates(prompt, brand_profile or {}, avoid)
         if not polished:
             return None
         return await _generate_image_bytes(polished)

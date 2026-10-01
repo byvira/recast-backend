@@ -16,6 +16,7 @@ from typing import Optional
 from app.prompts.registry import load_prompt
 from app.prompts.safe import contains_banned, guard_output
 from app.pipelines.text.brand_context import build_tone_override
+from app.pipelines.text.claims import unsupported_claims
 from app.pipelines.text.generator import build_language_instruction
 from app.shared.llm import call_llm, GroqModel
 
@@ -207,6 +208,8 @@ async def apply_chip(
             "error": problem,
         }
 
+    # A quick edit should not add facts. Anything new that the original text and the brand facts do not back up is listed.
+    claim_warnings = [] if refined == content else unsupported_claims(refined, [content, brand_context])
     return {
         "original": content,
         "refined": refined,
@@ -215,4 +218,5 @@ async def apply_chip(
         "word_count": len(refined.split()),
         "char_count": len(refined),
         "changed": refined != content,
+        "claim_warnings": claim_warnings,
     }

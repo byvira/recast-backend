@@ -6,6 +6,7 @@ cannot be expanded well, it is returned unchanged with the reason, never a bad r
 
 from __future__ import annotations
 
+from app.pipelines.text.claims import unsupported_claims
 import logging
 from typing import Awaitable, Callable, Optional
 
@@ -59,7 +60,10 @@ async def fit_script(
             logger.warning("Script fit rewrite failed: %s", exc)
             break
         if acceptable(out, script, target, wpm):
-            return _result(out, "fitted", wpm, "")
+            res = _result(out, "fitted", wpm, "")
+            # lengthening must not add facts: anything new that the original script does not back up is listed
+            res["claim_warnings"] = unsupported_claims(out, [script]) if direction == "longer" else []
+            return res
 
     if direction == "shorter":
         return _result(duration.trim_to_seconds(script, target, wpm), "fitted", wpm, "")

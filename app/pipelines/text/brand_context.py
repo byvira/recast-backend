@@ -79,8 +79,9 @@ _ENGAGEMENT_PRIORITY = {
         "ENGAGEMENT PRIORITY FOR FACEBOOK: Comments from people who know the "
         "author are what this platform's format rewards — write with the "
         "specificity of something that actually happened to a real person, "
-        "not broadcast-style messaging. Personal and concrete outperforms "
-        "polished and general here."
+        "but only when the source content or brand facts say it happened; "
+        "never invent an event. Personal and concrete outperforms polished "
+        "and general here."
     ),
 }
 

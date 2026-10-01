@@ -9,9 +9,9 @@ the carousel/slide-sequence/governance wrapper around one or more of those files
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LayoutPreset(str, Enum):
@@ -52,6 +52,48 @@ class ImageSourceType(str, Enum):
     UPLOADED = "uploaded"
 
 
+class Layer(BaseModel):
+    """One editable element of a picture. Positions are fractions of the canvas, so a design works at any size. Every field
+    is range checked here, so a bad value from the browser can never reach the drawing code."""
+
+    id: str = Field(min_length=1, max_length=40)
+    type: Literal["text", "shape", "image", "logo", "mascot", "icon"]
+    name: str = Field("", max_length=60)
+    x: float = Field(0.0, ge=-1.0, le=2.0)
+    y: float = Field(0.0, ge=-1.0, le=2.0)
+    w: float = Field(0.3, ge=0.001, le=3.0)
+    h: float = Field(0.1, ge=0.001, le=3.0)
+    rotation: float = Field(0.0, ge=-360.0, le=360.0)
+    opacity: float = Field(1.0, ge=0.0, le=1.0)
+    locked: bool = False
+    hidden: bool = False
+    # text (the box height of a text layer is not stored: it grows with the text)
+    text: str = Field("", max_length=2000)
+    font: Optional[str] = Field(None, max_length=60)  # a bundled family name; anything else falls back to Inter
+    size: float = Field(0.05, ge=0.005, le=0.5)        # fraction of the canvas width
+    bold: bool = True
+    color: str = Field("#FFFFFF", pattern=r"^#[0-9a-fA-F]{6}$")
+    align: Literal["left", "center", "right"] = "left"
+    line_height: float = Field(1.25, ge=0.8, le=3.0)
+    letter_spacing: float = Field(0.0, ge=-0.2, le=1.0)  # in em
+    uppercase: bool = False
+    shadow: bool = False
+    box_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    accent_word: str = Field("", max_length=80)
+    accent_color: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    # shape
+    shape: Literal["rect", "ellipse", "gradient_up", "gradient_down"] = "rect"
+    fill: str = Field("#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    stroke: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+    stroke_w: float = Field(0.0, ge=0.0, le=0.2)
+    radius: float = Field(0.0, ge=0.0, le=0.5)          # of the shape's shorter side
+    # picture layers: logo and mascot always come from the brand; an uploaded image names a file in this workspace's library
+    media_id: Optional[str] = Field(None, max_length=80)
+    fit: Literal["contain", "cover"] = "contain"
+    # icon
+    icon: Optional[str] = Field(None, max_length=60)
+
+
 class Slide(BaseModel):
     slide_number: int
     title: str
@@ -64,6 +106,10 @@ class Slide(BaseModel):
     media_id: Optional[str] = None  # -> MediaAsset.id, the rendered PNG for this slide
     text_content: dict = {}
     effects: dict = {}
+    # The editable design: the clean picture (no words on it) plus the layers drawn over it. media_id above stays the
+    # finished picture, drawn from these. Slides made before the editor existed have neither and stay as they were.
+    background_media_id: Optional[str] = None
+    layers: list[Layer] = []
 
 
 class CommentPin(BaseModel):

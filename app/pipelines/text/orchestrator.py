@@ -818,6 +818,7 @@ async def _run_single_repurpose(
             is_repurpose=True,
             schedule_mode=schedule_mode,
             scheduled_at=scheduled_at,
+            input_text=normalised.raw_content,
         )
         piece_id = await save_live_piece(
             session_id=normalised.session_id,
