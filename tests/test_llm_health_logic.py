@@ -295,3 +295,41 @@ def test_huggingface_picture_is_decoded_from_the_provider_reply(monkeypatch):
     monkeypatch.setattr(of.httpx, "AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(handler), **k))
     assert asyncio.run(of._huggingface("a cat")) == b"PNGDATA"
     assert seen["url"].endswith("/nscale/v1/images/generations")
+
+
+def test_cloudflare_key_check_accepts_either_kind_of_token(monkeypatch):
+    import asyncio
+    import httpx
+    from app.core.config import settings
+    from app.shared.llm_health import keycheck
+
+    for name in ("ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "HUGGINGFACE_API_TOKEN"):
+        monkeypatch.setattr(settings, name, "")
+    monkeypatch.setattr(settings, "CLOUDFLARE_API_TOKEN", "t")
+    monkeypatch.setattr(settings, "CLOUDFLARE_ACCOUNT_ID", "acct")
+    real = httpx.AsyncClient
+
+    def personal(req):  # a personal token: only the user route knows it
+        return httpx.Response(200 if "/user/" in req.url.path else 401, json={"success": "/user/" in req.url.path})
+
+    def account(req):  # an account token: only the account route knows it
+        return httpx.Response(200 if "/accounts/" in req.url.path else 401, json={"success": "/accounts/" in req.url.path})
+
+    for handler in (personal, account):
+        monkeypatch.setattr(keycheck.httpx, "AsyncClient", lambda *a, h=handler, **k: real(transport=httpx.MockTransport(h), **k))
+        assert asyncio.run(keycheck.check_keys())["cloudflare"]["status"] == "ok"
+
+
+def test_a_restricted_key_that_is_only_missing_one_permission_counts_as_accepted(monkeypatch):
+    import asyncio
+    import httpx
+    from app.core.config import settings
+    from app.shared.llm_health import keycheck
+
+    for name in ("CLOUDFLARE_API_TOKEN", "DEEPGRAM_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "HUGGINGFACE_API_TOKEN"):
+        monkeypatch.setattr(settings, name, "")
+    monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", "restricted")
+    real = httpx.AsyncClient
+    body = {"detail": {"message": "The API key you used is missing the permission models_read to execute this operation."}}
+    monkeypatch.setattr(keycheck.httpx, "AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(lambda r: httpx.Response(401, json=body)), **k))
+    assert asyncio.run(keycheck.check_keys())["elevenlabs"]["status"] == "ok"

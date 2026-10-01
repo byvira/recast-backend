@@ -27,6 +27,9 @@ async def _get(client: httpx.AsyncClient, url: str, headers: dict[str, str]) -> 
     ms = round((time.monotonic() - t0) * 1000)
     if r.status_code < 400:
         return {"status": "ok", "latency_ms": ms, "detail": "Key accepted (no allowance used)."}
+    if r.status_code in (401, 403) and "missing the permission" in r.text.lower():
+        # a restricted key: the provider recognised it and only refused this one question, so the key itself is fine
+        return {"status": "ok", "latency_ms": ms, "detail": "Key accepted. It is restricted, so only some features could be checked."}
     return {"status": "error", "latency_ms": ms, "http_status": r.status_code, "detail": scrub_message(f"{r.status_code} {r.text[:150]}", 200)}
 
 
@@ -34,10 +37,13 @@ async def check_keys() -> dict[str, dict[str, Any]]:
     """One entry per provider. A provider with no key set is `not_set`, which is not a failure."""
     out: dict[str, dict[str, Any]] = {}
     jobs: dict[str, tuple[str, dict[str, str]]] = {}
+    alt_cloudflare: tuple[str, dict[str, str]] | None = None
     if settings.CLOUDFLARE_API_TOKEN:
         base = "https://api.cloudflare.com/client/v4"
-        url = f"{base}/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/tokens/verify" if settings.CLOUDFLARE_ACCOUNT_ID else f"{base}/user/tokens/verify"
-        jobs["cloudflare"] = (url, {"Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"})
+        jobs["cloudflare"] = (f"{base}/user/tokens/verify", {"Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"})
+        if settings.CLOUDFLARE_ACCOUNT_ID:
+            # a token made under an account is only recognised by the account route, a personal one only by the user route
+            alt_cloudflare = (f"{base}/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/tokens/verify", jobs["cloudflare"][1])
     else:
         out["cloudflare"] = {"status": "not_set", "detail": "No Cloudflare key is set on the server."}
     if settings.ELEVENLABS_API_KEY:
@@ -65,4 +71,9 @@ async def check_keys() -> dict[str, dict[str, Any]]:
         async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
             results = await asyncio.gather(*(_get(client, url, headers) for url, headers in jobs.values()))
         out.update(dict(zip(jobs, results)))
+        if alt_cloudflare and out.get("cloudflare", {}).get("status") == "error":
+            async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+                again = await _get(client, *alt_cloudflare)
+            if again["status"] == "ok":
+                out["cloudflare"] = again
     return out
