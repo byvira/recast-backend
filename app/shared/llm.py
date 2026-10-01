@@ -24,6 +24,7 @@ No inline parsing logic exists in this file.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import time
@@ -38,7 +39,7 @@ from groq import APIConnectionError, APIStatusError, AsyncGroq, RateLimitError
 
 from app.core.config import settings
 from app.core.tracing import add_run_metadata, traceable
-from app.shared.llm_health.track import log_attempt as _track_log, track as _track, usage_numbers as _usage_numbers
+from app.shared.llm_health.track import fallback_scope as _fallback_scope, log_attempt as _track_log, track as _track, usage_numbers as _usage_numbers
 from app.prompts.registry import load_prompt
 from app.utils.jsonparser import parse_llm_json
 
@@ -57,6 +58,7 @@ class GroqModel(str, Enum):
     POWERFUL  = "openai/gpt-oss-120b"           # complex multi-step reasoning
     REASONING = "openai/gpt-oss-120b"           # deep reasoning — pass reasoning_effort="high" at the call site if a distinct tier is needed
     WHISPER   = "whisper-large-v3"              # transcription only (audio pipeline)
+    WHISPER_TURBO = "whisper-large-v3-turbo"    # backup transcription: same account, its own separate limits
 
 
 class GeminiModel(str, Enum):
@@ -658,6 +660,7 @@ async def call_llm_stream(
     client   = get_groq_client()
     messages = _build_messages(prompt, system)
     capped   = _safe_max_tokens(prompt, system, max_tokens)
+    started  = False  # once a chunk has gone out, another provider cannot take over mid-sentence
 
     try:
         stream = await _groq_create(
@@ -672,16 +675,20 @@ async def call_llm_stream(
         async for chunk in stream:
             delta = chunk.choices[0].delta.content
             if delta:
+                started = True
                 yield delta
 
-    except RateLimitError:
-        raise HTTPException(
-            status_code=503,
-            detail="LLM rate limit. Please try again in 60 seconds.",
-        )
-    except APIConnectionError as exc:
-        logger.error("Groq stream connection error: %s", exc)
-        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    except (RateLimitError, APIConnectionError, APIStatusError) as exc:
+        logger.warning("Groq stream failed (%s)%s", exc.__class__.__name__, " after output began" if started else ", using the fallback chain")
+        if started:
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        # Nothing was sent yet, so the rest of the chain can answer. It comes back whole, not word by word.
+        try:
+            text = await call_llm_fallback(prompt=prompt, system=system)
+        except Exception:
+            raise HTTPException(status_code=503, detail="LLM rate limit. Please try again in 60 seconds." if isinstance(exc, RateLimitError) else "LLM service unavailable.")
+        if text:
+            yield text
     except Exception as exc:
         logger.error("Unexpected call_llm_stream error: %s", exc)
         raise HTTPException(status_code=500, detail="Unexpected streaming error.")
@@ -939,26 +946,32 @@ async def call_vision(
     Groq does not support vision — Gemini is the only option here.
     Used by: image pipeline, video thumbnail scoring, keyframe analysis.
     """
-    client = get_gemini_client()
-    loop   = asyncio.get_running_loop()
     add_run_metadata(gemini_model=model.value, mime_type=mime_type, image_bytes=len(image_bytes or b""))
-    try:
-        response = await _gemini_generate(model.value, lambda: loop.run_in_executor(
-            None,
-            lambda: client.models.generate_content(
-                model=model.value,
-                contents=[
-                    types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                    prompt,
-                ],
-            ),
-        ))
-        _record_gemini_usage(response, model.value)
-        return response.text or ""
+    if settings.GEMINI_API_KEY and time.monotonic() >= _gemini_skip_until:
+        client = get_gemini_client()
+        loop   = asyncio.get_running_loop()
+        try:
+            response = await _gemini_generate(model.value, lambda: loop.run_in_executor(
+                None,
+                lambda: client.models.generate_content(
+                    model=model.value,
+                    contents=[
+                        types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+                        prompt,
+                    ],
+                ),
+            ))
+            _record_gemini_usage(response, model.value)
+            return response.text or ""
 
-    except Exception as exc:
-        logger.error("Gemini vision call failed: %s", exc)
-        return ""
+        except Exception as exc:
+            logger.error("Gemini vision call failed: %s", exc)
+            _skip_gemini_if_refused(exc)
+
+    # Gemini is the only Google option; a free OpenRouter model that accepts images covers for it.
+    from app.shared.open_fallbacks import open_vision_fallback
+
+    return await open_vision_fallback(prompt, image_bytes, mime_type) or ""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1049,14 +1062,25 @@ async def transcribe_audio(
     async with aiofiles.open(file_path, "rb") as f:
         audio_bytes = await f.read()
 
-    async with _track("groq", GroqModel.WHISPER.value, feature="transcription"):
-        response = await client.audio.transcriptions.create(
-            model=GroqModel.WHISPER.value,
-            file=(file_path, audio_bytes),
-            language=language,
-            response_format="verbose_json",
-            timestamp_granularities=["segment"],
-        )
+    response = None
+    failure: Exception | None = None
+    for attempt, whisper in enumerate((GroqModel.WHISPER, GroqModel.WHISPER_TURBO)):
+        try:
+            with _fallback_scope() if attempt else contextlib.nullcontext():
+                async with _track("groq", whisper.value, feature="transcription"):
+                    response = await client.audio.transcriptions.create(
+                        model=whisper.value,
+                        file=(file_path, audio_bytes),
+                        language=language,
+                        response_format="verbose_json",
+                        timestamp_granularities=["segment"],
+                    )
+            break
+        except Exception as exc:  # noqa: BLE001
+            failure = exc
+            logger.warning("Whisper (%s) failed: %s", whisper.value, exc)
+    if response is None:
+        raise failure  # type: ignore[misc]
 
     segments = [
         {"start": seg.start, "end": seg.end, "text": seg.text}

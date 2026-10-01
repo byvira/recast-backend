@@ -69,6 +69,35 @@ async def open_text_fallback(prompt: str, system: str = "") -> str | None:
     return None
 
 
+async def open_vision_fallback(prompt: str, image_bytes: bytes, mime_type: str = "image/jpeg") -> str | None:
+    """Describes a picture with a free OpenRouter model that accepts images. None when there is no key or both fail."""
+    if not settings.OPENROUTER_API_KEY or not image_bytes:
+        return None
+    data_uri = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
+    content = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_uri}}]
+    for model in (settings.OPENROUTER_VISION_MODEL, settings.OPENROUTER_VISION_MODEL_2, settings.OPENROUTER_VISION_MODEL_3):
+        if not model:
+            continue
+        try:
+            with fallback_scope():
+                async with track("openrouter", model, feature="vision"):
+                    async with httpx.AsyncClient(timeout=TEXT_TIMEOUT_S) as client:
+                        r = await client.post(
+                            "https://openrouter.ai/api/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+                            json={"model": model, "messages": [{"role": "user", "content": content}], "temperature": 0.2},
+                        )
+                        r.raise_for_status()
+                        text = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+                    if not text.strip():
+                        raise RuntimeError("The provider returned an empty answer.")
+            logger.info("Looked at this picture via the %s fallback.", model)
+            return text
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("%s vision fallback failed: %s", model, exc)
+    return None
+
+
 async def _huggingface(prompt: str) -> bytes:
     model = settings.HUGGINGFACE_IMAGE_MODEL
     async with track("huggingface", model, feature="image_generation"):

@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: str = ""
     MISTRAL_MODEL: str = "open-mistral-nemo"  # checked live 2026-10-01; mistral-small-latest was rate limited on the free plan
     OPENROUTER_API_KEY: str = ""
+    # Picture understanding when Gemini is not answering: free OpenRouter models that accept images (checked 2026-10-01).
+    OPENROUTER_VISION_MODEL: str = "qwen/qwen3.8-27b:free"
+    OPENROUTER_VISION_MODEL_2: str = "google/gemma-4-31b-it:free"
+    OPENROUTER_VISION_MODEL_3: str = "openrouter/free"  # OpenRouter picks whichever free model is available; free models are often busy
     OPENROUTER_MODEL: str = "qwen/qwen3.8-27b:free"  # checked live 2026-10-01; openai/gpt-oss-120b:free had been retired
     HUGGINGFACE_API_TOKEN: str = ""
     HUGGINGFACE_IMAGE_MODEL: str = "black-forest-labs/FLUX.1-schnell"

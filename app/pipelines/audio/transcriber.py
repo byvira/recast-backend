@@ -8,6 +8,7 @@ audio agent, just word-level (not segment-level) so the result matches
 end_s), and taking raw bytes directly rather than requiring a file path.
 """
 
+import contextlib
 import logging
 from typing import Optional
 
@@ -17,7 +18,7 @@ from app.shared.llm import GroqModel, get_groq_client
 logger = logging.getLogger(__name__)
 
 
-from app.shared.llm_health.track import track
+from app.shared.llm_health.track import fallback_scope, track
 
 
 async def transcribe_audio_detailed(
@@ -32,14 +33,25 @@ async def transcribe_audio_detailed(
         kwargs: dict = {}
         if language:
             kwargs["language"] = language
-        async with track("groq", GroqModel.WHISPER.value, feature="transcription"):
-            response = await client.audio.transcriptions.create(
-                model=GroqModel.WHISPER.value,
-                file=(filename, audio_bytes),
-                response_format="verbose_json",
-                timestamp_granularities=["word"],
-                **kwargs,
-            )
+        response = None
+        failure: Exception | None = None
+        for attempt, whisper in enumerate((GroqModel.WHISPER, GroqModel.WHISPER_TURBO)):
+            try:
+                with fallback_scope() if attempt else contextlib.nullcontext():
+                    async with track("groq", whisper.value, feature="transcription"):
+                        response = await client.audio.transcriptions.create(
+                            model=whisper.value,
+                            file=(filename, audio_bytes),
+                            response_format="verbose_json",
+                            timestamp_granularities=["word"],
+                            **kwargs,
+                        )
+                break
+            except Exception as exc:  # noqa: BLE001
+                failure = exc
+                logger.warning("Whisper (%s) failed: %s", whisper.value, exc)
+        if response is None:
+            raise failure  # type: ignore[misc]
         words = getattr(response, "words", None) or []
         return (
             [TranscriptWord(word=w.word, start_s=w.start, end_s=w.end) for w in words],
