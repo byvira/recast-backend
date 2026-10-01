@@ -55,6 +55,18 @@ def _message_of(exc: BaseException) -> str:
     return scrub_message(text, 500)
 
 
+def refused_outright(exc: BaseException) -> bool:
+    """True when a provider said no for a reason that retrying will not fix in the next minutes: a rejected key,
+    missing access or plan, or a used-up allowance. Callers use it to skip that provider for a while."""
+    try:
+        from app.shared.llm_health.classifier import classify
+
+        kind = classify(http_status=_status_of(exc), error_class=exc.__class__.__name__, message=_message_of(exc))
+        return kind in ("auth_invalid_key", "billing_or_access", "model_unavailable", "quota_exhausted")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def log_attempt(
     provider: str, model: str, t0: float, *, result: Any = None, exc: BaseException | None = None,
     feature: str | None = None, fallback: bool | None = None,

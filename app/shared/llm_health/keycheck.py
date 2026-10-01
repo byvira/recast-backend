@@ -46,7 +46,9 @@ async def check_keys() -> dict[str, dict[str, Any]]:
             alt_cloudflare = (f"{base}/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/tokens/verify", jobs["cloudflare"][1])
     else:
         out["cloudflare"] = {"status": "not_set", "detail": "No Cloudflare key is set on the server."}
-    if settings.ELEVENLABS_API_KEY:
+    if not settings.ELEVENLABS_ENABLED:
+        out["elevenlabs"] = {"status": "not_set", "detail": "ElevenLabs is switched off (ELEVENLABS_ENABLED=false)."}
+    elif settings.ELEVENLABS_API_KEY:
         jobs["elevenlabs"] = ("https://api.elevenlabs.io/v1/models", {"xi-api-key": settings.ELEVENLABS_API_KEY})
     else:
         out["elevenlabs"] = {"status": "not_set", "detail": "No ElevenLabs key is set on the server."}

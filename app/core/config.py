@@ -150,6 +150,9 @@ class Settings(BaseSettings):
     # upgrade the account later. Not re-added without a new decision —
     # see pow/audio_image_pipeline/PROGRESS.md's Decisions Log.
     ELEVENLABS_API_KEY: str = ""
+    # Set false to skip ElevenLabs entirely (narration goes straight to Deepgram), for example while the account is
+    # on a plan that cannot use the voices the product needs. Switch back on after upgrading.
+    ELEVENLABS_ENABLED: bool = True
 
     # Deepgram — added 2026-09-26 by the user directly to .env (not yet
     # wired into any code path) to check real feasibility as a TTS option

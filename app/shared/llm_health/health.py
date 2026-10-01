@@ -67,6 +67,8 @@ KEY_SETTING = {
 def is_configured(provider: str) -> bool:
     from app.core.config import settings
 
+    if provider == "elevenlabs" and not settings.ELEVENLABS_ENABLED:
+        return False  # switched off on purpose
     if provider == "pollinations":
         return bool(settings.POLLINATIONS_ENABLED)  # needs no key
     name = KEY_SETTING.get(provider)

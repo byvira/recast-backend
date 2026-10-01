@@ -333,3 +333,28 @@ def test_a_restricted_key_that_is_only_missing_one_permission_counts_as_accepted
     body = {"detail": {"message": "The API key you used is missing the permission models_read to execute this operation."}}
     monkeypatch.setattr(keycheck.httpx, "AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(lambda r: httpx.Response(401, json=body)), **k))
     assert asyncio.run(keycheck.check_keys())["elevenlabs"]["status"] == "ok"
+
+
+def test_a_plan_refusal_is_recognised_so_the_provider_can_be_skipped_for_a_while():
+    import httpx
+    from app.shared.llm_health.track import refused_outright
+
+    def err(status, text):
+        e = RuntimeError("x")
+        e.response = httpx.Response(status, text=text)  # type: ignore[attr-defined]
+        return e
+
+    assert refused_outright(err(402, '{"detail":{"status":"payment_required"}}'))
+    assert refused_outright(err(401, '{"detail":{"status":"quota_exceeded"}}'))
+    assert not refused_outright(err(500, "oops"))
+    assert not refused_outright(err(429, "rate limit per minute"))
+
+
+def test_elevenlabs_can_be_switched_off_and_then_reads_not_set_up(monkeypatch):
+    import asyncio
+    from app.core.config import settings
+    from app.shared.llm_health import keycheck
+
+    monkeypatch.setattr(settings, "ELEVENLABS_ENABLED", False)
+    assert health.is_configured("elevenlabs") is False
+    assert asyncio.run(keycheck.check_keys())["elevenlabs"]["status"] == "not_set"

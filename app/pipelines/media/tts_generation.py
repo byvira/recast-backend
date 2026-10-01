@@ -20,7 +20,8 @@ Follows the same defensive shape as image_generation.py's
 _generate_image_bytes: never raises, returns None on any failure.
 """
 
-from app.shared.llm_health.track import fallback_scope, note_fallback_failed, track
+from app.shared.llm_health.track import fallback_scope, note_fallback_failed, refused_outright, track
+import time
 import base64
 import logging
 from typing import Optional
@@ -364,6 +365,9 @@ class SpeechResult(BaseModel):
     words: Optional[list[TranscriptWord]] = None
 
 
+_elevenlabs_skip_until = 0.0  # time.monotonic() until which ElevenLabs is not tried after a plan or key refusal
+
+
 async def _synthesize(
     *,
     text: str,
@@ -386,6 +390,7 @@ async def _synthesize(
     override mechanism of any kind, so the fallback path never applies
     the lexicon regardless — a genuine per-provider gap, not a bug here.
     """
+    global _elevenlabs_skip_until
     pronunciation_locators = None
     if lexicon and lexicon.elevenlabs_dictionary_id and lexicon.elevenlabs_dictionary_version_id:
         pronunciation_locators = [
@@ -395,7 +400,7 @@ async def _synthesize(
             }
         ]
 
-    if settings.ELEVENLABS_API_KEY:
+    if settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED and time.monotonic() >= _elevenlabs_skip_until:
         try:
             if timed:
                 audio, words = await _call_elevenlabs_timed(
@@ -412,6 +417,10 @@ async def _synthesize(
                 "ElevenLabs TTS failed for workspace %s, checking Deepgram fallback: %s",
                 workspace_id, exc,
             )
+            if refused_outright(exc):
+                _elevenlabs_skip_until = time.monotonic() + 600.0  # a plan or key problem: stop asking for 10 minutes
+    elif not settings.ELEVENLABS_ENABLED:
+        logger.info("ElevenLabs is switched off (ELEVENLABS_ENABLED=false), using Deepgram.")
     else:
         logger.warning("ELEVENLABS_API_KEY not configured for workspace %s.", workspace_id)
 
