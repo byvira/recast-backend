@@ -757,6 +757,8 @@ async def _build_library_zip(pieces: list[dict], workspace_id: str, brand_id: Op
     image_docs = await image_assets.find(query).sort("created_at", -1).to_list(length=500)
 
     media_ids = {a.get("media_id") for a in audio_docs if a.get("media_id")}
+    for a in audio_docs:
+        media_ids.update(c.get("media_id") for c in a.get("video_clips") or [] if c.get("media_id"))
     for doc in image_docs:
         media_ids.update(s.get("media_id") for s in doc.get("slides", []) if s.get("media_id"))
     media_docs = await media_assets.find({"id": {"$in": list(media_ids)}, "workspace_id": workspace_id}).to_list(length=None)

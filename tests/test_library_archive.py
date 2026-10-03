@@ -59,8 +59,9 @@ def test_an_audio_asset_with_no_stored_file_is_left_out():
 
 
 def test_media_limit_keeps_all_text():
-    many = [{"title": f"t{i}", "slides": [{"slide_number": 1, "media_id": "m2"}]} for i in range(la.MAX_MEDIA_FILES + 5)]
-    planned = la.plan_library_export(PIECES, [], many, MEDIA)
+    many = [{"title": f"t{i}", "slides": [{"slide_number": 1, "media_id": f"x{i}"}]} for i in range(la.MAX_MEDIA_FILES + 5)]
+    media = {**MEDIA, **{f"x{i}": {"url": f"https://x/{i}.png", "mime_type": "image/png"} for i in range(la.MAX_MEDIA_FILES + 5)}}
+    planned = la.plan_library_export(PIECES, [], many, media)
     kept, skipped = la.within_limits(planned)
     # 205 images plus the one attached to a post, minus the 200 kept.
     assert skipped == 6
@@ -91,3 +92,28 @@ def test_a_file_that_could_not_be_downloaded_is_named_in_the_readme():
 def test_an_empty_library_still_makes_a_valid_zip():
     zf = zipfile.ZipFile(io.BytesIO(la.build_zip([], {}, [])))
     assert zf.namelist() == ["README.txt"]
+
+
+def test_videos_made_from_a_recording_are_exported_as_mp4():
+    audio = [{"title": "Episode 1", "media_id": "m1", "video_clips": [
+        {"media_id": "v1", "title": "Teaser", "platform": "Instagram"},
+        {"media_id": "gone"},
+    ]}]
+    media = {**MEDIA, "v1": {"url": "https://x/t.mp4", "mime_type": "video/mp4"}}
+    media_names = [f.name for f in la.plan_library_export([], audio, [], media) if f.folder == "media"]
+    assert "teaser_instagram_video_clip.mp4" in media_names
+    assert len(media_names) == 2  # the recording and the one clip that has a stored file
+
+
+def test_a_future_standalone_video_is_exported_too():
+    media = {"v9": {"url": "https://x/v.mp4", "mime_type": "video/mp4"}}
+    planned = la.plan_library_export([], [], [], media, video_assets=[{"title": "Launch film", "media_id": "v9"}])
+    assert [f.name for f in planned] == ["launch-film_library_video_video.mp4"]
+
+
+def test_the_same_file_reached_twice_is_downloaded_once():
+    pieces = [{"content": "Launch day", "platform": "Instagram", "pipeline_type": "text",
+               "media": [{"url": "https://x/c1.png", "mime_type": "image/png", "kind": "image"}]}]
+    planned = la.plan_library_export(pieces, [], IMAGES, MEDIA)
+    urls = [f.url for f in planned if f.folder == "media"]
+    assert urls.count("https://x/c1.png") == 1

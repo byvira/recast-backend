@@ -45,6 +45,7 @@ def plan_library_export(
     audio_assets: Iterable[dict] = (),
     image_assets: Iterable[dict] = (),
     media_by_id: Optional[dict[str, dict]] = None,
+    video_assets: Iterable[dict] = (),
 ) -> list[PlannedFile]:
     media_by_id = media_by_id or {}
     planned: list[PlannedFile] = []
@@ -103,7 +104,49 @@ def plan_library_export(
                 label=title,
             ))
 
-    return _with_unique_names(planned)
+    # Videos made from a recording, then any standalone video assets (the Video pipeline, once it stores them).
+    for a in audio_assets:
+        for clip in a.get("video_clips") or []:
+            media = media_by_id.get(clip.get("media_id") or "")
+            if not media or not media.get("url"):
+                continue
+            title = clip.get("title") or f"{a.get('title') or 'recording'} video"
+            planned.append(PlannedFile(
+                folder="media",
+                name=naming.export_filename(
+                    title, clip.get("platform"), "video", "clip", naming.extension_for(media.get("mime_type"), "mp4")
+                ),
+                url=media["url"],
+                label=title,
+            ))
+
+    for v in video_assets:
+        media = media_by_id.get(v.get("media_id") or "")
+        if not media or not media.get("url"):
+            continue
+        title = v.get("title") or "video"
+        planned.append(PlannedFile(
+            folder="media",
+            name=naming.export_filename(title, None, "video", "video", naming.extension_for(media.get("mime_type"), "mp4")),
+            url=media["url"],
+            label=title,
+        ))
+
+    return _with_unique_names(_without_repeated_files(planned))
+
+
+def _without_repeated_files(files: list[PlannedFile]) -> list[PlannedFile]:
+    """The same stored file can be reached twice (a picture attached to a post, and the picture asset itself).
+    Keep the first, so the download holds each file once."""
+    seen: set[str] = set()
+    kept: list[PlannedFile] = []
+    for f in files:
+        if f.folder == "media" and f.url:
+            if f.url in seen:
+                continue
+            seen.add(f.url)
+        kept.append(f)
+    return kept
 
 
 def _with_unique_names(files: list[PlannedFile]) -> list[PlannedFile]:
