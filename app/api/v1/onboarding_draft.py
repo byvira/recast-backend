@@ -51,6 +51,20 @@ def _doc_to_draft_response(doc: dict) -> DraftResponse:
     )
 
 
+def _changed_by_another_tab(existing: dict, client_id: str, base_updated_at: datetime) -> bool:
+    """True when the stored draft was last saved by a different tab, after the save this tab last saw."""
+    saved_by = existing.get("client_id")
+    stored_at = existing.get("updated_at")
+    if not saved_by or saved_by == client_id or not isinstance(stored_at, datetime):
+        return False
+
+    # Mongo hands back naive UTC; the request may carry a zone. Compare both as naive UTC.
+    def naive(value: datetime) -> datetime:
+        return value.astimezone(timezone.utc).replace(tzinfo=None) if value.tzinfo else value
+
+    return naive(stored_at) > naive(base_updated_at) + timedelta(milliseconds=2)
+
+
 # ── POST /api/v1/onboarding/draft ─────────────────────────────────────────────
 
 @router.post("/draft", response_model=DraftResponse, status_code=200)
@@ -69,6 +83,21 @@ async def save_draft(
     brand_id will be null on the first save and populated from step 2 onward.
     """
     now = datetime.now(timezone.utc)
+
+    if body.client_id and body.base_updated_at:
+        existing = await onboarding_drafts.find_one(
+            {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}, {"client_id": 1, "updated_at": 1}
+        )
+        if existing and _changed_by_another_tab(existing, body.client_id, body.base_updated_at):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "draft_changed_elsewhere",
+                    "message": "This setup was changed in another tab. Reload this page to see the latest.",
+                },
+            )
+
+    set_fields = {"client_id": body.client_id} if body.client_id else {}
 
     doc = await onboarding_drafts.find_one_and_update(
         {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id},
@@ -94,6 +123,7 @@ async def save_draft(
                 "completed_steps":  body.completed_steps,
                 "blueprint_version":body.blueprint_version,
                 "updated_at":       now,
+                **set_fields,
             },
             "$setOnInsert": {
                 "created_at": now,

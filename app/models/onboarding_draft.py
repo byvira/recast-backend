@@ -47,6 +47,11 @@ class SaveDraftBody(BaseModel):
     completed_steps:   list[str]                = []
     blueprint_version: str                      = "2.0"
 
+    # Two open tabs: a tab names itself and says which save it last saw. A save from a different tab
+    # that missed a newer save is refused instead of silently overwriting it. Both are optional.
+    client_id:         Optional[str]            = None
+    base_updated_at:   Optional[datetime]       = None
+
 
 class DraftResponse(BaseModel):
     """
