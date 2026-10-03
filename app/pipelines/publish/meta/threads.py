@@ -112,6 +112,15 @@ class ThreadsPublisher(PlatformPublisher):
                 if publish_response.status_code == 200:
                     post_id  = publish_response.json()["id"]
                     post_url = f"https://www.threads.net/@{request.platform_user_id}/post/{post_id}"
+                    # The platform's own link to the post (the fallback above is built from ids and may not open it). Best effort.
+                    try:
+                        link_response = await client.get(
+                            f"{THREADS_BASE}/{post_id}", params={"fields": "permalink", "access_token": access_token},
+                        )
+                        if link_response.status_code == 200 and link_response.json().get("permalink"):
+                            post_url = link_response.json()["permalink"]
+                    except Exception:  # noqa: BLE001
+                        pass
                     logger.info(
                         "Threads post published: %s for piece %s",
                         post_id, request.piece_id,

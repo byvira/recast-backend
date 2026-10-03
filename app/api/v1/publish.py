@@ -26,6 +26,7 @@ from app.db.mongo import brand_profiles, content_pieces, users
 from app.models.media import MediaAsset
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
+from app.pipelines.publish.spine import check_gate, extra_media_note, media_for_publish, planned_media_note, platform_key, record_override
 from app.pipelines.publish.health import mark_healthy
 from app.workers.token_refresh import recover_connection
 from app.pipelines.publish.token_store import get_token
@@ -54,6 +55,9 @@ class PublishNowRequest(BaseModel):
     # "no review step happened" — YouTubePublisher generates real metadata
     # fresh in that case, never a blank/guessed default.
     youtube_metadata: Optional[dict] = None
+    # A flagged or not-quality-passed post is refused unless the member
+    # explicitly chooses to send it anyway. Who chose, and when, is kept.
+    confirm_publish_anyway: bool = False
 
 
 class YouTubePrepareRequest(BaseModel):
@@ -76,7 +80,9 @@ async def _get_verified_piece(piece_id: str, workspace_id: str) -> dict:
 
 async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> tuple[dict, Optional[str]]:
     """Atomically transition a piece into "publishing", rejecting the call
-    if it's already publishing or published.
+    if it's already publishing or published. A piece waiting in "queued" is
+    taken too: the scheduled worker claims the same way (queued -> publishing),
+    so a Publish Now click and a due schedule can never both post.
 
     _get_verified_piece + a later plain update_one(..., "publishing") left a
     real race window: two near-simultaneous /publish/now calls (a genuine
@@ -99,7 +105,13 @@ async def _claim_piece_for_publishing(piece_id: str, workspace_id: str) -> tuple
             "deleted": {"$ne": True},
             "publish_status": {"$nin": ["publishing", "published"]},
         },
-        {"$set": {"publish_status": "publishing", "updated_at": datetime.now(timezone.utc)}},
+        {"$set": {
+            "publish_status": "publishing",
+            # Stamped so a post stuck here can be told apart from one in flight
+            # (the scheduled worker's reaper reads it).
+            "publishing_started_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }},
         return_document=ReturnDocument.BEFORE,
     )
     if piece is not None:
@@ -144,6 +156,8 @@ async def _update_piece_status(
     error_message: Optional[str] = None,
     increment_attempts: bool = False,
     media_dropped_reason: Optional[str] = None,
+    published_content: Optional[str] = None,
+    published_version: Optional[int] = None,
 ) -> None:
     """Update publish status fields on a piece."""
     updates: dict = {
@@ -165,6 +179,12 @@ async def _update_piece_status(
         # The real go-live time — metric checkpoints (1h/24h/72h/7d) are
         # measured from this, not from updated_at.
         updates["published_at"] = updates["updated_at"]
+        # What actually went out (the platform fixer may have trimmed it) and which version of the post that was, so a later
+        # edit never rewrites history and analytics stays tied to the words that were live.
+        if published_content is not None:
+            updates["published_content"] = published_content
+        if published_version is not None:
+            updates["published_version"] = published_version
 
     flt = {"piece_id": piece_id, "workspace_id": workspace_id}
     if increment_attempts:
@@ -224,7 +244,7 @@ async def publish_now(
             {"piece_id": body.piece_id, "workspace_id": ctx.workspace_id, "publish_status": "publishing"},
             {"$set": {
                 "publish_status": "failed",
-                "last_error": "Publishing hit an unexpected problem. Try again.",
+                "last_error": "Publishing hit an unexpected problem. Check the platform first, then try again.",
                 "updated_at": datetime.now(timezone.utc),
             }},
         )
@@ -245,7 +265,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
     # slug ("linkedin"), not the display-cased content Platform value
     # ("LinkedIn") that piece["platform"] actually holds.
     display_platform = piece["platform"]
-    platform = display_platform.lower()
+    platform = platform_key(display_platform)
 
     # Check platform token exists for this workspace
     token_data = await get_token(ws, platform)
@@ -267,6 +287,15 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
             detail=f"Platform '{display_platform}' not supported.",
         )
 
+    # Server-side gate: only approved posts go out, and a flagged one needs an
+    # explicit "publish anyway". The claim is put back, nothing was sent.
+    block = check_gate(piece, confirm_anyway=body.confirm_publish_anyway)
+    if block:
+        await _release_claim(body.piece_id, ws, previous_status)
+        raise block.http()
+    if body.confirm_publish_anyway:
+        await record_override(piece, ws, ctx.user_id)
+
     # Build publish request — media populated for real (was always empty,
     # PublishRequest.media_urls existed but neither construction site ever
     # passed it) from whatever the piece actually has attached.
@@ -277,7 +306,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
         brand_id=piece["brand_id"],
         platform=platform,
         content=piece["content"],
-        media=[MediaAsset(**m) for m in piece.get("media") or []],
+        media=[MediaAsset(**m) for m in await media_for_publish(piece, ws, platform)],
         youtube_metadata=body.youtube_metadata,
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
@@ -298,7 +327,9 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
                 platform_post_id=result.platform_post_id,
                 platform_post_url=result.platform_post_url,
                 increment_attempts=True,
-                media_dropped_reason=result.media_dropped_reason,
+                media_dropped_reason=result.media_dropped_reason or extra_media_note(piece, platform) or planned_media_note(piece),
+                published_content=content,
+                published_version=piece.get("version_count"),
             )
             from app.shared.governance_events import emit_content_published
             emit_content_published(
@@ -459,7 +490,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
         {"piece_id": body.piece_id, "workspace_id": ws},
         {"$set": {
             "publish_status":       "queued",
-            "publish_scheduled_at": retry_at.isoformat(),
+            "publish_scheduled_at": retry_at,
             # The worker publishes to publish_target and would otherwise fall
             # back to LinkedIn for a piece that never had one set.
             "publish_target":       platform,

@@ -14,6 +14,7 @@ from app.pipelines.publish.base import (
     PublishRequest,
     PublishResult,
 )
+from app.pipelines.publish.media_fit import jpeg_url
 from app.pipelines.publish.validators import validate_instagram
 from app.pipelines.publish.meta.oauth import (
     build_auth_url,
@@ -25,6 +26,31 @@ from app.pipelines.publish.supervisor.classifier import classify_error
 logger = logging.getLogger(__name__)
 
 GRAPH_BASE = "https://graph.facebook.com/v19.0"
+
+
+_READY_POLLS = 24        # about two minutes in all
+_READY_POLL_SECONDS = 5
+
+
+async def _wait_until_ready(client, container_id: str, access_token: str):
+    """(True, None) when Instagram says the container is ready, (False, None) when it is still processing after the wait (try
+    again later), (False, message) when Instagram reports it failed or expired."""
+    import asyncio
+
+    for _ in range(_READY_POLLS):
+        try:
+            resp = await client.get(
+                f"{GRAPH_BASE}/{container_id}", params={"fields": "status_code", "access_token": access_token},
+            )
+            status = (resp.json() or {}).get("status_code") if resp.status_code == 200 else None
+        except Exception:  # noqa: BLE001
+            status = None
+        if status == "FINISHED":
+            return True, None
+        if status in ("ERROR", "EXPIRED"):
+            return False, "Instagram could not process this video. Check its size and length, then try again."
+        await asyncio.sleep(_READY_POLL_SECONDS)
+    return False, None
 
 
 class InstagramPublisher(PlatformPublisher):
@@ -88,10 +114,47 @@ class InstagramPublisher(PlatformPublisher):
             container_params["video_url"] = asset.url
             container_params["media_type"] = "REELS"
         else:
-            container_params["image_url"] = asset.url
+            # Instagram photo posts take JPEG; our pictures are PNG, so ask for the JPEG version of the same picture.
+            container_params["image_url"] = jpeg_url(asset.url)
+
+        # Several pictures on one post go out as an Instagram carousel (2 to 10 pictures). Built from Meta's documented carousel
+        # steps (a container per picture, then one carousel container naming them); not yet confirmed against a live account.
+        carousel_urls = [jpeg_url(m.url) for m in request.media if m.kind.value == "image"][:10]
+        is_carousel = asset.kind.value == "image" and len(carousel_urls) >= 2
 
         try:
-            async with httpx.AsyncClient() as client:
+            # A generous timeout: Instagram fetches the picture from our host while it answers, which takes longer than the
+            # few seconds the default allows (found by a live test: a plain photo timed out).
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                if is_carousel:
+                    child_ids: list[str] = []
+                    for url in carousel_urls:
+                        child = await client.post(
+                            f"{GRAPH_BASE}/{ig_user_id}/media",
+                            params={"image_url": url, "is_carousel_item": "true", "access_token": access_token},
+                        )
+                        if child.status_code != 200:
+                            error_data = child.json()
+                            error_message = error_data.get("error", {}).get("message", child.text)
+                            return PublishResult(
+                                success=False, platform="instagram", piece_id=request.piece_id,
+                                error_type=classify_error(child.status_code, error_message).value,
+                                error_code=child.status_code, error_message=error_message,
+                            )
+                        # each picture must finish processing before the carousel names it
+                        child_ready, child_problem = await _wait_until_ready(client, child.json()["id"], access_token)
+                        if not child_ready:
+                            return PublishResult(
+                                success=False, platform="instagram", piece_id=request.piece_id,
+                                error_type="TRANSIENT" if child_problem is None else "FATAL", error_code=500,
+                                error_message=child_problem or "Instagram is still processing the pictures. It will be tried again shortly.",
+                            )
+                        child_ids.append(child.json()["id"])
+                    container_params = {
+                        "caption": request.content, "access_token": access_token,
+                        "media_type": "CAROUSEL", "children": ",".join(child_ids),
+                    }
+
                 # Step 1 — Create media container
                 container_response = await client.post(
                     f"{GRAPH_BASE}/{ig_user_id}/media",
@@ -113,6 +176,20 @@ class InstagramPublisher(PlatformPublisher):
 
                 container_id = container_response.json()["id"]
 
+                # Instagram processes every container (a picture, a carousel, a video) after it is made, and publishing before it
+                # is ready fails with "Media ID is not available" (found by a live test: even a plain photo needs the wait).
+                # Wait for Meta's container status to say it is ready.
+                ready, wait_problem = await _wait_until_ready(client, container_id, access_token)
+                if not ready:
+                    return PublishResult(
+                        success=False,
+                        platform="instagram",
+                        piece_id=request.piece_id,
+                        error_type="TRANSIENT" if wait_problem is None else "FATAL",
+                        error_code=500,
+                        error_message=wait_problem or "Instagram is still processing the post. It will be tried again shortly.",
+                    )
+
                 # Step 2 — Publish the container
                 publish_response = await client.post(
                     f"{GRAPH_BASE}/{ig_user_id}/media_publish",
@@ -124,7 +201,17 @@ class InstagramPublisher(PlatformPublisher):
 
                 if publish_response.status_code == 200:
                     post_id  = publish_response.json()["id"]
+                    # The link to the post is its permalink, which Instagram gives for the media id. The id itself is not
+                    # a link, so a link built from it did not open the post. Falls back to the old form if it cannot be read.
                     post_url = f"https://www.instagram.com/p/{post_id}/"
+                    try:
+                        link_response = await client.get(
+                            f"{GRAPH_BASE}/{post_id}", params={"fields": "permalink", "access_token": access_token},
+                        )
+                        if link_response.status_code == 200 and link_response.json().get("permalink"):
+                            post_url = link_response.json()["permalink"]
+                    except Exception:  # noqa: BLE001
+                        pass
                     logger.info(
                         "Instagram post published: %s for piece %s",
                         post_id, request.piece_id,

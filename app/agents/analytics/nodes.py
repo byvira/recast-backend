@@ -19,6 +19,7 @@ from app.pipelines.analytics.aggregator import (
     fetch_account_metrics_all,
     fetch_post_metrics_all,
 )
+from app.pipelines.publish.spine import platform_key
 from app.pipelines.publish.token_store import get_all_tokens
 from app.pipelines.text.generator import resolve_language_directive_name
 from app.prompts.registry import load_fixture, load_localized, load_prompt
@@ -109,16 +110,16 @@ async def fetch_metrics_node(state: AnalyticsAgentState) -> dict:
                 "publish_status":   "published",
                 "platform_post_id": {"$exists": True, "$ne": None},
             },
-            {"platform": 1, "platform_post_id": 1, "_id": 1},
+            {"platform": 1, "platform_post_id": 1, "piece_id": 1, "_id": 1},
         ).sort("created_at", -1).to_list(length=20)
 
         posts_to_fetch = [
             {
-                "piece_id":         str(piece["_id"]),
-                # Lowercase slug — matches token_store's platform key and
-                # the aggregator's _FETCHERS dict, not the display-cased
-                # content Platform value ("LinkedIn") piece["platform"] holds.
-                "platform":         piece.get("platform", "").lower(),
+                # The post's own id (what metrics are joined back on), not the database row id.
+                "piece_id":         piece.get("piece_id") or str(piece["_id"]),
+                # The registry key — matches token_store's platform key and the aggregator's fetchers, not the
+                # display-cased content value ("Twitter/X") piece["platform"] holds.
+                "platform":         platform_key(piece.get("platform", "")),
                 "platform_post_id": piece["platform_post_id"],
                 "platform_user_id": "",
             }

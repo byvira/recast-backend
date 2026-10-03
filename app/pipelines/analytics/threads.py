@@ -68,6 +68,7 @@ class ThreadsAnalyticsFetcher(AnalyticsFetcher):
                 platform=self.platform,
                 post_id=piece_id,
                 platform_post_id=platform_post_id,
+                fetch_ok=False,
                 fetched_at=datetime.now(timezone.utc),
             )
 

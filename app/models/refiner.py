@@ -35,3 +35,6 @@ class RefineChatResponse(BaseModel):
     turn: int          
     piece_id: Optional[str] = None
     version_saved: bool = False
+    # Set when the answer could not be used (unusable, or it used a banned word): `refined` is then the text as it was
+    # and nothing was saved.
+    error: Optional[str] = None

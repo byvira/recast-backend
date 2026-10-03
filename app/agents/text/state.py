@@ -141,6 +141,9 @@ class TextAgentState(TypedDict):
 
     quality_passed: bool
     quality_issues: list[str]
+    # The brand-rule problems the writing step itself found (generic opening or closing, a missing required phrase), carried
+    # to the quality step so the one gate that decides pass or rewrite sees them too.
+    generation_issues: list[str]
     readability_score: Optional[float]
 
     # ─────────────────────────────────────────────────────────────
@@ -269,6 +272,7 @@ def build_initial_state(
         # Quality — safe defaults until quality_check_node runs
         quality_passed=False,
         quality_issues=[],
+        generation_issues=[],
         readability_score=None,
 
         # Retry — clean start

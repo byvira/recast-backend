@@ -20,6 +20,18 @@ PLATFORM_LIMITS = {
 }
 
 
+def _declared_limit(platform: str):
+    """The platform's own declared limit from the registry (one place per platform), if it declares one."""
+    try:
+        from app.platforms.base import get_platform, import_all, resolve_platform_by_display_value
+
+        import_all()
+        definition = get_platform(platform.lower()) or resolve_platform_by_display_value(platform)
+        return definition.max_chars if definition else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def fix_content(
     platform: str,
     content: str,
@@ -34,7 +46,7 @@ def fix_content(
 
     # Fix: content too long — truncate at sentence boundary
     if "too long" in error_lower or "character limit" in error_lower:
-        limit = PLATFORM_LIMITS.get(platform.lower())
+        limit = _declared_limit(platform) or PLATFORM_LIMITS.get(platform.lower())
         if limit and len(content) > limit:
             fixed = _truncate_at_sentence(content, limit)
             if fixed:

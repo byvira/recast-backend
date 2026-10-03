@@ -128,6 +128,10 @@ async def fetch_post_metrics_all(
             access_token=token["access_token"],
             piece_id=post.get("piece_id", ""),
         )
+        if not metrics.fetch_ok:
+            # The platform could not be read. Keep what is already stored; never replace real numbers with zeros.
+            logger.warning("Post metrics unavailable for %s %s, kept the earlier numbers", platform, post.get("platform_post_id"))
+            continue
         metrics.workspace_id = workspace_id
         results.append(metrics)
 

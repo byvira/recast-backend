@@ -21,6 +21,8 @@ Context layers injected in order:
 
 import logging
 import re
+
+from jinja2 import TemplateNotFound
 from typing import Dict, List, Tuple
 
 from app.models.text import AgentTask, AgentResult, Platform, LANGUAGE_NAMES
@@ -188,18 +190,21 @@ GENERIC_OPENINGS = [
 # PLATFORM RULES
 # ─────────────────────────────────────────────────────────────────────────────
 
-PLATFORM_RULES = {
-    Platform.LINKEDIN: load_prompt("text/generate/platform_rules/linkedin"),
-    Platform.TWITTER: load_prompt(
-        "text/generate/platform_rules/twitter", example_tweet=load_fixture("generator_example_tweet")
-    ),
-    Platform.TWITTER_THREAD: load_prompt("text/generate/platform_rules/twitter_thread"),
-    Platform.INSTAGRAM: load_prompt("text/generate/platform_rules/instagram"),
-    Platform.FACEBOOK: load_prompt("text/generate/platform_rules/facebook"),
-    Platform.BLOG: load_prompt("text/generate/platform_rules/blog"),
-    Platform.NEWSLETTER: load_prompt("text/generate/platform_rules/newsletter"),
-    Platform.YOUTUBE: load_prompt("text/generate/platform_rules/youtube"),
-}
+def _per_platform(folder: str, **variables_for: dict) -> dict:
+    """One prompt per text platform, found by name: `text/generate/<folder>/<platform name in lower case>.jinja`. The set of
+    platforms comes from the platform list (the Platform enum is built from it), so a new text platform needs its prompt files
+    added and its registry entry, not a code edit here. `variables_for` gives a platform's own template variables."""
+    found = {}
+    for member in Platform:
+        name = member.name.lower()
+        try:
+            found[member] = load_prompt(f"text/generate/{folder}/{name}", **variables_for.get(name, {}))
+        except TemplateNotFound:
+            logger.warning("No %s prompt file for %s, so it gets none", folder, member.value)
+    return found
+
+
+PLATFORM_RULES = _per_platform("platform_rules", twitter={"example_tweet": load_fixture("generator_example_tweet")})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,16 +216,7 @@ PLATFORM_RULES = {
 # per-platform prompt fragment in this module — moved here to match.
 # ─────────────────────────────────────────────────────────────────────────────
 
-HASHTAG_RULES = {
-    Platform.LINKEDIN: load_prompt("text/generate/hashtag_rules/linkedin"),
-    Platform.INSTAGRAM: load_prompt("text/generate/hashtag_rules/instagram"),
-    Platform.TWITTER: load_prompt("text/generate/hashtag_rules/twitter"),
-    Platform.TWITTER_THREAD: load_prompt("text/generate/hashtag_rules/twitter_thread"),
-    Platform.FACEBOOK: load_prompt("text/generate/hashtag_rules/facebook"),
-    Platform.BLOG: load_prompt("text/generate/hashtag_rules/blog"),
-    Platform.NEWSLETTER: load_prompt("text/generate/hashtag_rules/newsletter"),
-    Platform.YOUTUBE: load_prompt("text/generate/hashtag_rules/youtube"),
-}
+HASHTAG_RULES = _per_platform("hashtag_rules")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,16 +226,7 @@ HASHTAG_RULES = {
 # under app/prompts/text/generate/cta_rules/.
 # ─────────────────────────────────────────────────────────────────────────────
 
-CTA_RULES = {
-    Platform.LINKEDIN: load_prompt("text/generate/cta_rules/linkedin"),
-    Platform.TWITTER: load_prompt("text/generate/cta_rules/twitter"),
-    Platform.TWITTER_THREAD: load_prompt("text/generate/cta_rules/twitter_thread"),
-    Platform.INSTAGRAM: load_prompt("text/generate/cta_rules/instagram"),
-    Platform.FACEBOOK: load_prompt("text/generate/cta_rules/facebook"),
-    Platform.BLOG: load_prompt("text/generate/cta_rules/blog"),
-    Platform.NEWSLETTER: load_prompt("text/generate/cta_rules/newsletter"),
-    Platform.YOUTUBE: load_prompt("text/generate/cta_rules/youtube"),
-}
+CTA_RULES = _per_platform("cta_rules")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -555,16 +542,13 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         base_hashtag_rule = HASHTAG_RULES.get(task.platform, "")
         if banned_words and base_hashtag_rule:
             banned_vocab = ", ".join(f"#{w.replace(' ', '')}" for w in banned_words)
-            hashtag_instruction = (
-                f"{base_hashtag_rule}\n"
-                f"HASHTAG RULE: Never use these brand-banned hashtags or variations: {banned_vocab}\n"
-                f"Use brand vocabulary instead — draw from: product name, core features, "
-                f"brand phrases, and the specific topic of this piece."
+            hashtag_instruction = load_prompt(
+                "text/generate/hashtag_banned", base_hashtag_rule=base_hashtag_rule, banned_vocab=banned_vocab,
             )
         else:
             hashtag_instruction = base_hashtag_rule
     else:
-        hashtag_instruction = "Do NOT include any hashtags anywhere in the content."
+        hashtag_instruction = load_prompt("text/generate/hashtag_none")
 
     # ── CTA instruction ───────────────────────────────────────────────────
     cta_instruction = (

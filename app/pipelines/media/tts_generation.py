@@ -23,6 +23,7 @@ _generate_image_bytes: never raises, returns None on any failure.
 from app.shared.llm_health.track import fallback_scope, note_fallback_failed, refused_outright, track
 import time
 import base64
+import asyncio
 import logging
 from typing import Optional
 
@@ -112,6 +113,29 @@ def _resolve_elevenlabs_voice_id(voice_settings: MemberVoiceSettings) -> Optiona
     if voice_id.lower() in _PLACEHOLDER_VOICE_IDS:
         return None
     return voice_id
+
+
+_DEEPGRAM_LANGUAGE_CODES = {"en", "es", "de", "fr", "nl", "it", "ja"}
+
+
+def _is_transient(exc: Exception) -> bool:
+    """A failure worth one more try: a timeout, a connection that dropped, or a server error (5xx). Not a refusal."""
+    import httpx
+
+    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return False
+
+
+def _deepgram_can_read(text: str) -> bool:
+    """False only when the script is clearly in a language Deepgram's voices do not support. When the language cannot be
+    told with confidence (short or mixed text) it is allowed, exactly as before."""
+    from app.shared.language import detect_language
+
+    detected = detect_language(text)
+    return detected is None or detected in _DEEPGRAM_LANGUAGE_CODES
 
 
 def _resolve_deepgram_model(voice_settings: MemberVoiceSettings) -> str:
@@ -416,16 +440,28 @@ async def _synthesize(
 
     if settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED and time.monotonic() >= _elevenlabs_skip_until:
         try:
-            if timed:
-                audio, words = await _call_elevenlabs_timed(
+            async def _once():
+                if timed:
+                    audio, words = await _call_elevenlabs_timed(
+                        text=text, voice_settings=voice_settings, workspace_id=workspace_id,
+                        pronunciation_dictionary_locators=pronunciation_locators,
+                    )
+                    return SpeechResult(audio=audio, words=words or None)
+                return SpeechResult(audio=await _call_elevenlabs(
                     text=text, voice_settings=voice_settings, workspace_id=workspace_id,
                     pronunciation_dictionary_locators=pronunciation_locators,
-                )
-                return SpeechResult(audio=audio, words=words or None)
-            return SpeechResult(audio=await _call_elevenlabs(
-                text=text, voice_settings=voice_settings, workspace_id=workspace_id,
-                pronunciation_dictionary_locators=pronunciation_locators,
-            ))
+                ))
+
+            try:
+                return await _once()
+            except Exception as first:  # noqa: BLE001
+                # One more try for a blip (a timeout, a dropped connection, a server error), before the fallback voice takes
+                # over. A refusal (plan, key, quota) is not retried: asking again would only spend more.
+                if not _is_transient(first):
+                    raise
+                logger.info("ElevenLabs blip for workspace %s, trying once more: %s", workspace_id, first)
+                await asyncio.sleep(1.5)
+                return await _once()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "ElevenLabs TTS failed for workspace %s, checking Deepgram fallback: %s",
@@ -440,6 +476,12 @@ async def _synthesize(
 
     if not settings.DEEPGRAM_API_KEY:
         logger.warning("DEEPGRAM_API_KEY not configured — no TTS provider available.")
+        return None
+
+    # The fallback voices read English (and a few other languages). A script they cannot read would be spoken by an
+    # English voice and saved as that language with no sign anything was wrong, so it is refused here instead.
+    if not _deepgram_can_read(text):
+        logger.warning("Deepgram fallback refused for workspace %s: the script is in a language it cannot read.", workspace_id)
         return None
 
     try:

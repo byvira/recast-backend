@@ -187,6 +187,8 @@ async def score_hook(
             "recommended": 0,
             "recommended_content": content,
             "platform": platform,
+            # The score above is not a real score; the route must say so and not hand it out as one.
+            "scoring_failed": True,
         }
 
     # ── Apply recommended hook to full content ────────────────────────────

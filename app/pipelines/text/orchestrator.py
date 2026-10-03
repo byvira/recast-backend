@@ -38,6 +38,7 @@ from app.pipelines.text.seo import run_seo_agent, should_run_seo
 from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
 from app.pipelines.media.default_image import pick_default_image
 from app.pipelines.media.pdf_export import generate_pieces_pdf
+from app.pipelines.publish.spine import platform_key, to_utc_datetime
 from app.shared.storage import ContentType, upload_file
 from app.agents.text.event_emitter import EventEmitter
 from uuid import uuid4
@@ -346,13 +347,13 @@ async def run_text_pipeline(
                 # publish_target marks that this specific piece is meant to
                 # actually go out, not just be drafted/reviewed — only set
                 # for platforms the caller explicitly picked in "Publish To".
-                # Lowercased: the real publish system (token_store.get_token,
-                # scheduled_posts worker) keys connections by lowercase slug
-                # ("linkedin"), not the display-cased content Platform value
-                # ("LinkedIn") — storing the latter here silently broke
-                # every scheduled/queued piece's token lookup.
+                # The registry key: the real publish system (token_store.get_token,
+                # scheduled_posts worker) keys connections by it ("linkedin",
+                # "twitter"), not the display-cased content Platform value
+                # ("LinkedIn", "Twitter/X") — storing the latter silently
+                # broke every scheduled piece's token lookup.
                 publish_target=(
-                    _platform_str(platform).lower()
+                    platform_key(_platform_str(platform))
                     if _platform_str(platform) in publish_targets_set
                     else None
                 ),
@@ -837,15 +838,13 @@ async def _run_single_repurpose(
             repurposed=True,
             sections=[s.model_dump() for s in sections] if sections else None,
             source_platform=_platform_str(source_platform),
-            # "queued"/"pending" (not the raw "now"/"scheduled" schedule_mode
-            # value) is what content_pieces.publish_status and the calendar
-            # query (get_calendar) actually recognise — see the identical
-            # mapping in app/agents/text/nodes.py. Storing schedule_mode
-            # directly left every repurposed piece with an invalid
-            # publish_status ("now"), which get_calendar's $or never
-            # matches, so repurposed content never appeared on the calendar.
-            publish_status="queued" if schedule_mode == "scheduled" else "pending",
-            publish_scheduled_at=scheduled_at,
+            # A planned time is intent only (same rule as the live path in
+            # app/agents/text/nodes.py): the piece stays "pending" and is
+            # queued when somebody approves it. Storing the raw schedule_mode
+            # ("now") as the status once left repurposed pieces with a value
+            # get_calendar never matches.
+            publish_status="pending",
+            intended_publish_at=to_utc_datetime(scheduled_at) if schedule_mode == "scheduled" else None,
         )
     except Exception as exc:
         logger.error(
@@ -908,8 +907,8 @@ async def _run_single_repurpose(
         quality_issues=issues,
         flagged_for_review=not is_valid,
         repurposed=True,
-        publish_status="queued" if schedule_mode == "scheduled" else "pending",
-        publish_scheduled_at=scheduled_at,
+        publish_status="pending",
+        intended_publish_at=to_utc_datetime(scheduled_at) if schedule_mode == "scheduled" else None,
     )
 
 

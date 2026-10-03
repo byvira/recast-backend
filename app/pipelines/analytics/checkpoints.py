@@ -27,6 +27,7 @@ from typing import Optional
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import content_pieces, post_metric_checkpoints, workspace_connections
 from app.pipelines.analytics.aggregator import fetch_post_metrics_all
+from app.pipelines.publish.spine import platform_key
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ async def _capture_workspace(workspace_id: str, now: datetime) -> tuple[int, int
     posts = [
         {
             "piece_id": piece["piece_id"],
-            "platform": (piece.get("publish_target") or piece.get("platform") or "").lower(),
+            "platform": platform_key(piece.get("publish_target") or piece.get("platform") or ""),
             "platform_post_id": piece["platform_post_id"],
             "platform_user_id": "",
         }

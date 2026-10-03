@@ -14,6 +14,7 @@ publisher, no real LinkedIn/Instagram/Facebook API calls) and the derived
 kanban "scheduled"/"failed" stages.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -22,6 +23,16 @@ from app.pipelines.publish.base import PublishResult
 from app.pipelines.publish.token_store import save_token
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 from tests.conftest import create_workspace
+
+
+# A schedule time safely in the future, whenever the suite runs.
+_LATER = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def _approve(client, ws_id: str, piece_id: str) -> None:
+    """Publishing and scheduling only take approved posts."""
+    res = await client.patch(f"/api/v1/content/pieces/{piece_id}/approve", headers={"X-Workspace-Id": ws_id})
+    assert res.status_code == 200, res.text
 
 
 async def _seed_piece(workspace_id: str, user_id: str, brand_id: str, platform: str = "LinkedIn") -> str:
@@ -53,7 +64,7 @@ async def test_schedule_without_connected_token_rejected(signup_user):
 
     res = await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z"},
+        json={"scheduled_at": _LATER},
         headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 400
@@ -65,10 +76,11 @@ async def test_schedule_with_connected_token_writes_queued_not_scheduled(signup_
     ws_id = await create_workspace(client, "Schedule WS")
     await _connect_linkedin(ws_id)
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await _approve(client, ws_id, piece_id)
 
     res = await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z"},
+        json={"scheduled_at": _LATER},
         headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 200, res.text
@@ -85,7 +97,7 @@ async def test_schedule_unsupported_platform_rejected(signup_user):
 
     res = await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z"},
+        json={"scheduled_at": _LATER},
         headers={"X-Workspace-Id": ws_id},
     )
     # No publisher exists for "Blog" — connection check fails first (no
@@ -98,10 +110,11 @@ async def test_cancel_schedule_reverts_to_pending(signup_user):
     ws_id = await create_workspace(client, "Cancel WS")
     await _connect_linkedin(ws_id)
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await _approve(client, ws_id, piece_id)
 
     await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z"},
+        json={"scheduled_at": _LATER},
         headers={"X-Workspace-Id": ws_id},
     )
 
@@ -112,7 +125,8 @@ async def test_cancel_schedule_reverts_to_pending(signup_user):
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["publish_status"] == "pending"
-    assert body["stage"] == "drafting"
+    # scheduling needs approval, so the cancelled post is still approved: back to waiting to be published, not back to drafting
+    assert body["stage"] == "staging"
 
 
 async def test_cancel_schedule_on_non_queued_piece_rejected(signup_user):
@@ -132,6 +146,7 @@ async def test_publish_now_success_marks_published(signup_user):
     ws_id = await create_workspace(client, "Publish WS")
     await _connect_linkedin(ws_id)
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await _approve(client, ws_id, piece_id)
 
     fake_publisher = AsyncMock()
     fake_publisher.publish = AsyncMock(return_value=PublishResult(
@@ -244,6 +259,7 @@ async def test_a_refused_publish_does_not_leave_the_piece_stuck(signup_user):
 
     # Connecting afterwards makes it publishable again.
     await _connect_linkedin(ws_id)
+    await _approve(client, ws_id, piece_id)
     fake_publisher = AsyncMock()
     fake_publisher.publish = AsyncMock(return_value=PublishResult(
         success=True, platform="linkedin", piece_id=piece_id, platform_post_id="p1",
@@ -258,6 +274,7 @@ async def test_a_publisher_crash_does_not_leave_the_piece_publishing(signup_user
     ws_id = await create_workspace(client, "Crash WS")
     await _connect_linkedin(ws_id)
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
+    await _approve(client, ws_id, piece_id)
 
     fake_publisher = AsyncMock()
     fake_publisher.publish = AsyncMock(side_effect=RuntimeError("boom"))
@@ -301,7 +318,7 @@ async def test_scheduling_instagram_without_media_is_refused_up_front(signup_use
 
     res = await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z"}, headers={"X-Workspace-Id": ws_id},
+        json={"scheduled_at": _LATER}, headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 400
     assert "image or video" in res.json()["detail"].lower()
@@ -315,7 +332,7 @@ async def test_scheduling_youtube_needs_a_video(signup_user):
 
     res = await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z", "youtube_metadata": _YT_DETAILS},
+        json={"scheduled_at": _LATER, "youtube_metadata": _YT_DETAILS},
         headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 400
@@ -327,11 +344,12 @@ async def test_a_scheduled_youtube_upload_keeps_the_details_that_were_reviewed(s
     ws_id = await create_workspace(client, "YT Details WS")
     await _connect(ws_id, "youtube")
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="YouTube")
+    await _approve(client, ws_id, piece_id)
     await content_pieces.update_one({"piece_id": piece_id}, {"$set": {"media": [{**_VIDEO, "workspace_id": ws_id}]}})
 
     res = await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z", "youtube_metadata": _YT_DETAILS},
+        json={"scheduled_at": _LATER, "youtube_metadata": _YT_DETAILS},
         headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 200, res.text
@@ -357,7 +375,7 @@ async def test_a_scheduled_youtube_upload_rejects_invalid_details(signup_user):
 
     res = await client.patch(
         f"/api/v1/content/pieces/{piece_id}/schedule",
-        json={"scheduled_at": "2026-12-01T10:00:00Z", "youtube_metadata": {"title": ""}},
+        json={"scheduled_at": _LATER, "youtube_metadata": {"title": ""}},
         headers={"X-Workspace-Id": ws_id},
     )
     assert res.status_code == 422

@@ -46,7 +46,7 @@ ROWS = [
     dict(
         key="pinterest", label="Pinterest",
         pipelines=frozenset({"text", "image", "video", "audio"}),
-        native_formats={"image": "native", "video": "native", "text": "card", "audio": "audiogram"},
+        native_formats={"image": "native", "video": "native", "text": "card"},
         mode="code_driven", integration_pattern="api_publish",
         audit_required=True,
         rate_limits="Trial access in days, Standard access in 1-4 weeks (Pinterest access tiers page, checked 2026-09-20).",

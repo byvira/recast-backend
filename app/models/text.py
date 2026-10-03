@@ -384,6 +384,9 @@ class GeneratedPiece(BaseModel):
     publish_target: Optional[str] = None
     publish_status: Optional[str] = None
     publish_scheduled_at: Optional[datetime] = None
+    # Planned time from generation (schedule_mode "scheduled"): intent only.
+    # The piece stays pending and is queued when somebody approves it.
+    intended_publish_at: Optional[datetime] = None
     publish_job_id: Optional[str] = None
     # Real media attached to this piece — brand-asset match, an auto-generated
     # quote card, an upload, or (Nano Banana) AI-generated; empty until the
@@ -534,6 +537,7 @@ class ContentPiece(BaseModel):
     repurposed: bool = False
     publish_status: PublishStatus = PublishStatus.PENDING
     publish_scheduled_at: Optional[str] = None
+    intended_publish_at: Optional[str] = None
     publish_target: Optional[str] = None
     publish_job_id: Optional[str] = None
     version_count: int = 1

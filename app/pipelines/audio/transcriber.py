@@ -70,8 +70,9 @@ async def transcribe_audio_detailed(
         return [], None
 
 
-async def transcribe_audio_bytes(audio_bytes: bytes, filename: str, language: Optional[str] = "en") -> list[TranscriptWord]:
-    """Word-level transcript only. Returns an empty list (never raises) on
+async def transcribe_audio_bytes(audio_bytes: bytes, filename: str, language: Optional[str] = None) -> list[TranscriptWord]:
+    """Word-level transcript only. `language=None` lets the provider detect it (a forced "en" garbled every non-English
+    recording). Returns an empty list (never raises) on
     any provider failure — an uploaded file with no transcript yet is a
     real, honest state (matches AudioAsset.transcript's own default `[]`),
     not a reason to fail the whole upload."""

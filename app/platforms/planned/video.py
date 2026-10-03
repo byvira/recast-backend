@@ -8,7 +8,7 @@ ROWS = [
     dict(
         key="tiktok", label="TikTok",
         pipelines=frozenset({"text", "image", "video", "audio"}),
-        native_formats={"video": "native", "image": "photo", "text": "card", "audio": "audiogram"},
+        native_formats={"video": "native", "image": "photo", "text": "card"},
         mode="code_driven", integration_pattern="api_publish",
         audit_required=True,
         rate_limits="Unaudited clients are restricted to private viewing until audit passes; 6 requests/minute per user token (TikTok Direct Post reference, checked 2026-09-20).",

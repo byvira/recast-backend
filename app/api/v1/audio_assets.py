@@ -336,6 +336,21 @@ async def generate_audio_asset(
     return await create_audio_from_script(body, ctx, run)
 
 
+def _spoken_text(content: str) -> str:
+    """A post's text as it should be read aloud: hashtags, markdown marks and bullet or heading signs are written for the
+    eye and would be spoken as noise, so they are dropped. Only used when the script comes from a post, never for a script
+    the member typed."""
+    lines = []
+    for line in (content or "").splitlines():
+        line = re.sub(r"^\s{0,3}(#{1,6}\s+|[-*•]\s+|>\s+)", "", line)
+        line = re.sub(r"(\*\*|__|\*|`)", "", line)
+        line = re.sub(r"(?<!\w)#\w+", "", line)
+        line = re.sub(r"[ 	]{2,}", " ", line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines).strip()
+
+
 async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: WorkspaceContext, run) -> AudioAsset:
     """The work behind POST /generate, callable without a request (campaign runs use it).
     `run` only needs an async `step(label)`."""
@@ -354,11 +369,16 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
         content = piece.get("content") or ""
         source_content_hash = str(hash(content))
         if not script:
-            script = content.strip()
+            script = _spoken_text(content)
 
     if not script:
         raise HTTPException(
             status_code=400, detail="script is required (or pass source_piece_id to use its content)."
+        )
+    if len(script) > settings.AUDIO_SCRIPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"That script is too long to narrate in one go ({len(script):,} characters; the limit is {settings.AUDIO_SCRIPT_MAX_CHARS:,}). Split it into parts.",
         )
 
     voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
@@ -652,7 +672,7 @@ def _parse_translation_score(raw: str) -> tuple[float, str]:
         return 0.0, "Couldn't parse the QA gate's score — treated as failing."
 
 
-async def _translate_with_quality_gate(source_text: str, target_language: str) -> tuple[str, float]:
+async def _translate_with_quality_gate(source_text: str, target_language: str, brand_context: str = "") -> tuple[str, float]:
     """Real 3x QA gate, same shape as app.agents.base.should_retry /
     app/agents/*/graph.py's evaluate->retry loop (avg_quality < 0.75,
     up to max_retries) — translate, score the translation's real
@@ -662,7 +682,7 @@ async def _translate_with_quality_gate(source_text: str, target_language: str) -
     best_text, best_score = "", -1.0
     for attempt in range(1, _TRANSLATION_MAX_ATTEMPTS + 1):
         translate_prompt = load_prompt(
-            "audio/localize/translate_script", target_language=target_language, script=source_text
+            "audio/localize/translate_script", target_language=target_language, script=source_text, brand_context=brand_context,
         )
         candidate = clean_translation(await call_llm(translate_prompt))
         if not candidate:
@@ -740,7 +760,12 @@ async def localize_audio_asset(
             detail="This audio asset has no script or transcript to translate.",
         )
 
-    translated_text, quality_score = await _translate_with_quality_gate(source_text, body.target_language)
+    # The brand's voice and tone goes into the translation, so a translated narration still sounds like the brand.
+    from app.pipelines.text.brand_context import build_brand_context
+
+    brand = await brand_profiles.find_one({"id": source.brand_id, "workspace_id": ctx.workspace_id})
+    brand_context = build_brand_context(brand) if brand else ""
+    translated_text, quality_score = await _translate_with_quality_gate(source_text, body.target_language, brand_context)
     if not translated_text:
         raise HTTPException(status_code=502, detail="Translation failed. Try again.")
     if quality_score < _TRANSLATION_QUALITY_THRESHOLD:
@@ -960,6 +985,7 @@ async def _ingest_audio(
         media_id=media.id,
         original_media_id=original_media_id,
         transcript=transcript,
+        transcript_note=None if transcript else "No transcript could be made when this was uploaded. Use Transcribe to try again.",
         dsp_settings=dsp_settings,
         approval_status=AudioApprovalStatus.PENDING,
     )
@@ -1048,6 +1074,17 @@ async def export_audio_asset(
 # status semantics, not a new governance shape invented for Audio.
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _master_transcript(doc: dict) -> list:
+    """The word timings that belong to the audio an assembly or video is built from. Those renders use the approved master
+    when there is one, so they caption from the timings it was approved with; a cleanup made afterwards moved the current
+    timings and would put captions out of step. An asset approved before this was kept (no stored timings) uses the current
+    ones, as before."""
+    pinned = doc.get("approved_master_transcript")
+    if doc.get("approved_master_media_id") and pinned is not None:
+        return pinned
+    return doc.get("transcript", [])
+
+
 async def _bump_audio_version(
     asset_id: str, workspace_id: str, new_media_id: str, script_snapshot: Optional[str], action: str, actor_user_id: str,
     *, transcript: Optional[list[dict]] = None, extra_set: Optional[dict] = None,
@@ -1058,15 +1095,22 @@ async def _bump_audio_version(
     doc = await audio_assets.find_one({"id": asset_id, "workspace_id": workspace_id})
     if not doc:
         return None
-    new_version_number = doc.get("version_count", 1) + 1
     now = datetime.now(timezone.utc)
-    changes = {"media_id": new_media_id, "version_count": new_version_number, "updated_at": now, **(extra_set or {})}
+    changes = {"media_id": new_media_id, "updated_at": now, **(extra_set or {})}
     if transcript is not None:
         changes["transcript"] = transcript
-    await audio_assets.update_one(
-        {"id": asset_id, "workspace_id": workspace_id},
-        {"$set": changes},
+    # The next version number is taken in the same step as the change (two overlapping changes used to claim the same
+    # number). An approved master stays pinned, with its own word timings (approved_master_transcript), and the new
+    # version sits beside it.
+    ops: dict = {"$set": changes, "$inc": {"version_count": 1}}
+    from pymongo import ReturnDocument
+    bumped = await audio_assets.find_one_and_update(
+        {"id": asset_id, "workspace_id": workspace_id}, ops,
+        projection={"version_count": 1}, return_document=ReturnDocument.AFTER,
     )
+    if not bumped:
+        return None
+    new_version_number = bumped.get("version_count", 2)
     version = AudioAssetVersion(
         version_id=str(uuid4()),
         audio_asset_id=asset_id,
@@ -1081,6 +1125,69 @@ async def _bump_audio_version(
     )
     await audio_asset_versions.insert_one(version.model_dump())
     return await audio_assets.find_one({"id": asset_id, "workspace_id": workspace_id})
+
+
+class RegenerateAudioRequest(BaseModel):
+    # A new script to voice. Left out, the asset's current script is voiced again (a fresh read of the same words).
+    script: Optional[str] = None
+
+
+@router.post("/{audio_asset_id}/regenerate", response_model=AudioAsset)
+@limiter.limit("6/minute")
+async def regenerate_audio_asset(
+    request: Request,
+    audio_asset_id: str,
+    body: RegenerateAudioRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+    run: AudioRun = Depends(audio_run("Narration", 2)),
+) -> AudioAsset:
+    """Voice a narration again, with the same or an edited script, as a NEW VERSION of this asset (the same way a cleanup
+    is). Until now the only way to change the words was to make a new asset, so version history never covered re-voicing.
+    An approved master stays pinned; the new version sits beside it."""
+    await assert_generation_allowed(ctx.workspace_id)
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    script = (body.script if body.script is not None else doc.get("script")) or ""
+    script = script.strip()
+    if not script:
+        raise HTTPException(status_code=400, detail="This recording was uploaded, so it has no script to voice again. Make a new narration instead.")
+    if len(script) > settings.AUDIO_SCRIPT_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"That script is too long to narrate in one go ({len(script):,} characters; the limit is {settings.AUDIO_SCRIPT_MAX_CHARS:,}). Split it into parts.",
+        )
+
+    await run.step("Voicing your script")
+    voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
+    lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
+    speech = await synthesize_speech_timed(
+        text=script, voice_settings=voice_settings, lexicon=lexicon, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+    )
+    if not speech:
+        raise HTTPException(
+            status_code=503,
+            detail="Narration couldn't be made right now. Nothing was changed. Try again in a moment.",
+        )
+
+    await run.step("Saving the audio")
+    url = await upload_file(speech.audio, UploadContentType.AUDIO, ctx.user_id)
+    now = datetime.now(timezone.utc)
+    media = MediaAsset(
+        id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.AUDIO, url=url, mime_type="audio/mpeg",
+        source=MediaSource.SYNTHESIZED, created_by=ctx.user_id, created_at=now, size_bytes=len(speech.audio),
+        duration_s=spoken_length.audio_duration_seconds(speech.audio) or spoken_length.duration_from_words(speech.words or []),
+    )
+    await media_assets.insert_one(media.model_dump())
+
+    updated = await _bump_audio_version(
+        audio_asset_id, ctx.workspace_id, media.id, script, "regenerated", ctx.user_id,
+        transcript=[w.model_dump() if hasattr(w, "model_dump") else w for w in (speech.words or [])],
+        extra_set={"script": script, "voice_settings_snapshot": voice_settings.model_dump()},
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    return AudioAsset(**updated)
 
 
 @router.patch("/{audio_asset_id}/approve", response_model=AudioAsset)
@@ -1099,6 +1206,7 @@ async def approve_audio_asset(
         {"$set": {
             "approval_status": AudioApprovalStatus.APPROVED.value,
             "approved_master_media_id": asset.media_id,
+            "approved_master_transcript": [w.model_dump() for w in asset.transcript],
             "updated_at": datetime.now(timezone.utc),
         }},
     )
@@ -1868,7 +1976,7 @@ async def transcribe_audio_asset(
 
     await audio_assets.update_one(
         {"id": audio_asset_id, "workspace_id": ctx.workspace_id},
-        {"$set": {"transcript": [w.model_dump() for w in transcript], "updated_at": datetime.now(timezone.utc)}},
+        {"$set": {"transcript": [w.model_dump() for w in transcript], "transcript_note": None, "updated_at": datetime.now(timezone.utc)}},
     )
     updated = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
     return AudioAsset(**updated)
@@ -1937,7 +2045,9 @@ async def cleanup_audio_asset(
     await media_assets.insert_one(new_media.model_dump())
 
     updated = await _bump_audio_version(
-        audio_asset_id, ctx.workspace_id, new_media.id, doc.get("script"), "cleanup", ctx.user_id,
+        audio_asset_id, ctx.workspace_id, new_media.id, doc.get("script"),
+        # the version list says when the basic echo cleanup was used because the full one was not available
+        "cleanup_basic_echo" if echo_note else "cleanup", ctx.user_id,
         transcript=new_transcript,
         extra_set={"dsp_settings": {**doc.get("dsp_settings", {}), "cleanup": applied}},
     )
@@ -2181,7 +2291,7 @@ async def assemble_audio_asset(
             assemble_episode, voice_bytes=voice_bytes, plan=body, intro_bytes=intro_bytes,
             outro_bytes=outro_bytes, sponsor_bytes=sponsor_bytes, bed_bytes=bed_bytes,
             transition_sfx_bytes=transition_bytes, signature_bytes=signature_bytes,
-            transcript=doc.get("transcript", []),
+            transcript=_master_transcript(doc),
         )
     except AssembleError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2239,7 +2349,7 @@ async def assemble_audio_asset(
             end_s=round(_shift(w["end_s"] if isinstance(w, dict) else w.end_s) + (w["end_s"] if isinstance(w, dict) else w.end_s), 3),
             speaker=w["speaker"] if isinstance(w, dict) else w.speaker,
         )
-        for w in doc.get("transcript", [])
+        for w in _master_transcript(doc)
     ]
 
     assembly = Assembly(
@@ -2260,6 +2370,88 @@ async def assemble_audio_asset(
 # background via the same live-step tracker as cleanup/assemble.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Renders in progress in this process, keyed by asset and the exact settings. A render takes minutes, and the screen gives
+# up waiting well before the server does, so a second click or a retry used to start the same render again and leave two
+# identical clips. While one is running, the same request is answered plainly instead.
+_VIDEO_IN_FLIGHT: set[str] = set()
+
+
+async def _video_render_guard(audio_asset_id: str, body: MakeVideoRequest, ctx: WorkspaceContext = Depends(require("edit_content"))):
+    from app.db.mongo import get_db
+
+    key = f"{ctx.workspace_id}:{audio_asset_id}:{body.model_dump_json()}"
+    if key in _VIDEO_IN_FLIGHT:
+        raise HTTPException(status_code=409, detail="This video is already being made. It will show in your videos when it is ready.")
+    _VIDEO_IN_FLIGHT.add(key)
+    # A record of the render, so a render that was lost (the server restarted, the request was dropped) shows up as
+    # interrupted instead of leaving no trace.
+    jobs = get_db()["audio_render_jobs"]
+    job_id = str(uuid4())
+    started = datetime.now(timezone.utc)
+    await jobs.insert_one({"id": job_id, "workspace_id": ctx.workspace_id, "audio_asset_id": audio_asset_id, "kind": "video",
+                           "status": "running", "started_at": started})
+    try:
+        yield
+    except BaseException as exc:  # noqa: BLE001 - recorded, then raised again unchanged
+        detail = getattr(exc, "detail", None)
+        await jobs.update_one({"id": job_id}, {"$set": {
+            "status": "failed", "finished_at": datetime.now(timezone.utc),
+            "error": detail if isinstance(detail, str) else "The video could not be made.",
+        }})
+        raise
+    else:
+        await jobs.update_one({"id": job_id}, {"$set": {"status": "done", "finished_at": datetime.now(timezone.utc)}})
+    finally:
+        _VIDEO_IN_FLIGHT.discard(key)
+
+
+_RENDER_JOB_STALE = timedelta(minutes=40)
+
+
+@router.get("/{audio_asset_id}/sound-checks")
+@limiter.limit("20/minute")
+async def sound_checks(
+    request: Request,
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Loudness, peaks and long silences of the recording as it is now (its current version), as advice: good, or worth a look
+    with a plain sentence. Measured from the audio itself, nothing is changed."""
+    from app.pipelines.audio.sound_checks import run_sound_checks
+
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    media = await media_assets.find_one({"id": doc.get("media_id"), "workspace_id": ctx.workspace_id}) if doc.get("media_id") else None
+    if not media:
+        raise HTTPException(status_code=400, detail="This recording has no audio file to check.")
+    audio_bytes = await _download_media_bytes(media["url"])
+    return {"audio_asset_id": audio_asset_id, "media_id": media["id"], "checks": await run_sound_checks(audio_bytes)}
+
+
+@router.get("/{audio_asset_id}/render-jobs")
+async def list_render_jobs(
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The recent video renders for this recording and how each ended. A render still marked running long after it could
+    have finished (the server restarted in the middle) is marked interrupted when it is read here."""
+    from app.db.mongo import get_db
+
+    jobs = get_db()["audio_render_jobs"]
+    cutoff = datetime.now(timezone.utc) - _RENDER_JOB_STALE
+    await jobs.update_many(
+        {"workspace_id": ctx.workspace_id, "audio_asset_id": audio_asset_id, "status": "running", "started_at": {"$lt": cutoff}},
+        {"$set": {"status": "failed", "error": "This render was interrupted. Start it again.", "finished_at": datetime.now(timezone.utc)}},
+    )
+    docs = await jobs.find({"workspace_id": ctx.workspace_id, "audio_asset_id": audio_asset_id}, {"_id": 0}).sort("started_at", -1).to_list(length=10)
+    for d in docs:
+        for field in ("started_at", "finished_at"):
+            if d.get(field):
+                d[field] = d[field].replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z") if d[field].tzinfo is None else d[field].isoformat().replace("+00:00", "Z")
+    return {"jobs": docs}
+
+
 @router.post("/{audio_asset_id}/video", response_model=AudioAsset)
 @limiter.limit("6/minute")
 async def make_video_from_audio_asset(
@@ -2268,6 +2460,7 @@ async def make_video_from_audio_asset(
     body: MakeVideoRequest,
     ctx: WorkspaceContext = Depends(require("edit_content")),
     run: AudioRun = Depends(audio_run("Rendering video", 3)),
+    _guard: None = Depends(_video_render_guard),
 ) -> AudioAsset:
     doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
     if not doc:
@@ -2311,7 +2504,7 @@ async def make_video_from_audio_asset(
 
     await run.step("Loading the recording")
     audio_bytes = await _download_media_bytes(voice["url"])
-    words = [TranscriptWordLike(word=w["word"], start_s=w["start_s"], end_s=w["end_s"]) for w in doc.get("transcript", [])]
+    words = [TranscriptWordLike(word=w["word"], start_s=w["start_s"], end_s=w["end_s"]) for w in _master_transcript(doc)]
 
     await run.step("Rendering the video")
     try:
@@ -2356,6 +2549,106 @@ async def make_video_from_audio_asset(
     )
     updated = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
     return AudioAsset(**updated)
+
+
+class SendToDraftRequest(BaseModel):
+    clip_id: str
+    # The post text. Left empty, the video's own title is used.
+    caption: Optional[str] = None
+    # A post platform name ("YouTube", "Instagram"...). Left empty, the video's chosen place to post is used.
+    platform: Optional[str] = None
+
+
+@router.post("/{audio_asset_id}/send-to-draft")
+@limiter.limit("20/minute")
+async def send_clip_to_draft(
+    request: Request,
+    audio_asset_id: str,
+    body: SendToDraftRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """Make a draft post from one of this recording's videos, with the video attached, in one step.
+
+    Safe to repeat: the same recording and video always give back the same draft, so a second click (or a retry
+    after a dropped connection) never makes another one."""
+    from uuid import NAMESPACE_URL, uuid5
+
+    from pymongo.errors import DuplicateKeyError
+
+    from app.db.mongo import content_pieces
+    from app.models.text import InputSourceType, Platform
+    from app.pipelines.publish import attachments as piece_attachments
+    from app.pipelines.text.storage import ensure_session_exists, get_piece, save_live_piece
+
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    clip = next((c for c in doc.get("video_clips") or [] if c.get("id") == body.clip_id), None)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Video not found.")
+
+    preset = video_presets.PRESETS.get(clip.get("platform") or "")
+    platform_text = (body.platform or "").strip() or (preset or {}).get("platform") or "YouTube"
+    try:
+        platform = Platform(platform_text).value
+    except ValueError:
+        raise HTTPException(status_code=400, detail="That platform isn't supported for posts.")
+    caption = (body.caption or "").strip() or (clip.get("title") or "").strip() or doc.get("title", "")
+    if not caption:
+        raise HTTPException(status_code=400, detail="Add some text for the post.")
+
+    # The draft already made for this recording and video, if it still exists.
+    existing = await content_pieces.find_one({
+        "workspace_id": ctx.workspace_id, "deleted": {"$ne": True},
+        "send_origin.audio_asset_id": audio_asset_id, "send_origin.clip_id": body.clip_id,
+    })
+    created = False
+    if existing:
+        piece_id = existing["piece_id"]
+    else:
+        # First time: one repeatable id per (recording, video). The unique index on piece_id is what makes two
+        # clicks at the same moment land on the same draft instead of creating another. If an earlier draft with
+        # that id was deleted, this is a fresh send and gets a new id.
+        origin = f"send-to-draft:{ctx.workspace_id}:{audio_asset_id}:{body.clip_id}"
+        piece_id = str(uuid5(NAMESPACE_URL, origin))
+        repeatable = True
+        taken_by_deleted = await content_pieces.find_one({"piece_id": piece_id, "deleted": True}, {"_id": 1})
+        if taken_by_deleted:
+            piece_id, repeatable = str(uuid4()), False
+        session_id = str(uuid5(NAMESPACE_URL, origin + ":session")) if repeatable else str(uuid4())
+        try:
+            await ensure_session_exists(
+                session_id=session_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+                brand_id=doc["brand_id"], source_type=InputSourceType.TEXT.value,
+            )
+        except DuplicateKeyError:
+            pass  # the same moment's other click made the session first
+        try:
+            await save_live_piece(
+                session_id=session_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+                brand_id=doc["brand_id"], platform=platform, content=caption,
+                word_count=len(caption.split()), char_count=len(caption),
+                piece_id=piece_id,
+                extra_fields={"send_origin": {"audio_asset_id": audio_asset_id, "clip_id": body.clip_id}},
+            )
+            created = True
+        except DuplicateKeyError:
+            pass  # a click at the same moment made it first
+
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=500, detail="Couldn't make the draft. Try again.")
+    try:
+        resolved = await piece_attachments.resolve_asset(
+            ctx.workspace_id, "video", asset_id=audio_asset_id, clip_id=body.clip_id,
+        )
+        attachment, _ = await piece_attachments.attach(piece, ctx.workspace_id, ctx.user_id, resolved)
+    except piece_attachments.AttachmentError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message)
+    return {
+        "piece_id": piece_id, "platform": piece["platform"], "content": piece["content"],
+        "created": created, "attachment": attachment,
+    }
 
 
 async def _generate_clip_suggestions(doc: dict, workspace_id: str, audio_asset_id: str) -> list[SuggestedClip]:

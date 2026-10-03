@@ -38,6 +38,10 @@ class PostMetrics(BaseModel):
 
     fetched_at: datetime = Field(default_factory=datetime.utcnow)
 
+    # False when the platform could not be read (error, timeout, no answer). The numbers are then NOT real: nothing
+    # may store them, or a failed read would overwrite real figures with zeros.
+    fetch_ok: bool = True
+
 
 # ── Account-level metrics ─────────────────────────────────────────────────────
 

@@ -24,8 +24,9 @@ from typing import Optional
 
 from app.agents.text.state import TextAgentState
 from app.models.text import AgentTask, GeneratedPiece, Platform
-from app.pipelines.text.brand_context import build_goal_context, build_tone_override, build_engagement_context
+from app.pipelines.text.brand_context import build_goal_context, build_tone_and_terms, build_tone_override, build_engagement_context
 from app.pipelines.text.generator import GENERIC_OPENINGS, generate_for_platform
+from app.pipelines.publish.spine import to_utc_datetime
 from app.pipelines.text.hook_agent import apply_recommended_hook, run_hook_agent
 from app.pipelines.text.normalizer import clean_raw_content, extract_content_brief
 from app.pipelines.text.quality import run_quality_gate
@@ -207,13 +208,19 @@ async def build_context_node(state: TextAgentState) -> dict:
     goal = state["goal"]
     tone = state["tone"]
     goal_context = build_goal_context(goal.value if goal else None)
-    tone_override_text = build_tone_override(tone.value if tone else "brand", state["language"])
+    tone_override_text = build_tone_and_terms(tone.value if tone else "brand", state["language"])
     current_platform_str = str(
         state["current_platform"].value
         if hasattr(state["current_platform"], "value")
         else state["current_platform"]
     )
     engagement_context = build_engagement_context(current_platform_str)
+    # What has worked for this workspace on this platform (off unless PERFORMANCE_HINT_IN_PROMPTS is on).
+    from app.pipelines.text.performance_hint import best_post_hint
+
+    hint = await best_post_hint(state["workspace_id"], current_platform_str)
+    if hint:
+        engagement_context = f"{engagement_context}\n\n{hint}" if engagement_context else hint
 
     # ── Extract all enforcement data ──────────────────────────────────────
     enforcement = _extract_enforcement_data(brand_profile)
@@ -313,8 +320,12 @@ async def generate_node(state: TextAgentState) -> dict:
 
     result = await generate_for_platform(task)
     content = result.output.get("content", "")
+    # Only the brand-rule findings the quality step does not already check itself (its banned-word, length and limit checks
+    # cover the rest).
+    brand_rule_prefixes = ("Generic opening", "Generic closing", "Required brand phrase")
+    generation_issues = [i for i in (result.output.get("quality_issues") or []) if i.startswith(brand_rule_prefixes)]
 
-    return {"generated_content": content}
+    return {"generated_content": content, "generation_issues": generation_issues}
 
 
 async def hooks_node(state: TextAgentState) -> dict:
@@ -465,15 +476,45 @@ async def quality_check_node(state: TextAgentState) -> dict:
         grammar_check=state["extras"].get("grammar_check", False),
     )
 
+    # The platform's own hard limits (the same rules the schedule and publish steps enforce), so a piece that cannot be posted
+    # is rewritten now and not found out later. Twitter and its threads are left to their own checks above (a thread is
+    # several tweets, not one).
+    from app.pipelines.publish.spine import platform_key
+    from app.pipelines.publish.validators import validate_for_platform
+
+    key = platform_key(platform_str)
+    if key and key != "twitter":
+        try:
+            _, limit_issues = validate_for_platform(key, state["generated_content"])
+        except Exception:  # noqa: BLE001
+            limit_issues = []
+        new_limit_issues = [i for i in limit_issues if i not in quality.issues]
+        if new_limit_issues:
+            quality.issues = [*quality.issues, *new_limit_issues]
+            quality.passed = False
+
     # Figures, prices and "last Thursday" stories that nothing supplied backs up. Advisory only: it never blocks or
     # rewrites, it asks the member to confirm before publishing. Compared against what the model was given.
     from app.pipelines.text.claims import unsupported_claims
 
+    # In topic mode the "source" is a research note the model itself wrote from the topic, so a figure in it is not evidence
+    # for a figure in the post. Only what the brand itself says counts there.
+    from app.models.text import InputSourceType
+
+    topic_mode = state.get("source_type") == InputSourceType.TOPIC
     claim_warnings = unsupported_claims(
         state["generated_content"],
+        [state.get("brand_context") or ""] if topic_mode else
         [state.get("normalised_content") or "", state.get("raw_input") or "", state.get("brand_context") or "", state.get("content_brief") or ""],
     )
     quality.issues = [*quality.issues, *(f"Advisory: {w}" for w in claim_warnings)]
+
+    # The writing step already judged the brand's opening, closing and required-phrase rules. This gate did not, so a piece
+    # that broke them passed here and was never rewritten.
+    brand_rule_issues = [i for i in (state.get("generation_issues") or []) if i not in quality.issues]
+    if brand_rule_issues:
+        quality.issues = [*quality.issues, *brand_rule_issues]
+        quality.passed = False
 
     if emitter:
         readability_level = getattr(quality, "readability_level", "Standard") or "Standard"
@@ -570,8 +611,13 @@ async def rewrite_node(state: TextAgentState) -> dict:
     if emitter:
         await emitter.emit_log(msg.retrying(platform=platform_str, attempt=state["retry_count"] + 1))
 
+    # The rewritten text has its own brand-rule findings; the old ones no longer apply to it.
+    brand_rule_prefixes = ("Generic opening", "Generic closing", "Required brand phrase")
+    generation_issues = [i for i in (result.output.get("quality_issues") or []) if i.startswith(brand_rule_prefixes)]
+
     return {
         "generated_content": rewritten_content,
+        "generation_issues": generation_issues,
         "retry_count": state["retry_count"] + 1,
         "extras": updated_extras,
     }
@@ -629,10 +675,13 @@ async def collect_output_node(state: TextAgentState) -> dict:
         quality_issues=state["quality_issues"],
         flagged_for_review=state["flagged_for_review"],
         publish_target=state["publish_target"],
-        # "queued" (not the old, worker-incompatible "scheduled") is what
-        # app/workers/scheduled_posts.py polls for — see PublishStatus.
-        publish_status="queued" if state["schedule_mode"] == "scheduled" else "pending",
-        publish_scheduled_at=state["scheduled_at"],
+        # A planned time only records the intent. The piece stays pending and
+        # is queued when somebody approves it (spine.promote_approved_intent),
+        # so the worker never publishes something nobody reviewed.
+        publish_status="pending",
+        intended_publish_at=(
+            to_utc_datetime(state["scheduled_at"]) if state["schedule_mode"] == "scheduled" else None
+        ),
     )
 
     pieces = state["pieces"] + [piece.model_dump()]
@@ -660,49 +709,58 @@ async def collect_output_node(state: TextAgentState) -> dict:
         # user, so it falls back to the old empty-id behaviour and logs
         # rather than raising.
         piece_id = ""
-        try:
-            from app.pipelines.text.storage import ensure_session_exists, save_live_piece
+        # Nothing was written (the model returned nothing): there is no post to save, so no empty flagged piece is left behind.
+        if (latest_piece.get("content") or "").strip():
+            try:
+                from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 
-            source_type = state.get("source_type")
-            await ensure_session_exists(
-                session_id=state["session_id"],
-                workspace_id=state["workspace_id"],
-                user_id=state["user_id"],
-                brand_id=state["brand_id"],
-                source_type=source_type.value if hasattr(source_type, "value") else str(source_type),
-                goal=state["extras"].get("goal"),
-                tone=state["extras"].get("tone"),
-                is_repurpose=state.get("is_repurpose", False),
-                batch_mode=state.get("batch_mode", False),
-                schedule_mode=state.get("schedule_mode", "now"),
-                scheduled_at=state.get("scheduled_at"),
-                input_text=state.get("raw_input"),
-            )
-            piece_id = await save_live_piece(
-                session_id=state["session_id"],
-                workspace_id=state["workspace_id"],
-                user_id=state["user_id"],
-                brand_id=state["brand_id"],
-                platform=platform,
-                content=latest_piece.get("content", ""),
-                word_count=latest_piece.get("word_count", 0),
-                char_count=latest_piece.get("char_count", 0),
-                hooks=latest_piece.get("hooks", []),
-                seo=latest_piece.get("seo", {}),
-                quality_passed=latest_piece.get("quality_passed", True),
-                quality_issues=latest_piece.get("quality_issues", []),
-                flagged_for_review=is_flagged,
-                readability_score=latest_piece.get("readability_score"),
-                repurposed=latest_piece.get("repurposed", False),
-                publish_status=latest_piece.get("publish_status"),
-                publish_scheduled_at=latest_piece.get("publish_scheduled_at"),
-                publish_target=latest_piece.get("publish_target"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "collect_output_node: failed to persist piece for %s session %s: %s",
-                platform, state.get("session_id"), exc, exc_info=True,
-            )
+                source_type = state.get("source_type")
+                await ensure_session_exists(
+                    session_id=state["session_id"],
+                    workspace_id=state["workspace_id"],
+                    user_id=state["user_id"],
+                    brand_id=state["brand_id"],
+                    source_type=source_type.value if hasattr(source_type, "value") else str(source_type),
+                    goal=state["extras"].get("goal"),
+                    tone=state["extras"].get("tone"),
+                    is_repurpose=state.get("is_repurpose", False),
+                    batch_mode=state.get("batch_mode", False),
+                    schedule_mode=state.get("schedule_mode", "now"),
+                    scheduled_at=state.get("scheduled_at"),
+                    input_text=state.get("raw_input"),
+                    extras={
+                        k: bool(state["extras"][k])
+                        for k in ("hook_variations", "hashtags", "auto_cta", "seo_meta", "grammar_check", "plagiarism_check", "avoid_blacklist", "pdf_export")
+                        if k in state["extras"]
+                    },
+                )
+                piece_id = await save_live_piece(
+                    session_id=state["session_id"],
+                    workspace_id=state["workspace_id"],
+                    user_id=state["user_id"],
+                    brand_id=state["brand_id"],
+                    platform=platform,
+                    content=latest_piece.get("content", ""),
+                    word_count=latest_piece.get("word_count", 0),
+                    char_count=latest_piece.get("char_count", 0),
+                    hooks=latest_piece.get("hooks", []),
+                    seo=latest_piece.get("seo", {}),
+                    quality_passed=latest_piece.get("quality_passed", True),
+                    quality_issues=latest_piece.get("quality_issues", []),
+                    flagged_for_review=is_flagged,
+                    readability_score=latest_piece.get("readability_score"),
+                    repurposed=latest_piece.get("repurposed", False),
+                    publish_status=latest_piece.get("publish_status"),
+                    publish_scheduled_at=latest_piece.get("publish_scheduled_at"),
+                    publish_target=latest_piece.get("publish_target"),
+                    intended_publish_at=latest_piece.get("intended_publish_at"),
+                    extra_fields={"language": state.get("language") or None},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "collect_output_node: failed to persist piece for %s session %s: %s",
+                    platform, state.get("session_id"), exc, exc_info=True,
+                )
 
         # Real piece_id onto the piece this node is about to return — without
         # this, the blocking (non-SSE) caller's own redundant save_pipeline_

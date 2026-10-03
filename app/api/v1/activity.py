@@ -34,6 +34,7 @@ from app.db.mongo import (
     workspace_members,
     workspaces,
 )
+from app.pipelines.publish.spine import iso_utc, to_utc_datetime
 from app.shared.activity import live
 from app.shared.activity import inbox as inbox_mod
 from app.shared.activity.runs import list_runs
@@ -213,19 +214,26 @@ _UPCOMING_LIMIT = 5
 
 async def _upcoming(workspace_id: str) -> list[dict]:
     """What's queued to happen on its own in the next 24h: scheduled posts
-    (publish_scheduled_at is stored as an ISO string — the same comparison
-    app.workers.scheduled_posts uses) and automated campaign runs."""
+    (publish_scheduled_at is a real datetime now, an ISO string on older rows,
+    so both are matched) and automated campaign runs."""
     now = datetime.now(timezone.utc)
+    horizon = now + _UPCOMING_WINDOW
     items: list[dict] = []
-    async for piece in content_pieces.find(
+    due_pieces = await content_pieces.find(
         {
             "workspace_id": workspace_id,
             "publish_status": "queued",
             "deleted": {"$ne": True},
-            "publish_scheduled_at": {"$lte": (now + _UPCOMING_WINDOW).isoformat()},
+            "$or": [
+                {"publish_scheduled_at": {"$lte": horizon}},
+                {"publish_scheduled_at": {"$lte": horizon.isoformat()}},
+            ],
         },
         {"piece_id": 1, "content": 1, "platform": 1, "publish_target": 1, "publish_scheduled_at": 1},
-    ).sort("publish_scheduled_at", 1).limit(_UPCOMING_LIMIT):
+    ).limit(100).to_list(length=100)
+    # Mixed datetime and string rows do not sort together in the database.
+    due_pieces.sort(key=lambda p: to_utc_datetime(p.get("publish_scheduled_at")) or horizon)
+    for piece in due_pieces[:_UPCOMING_LIMIT]:
         first = ((piece.get("content") or "").strip().splitlines() or [""])[0]
         items.append({
             "id": f"post:{piece['piece_id']}",
@@ -233,7 +241,7 @@ async def _upcoming(workspace_id: str) -> list[dict]:
             "title": first if len(first) <= 60 else first[:57].rstrip() + "…",
             "project": (piece.get("publish_target") or piece.get("platform") or "").capitalize(),
             "subtitle": "Scheduled post",
-            "at": piece.get("publish_scheduled_at"),
+            "at": iso_utc(piece.get("publish_scheduled_at")),
             "href": "/dashboard/calendar",
         })
     async for campaign in get_campaigns_collection().find(

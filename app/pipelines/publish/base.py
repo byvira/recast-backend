@@ -14,6 +14,9 @@ from typing import Optional
 from app.models.media import MediaAsset
 
 
+AUDIO_ALONE_MESSAGE = "Audio can't be posted on its own. Render it as a video and attach that."
+
+
 @dataclass
 class PublishRequest:
     """Everything a publisher needs to post content."""
@@ -130,6 +133,9 @@ class PlatformPublisher(ABC):
 
         native = definition.native_formats.get(asset.kind.value) if definition else None
         if native != "native":
+            if asset.kind.value == "audio":
+                # Audio reaches social platforms only as a rendered video.
+                return MediaAttachResult(dropped_reason=AUDIO_ALONE_MESSAGE)
             label = definition.label if definition else request.platform
             return MediaAttachResult(
                 dropped_reason=f"{label} doesn't support {asset.kind.value} yet"

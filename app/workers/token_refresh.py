@@ -53,6 +53,9 @@ def _is_due(account: dict, now: datetime) -> bool:
     return not attempts or now - max(attempts) >= wait
 
 
+META_PLATFORMS = ("instagram", "facebook", "threads")
+
+
 async def refresh_connection(account: dict) -> tuple[bool, str]:
     """Renew one connection's access token. Returns (ok, error). Also used by
     the publish paths to recover from an expired token on the spot."""
@@ -62,16 +65,20 @@ async def refresh_connection(account: dict) -> tuple[bool, str]:
     except ValueError:
         return False, f"No publisher for {platform}"
     encrypted_refresh = account.get("refresh_token")
-    if not encrypted_refresh:
+    # Meta's login has no refresh token: it is renewed by exchanging the current access token for a new one, and the
+    # Meta publishers' refresh_token() takes that access token. These connections used to be skipped here (no refresh
+    # token on file), so they silently expired.
+    renews_with_access_token = platform in META_PLATFORMS and not encrypted_refresh and account.get("access_token")
+    if not encrypted_refresh and not renews_with_access_token:
         return False, "No refresh token on file — this platform needs a manual reconnect."
     try:
-        refresh_token_value = decrypt_token(encrypted_refresh)
+        refresh_token_value = decrypt_token(account["access_token"] if renews_with_access_token else encrypted_refresh)
         new_token = await publisher.refresh_token(refresh_token_value)
         await save_token(
             workspace_id=account["workspace_id"],
             platform=platform,
             access_token=new_token["access_token"],
-            refresh_token=refresh_token_value,
+            refresh_token=None if renews_with_access_token else (new_token.get("refresh_token") or refresh_token_value),
             expires_at=new_token["expires_at"],
             platform_user_id=account.get("platform_user_id", ""),
             username=account.get("username", ""),

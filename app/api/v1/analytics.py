@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace
 from app.db.mongo import get_db
+from app.pipelines.publish.spine import iso_utc
 from app.pipelines.text.storage import compute_kanban_stage
 from app.pipelines.analytics.aggregator import (
     fetch_account_metrics_all,
@@ -132,36 +133,97 @@ async def get_summary(
     return summary
 
 
+async def _refresh_now(ctx: WorkspaceContext) -> dict:
+    """Refresh this workspace's account numbers AND the numbers of its published posts, the same work the scheduled job
+    does. The button used to refresh accounts only, so post numbers never moved when someone asked for fresh data."""
+    from app.pipelines.analytics.scheduler import _refresh_workspace_analytics
+
+    db = get_db()
+    ws = ctx.workspace_id
+    await _refresh_workspace_analytics(db, ws)
+    platforms = [d["platform"] async for d in db["account_metrics"].find({"workspace_id": ws}, {"platform": 1})]
+    return {
+        "refreshed":    True,
+        "platforms":    platforms,
+        "refreshed_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @router.get("/refresh")
 @limiter.limit("5/minute")
 async def trigger_refresh(
     request: Request,
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    db  = get_db()
-    ws  = ctx.workspace_id
-    since = datetime.now(timezone.utc) - timedelta(days=7)
-    until = datetime.now(timezone.utc)
-    account_metrics = await fetch_account_metrics_all(
-        workspace_id=ws,
-        since=since,
-        until=until,
-    )
-    for m in account_metrics:
-        await db["account_metrics"].update_one(
-            {"workspace_id": ws, "platform": m.platform},
-            {"$set": {
-                **m.model_dump(),
-                "workspace_id": ws,
-                "updated_at": datetime.now(timezone.utc),
-            }},
-            upsert=True,
+    return await _refresh_now(ctx)
+
+
+@router.post("/refresh")
+@limiter.limit("5/minute")
+async def trigger_refresh_post(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The same refresh as GET /refresh, under the right verb: it changes stored data, so it is a POST. GET stays for the
+    screens that already call it."""
+    return await _refresh_now(ctx)
+
+
+_COUNT_FIELDS = ("likes", "comments", "shares", "reposts", "saves", "clicks", "impressions", "reach", "views")
+
+
+@router.get("/assets/{asset_type}/{asset_id}")
+@limiter.limit("60/minute")
+async def asset_performance(
+    request: Request,
+    asset_type: str,
+    asset_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """How the posts a picture or a recording went out in have done, added up. The post is what gets published and measured;
+    an asset knows which posts it is attached to, so its results are those posts' results. Posts that are not published yet,
+    or whose numbers have not been read yet, are listed without numbers and add nothing to the totals."""
+    from fastapi import HTTPException
+
+    from app.db.mongo import audio_assets, content_pieces, image_assets
+
+    collection = {"image": image_assets, "audio": audio_assets}.get(asset_type)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Results are available for pictures (image) and recordings (audio).")
+    doc = await collection.find_one({"id": asset_id, "workspace_id": ctx.workspace_id}, {"linked_pieces": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="That asset wasn't found.")
+
+    db = get_db()
+    posts: list[dict] = []
+    totals = {name: 0 for name in _COUNT_FIELDS}
+    measured = 0
+    for link in (doc.get("linked_pieces") or [])[:100]:
+        piece_id = link.get("piece_id")
+        piece = await content_pieces.find_one(
+            {"piece_id": piece_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+            {"platform": 1, "publish_status": 1, "platform_post_url": 1, "published_at": 1, "content": 1},
         )
-    return {
-        "refreshed":    True,
-        "platforms":    [m.platform for m in account_metrics],
-        "refreshed_at": datetime.now(timezone.utc).isoformat(),
-    }
+        if not piece:
+            continue
+        metrics = await db["post_metrics"].find_one({"workspace_id": ctx.workspace_id, "post_id": piece_id})
+        entry = {
+            "piece_id": piece_id,
+            "platform": piece.get("platform"),
+            "publish_status": piece.get("publish_status"),
+            "platform_post_url": piece.get("platform_post_url"),
+            "published_at": iso_utc(piece.get("published_at")) if piece.get("published_at") else None,
+            "preview": (piece.get("content") or "")[:80],
+            "metrics": None,
+        }
+        if metrics:
+            entry["metrics"] = {name: int(metrics.get(name) or 0) for name in _COUNT_FIELDS}
+            entry["metrics"]["fetched_at"] = iso_utc(metrics.get("fetched_at")) if metrics.get("fetched_at") else None
+            for name in _COUNT_FIELDS:
+                totals[name] += entry["metrics"][name]
+            measured += 1
+        posts.append(entry)
+    return {"asset_type": asset_type, "asset_id": asset_id, "post_count": len(posts), "measured_posts": measured, "totals": totals, "posts": posts}
 
 
 @router.post("/ask")
@@ -318,6 +380,9 @@ async def get_calendar(
                 # Some paths store the schedule as an ISO string, which a
                 # date range never matches; ISO strings sort like dates.
                 {"publish_scheduled_at": {"$gte": start.isoformat(), "$lte": end.isoformat()}},
+                # A piece generated with a planned time sits on that day
+                # until it is approved and queued.
+                {"intended_publish_at": {"$gte": start, "$lte": end}},
                 {
                     "publish_status": {"$in": ["pending", "failed"]},
                     "created_at":     {"$gte": start, "$lte": end},
@@ -347,6 +412,8 @@ async def get_calendar(
             display_date = piece.get("published_at") or piece.get("updated_at") or piece["created_at"]
         elif piece.get("publish_scheduled_at"):
             display_date = piece["publish_scheduled_at"]
+        elif piece.get("intended_publish_at"):
+            display_date = piece["intended_publish_at"]
         else:
             display_date = piece["created_at"]
 
@@ -397,7 +464,7 @@ async def get_calendar(
             # per card instead of guessing.
             "stage":            compute_kanban_stage(piece),
             "platforms":        [piece.get("platform", "")] if piece.get("platform") else [],
-            "scheduled_at":     piece.get("publish_scheduled_at"),
+            "scheduled_at":     iso_utc(piece.get("publish_scheduled_at")),
             "created_at":       piece.get("created_at"),
             "platform_results": [platform_result],
             "campaign_id":      campaign_id,

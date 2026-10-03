@@ -13,7 +13,7 @@ def _twitter() -> PlatformDefinition:
         label="X (Twitter)",
         category="Social and feed networks",
         pipelines=frozenset({"text", "image", "video", "audio"}),
-        native_formats={"text": "native", "image": "native", "video": "native", "audio": "audiogram"},
+        native_formats={"text": "native", "image": "native", "video": "native"},
         shapes=["post", "thread"],
         mode="config_driven",
         integration_pattern="manual_handoff",

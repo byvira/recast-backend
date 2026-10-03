@@ -177,6 +177,11 @@ class ImageAsset(BaseModel):
     file_naming_template: Optional[str] = None
     qa_flagged: bool = False
     qa_flag_reason: Optional[str] = None
+    # The posts this picture is attached to: [{piece_id, attached_at}]. Written when it is attached to a post, so the
+    # picture knows where it went and a post's results can be traced back to it.
+    linked_pieces: list[dict] = []
+    # The campaign this picture was made for, when it was made by a campaign run.
+    campaign_id: Optional[str] = None
 
 
 class ImageAssetVersion(BaseModel):  # mirrors ContentPieceVersion (app.models.text)

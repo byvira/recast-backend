@@ -119,7 +119,10 @@ def flesch_reading_ease(text: str) -> Optional[float]:
 
 
 def check_banned_words(content: str, banned_words: list[str]) -> list[str]:
-    return [w for w in banned_words if w.lower() in content.lower()]
+    # Whole words, like the rest of the checks: a banned "ass" must not flag "class" (substring matching did).
+    from app.prompts.safe import contains_banned
+
+    return contains_banned(content, banned_words)
 
 
 def check_grammar_advisory(content: str) -> list[str]:

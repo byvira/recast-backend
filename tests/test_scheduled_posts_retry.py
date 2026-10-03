@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from app.db.mongo import content_pieces
 from app.pipelines.publish.base import PublishResult
+from app.pipelines.publish.spine import to_utc_datetime
 from app.pipelines.publish.token_store import save_token
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
 from app.workers.scheduled_posts import _publish_scheduled_piece
@@ -71,7 +72,8 @@ async def test_transient_failure_requeues_instead_of_failing(signup_user):
     updated = await content_pieces.find_one({"piece_id": piece_id})
     assert updated["publish_status"] == "queued"  # not "failed"
     assert updated["publish_attempts"] == 1
-    assert updated["publish_scheduled_at"] > piece["publish_scheduled_at"]  # pushed into the future
+    # pushed into the future (the old row held an ISO string; the retry writes a real datetime)
+    assert to_utc_datetime(updated["publish_scheduled_at"]) > to_utc_datetime(piece["publish_scheduled_at"])
 
 
 async def test_auth_failure_fails_immediately_no_retry(signup_user):

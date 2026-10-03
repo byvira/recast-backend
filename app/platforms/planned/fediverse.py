@@ -24,7 +24,7 @@ ROWS = [
     dict(
         key="peertube", label="PeerTube",
         pipelines=frozenset({"video", "audio"}),
-        native_formats={"video": "native", "audio": "audiogram"},
+        native_formats={"video": "native"},
         mode="code_driven", integration_pattern="api_publish",
         rate_limits="Free API (verify).",
         policy_constraints=["Federated video hosting on independent instances; open API, no audit."],

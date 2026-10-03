@@ -1,6 +1,6 @@
 import logging
 from app.models.text import AgentTask, AgentResult, Platform
-from app.pipelines.text.brand_context import build_goal_context, build_tone_override, build_engagement_context
+from app.pipelines.text.brand_context import build_goal_context, build_tone_and_terms, build_tone_override, build_engagement_context
 from app.pipelines.text.generator import (
     PLATFORM_RULES,
     build_approved_copy_instruction,
@@ -42,7 +42,7 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
 
     goal_context = build_goal_context(task.metadata.get("goal"))
     engagement_context = build_engagement_context(task.platform.value)
-    tone_override = build_tone_override(task.metadata.get("tone"), task.metadata.get("language", "en"))
+    tone_override = build_tone_and_terms(task.metadata.get("tone"), task.metadata.get("language", "en"))
     platform_rules = PLATFORM_RULES.get(task.platform, "")
     language_instruction = build_language_instruction(task.metadata.get("language", "en"))
 
@@ -121,7 +121,7 @@ async def run_structured_repurpose_agent(task: AgentTask, source_platform: Platf
 
     goal_context = build_goal_context(task.metadata.get("goal"))
     engagement_context = build_engagement_context(task.platform.value)
-    tone_override = build_tone_override(task.metadata.get("tone"), task.metadata.get("language", "en"))
+    tone_override = build_tone_and_terms(task.metadata.get("tone"), task.metadata.get("language", "en"))
     platform_rules = PLATFORM_RULES.get(task.platform, "")
     language_instruction = build_language_instruction(task.metadata.get("language", "en"))
 

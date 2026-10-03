@@ -14,11 +14,13 @@ from app.db.mongo import content_pieces, users, workspaces
 from app.models.media import MediaAsset
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import get_publisher
+from app.pipelines.publish.spine import check_gate, extra_media_note, iso_utc, media_for_publish, planned_media_note, platform_key
 from app.pipelines.publish.supervisor.alerts import alert_fatal
 from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
 from app.pipelines.publish.supervisor.retry import get_retry_delay, should_retry
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.health import mark_healthy
+from pymongo import ReturnDocument
 from app.workers.token_refresh import recover_connection
 from app.shared.activity import record_system
 from app.shared.activity.projector import platform_name
@@ -83,39 +85,185 @@ async def _notify_publish_failure(
         logger.error("publish-failure email failed for piece %s: %s", piece_id, e)
 
 
+# A post that has been "publishing" longer than this was interrupted (a restart,
+# a crash). It is marked failed, never retried by itself: the platform may
+# already have posted it.
+PUBLISHING_STALE_AFTER = timedelta(minutes=15)
+INTERRUPTED_MESSAGE = "Publishing was interrupted. Check the platform before trying again."
+
+
+def _due_filter(now: datetime) -> dict:
+    """Queued posts whose time has come. publish_scheduled_at is a real datetime
+    on new rows and an ISO string on older ones; a comparison only matches its
+    own type, so both are asked."""
+    return {
+        "publish_status": "queued",
+        "deleted":        {"$ne": True},
+        "$or": [
+            {"publish_scheduled_at": {"$lte": now}},
+            {"publish_scheduled_at": {"$lte": now.isoformat()}},
+        ],
+    }
+
+
+async def reap_stuck_publishing() -> int:
+    """Mark posts stuck in "publishing" as failed. Returns how many."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - PUBLISHING_STALE_AFTER
+    stuck = await content_pieces.find({
+        "publish_status": "publishing",
+        "$or": [
+            {"publishing_started_at": {"$lt": cutoff}},
+            # Rows from before the start time was stamped: last touched long ago.
+            {"publishing_started_at": {"$exists": False}, "updated_at": {"$lt": cutoff}},
+        ],
+    }, {"piece_id": 1, "workspace_id": 1, "platform": 1, "publish_target": 1}).to_list(length=100)
+    reaped = 0
+    for piece in stuck:
+        result = await content_pieces.update_one(
+            {"piece_id": piece["piece_id"], "publish_status": "publishing"},
+            {"$set": {"publish_status": "failed", "last_error": INTERRUPTED_MESSAGE, "updated_at": now}},
+        )
+        if not result.modified_count:
+            continue
+        reaped += 1
+        platform = platform_key(piece.get("publish_target") or piece.get("platform"))
+        try:
+            await record_system(
+                workspace_id=piece.get("workspace_id", ""),
+                key=f"publish:{piece['piece_id']}",
+                actor_name="Publishing scheduler",
+                category="post_published",
+                title=f"Post to {platform_name(platform)} was interrupted",
+                description=INTERRUPTED_MESSAGE,
+                status="failed",
+                channel=platform,
+                target_id=piece["piece_id"],
+                target_type="Scheduled Post",
+                href="/dashboard/calendar",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("reaper activity row failed for %s: %s", piece["piece_id"], exc)
+    if reaped:
+        logger.warning("Marked %d stuck publishing posts as failed", reaped)
+    return reaped
+
+
+async def _claim_due_piece(piece_id: str, now: datetime) -> dict | None:
+    """Atomically move one due piece queued -> publishing. Whoever wins the swap
+    publishes it; Publish Now claims the same way, so the two cannot both post."""
+    return await content_pieces.find_one_and_update(
+        {**_due_filter(now), "piece_id": piece_id},
+        {"$set": {
+            "publish_status": "publishing",
+            "publishing_started_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def _return_unapproved(piece: dict, message: str) -> None:
+    """A due piece that may not go out (not approved, rejected, needs review):
+    back to pending with a plain note, so it is not picked up again every minute."""
+    await content_pieces.update_one(
+        {"piece_id": piece["piece_id"], "publish_status": "publishing"},
+        {"$set": {
+            "publish_status": "pending",
+            "publish_scheduled_at": "",
+            "schedule_note": f"Not published. {message}",
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    platform = platform_key(piece.get("publish_target") or piece.get("platform"))
+    try:
+        await record_system(
+            workspace_id=piece.get("workspace_id", ""),
+            key=f"publish:{piece['piece_id']}",
+            actor_name="Publishing scheduler",
+            category="post_published",
+            title=f"Scheduled post to {platform_name(platform)} was held back",
+            description=message,
+            status="warning",
+            channel=platform,
+            target_id=piece["piece_id"],
+            target_type="Scheduled Post",
+            href="/dashboard/drafts",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("held-back activity row failed for %s: %s", piece["piece_id"], exc)
+
+
 @distributed_job_lock("process_scheduled_posts", ttl_seconds=55)
 async def process_scheduled_posts() -> None:
     """
     Find all posts scheduled for now or earlier and publish them.
     Called every minute by the scheduler.
+
+    Each due post is claimed one at a time with an atomic queued -> publishing
+    swap, so a second instance, a lock that failed open, or a Publish Now click
+    cannot post the same piece twice.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    await reap_stuck_publishing()
 
-    due_posts = await content_pieces.find({
-        "publish_status":       "queued",
-        "publish_scheduled_at": {"$lte": now},
-        "deleted":              {"$ne": True},
-    }).to_list(length=50)
+    now = datetime.now(timezone.utc)
+    due = await content_pieces.find(_due_filter(now), {"piece_id": 1}).to_list(length=50)
 
-    if not due_posts:
+    if not due:
         return
 
-    logger.info("Found %d scheduled posts due for publishing", len(due_posts))
+    logger.info("Found %d scheduled posts due for publishing", len(due))
 
-    for piece in due_posts:
+    for candidate in due:
+        piece_id = candidate["piece_id"]
+        piece = await _claim_due_piece(piece_id, now)
+        if piece is None:
+            continue  # somebody else took it (or it was cancelled) first
         try:
+            # Only approved posts go out; a flagged one only if a person already
+            # chose "publish anyway" when scheduling it.
+            block = check_gate(piece, honour_recorded_override=True)
+            if block:
+                await _return_unapproved(piece, block.message)
+                continue
             await _publish_scheduled_piece(piece)
         except Exception as e:
-            logger.error(
-                "Failed to publish scheduled piece %s: %s",
-                piece.get("piece_id"), e,
+            logger.error("Failed to publish scheduled piece %s: %s", piece_id, e)
+            # Never leave it on "publishing". Not retried: the platform may have posted.
+            await content_pieces.update_one(
+                {"piece_id": piece_id, "publish_status": "publishing"},
+                {"$set": {
+                    "publish_status": "failed",
+                    "last_error": "Publishing hit an unexpected problem. Check the platform before trying again.",
+                    "updated_at": datetime.now(timezone.utc),
+                }},
             )
+
+
+async def _fail_before_publish(piece: dict, platform: str, user_id: str, workspace_id: str, message: str) -> None:
+    """Mark a claimed piece failed with a plain reason, and tell its owner. Used
+    when nothing could be sent (no connection, no publisher, a crash)."""
+    await content_pieces.update_one(
+        {"piece_id": piece["piece_id"]},
+        {"$set": {
+            "publish_status": "failed",
+            "last_error": message,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    await _notify_publish_failure(
+        piece_id=piece["piece_id"], platform=platform, user_id=user_id,
+        brand_id=piece.get("brand_id", ""), workspace_id=workspace_id,
+        error_message=message,
+        scheduled_at=iso_utc(piece.get("publish_scheduled_at")) or "",
+    )
 
 
 async def _publish_scheduled_piece(piece: dict) -> None:
     """Publish one scheduled piece."""
     piece_id     = piece["piece_id"]
-    platform     = piece.get("publish_target", "linkedin")
+    # publish_target may be missing (or an older display-style value): derive it.
+    platform     = platform_key(piece.get("publish_target") or piece.get("platform"))
     user_id      = piece["user_id"]
     workspace_id = piece.get("workspace_id", "")
 
@@ -135,7 +283,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             piece_id=piece_id, platform=platform, user_id=user_id,
             brand_id=piece.get("brand_id", ""), workspace_id="",
             error_message="Missing workspace_id",
-            scheduled_at=piece.get("publish_scheduled_at", ""),
+            scheduled_at=iso_utc(piece.get("publish_scheduled_at")) or "",
         )
         return
 
@@ -146,19 +294,9 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             "No token for workspace %s platform %s — piece %s skipped",
             workspace_id, platform, piece_id,
         )
-        await content_pieces.update_one(
-            {"piece_id": piece_id},
-            {"$set": {
-                "publish_status": "failed",
-                "last_error": f"No {platform} token found",
-                "updated_at": datetime.now(timezone.utc),
-            }},
-        )
-        await _notify_publish_failure(
-            piece_id=piece_id, platform=platform, user_id=user_id,
-            brand_id=piece.get("brand_id", ""), workspace_id=workspace_id,
-            error_message=f"No {platform} token found",
-            scheduled_at=piece.get("publish_scheduled_at", ""),
+        await _fail_before_publish(
+            piece, platform, user_id, workspace_id,
+            f"{platform_name(platform)} isn't connected, so this post couldn't go out. Reconnect it in Settings.",
         )
         return
 
@@ -167,6 +305,10 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         publisher = get_publisher(platform)
     except ValueError:
         logger.error("No publisher for platform %s", platform)
+        await _fail_before_publish(
+            piece, platform, user_id, workspace_id,
+            f"Publishing to {platform_name(platform)} isn't supported yet.",
+        )
         return
 
     # Build request — media populated for real, same fix as the publish-now
@@ -178,24 +320,38 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         user_id=user_id,
         brand_id=piece["brand_id"],
         platform=platform,
-        content=piece["content"],
-        media=[MediaAsset(**m) for m in piece.get("media") or []],
+        # The text to send: a fixed version made by an earlier failed attempt (see the FIXABLE branch below), else the post as written.
+        content=piece.get("publish_content_override") or piece["content"],
+        media=[MediaAsset(**m) for m in await media_for_publish(piece, workspace_id, platform)],
         # The title, description and tags the member reviewed when scheduling a
         # YouTube upload. Without them the publisher makes its own.
         youtube_metadata=piece.get("publish_youtube_metadata"),
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
 
-    # Mark as publishing
+    # Mark as publishing (the loop already claimed it; this also records the
+    # derived target and refreshes the start time the reaper reads)
     await content_pieces.update_one(
         {"piece_id": piece_id},
         {"$set": {
             "publish_status": "publishing",
+            "publish_target": platform,
+            "publishing_started_at": datetime.now(timezone.utc),
             "updated_at": datetime.now(timezone.utc),
         }},
     )
 
-    result = await publisher.publish(pub_request, token_data["access_token"])
+    try:
+        result = await publisher.publish(pub_request, token_data["access_token"])
+    except Exception as exc:  # noqa: BLE001
+        # An exception here must not leave the piece "publishing", and must not
+        # be retried by itself: the platform may already have the post.
+        logger.error("Publisher raised for scheduled piece %s on %s: %s", piece_id, platform, exc)
+        await _fail_before_publish(
+            piece, platform, user_id, workspace_id,
+            "Publishing hit an unexpected problem. Check the platform before trying again.",
+        )
+        return
 
     if result.success:
         await content_pieces.update_one(
@@ -209,7 +365,10 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 # Row 9: same outcome the Activity Log already shows (see
                 # emit_content_published below), also on the piece itself so
                 # Drafts/Library/Calendar can render a real badge.
-                "media_dropped_reason": result.media_dropped_reason or None,
+                "media_dropped_reason": result.media_dropped_reason or extra_media_note(piece, platform) or planned_media_note(piece) or None,
+                # What went out and which version of the post it was (see _update_piece_status in api/v1/publish.py).
+                "published_content": pub_request.content,
+                "published_version": piece.get("version_count"),
             }},
         )
         try:
@@ -257,7 +416,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                     "auth_recovery_tried": True,
                     **({
                         "publish_status": "queued",
-                        "publish_scheduled_at": datetime.now(timezone.utc).isoformat(),
+                        "publish_scheduled_at": datetime.now(timezone.utc),
                         "updated_at": datetime.now(timezone.utc),
                     } if recovered else {}),
                 }},
@@ -286,7 +445,27 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         # requeued instead of permanently failing on the first error — this
         # worker previously had no retry or requeue logic at all, unlike
         # /publish/now's synchronous retry loop.
-        if error_type != ErrorType.AUTH and should_retry(error_type, attempt):
+        # The platform said the text itself is the problem (too long, a banned hashtag). Publish Now fixes it and sends again;
+        # this worker used to queue the same unchanged text and fail on the second try. When the fixer can repair it, the
+        # repaired text is kept for the next attempt (the post itself is not rewritten); when it cannot, retrying is pointless.
+        if error_type == ErrorType.FIXABLE:
+            from app.pipelines.publish.supervisor.fixer import fix_content
+
+            fixed, fixed_text = fix_content(platform, pub_request.content, result.error_message or "")
+            if fixed:
+                await content_pieces.update_one(
+                    {"piece_id": piece_id},
+                    {"$set": {
+                        "publish_status": "queued",
+                        "publish_scheduled_at": datetime.now(timezone.utc) + timedelta(seconds=15),
+                        "publish_content_override": fixed_text,
+                        "last_error": result.error_message,
+                        "updated_at": datetime.now(timezone.utc),
+                    }, "$inc": {"publish_attempts": 1}},
+                )
+                return
+
+        if error_type != ErrorType.AUTH and error_type != ErrorType.FIXABLE and should_retry(error_type, attempt):
             delay = get_retry_delay(error_type, attempt) or 60
             next_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
             await content_pieces.update_one(
@@ -294,7 +473,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 {
                     "$set": {
                         "publish_status": "queued",
-                        "publish_scheduled_at": next_at.isoformat(),
+                        "publish_scheduled_at": next_at,
                         "last_error": result.error_message,
                         "updated_at": datetime.now(timezone.utc),
                     },
@@ -334,7 +513,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             piece_id=piece_id, platform=platform, user_id=user_id,
             brand_id=piece["brand_id"], workspace_id=workspace_id,
             error_message=result.error_message or "Unknown error",
-            scheduled_at=piece.get("publish_scheduled_at", ""),
+            scheduled_at=iso_utc(piece.get("publish_scheduled_at")) or "",
         )
         logger.error(
             "Scheduled piece %s failed on %s: %s",

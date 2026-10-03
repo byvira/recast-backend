@@ -53,8 +53,10 @@ class PlatformDefinition(BaseModel):
     category: str                        # source directory's section, e.g. "Social and feed networks"
 
     pipelines: frozenset[Pipeline] = frozenset()
-    # Per-pipeline output shape: "native" | "card" | "audiogram" | "link" | "embedded"
+    # Per-pipeline output shape: "native" | "card" | "link" | "embedded"
     # | "manual" | "thumbnail" | "description" | "photo" | "attachment" | "show_notes" | "cover_art"
+    # Audio is only "native" on audio hosts. Social platforms take audio as a
+    # rendered video attached to a post, so they declare no audio format.
     native_formats: dict[Pipeline, str] = Field(default_factory=dict)
     # Content shapes this platform supports beyond a single post, e.g. twitter's
     # ["post", "thread"] — this is what "fold TWITTER_THREAD into a shape-flag on
@@ -73,6 +75,9 @@ class PlatformDefinition(BaseModel):
     publisher_cls: Optional[str] = None
     analytics_fetcher_cls: Optional[str] = None
     validator_fn: Optional[str] = None
+    # The most characters a post to this platform may have, where the platform sets one. The auto-fixer trims to it. None
+    # means no single limit applies (or none is declared yet), and nothing is trimmed on its account.
+    max_chars: Optional[int] = None
 
     audit_required: bool = False
     rate_limits: Optional[str] = None          # free text — values are too heterogeneous for a typed field

@@ -23,10 +23,18 @@ from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import audio_assets, content_pieces, image_assets, media_assets, users
 from app.models.media import MediaAsset
+from app.models.attachment import AttachRequest, RefreshAttachmentsRequest
 from app.pipelines.export import library_archive
+from app.pipelines.publish import attachments as piece_attachments
 from app.pipelines.publish.registry import get_publisher
-from app.pipelines.publish.token_store import get_token
-from app.pipelines.publish.validators import validate_for_platform
+from app.pipelines.publish.spine import (
+    check_gate,
+    parse_schedule_time,
+    platform_key,
+    promote_approved_intent,
+    record_override,
+    schedule_blocker,
+)
 from app.pipelines.text.storage import (
     get_session,
     get_workspace_sessions,
@@ -93,6 +101,9 @@ class SchedulePieceRequest(BaseModel):
     # A scheduled YouTube upload publishes with the title, description and
     # tags the member reviewed, not ones made up at upload time.
     youtube_metadata: Optional[dict] = None
+    # A flagged or not-quality-passed post is refused unless the member
+    # explicitly chooses to send it anyway. Who chose, and when, is kept.
+    confirm_publish_anyway: bool = False
 
 
 class MarkPostedRequest(BaseModel):
@@ -247,7 +258,113 @@ async def update_piece_media(
         {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
         {"$set": {"media": media, "updated_at": datetime.now(timezone.utc)}},
     )
+    # Keep the post's attachment list in step with what it now carries.
+    await piece_attachments.replace_all_with_media(piece, ctx.workspace_id, ctx.user_id, body.media_id)
     return await get_piece(piece_id, ctx.workspace_id)
+
+
+# ── Attachments: images, audio and video attached to a post ──────────────────
+# The post is the only thing that gets published; these are the assets on it.
+# See app.pipelines.publish.attachments.
+
+def _attachment_http(exc: piece_attachments.AttachmentError) -> HTTPException:
+    return HTTPException(status_code=exc.status, detail=exc.message)
+
+
+@router.get("/pieces/{piece_id}/attachments")
+@limiter.limit("60/minute")
+async def list_piece_attachments(
+    request: Request,
+    piece_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """What is attached to a post, each with ``stale`` and ``stale_reason``:
+    "asset_changed" when the image or recording moved on after it was attached,
+    "text_changed" when the post's text was edited after a picture or recording
+    made from it was attached, otherwise none."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    items = await piece_attachments.list_with_status(piece, ctx.workspace_id)
+    return {"piece_id": piece_id, "attachments": items, "total": len(items)}
+
+
+@router.post("/pieces/{piece_id}/attachments")
+@limiter.limit("30/minute")
+async def attach_to_piece(
+    request: Request,
+    piece_id: str,
+    body: AttachRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Attach an image, recording, video or uploaded file to a post. The first
+    attachment is the one that gets published. Attaching the same thing again
+    returns the attachment already there."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    try:
+        resolved = await piece_attachments.resolve_asset(
+            ctx.workspace_id, body.asset_type, asset_id=body.asset_id,
+            slide_number=body.slide_number, clip_id=body.clip_id, media_id=body.media_id,
+        )
+        attachment, created = await piece_attachments.attach(piece, ctx.workspace_id, ctx.user_id, resolved)
+    except piece_attachments.AttachmentError as exc:
+        raise _attachment_http(exc)
+    fresh = await get_piece(piece_id, ctx.workspace_id) or piece
+    items = await piece_attachments.list_with_status(fresh, ctx.workspace_id)
+    return {
+        "attachment": next((a for a in items if a["id"] == attachment["id"]), attachment),
+        "created": created,
+        "attachments": items,
+        # Raw audio can't be posted by itself; say so now, not at publish time.
+        "warning": piece_attachments.AUDIO_NOTE if resolved["asset_type"] == "audio" else None,
+        # advice about how well this suits the post's platform (shape, length); never blocks
+        "notes": piece_attachments.attach_advice(resolved, fresh),
+    }
+
+
+@router.delete("/pieces/{piece_id}/attachments/{attachment_id}")
+@limiter.limit("30/minute")
+async def detach_from_piece(
+    request: Request,
+    piece_id: str,
+    attachment_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Take an attachment off a post."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    try:
+        await piece_attachments.detach(piece, ctx.workspace_id, attachment_id)
+    except piece_attachments.AttachmentError as exc:
+        raise _attachment_http(exc)
+    fresh = await get_piece(piece_id, ctx.workspace_id) or piece
+    items = await piece_attachments.list_with_status(fresh, ctx.workspace_id)
+    return {"piece_id": piece_id, "detached": attachment_id, "attachments": items}
+
+
+@router.post("/pieces/{piece_id}/attachments/refresh")
+@limiter.limit("30/minute")
+async def refresh_piece_attachments(
+    request: Request,
+    piece_id: str,
+    body: Optional[RefreshAttachmentsRequest] = None,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Bring attachments up to the asset's current version (a newer picture or
+    recording). Refused once the post is published or being published."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    try:
+        _, problems = await piece_attachments.refresh(piece, ctx.workspace_id, body.asset_id if body else None)
+    except piece_attachments.AttachmentError as exc:
+        raise _attachment_http(exc)
+    fresh = await get_piece(piece_id, ctx.workspace_id) or piece
+    items = await piece_attachments.list_with_status(fresh, ctx.workspace_id)
+    return {"piece_id": piece_id, "attachments": items, "problems": problems}
 
 
 @router.patch("/pieces/{piece_id}/approve")
@@ -265,6 +382,9 @@ async def approve_piece(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
+    # A post generated with a planned time is only queued once it is approved.
+    if await promote_approved_intent(updated, ctx.workspace_id):
+        updated = await get_piece(piece_id, ctx.workspace_id) or updated
     await _notify_approval_decision(updated, ctx, "approved", piece_id)
     return updated
 
@@ -311,55 +431,47 @@ async def schedule_piece(
     if not piece:
         raise HTTPException(status_code=404, detail="Piece not found.")
 
+    # A post that is out (or on its way out) must never be queued again: it
+    # would be posted a second time and orphan the first post's results.
+    if piece.get("publish_status") in ("published", "publishing"):
+        raise HTTPException(status_code=409, detail="This post is already published or being published.")
+
     platform = piece["platform"]
-    slug = platform.lower()
+    slug = platform_key(platform)
 
-    token_data = await get_token(ctx.workspace_id, slug)
-    if not token_data:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{platform} is not connected. Connect it in Settings before scheduling.",
-        )
+    # Real UTC datetime, so the worker's comparison is a date comparison and
+    # not a string one; a time already well past is refused up front.
+    scheduled_at = parse_schedule_time(body.scheduled_at)
 
-    try:
-        get_publisher(platform)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Publishing to {platform} isn't supported yet.",
-        )
+    blocker = await schedule_blocker(piece, ctx.workspace_id)
+    if blocker:
+        raise HTTPException(status_code=blocker[0], detail=blocker[1])
 
-    is_valid, issues = validate_for_platform(platform, piece["content"])
-    if not is_valid:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Content validation failed: {'; '.join(issues)}",
-        )
+    if slug == "youtube" and body.youtube_metadata is not None:
+        from app.pipelines.publish.youtube.metadata import YouTubeMetadata
+        try:
+            YouTubeMetadata(**body.youtube_metadata)
+        except Exception:
+            raise HTTPException(status_code=422, detail="The YouTube details aren't valid. Check the title, tags and category.")
 
-    # Platforms that refuse a post with no media would fail at the scheduled
-    # time, when nobody is watching, so they are refused now instead.
-    kinds = {str(m.get("kind")) for m in (piece.get("media") or [])}
-    if slug == "instagram" and not kinds:
-        raise HTTPException(status_code=400, detail="Instagram posts need an image or video. Add one first.")
-    if slug == "youtube":
-        if "video" not in kinds:
-            raise HTTPException(status_code=400, detail="YouTube posts need a video. Add one first.")
-        if body.youtube_metadata is not None:
-            from app.pipelines.publish.youtube.metadata import YouTubeMetadata
-            try:
-                YouTubeMetadata(**body.youtube_metadata)
-            except Exception:
-                raise HTTPException(status_code=422, detail="The YouTube details aren't valid. Check the title, tags and category.")
+    block = check_gate(piece, confirm_anyway=body.confirm_publish_anyway)
+    if block:
+        raise block.http()
+    if body.confirm_publish_anyway:
+        await record_override(piece, ctx.workspace_id, ctx.user_id)
 
     updated = await update_piece_status(
         piece_id=piece_id,
         workspace_id=ctx.workspace_id,
         publish_status="queued",
-        publish_scheduled_at=body.scheduled_at,
+        publish_scheduled_at=scheduled_at,
         publish_target=slug,
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
+    await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$unset": {"schedule_note": ""}},
+    )
     if slug == "youtube" and body.youtube_metadata is not None:
         await content_pieces.update_one(
             {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
@@ -427,7 +539,7 @@ async def mark_piece_posted(
     emit_content_published(
         ctx.workspace_id, pipeline_type=piece.get("pipeline_type", "text"),
         actor_user_id=ctx.user_id, actor_role=ctx.role,
-        content_id=piece_id, target=platform.lower(), external_url=post_url,
+        content_id=piece_id, target=platform_key(platform), external_url=post_url,
     )
     return await get_piece(piece_id, ctx.workspace_id)
 
@@ -496,7 +608,16 @@ async def approve_all(
     count = await approve_all_pieces(session_id, ctx.workspace_id)
     if count == 0:
         raise HTTPException(status_code=404, detail="Session not found or no pieces.")
-    return {"session_id": session_id, "approved_count": count}
+    # Posts generated with a planned time are queued now that they are approved.
+    queued = 0
+    planned = await content_pieces.find({
+        "session_id": session_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True},
+        "intended_publish_at": {"$ne": None}, "publish_status": {"$in": [None, "pending"]},
+    }).to_list(length=200)
+    for piece in planned:
+        if await promote_approved_intent(piece, ctx.workspace_id) == "queued":
+            queued += 1
+    return {"session_id": session_id, "approved_count": count, "queued_count": queued}
 
 
 @router.delete("/pieces/{piece_id}")

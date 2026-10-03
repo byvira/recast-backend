@@ -101,6 +101,8 @@ class MediaAsset(BaseModel):
     # preview-before-publish gate exists to catch before it goes out.
     qa_flagged: bool = False
     qa_flag_reason: Optional[str] = None
+    # What the picture shows, in words, for platforms that carry alt text (set when an image is attached to a post).
+    alt_text: Optional[str] = None
     # The real file size in bytes — known for free at creation time (every
     # writer already has the bytes in hand before upload). None for anything
     # created before this existed; the podcast feed fetches it once with a

@@ -275,10 +275,23 @@ class Settings(BaseSettings):
     # ── Publish Pipeline ──────────────────────────────────────────────────
     # Max retries before supervisor flags a post for human review
     PUBLISH_MAX_RETRIES: int = 3
+    # Longest script one narration is made from. Our own guard against a runaway request, not a provider limit.
+    AUDIO_SCRIPT_MAX_CHARS: int = 15000
+    # On (owner decision 2026-10-03): a post in one non-English language under the brand's own tone keeps English brand, product,
+    # technical and business terms in English, translates everyday words, and keeps any word native speakers normally say in
+    # English. Switch off with ENGLISH_TERMS_STAY_ENGLISH=false.
+    ENGLISH_TERMS_STAY_ENGLISH: bool = True
+    # Off by the owner's decision until about a month of real posts exists (turn on around 2026-11-03): when on, the writing prompt
+    # gets one sentence naming how the workspace's best measured post on that platform opened (needs at least 3 measured posts).
+    PERFORMANCE_HINT_IN_PROMPTS: bool = False
     # Seconds to wait between retry attempts (base — multiplied per attempt)
     PUBLISH_RETRY_BASE_DELAY: int = 5
     # How many minutes ahead to refresh tokens before they expire
     TOKEN_REFRESH_THRESHOLD_MINUTES: int = 10080  # 7 days
+    # Server-side gate on Publish Now, Schedule and the scheduled worker:
+    # only approved pieces go out, and a flagged piece needs an explicit
+    # "publish anyway". Emergency switch only — set False to lift every check.
+    PUBLISH_REQUIRE_APPROVAL: bool = True
 
 
 settings = Settings()

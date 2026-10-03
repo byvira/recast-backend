@@ -26,7 +26,7 @@ from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require_stream
 from app.db.mongo import brand_profiles
 from app.db.redis import get_cache, set_cache
-from app.models.text import GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
+from app.models.text import ExtrasConfig, GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
 from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
 from app.agents.text import session_relay
 from app.agents.text.event_emitter import EventEmitter
@@ -134,6 +134,17 @@ async def generate_stream(
     # workspace > caller-account > "en" precedence chain as /api/v1/text/generate
     # (see app.shared.language and api/v1/text.py::_resolve_request_language).
     language:      Optional[str]  = Query(None,       description="Content language — omit to use the workspace/account default"),
+    # The ConfigPanel extras. Omitted = the server's own default for that toggle (what every run used before these were
+    # sent), so an older client behaves exactly as it did.
+    hook_variations:  Optional[bool] = Query(None),
+    hashtags:         Optional[bool] = Query(None),
+    auto_cta:         Optional[bool] = Query(None),
+    seo_meta:         Optional[bool] = Query(None),
+    grammar_check:    Optional[bool] = Query(None),
+    plagiarism_check: Optional[bool] = Query(None),
+    avoid_blacklist:  Optional[bool] = Query(None),
+    pdf_export:       Optional[bool] = Query(None),
+    batch_days:       Optional[int]  = Query(None, ge=1, le=14, description="Days in batch mode (default 7)"),
     # require_stream: EventSource can't send X-Workspace-Id, so the active
     # workspace also arrives as ?workspace_id= (same membership check).
     ctx:           WorkspaceContext = Depends(require_stream("create_content")),
@@ -191,6 +202,14 @@ async def generate_stream(
             scheduled_at=scheduled_at,
             language=effective_language,
             publish_targets=publish_targets.split(",") if publish_targets else [],
+            batch_days=batch_days or BATCH_DAYS,
+            extras=ExtrasConfig(**{
+                name: value for name, value in {
+                    "hook_variations": hook_variations, "hashtags": hashtags, "auto_cta": auto_cta, "seo_meta": seo_meta,
+                    "grammar_check": grammar_check, "plagiarism_check": plagiarism_check,
+                    "avoid_blacklist": avoid_blacklist, "pdf_export": pdf_export,
+                }.items() if value is not None
+            }),
         )
     except ValueError as e:
         raise HTTPException(status_code=422, detail=f"Invalid parameter: {e}")
@@ -217,9 +236,9 @@ async def generate_stream(
         yield _sse("session_started", {
             "session_id":     session_id,
             "platforms":      body.platforms,
-            "platform_count": len(body.platforms) * (BATCH_DAYS if body.batch_mode else 1),
+            "platform_count": len(body.platforms) * (body.batch_days if body.batch_mode else 1),
             "batch_mode":     body.batch_mode,
-            "batch_days":     BATCH_DAYS if body.batch_mode else None,
+            "batch_days":     body.batch_days if body.batch_mode else None,
         })
 
         # Start pipeline in background — does not block SSE stream
@@ -402,7 +421,7 @@ async def _run_pipeline_with_emitter(
     reported.
     """
     started = time.monotonic()
-    requested = len(body.platforms) * (BATCH_DAYS if body.batch_mode else 1)
+    requested = len(body.platforms) * (body.batch_days if body.batch_mode else 1)
 
     # Control Tower: real progress from the run's own events — outputs done
     # for a batch (many cards), pipeline stages completed otherwise.
@@ -451,7 +470,7 @@ async def _run_and_report(
                 workspace_id=workspace_id,
                 user_id=user_id,
                 extras=body.extras,
-                days=BATCH_DAYS,
+                days=body.batch_days,
                 detected_intent=body.intent,
                 language=body.language,
                 emitter=emitter,

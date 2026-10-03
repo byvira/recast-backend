@@ -43,4 +43,11 @@ async def run_video_pipeline(
     Returns:
         Acknowledgement with queued status.
     """
-    return {"status": "queued", "message": "pipeline started"}
+    # Nothing is queued by this route and nothing ever was: it used to answer "queued / pipeline started" and do nothing,
+    # which looked like success. The working route is POST /api/v1/audio-assets/{id}/video (a video made from a recording).
+    from fastapi import HTTPException
+
+    raise HTTPException(
+        status_code=501,
+        detail="This route doesn't start anything. Use POST /api/v1/audio-assets/{id}/video (a video made from a recording) instead.",
+    )

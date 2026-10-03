@@ -53,8 +53,9 @@ def build_single_platform_graph():
             "flag":   "flag_review",
         }
     )
-    # Rewrite loops back to quality_check — one retry maximum
-    graph.add_edge("rewrite",        "quality_check")
+    # A rewrite goes back through the hooks and the SEO step before it is checked again, so the hooks and SEO that are saved
+    # describe the text that is kept and not the draft it replaced. One retry maximum.
+    graph.add_edge("rewrite",        "generate_hooks")
     graph.add_edge("flag_review",    "collect_output")
     graph.add_edge("collect_output", END)
 

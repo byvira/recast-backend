@@ -16,8 +16,24 @@ from app.pipelines.publish.base import (
     PublishRequest,
     PublishResult,
 )
+from app.pipelines.publish.media_fit import fit_image_for_bluesky
 from app.pipelines.publish.validators import validate_bluesky
 from app.pipelines.publish.supervisor.classifier import classify_error
+
+
+def _jwt_expiry(token: str):
+    """When a JWT access token stops working, read from its own `exp` claim (a standard field), or None when it cannot be
+    read. Lets the connection monitor renew the login before it lapses instead of after a post fails."""
+    import base64
+    import json
+
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
+        return datetime.fromtimestamp(int(exp), tz=timezone.utc) if exp else None
+    except Exception:  # noqa: BLE001
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +82,7 @@ class BlueSkyPublisher(PlatformPublisher):
             return {
                 "access_token":     data["accessJwt"],
                 "refresh_token":    data["refreshJwt"],
-                "expires_at":       None,   # ATP does not return expiry — refresh proactively
+                "expires_at":       _jwt_expiry(data["accessJwt"]),  # read from the token itself, so renewal can run before it lapses
                 "platform_user_id": data["did"],
                 "username":         data.get("handle", handle),
                 "email":            "",
@@ -84,7 +100,9 @@ class BlueSkyPublisher(PlatformPublisher):
 
             return {
                 "access_token": data["accessJwt"],
-                "expires_at":   None,
+                # Bluesky hands out a new refresh token with every renewal and the old one stops working, so it must be kept.
+                **({"refresh_token": data["refreshJwt"]} if data.get("refreshJwt") else {}),
+                "expires_at":   _jwt_expiry(data["accessJwt"]),
             }
 
     def validate_content(self, content: str) -> tuple[bool, list[str]]:
@@ -124,23 +142,27 @@ class BlueSkyPublisher(PlatformPublisher):
 
         if media_result.has_media:
             try:
+                # Up to four pictures go in one post (Bluesky's own limit for an image embed). With one picture attached this
+                # is exactly the single picture it always was.
+                pictures = [m for m in request.media if m.kind.value == "image"][:4] or [media_result.asset]
+                images = []
                 async with httpx.AsyncClient() as client:
-                    image_bytes_resp = await client.get(media_result.asset.url)
-                    image_bytes_resp.raise_for_status()
-                    upload_resp = await client.post(
-                        f"{ATP_BASE_URL}/com.atproto.repo.uploadBlob",
-                        content=image_bytes_resp.content,
-                        headers={
-                            "Authorization": f"Bearer {access_token}",
-                            "Content-Type": media_result.asset.mime_type,
-                        },
-                    )
-                    upload_resp.raise_for_status()
-                    blob = upload_resp.json()["blob"]
-                    embed = {
-                        "$type": "app.bsky.embed.images",
-                        "images": [{"image": blob, "alt": ""}],
-                    }
+                    for picture in pictures:
+                        image_bytes_resp = await client.get(picture.url)
+                        image_bytes_resp.raise_for_status()
+                        # Shrunk only when it is over Bluesky's size limit; a picture already under it goes up untouched.
+                        image_bytes, image_mime = fit_image_for_bluesky(image_bytes_resp.content, picture.mime_type)
+                        upload_resp = await client.post(
+                            f"{ATP_BASE_URL}/com.atproto.repo.uploadBlob",
+                            content=image_bytes,
+                            headers={
+                                "Authorization": f"Bearer {access_token}",
+                                "Content-Type": image_mime,
+                            },
+                        )
+                        upload_resp.raise_for_status()
+                        images.append({"image": upload_resp.json()["blob"], "alt": (getattr(picture, "alt_text", None) or "")[:1000]})
+                embed = {"$type": "app.bsky.embed.images", "images": images}
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Bluesky blob upload failed for piece %s: %s", request.piece_id, exc)
                 blob_dropped_reason = "Bluesky media upload failed — published as text only"

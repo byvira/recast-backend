@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
+from app.prompts.registry import load_prompt
 from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -73,11 +74,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_DESCRIBE_IMAGE_PROMPT = (
-    "Describe this image in one or two plain sentences for someone who can't see it: "
-    "the main subject, the setting, and any text that is visibly written in it. "
-    "Only say what is actually visible; do not guess names, brands, or intentions."
-)
+_DESCRIBE_IMAGE_PROMPT = load_prompt("media/image_describe")
 
 
 async def _describe_uploaded_image(contents: bytes, mime_type: str, workspace_id: str) -> Optional[str]:
@@ -186,6 +183,20 @@ async def _draw_and_store(
     assets = await _fetch_layer_assets(layers, brand, workspace_id)
     png = await asyncio.to_thread(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets)
     note = _fallback_note(background_bytes)
+    # Tamil and Hindi need a text-shaping engine to draw every combination correctly. If this server does not have one, say so on
+    # the picture instead of letting a wrongly ordered letter go unnoticed.
+    from app.pipelines.media.image_render import script_font_entry, shaping_available
+
+    if not shaping_available() and any(script_font_entry(layer.text) for layer in layers if layer.type == "text" and layer.text):
+        shaping_note = "Tamil or Hindi text on this server may have a few letters out of order. Check the headline."
+        note = f"{note} {shaping_note}" if note else shaping_note
+    # A layer that needed a picture (the brand logo, the mascot, an uploaded image) that could not be loaded was left off the
+    # picture. That is worth a look, so it is noted on the picture and not just logged.
+    missing = [layer for layer in layers if layer.type in ("logo", "mascot", "image") and not layer.hidden and layer.id not in assets]
+    if missing:
+        names = ", ".join(sorted({"the brand logo" if layer.type == "logo" else "the mascot" if layer.type == "mascot" else "an added picture" for layer in missing}))
+        gap = f"{names[0].upper()}{names[1:]} couldn't be loaded, so it is missing from this picture."
+        note = f"{note} {gap}" if note else gap
     return await _store_image(png, workspace_id=workspace_id, user_id=user_id, size=size, mime="image/png", source=MediaSource.RENDERED, flagged_reason=note)
 
 
@@ -239,6 +250,26 @@ def _brand_tokens_from(brand: dict) -> BrandTokens:
     )
 
 
+async def _record_first_version(asset: ImageAsset) -> None:
+    """The picture's first state as version 1, written when it is made. Until now the first version was only written the
+    first time the picture was edited, so a picture never edited had no history and a failure between an edit's two writes
+    could leave the version count ahead of the history. Best effort: a failure here never blocks making the picture, the
+    first edit still writes the baseline if it is missing."""
+    try:
+        await image_asset_versions.insert_one(ImageAssetVersion(
+            version_id=str(uuid4()),
+            image_asset_id=asset.id,
+            workspace_id=asset.workspace_id,
+            user_id=asset.created_by,
+            version_number=1,
+            slides_snapshot=list(asset.slides),
+            action="created",
+            created_at=asset.created_at,
+        ).model_dump())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not record the first version of picture %s: %s", asset.id, exc)
+
+
 async def _bump_version(
     asset_id: str, workspace_id: str, new_slides: list[Slide], action: str, actor_user_id: str
 ) -> Optional[dict]:
@@ -250,7 +281,6 @@ async def _bump_version(
     if not doc:
         return None
     current_version = doc.get("version_count", 1)
-    new_version_number = current_version + 1
     now = datetime.now(timezone.utc)
 
     # generate/upload never write a version row for the asset's first state,
@@ -272,10 +302,17 @@ async def _bump_version(
         ).model_dump())
 
     slides_dump = [s.model_dump() for s in new_slides]
-    await image_assets.update_one(
-        {"id": asset_id, "workspace_id": workspace_id},
-        {"$set": {"slides": slides_dump, "version_count": new_version_number, "updated_at": now}},
+    # Take the next version number in the same step as the change. Reading the count first and writing count + 1 let two
+    # saves that overlap both claim the same number. An approved master stays pinned: the new version sits beside it.
+    ops: dict = {"$set": {"slides": slides_dump, "updated_at": now}, "$inc": {"version_count": 1}}
+    from pymongo import ReturnDocument
+    bumped = await image_assets.find_one_and_update(
+        {"id": asset_id, "workspace_id": workspace_id}, ops,
+        projection={"version_count": 1}, return_document=ReturnDocument.AFTER,
     )
+    if not bumped:
+        return None
+    new_version_number = bumped.get("version_count", current_version + 1)
     version = ImageAssetVersion(
         version_id=str(uuid4()),
         image_asset_id=asset_id,
@@ -361,12 +398,30 @@ def _check_icon(name: Optional[str]) -> None:
         raise HTTPException(status_code=400, detail="That icon isn't available. Pick one from the list.")
 
 
+# Pictures being made right now in this process, keyed by who asked and the exact settings. A pack takes a while and the
+# screen gives up waiting before the server does, so a second click or a retry used to start the same pack again, with the
+# provider cost and a duplicate picture. While one is running, the same request is answered plainly instead.
+_GENERATE_IN_FLIGHT: set[str] = set()
+
+
+async def _generate_guard(body: GenerateImageAssetRequest, ctx: WorkspaceContext = Depends(require("create_content"))):
+    key = f"{ctx.workspace_id}:{ctx.user_id}:{body.model_dump_json()}"
+    if key in _GENERATE_IN_FLIGHT:
+        raise HTTPException(status_code=409, detail="This picture is already being made. It will show in your history when it is ready.")
+    _GENERATE_IN_FLIGHT.add(key)
+    try:
+        yield
+    finally:
+        _GENERATE_IN_FLIGHT.discard(key)
+
+
 @router.post("/generate", response_model=ImageAsset, status_code=201)
 @limiter.limit("20/minute")
 async def generate_image_asset(
     request: Request,
     body: GenerateImageAssetRequest,
     ctx: WorkspaceContext = Depends(require("create_content")),
+    _guard: None = Depends(_generate_guard),
 ) -> ImageAsset:
     """Real end-to-end generate: AI background (Cloudflare/Gemini, via
     generate_image_from_prompt) composited with real brand colors + the
@@ -441,6 +496,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
         text_content=SlideTextContent(
             headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
             icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
+            show_logo=use_logo, show_mascot=body.show_mascot,
         ),
         show_logo=use_logo, show_mascot=body.show_mascot,
     )
@@ -474,14 +530,22 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 text_content=SlideTextContent(
                     headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
             icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
+            show_logo=use_logo, show_mascot=body.show_mascot,
                 ).model_dump(),
             )
         ],
         approval_status=ImageApprovalStatus.PENDING,
         source_piece_id=body.source_piece_id,
         source_content_hash=source_content_hash,
+        # A text card made because the AI picture failed carries that note on the picture; it is also kept on the asset, where
+        # the review checks look for it (it was only ever on the picture's file record).
+        # While the rest of a set is still being made the asset says so, so a server restart in the middle leaves a picture set
+        # that is marked unfinished and not one that looks complete. Cleared below when the set is done.
+        qa_flagged=bool(getattr(media, "qa_flagged", False)) or body.count > 1,
+        qa_flag_reason=getattr(media, "qa_flag_reason", None) or ("Still making the rest of this set." if body.count > 1 else None),
     )
     await image_assets.insert_one(asset.model_dump())
+    await _record_first_version(asset)
 
     # The rest of a pack: one more real image each, in order. If one fails (quota, provider) the
     # run stops and the set keeps what was made, so the member gets "3 of 4" and not nothing.
@@ -496,6 +560,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                     text_content=SlideTextContent(
                         headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
                         icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
+            show_logo=use_logo, show_mascot=body.show_mascot,
                     ),
                     show_logo=use_logo,
                 )
@@ -508,11 +573,27 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 text_content=SlideTextContent(
                     headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
                     icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
+            show_logo=use_logo, show_mascot=body.show_mascot,
                 ).model_dump(),
             ))
         if len(made) > len(asset.slides):
             updated_doc = await _bump_version(asset_id, ctx.workspace_id, made, "pack_generated", ctx.user_id)
             asset = ImageAsset(**updated_doc)
+        if len(made) >= body.count:
+            # The whole set was made: back to the picture's own note (if it has one).
+            await image_assets.update_one(
+                {"id": asset_id, "workspace_id": ctx.workspace_id},
+                {"$set": {"qa_flagged": bool(getattr(media, "qa_flagged", False)), "qa_flag_reason": getattr(media, "qa_flag_reason", None)}},
+            )
+            asset = asset.model_copy(update={"qa_flagged": bool(getattr(media, "qa_flagged", False)), "qa_flag_reason": getattr(media, "qa_flag_reason", None)})
+        if len(made) < body.count:
+            # Say so on the asset: the member asked for a set and got part of it. Stored, not just logged.
+            partial = f"Only {len(made)} of {body.count} pictures could be made. The rest were not made, so generate again to add more."
+            await image_assets.update_one(
+                {"id": asset_id, "workspace_id": ctx.workspace_id},
+                {"$set": {"qa_flagged": True, "qa_flag_reason": partial}},
+            )
+            asset = asset.model_copy(update={"qa_flagged": True, "qa_flag_reason": partial})
 
     # file 04 Part 2 — first-class Phase 1 scope, not deferred: this is
     # what makes Odette's digest and Remy's signal history see Image
@@ -613,6 +694,7 @@ async def upload_image_asset(
         approval_status=ImageApprovalStatus.PENDING,
     )
     await image_assets.insert_one(asset.model_dump())
+    await _record_first_version(asset)
 
     emit_event_background(
         event_type=EventType.CONTENT_CREATED,
@@ -767,9 +849,13 @@ async def add_slide(
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt is required.")
 
+    first_tc = (asset.slides[0].text_content if asset.slides else {}) or {}
+    inherit_logo = first_tc.get("show_logo")
+    use_logo_here = body.show_logo or bool(inherit_logo)
     text_content = SlideTextContent(
         headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
             icon_name=body.icon_name, illustration_accent=body.illustration_accent,
+            show_logo=use_logo_here, show_mascot=first_tc.get("show_mascot"),
     )
     rendered = await _render_and_upload_slide(
         prompt=prompt,
@@ -779,7 +865,8 @@ async def add_slide(
         brand=brand,
         brand_tokens=_brand_tokens_from(brand),
         text_content=text_content,
-        show_logo=body.show_logo,
+        show_logo=use_logo_here,
+        show_mascot=bool(first_tc.get("show_mascot")),
     )
 
     next_number = max((s.slide_number for s in asset.slides), default=0) + 1
@@ -874,7 +961,8 @@ async def reset_slide_layers(
     layers = default_layers(
         size=LAYOUT_DIMS[slide.layout], brand=_brand_tokens_from(brand), headline=str(tc.get("headline") or ""), show_text=bool(tc.get("show_text", True)),
         accent_keyword=str(tc.get("accent_keyword") or ""), author=tc.get("author") or None,
-        has_logo=bool(visual_identity.get("logo_url")), has_mascot=False,
+        has_logo=bool(visual_identity.get("logo_url")) and tc.get("show_logo") is not False,
+        has_mascot=bool(visual_identity.get("mascot_url")) and tc.get("show_mascot") is True,
         icon_name=tc.get("icon_name") or None, illustration_accent=bool(tc.get("illustration_accent", False)),
     )
     return await _redraw_slide(asset, slide, layers, brand, ctx, "design_reset")

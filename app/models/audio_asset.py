@@ -89,6 +89,9 @@ class AudioAsset(BaseModel):
     dsp_settings: dict = {}                           # denoise/de-ess/compressor/EQ toggles actually applied
     approval_status: AudioApprovalStatus = AudioApprovalStatus.PENDING
     approved_master_media_id: Optional[str] = None
+    # The word timings the approved master had when it was approved. Later cleanups move timings on the current version, so
+    # anything built from the approved master (assemblies, videos) must caption from these, not from the current ones.
+    approved_master_transcript: Optional[list[dict]] = None
     # Added 2026-09-26 (governance sweep) — mirrors ImageAsset.version_count
     # exactly; needed once approve/reject/versions/restore endpoints exist.
     version_count: int = 1
@@ -97,6 +100,13 @@ class AudioAsset(BaseModel):
     show_id: Optional[str] = None
     qa_flagged: bool = False
     qa_flag_reason: Optional[str] = None
+    # Set when the recording was saved but no transcript could be made (the provider failed), so an empty transcript is a
+    # recorded state with a way forward (Transcribe again) and not a silent blank.
+    transcript_note: Optional[str] = None
+    # The posts this recording (or a video made from it) is attached to: [{piece_id, attached_at}].
+    linked_pieces: list[dict] = []
+    # The campaign this recording was made for, when it was made by a campaign run.
+    campaign_id: Optional[str] = None
     # Chapters found in the transcript: [{title, start_s}], sorted, the first at 0. Empty until
     # the member asks for them; each set replaces the last.
     chapters: list[dict] = Field(default_factory=list)

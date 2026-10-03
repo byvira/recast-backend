@@ -94,6 +94,15 @@ class FacebookPublisher(PlatformPublisher):
                 if response.status_code == 200:
                     post_id  = response.json()["id"]
                     post_url = f"https://www.facebook.com/{post_id.replace('_', '/posts/')}"
+                    # The platform's own link to the post, when it gives one. Best effort; the link above is the fallback.
+                    try:
+                        link_response = await client.get(
+                            f"{GRAPH_BASE}/{post_id}", params={"fields": "permalink_url", "access_token": access_token},
+                        )
+                        if link_response.status_code == 200 and link_response.json().get("permalink_url"):
+                            post_url = link_response.json()["permalink_url"]
+                    except Exception:  # noqa: BLE001
+                        pass
                     logger.info(
                         "Facebook post published: %s for piece %s",
                         post_id, request.piece_id,

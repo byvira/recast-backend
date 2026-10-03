@@ -91,8 +91,36 @@ def _resolve_font_path(font_name: Optional[str], *, bold: bool) -> str:
     return os.path.join(_FONTS_DIR, filename)
 
 
-def _load_font(font_name: Optional[str], size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont:
-    path = _resolve_font_path(font_name, bold=bold)
+# Scripts the bundled brand fonts (Latin only) cannot draw. When the text contains one, the matching Noto Sans file is used for
+# the whole text; it also carries the Latin letters, so a Tamil or Hindi line with English words in it draws all of them.
+_SCRIPT_FONTS = (
+    ((0x0B80, 0x0BFF), {"regular": "NotoSansTamil-Regular.ttf", "bold": "NotoSansTamil-Bold.ttf"}),          # Tamil
+    ((0x0900, 0x097F), {"regular": "NotoSansDevanagari-Regular.ttf", "bold": "NotoSansDevanagari-Bold.ttf"}),  # Devanagari (Hindi)
+)
+
+
+def script_font_entry(text: Optional[str]) -> Optional[dict]:
+    """The Noto font files for the first script in `text` that the brand fonts cannot draw, or None for ordinary Latin text."""
+    for ch in text or "":
+        code = ord(ch)
+        for (low, high), entry in _SCRIPT_FONTS:
+            if low <= code <= high:
+                return entry
+    return None
+
+
+def shaping_available() -> bool:
+    """Whether Pillow can shape complex scripts (Tamil and Hindi reorder vowel signs and join letters). Without the shaping
+    engine the letters are real but a few combinations are drawn in the wrong order. Pillow's Linux builds normally include it;
+    some others (for example the Windows ones) do not."""
+    from PIL import features
+
+    return bool(features.check("raqm"))
+
+
+def _load_font(font_name: Optional[str], size: int, *, bold: bool = False, text: Optional[str] = None) -> ImageFont.FreeTypeFont:
+    entry = script_font_entry(text)
+    path = os.path.join(_FONTS_DIR, entry["bold" if bold else "regular"]) if entry else _resolve_font_path(font_name, bold=bold)
     try:
         return ImageFont.truetype(path, size=size)
     except Exception as exc:  # noqa: BLE001
@@ -175,6 +203,10 @@ class SlideTextContent(BaseModel):
     headline: str
     accent_keyword: str = ""
     author: Optional[str] = None
+    # Whether the brand logo and mascot were on this picture when it was first made, so "start again" in the editor and slides
+    # added later keep the same brand treatment. None on pictures made before these were kept.
+    show_logo: Optional[bool] = None
+    show_mascot: Optional[bool] = None
     # A Lucide icon name (see pipelines/media/icons.py) drawn above the headline
     # in the accent colour. None draws no icon.
     icon_name: Optional[str] = None
@@ -193,7 +225,7 @@ def _fit_headline(draw, headline: str, font_name: Optional[str], max_width: int,
     max_block = int(target_size[1] * 0.26)
     size = biggest
     while True:
-        font = _load_font(font_name, size, bold=True)
+        font = _load_font(font_name, size, bold=True, text=headline)
         lines = _wrap_text(draw, headline, font, max_width)
         if (len(lines) <= 3 and len(lines) * int(size * 1.3) <= max_block) or size <= smallest:
             break

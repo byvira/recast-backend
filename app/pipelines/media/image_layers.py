@@ -50,7 +50,7 @@ def _color(value: Optional[str], fallback: str) -> tuple[int, int, int]:
 def _text_tile(layer: Layer, canvas_w: int, brand: BrandTokens) -> Image.Image:
     box_w = max(8, int(layer.w * canvas_w))
     size_px = max(8, int(layer.size * canvas_w))
-    font = _load_font(layer.font or brand.heading_font, size_px, bold=layer.bold)
+    font = _load_font(layer.font or brand.heading_font, size_px, bold=layer.bold, text=layer.text)
     pad = int(size_px * 0.45) if layer.box_color else 0
     inner_w = max(8, box_w - 2 * pad)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))

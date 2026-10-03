@@ -15,7 +15,8 @@ from typing import Any
 
 from app.core.workspace import WorkspaceContext
 from app.pipelines.media import duration
-from app.db.mongo import content_pieces, users, workspace_members, workspaces
+from app.db.mongo import audio_assets, content_pieces, image_assets, users, workspace_members, workspaces
+from app.pipelines.publish.attachments import attach_generated_image
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,12 @@ async def _image_request(campaign: dict[str, Any], piece: dict):
     content = (piece.get("content") or "").strip()
     title = _headline(content)  # the asset's name in the library
     show_text = image_plan.get("text", "headline") != "none"
-    headline = (await make_headline(content)) if show_text else ""
+    # The headline is written in the language the post was written in (it used to always be English).
+    from app.pipelines.text.generator import resolve_language_name
+
+    language = (piece.get("language") or "").strip()
+    language_name = resolve_language_name(language) if language and language != "en" else "English"
+    headline = (await make_headline(content, language_name=language_name)) if show_text else ""
     return GenerateImageAssetRequest(
         title=title, brand_id=campaign["brand_id"], headline=headline, show_text=show_text,
         show_logo=image_plan.get("logo", True), show_mascot=bool(image_plan.get("mascot", False)),
@@ -99,8 +105,11 @@ async def _make_for_piece(
     states: dict[str, str] = {}
     if "image" in kinds:
         try:
-            await create_image_asset(await _image_request(campaign, piece), ctx)
+            made = await create_image_asset(await _image_request(campaign, piece), ctx)
             states["image"] = "ready"
+            await image_assets.update_one({"id": getattr(made, "id", ""), "workspace_id": ctx.workspace_id}, {"$set": {"campaign_id": campaign["id"]}})
+            # The picture goes onto its post, so it is what gets published.
+            await attach_generated_image(piece["piece_id"], ctx.workspace_id, ctx.user_id, getattr(made, "id", ""))
         except Exception as exc:  # noqa: BLE001 - media must never fail the text
             states["image"] = "failed"
             logger.warning("Campaign %s: image for piece %s failed: %s", campaign["id"], piece["piece_id"], exc)
@@ -110,14 +119,22 @@ async def _make_for_piece(
             script = content
             if audio_opts.get("max_seconds"):
                 script = duration.trim_to_seconds(content, audio_opts["max_seconds"], wpm)
-            await create_audio_from_script(
-                GenerateAudioAssetRequest(
-                    title=title, brand_id=campaign["brand_id"], source_piece_id=piece["piece_id"],
-                    script=script, words_per_minute=wpm,
-                ),
-                ctx,
-                _NoRun(),
+            # A re-run for the same post and the same words reuses the recording already made, instead of voicing it again
+            # (which spends provider quota and leaves a second identical recording).
+            already = await audio_assets.find_one(
+                {"workspace_id": ctx.workspace_id, "campaign_id": campaign["id"], "source_piece_id": piece["piece_id"], "script": script},
+                {"id": 1},
             )
+            if not already:
+                made_audio = await create_audio_from_script(
+                    GenerateAudioAssetRequest(
+                        title=title, brand_id=campaign["brand_id"], source_piece_id=piece["piece_id"],
+                        script=script, words_per_minute=wpm,
+                    ),
+                    ctx,
+                    _NoRun(),
+                )
+                await audio_assets.update_one({"id": made_audio.id, "workspace_id": ctx.workspace_id}, {"$set": {"campaign_id": campaign["id"]}})
             states["audio"] = "ready"
         except Exception as exc:  # noqa: BLE001
             states["audio"] = "failed"
@@ -205,6 +222,8 @@ async def regenerate_image_for_piece(
 
     if old_ids:
         await image_assets.update_many({"id": {"$in": old_ids}}, {"$set": {"replaced_by": new.id}})
+    # The new picture replaces the old one on the post itself, not only in the library.
+    await attach_generated_image(piece_id, workspace_id, user_id, new.id, replace_ids=old_ids)
     await _record_status(workspace_id, piece_id, {"image": "ready"})
     return {"state": "ready" if new_real else "card", "note": note}
 

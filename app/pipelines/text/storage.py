@@ -23,9 +23,10 @@ Functions:
 import logging
 from datetime import datetime, timezone
 from uuid import uuid4
-from typing import Optional
+from typing import Any, Optional
 
 from app.db.mongo import content_sessions, content_pieces, content_piece_versions, users, brand_profiles
+from app.pipelines.publish.spine import normalize_piece_dates
 from app.models.text import (
     ContentSession,
     ContentPiece,
@@ -72,6 +73,7 @@ async def ensure_session_exists(
     schedule_mode: str = "now",
     scheduled_at: Optional[str] = None,
     input_text: Optional[str] = None,
+    extras: Optional[dict] = None,
 ) -> None:
     """Idempotent — safe to call once per platform. Platforms for one
     generation run finish concurrently and each calls this before saving its
@@ -99,6 +101,8 @@ async def ensure_session_exists(
                 "pieces_count": 0,
                 # What the member typed or pasted, kept (capped) so History can open this work again with the input filled in
                 "input_text": (input_text or "")[:MAX_INPUT_TEXT],
+                # The Extras toggles the run used, so a regenerate can repeat the run instead of using fixed defaults.
+                "extras": extras or None,
                 "created_at": now,
             },
             "$set": {"updated_at": now},
@@ -128,6 +132,9 @@ async def save_live_piece(
     publish_target: Optional[str] = None,
     sections: Optional[list[dict]] = None,
     source_platform: Optional[str] = None,
+    intended_publish_at: Optional[datetime] = None,
+    piece_id: Optional[str] = None,
+    extra_fields: Optional[dict] = None,
 ) -> str:
     """Persist one freshly-generated piece the moment its own graph run
     finishes. Mirrors save_pipeline_result's piece/version-1 document shape
@@ -137,7 +144,9 @@ async def save_live_piece(
     to have been called first for this session_id. Returns the real piece_id.
     """
     now = datetime.now(timezone.utc)
-    piece_id = str(uuid4())
+    # A caller that needs a repeatable id (send-to-draft) passes its own; the
+    # unique index on piece_id then makes a second insert fail instead of duplicating.
+    piece_id = piece_id or str(uuid4())
 
     piece_doc = {
         "piece_id": piece_id,
@@ -161,14 +170,24 @@ async def save_live_piece(
         "repurposed": repurposed,
         "publish_status": publish_status or PublishStatus.PENDING.value,
         "publish_scheduled_at": publish_scheduled_at,
+        # Planned time from generation: intent only. It becomes a real queued
+        # post when the piece is approved (see spine.promote_approved_intent).
+        "intended_publish_at": intended_publish_at,
         "publish_target": publish_target,
         "publish_job_id": None,
+        "attachments": [],
         "version_count": 1,
         "deleted": False,
         "created_at": now,
         "updated_at": now,
     }
+    piece_doc.update(extra_fields or {})
     await content_pieces.insert_one(piece_doc)
+    try:
+        from app.pipelines.text.events import emit_live_piece_created
+        emit_live_piece_created(piece_doc)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("save_live_piece: event emit scheduling failed: %s", exc)
 
     version_doc = {
         "version_id": str(uuid4()),
@@ -202,6 +221,53 @@ async def save_live_piece(
 # ─────────────────────────────────────────────────────────────────────────────
 # SAVE PIPELINE RESULT
 # ─────────────────────────────────────────────────────────────────────────────
+
+async def _adopt_saved_piece(piece, result, campaign_id, workspace_id: str, now) -> Optional[str]:
+    """The piece_id when `piece` was already saved by its own graph run (and is now brought under this result's session),
+    otherwise None so the caller saves it as new."""
+    saved_id = getattr(piece, "piece_id", None)
+    if not saved_id:
+        return None
+    existing = await content_pieces.find_one({"piece_id": saved_id, "workspace_id": workspace_id}, {"session_id": 1})
+    if not existing:
+        return None
+    updates = {
+        "session_id": result.session_id,
+        "batch_day_index": result.batch_day_index,
+        "angle": result.angle,
+        "source_platform": result.source_platform,
+        "updated_at": now,
+    }
+    if campaign_id:
+        updates["campaign_id"] = campaign_id
+    await content_pieces.update_one({"piece_id": saved_id, "workspace_id": workspace_id}, {"$set": updates})
+    old_session = existing.get("session_id")
+    if old_session and old_session != result.session_id:
+        await content_piece_versions.update_many({"piece_id": saved_id, "workspace_id": workspace_id}, {"$set": {"session_id": result.session_id}})
+        await _release_session(old_session, workspace_id)
+    return saved_id
+
+
+async def _release_session(session_id: str, workspace_id: str) -> None:
+    """After a piece moves out of a session: drop the session if nothing is left in it, else fix its count."""
+    left = await content_pieces.count_documents({"session_id": session_id, "workspace_id": workspace_id})
+    if left == 0:
+        await content_sessions.delete_one({"session_id": session_id, "workspace_id": workspace_id})
+    else:
+        await content_sessions.update_one({"session_id": session_id, "workspace_id": workspace_id}, {"$set": {"pieces_count": left}})
+
+
+async def discard_generated_piece(piece_id: str, workspace_id: str) -> None:
+    """Remove a piece a run saved that is not wanted (for example the copy a regenerate made when the new text was put
+    on the existing piece as a new version instead). Its versions go with it, and its session if that is now empty."""
+    doc = await content_pieces.find_one({"piece_id": piece_id, "workspace_id": workspace_id}, {"session_id": 1})
+    if not doc:
+        return
+    await content_piece_versions.delete_many({"piece_id": piece_id, "workspace_id": workspace_id})
+    await content_pieces.delete_one({"piece_id": piece_id, "workspace_id": workspace_id})
+    if doc.get("session_id"):
+        await _release_session(doc["session_id"], workspace_id)
+
 
 async def save_pipeline_result(
     result: TextPipelineResult,
@@ -247,11 +313,25 @@ async def save_pipeline_result(
         "updated_at": now,
     }
 
-    await content_sessions.insert_one(session_doc)
+    # An upsert: the run's own graph may already have created this session. Insert-only used to fail on the unique index
+    # or leave a second session behind.
+    await content_sessions.update_one(
+        {"session_id": result.session_id},
+        {"$setOnInsert": {k: v for k, v in session_doc.items() if k != "updated_at"}, "$set": {"updated_at": now}},
+        upsert=True,
+    )
     logger.info("Session saved: %s (%d pieces)", result.session_id, len(result.pieces))
 
     # ── Save each piece + version 1 ───────────────────────────────────────
     for piece in result.pieces:
+        # The graph already saved this piece the moment it finished (it carries that piece_id). Saving again made a
+        # second copy of every piece in batch, campaign and blocking runs, so adopt the saved one instead: bring it
+        # under this session and add what only this caller knows (campaign, batch day, angle).
+        adopted = await _adopt_saved_piece(piece, result, campaign_id, workspace_id, now)
+        if adopted:
+            piece_ids.append(adopted)
+            continue
+
         piece_id = str(uuid4())
         piece_ids.append(piece_id)
 
@@ -281,13 +361,18 @@ async def save_pipeline_result(
             "repurposed": piece.repurposed,
             "publish_status": PublishStatus.PENDING.value,
             "publish_scheduled_at": piece.publish_scheduled_at,
+            "intended_publish_at": getattr(piece, "intended_publish_at", None),
             "publish_target": piece.publish_target,
             "publish_job_id": None,
+            "attachments": [],
             "version_count": 1,
             "deleted": False,
             "created_at": now,
             "updated_at": now,
         }
+        # The default picture chosen for the run, so a piece saved here keeps it (it used to be dropped on this path).
+        if getattr(piece, "media", None):
+            piece_doc["media"] = [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in piece.media]
 
         await content_pieces.insert_one(piece_doc)
 
@@ -347,6 +432,7 @@ async def get_session(session_id: str, workspace_id: str) -> Optional[dict]:
     session.pop("_id", None)
     for piece in pieces:
         piece.pop("_id", None)
+        normalize_piece_dates(piece)
 
     return session
 
@@ -519,6 +605,7 @@ async def get_workspace_pieces(
     for p in pieces:
         p.pop("_id", None)
         p["stage"] = compute_kanban_stage(p)
+        normalize_piece_dates(p)
 
     await _attach_display_names(pieces)
 
@@ -553,6 +640,7 @@ async def get_all_workspace_pieces(
     for p in pieces:
         p.pop("_id", None)
         p["stage"] = compute_kanban_stage(p)
+        normalize_piece_dates(p)
     await _attach_display_names(pieces)
     return pieces
 
@@ -566,7 +654,7 @@ async def get_piece(piece_id: str, workspace_id: str) -> Optional[dict]:
         return None
     piece.pop("_id", None)
     piece["stage"] = compute_kanban_stage(piece)
-    return piece
+    return normalize_piece_dates(piece)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -640,7 +728,6 @@ async def update_piece_content(
         return None
 
     now = datetime.now(timezone.utc)
-    new_version_number = piece.get("version_count", 1) + 1
     new_word_count = len(new_content.split())
     new_char_count = len(new_content)
     # readability_score used to just go stale here — this is the only write
@@ -654,18 +741,27 @@ async def update_piece_content(
     # funnel through, instead of fixing each caller separately.
     new_readability_score = flesch_reading_ease(new_content)
 
-    # Update piece
-    await content_pieces.update_one(
+    # Update the piece and take the next version number in ONE step. Reading the count and writing count + 1 later let two
+    # edits that overlap (autosave, a chip and a manual edit) both claim the same number.
+    from pymongo import ReturnDocument
+    bumped = await content_pieces.find_one_and_update(
         {"piece_id": piece_id, "workspace_id": workspace_id},
-        {"$set": {
-            "content": new_content,
-            "word_count": new_word_count,
-            "char_count": new_char_count,
-            "version_count": new_version_number,
-            "readability_score": new_readability_score,
-            "updated_at": now,
-        }},
+        {
+            "$set": {
+                "content": new_content,
+                "word_count": new_word_count,
+                "char_count": new_char_count,
+                "readability_score": new_readability_score,
+                "updated_at": now,
+            },
+            "$inc": {"version_count": 1},
+        },
+        projection={"version_count": 1},
+        return_document=ReturnDocument.AFTER,
     )
+    if not bumped:
+        return None
+    new_version_number = bumped.get("version_count", 2)
 
     # Save new version
     version_doc = {
@@ -704,7 +800,7 @@ async def update_piece_status(
     workspace_id: str,
     approval_status: Optional[str] = None,
     publish_status: Optional[str] = None,
-    publish_scheduled_at: Optional[str] = None,
+    publish_scheduled_at: Optional[Any] = None,
     publish_target: Optional[str] = None,
     archived: Optional[bool] = None,
 ) -> Optional[dict]:

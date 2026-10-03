@@ -131,9 +131,10 @@ def test_the_picture_prompt_is_built_from_the_post_and_steers_away_from_faces():
     assert "Second paragraph" in topic and len(topic) <= 600
     raw = ig._build_raw_prompt(topic, {"visual_identity": {"colors": {"primary": "#112233"}, "visual_style_notes": "calm, editorial"}})
     assert "visual metaphor" in raw and "dominant palette" in raw and "#112233" in raw
-    import inspect
+    # the picture-writing instruction now lives in a prompt file (media/image_polish); check the instruction itself
+    from app.prompts.registry import load_prompt
 
-    assert "avoid close-up faces" in inspect.getsource(ig._polish_prompt)
+    assert "avoid close-up faces" in load_prompt("media/image_polish", raw_prompt=raw)
 
 
 # ---- claims check on every text flow ----------------------------------------------------------------------------------------------------

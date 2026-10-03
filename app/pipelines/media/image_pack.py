@@ -7,21 +7,13 @@ pack is a set of different takes on the same idea, not copies. Pure, no network.
 
 from __future__ import annotations
 
+from app.prompts.registry import load_fixture, load_prompt
+
 MAX_PACK_SIZE = 10
 PACK_SIZE_CHOICES = (1, 3, 4, 5)
 
 # Different directions, cycled; kept plain so they read as art direction to an image model.
-_VARIATIONS = (
-    "a wide establishing composition",
-    "a close-up detail shot",
-    "a different angle with a new colour accent",
-    "a minimal composition with generous empty space",
-    "a bold, high-contrast composition",
-    "a softer, atmospheric composition",
-    "a top-down composition",
-    "a symmetrical, centred composition",
-    "a layered composition with depth",
-)
+_VARIATIONS = tuple(load_fixture("image_pack_variations"))
 
 
 def clamp_pack_size(count: int | None) -> int:
@@ -37,5 +29,5 @@ def pack_prompts(prompt: str, count: int | None) -> list[str]:
     prompts = [base]
     for i in range(1, n):
         direction = _VARIATIONS[(i - 1) % len(_VARIATIONS)]
-        prompts.append(f"{base}. Variation {i + 1} of {n}: {direction}.")
+        prompts.append(load_prompt("media/image_pack_variation", base=base, number=i + 1, total=n, direction=direction))
     return prompts

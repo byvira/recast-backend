@@ -13,6 +13,7 @@ from app.pipelines.analytics.aggregator import (
     fetch_account_metrics_all,
 )
 from app.pipelines.analytics.snapshots import record_daily_snapshot
+from app.pipelines.publish.spine import platform_key
 from app.db.mongo import get_db
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,7 @@ async def _refresh_workspace_analytics(db, workspace_id: str):
 
     # ── Post metrics ──────────────────────────────────────────────────────
     cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
+    stale_after = datetime.now(timezone.utc) - timedelta(days=90)
 
     # Each content_pieces document is already exactly one platform's content
     # (piece["platform"] + piece["platform_post_id"]) — see the identical
@@ -83,22 +85,31 @@ async def _refresh_workspace_analytics(db, workspace_id: str):
             "workspace_id":     workspace_id,
             "publish_status":   "published",
             "platform_post_id": {"$exists": True, "$ne": None},
-            "$or": [
-                {"metrics_fetched_at": {"$lt": cutoff}},
-                {"metrics_fetched_at": {"$exists": False}},
+            "$and": [
+                {"$or": [
+                    {"metrics_fetched_at": {"$lt": cutoff}},
+                    {"metrics_fetched_at": {"$exists": False}},
+                ]},
+                # Posts older than 90 days are no longer polled every run (their numbers have settled).
+                {"$or": [
+                    {"published_at": {"$gte": stale_after}},
+                    {"published_at": {"$exists": False}},
+                    {"published_at": None},
+                ]},
             ],
         },
         {
             "platform": 1,
             "platform_post_id": 1,
+            "piece_id": 1,
             "_id": 1,
         }
-    ).to_list(length=200)
+    ).sort("metrics_fetched_at", 1).to_list(length=200)  # never-fetched first, then least recently fetched
 
     posts_to_fetch = [
         {
-            "piece_id":         str(piece["_id"]),
-            "platform":         piece.get("platform", "").lower(),
+            "piece_id":         piece.get("piece_id") or str(piece["_id"]),
+            "platform":         platform_key(piece.get("platform", "")),
             "platform_post_id": piece["platform_post_id"],
             "platform_user_id": "",
         }
@@ -132,7 +143,7 @@ async def _refresh_workspace_analytics(db, workspace_id: str):
 
         if m.post_id:
             await db["content_pieces"].update_one(
-                {"_id": m.post_id},
+                {"workspace_id": workspace_id, "piece_id": m.post_id},
                 {"$set": {"metrics_fetched_at": datetime.now(timezone.utc)}},
             )
 

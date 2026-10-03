@@ -118,11 +118,11 @@ def render_quote_card(hook_text: str, visual_identity: dict) -> bytes:
     margin = 120
     max_width = CARD_SIZE[0] - margin * 2
     text = (hook_text or "").strip()
-    font = _load_font(fonts.get("heading"), 72, bold=True)
+    font = _load_font(fonts.get("heading"), 72, bold=True, text=text)
     lines: list[str] = []
     size = 72
     while text:
-        font = _load_font(fonts.get("heading"), size, bold=True)
+        font = _load_font(fonts.get("heading"), size, bold=True, text=text)
         lines = _wrap_text(draw, text, font, max_width)
         if (len(lines) <= 6 and len(lines) * int(size * 1.25) <= CARD_SIZE[1] * 0.7) or size <= 36:
             break

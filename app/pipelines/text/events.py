@@ -37,6 +37,44 @@ async def _actor_role(workspace_id: str, user_id: str) -> str:
         return ""
 
 
+async def _emit_live_piece_created(piece_doc: dict) -> None:
+    role = await _actor_role(piece_doc["workspace_id"], piece_doc["user_id"])
+    piece_id = piece_doc["piece_id"]
+    content = piece_doc.get("content") or ""
+    await emit_event(
+        event_type=EventType.CONTENT_CREATED,
+        pipeline_type=PipelineType.TEXT,
+        workspace_id=piece_doc["workspace_id"],
+        actor_user_id=piece_doc["user_id"],
+        actor_role=role,
+        payload=ContentEventPayload(
+            content_id=piece_id,
+            content_ref=ContentRef(collection="content_pieces", id=piece_id),
+            content_text=content,
+            content_summary=content[:400],
+            target=piece_doc.get("platform") or "",
+            word_count=piece_doc.get("word_count") or 0,
+            quality_passed=bool(piece_doc.get("quality_passed", True)),
+            flagged_for_review=bool(piece_doc.get("flagged_for_review", False)),
+            brand_id=piece_doc.get("brand_id") or "",
+            session_id=piece_doc.get("session_id") or "",
+        ),
+        idempotency_key=f"content.created:{piece_id}",
+    )
+
+
+def emit_live_piece_created(piece_doc: dict) -> None:
+    """content.created for a piece saved the moment its own run finished (the live path). Same event, same idempotency key
+    as emit_pieces_created, so a piece that is later saved through the result path is not announced twice. Never raises."""
+    if not piece_doc.get("workspace_id") or not piece_doc.get("user_id"):
+        return
+    try:
+        task = asyncio.create_task(_emit_live_piece_created(piece_doc))
+        task.add_done_callback(_log_task)
+    except RuntimeError:
+        logger.debug("emit_live_piece_created: no running loop; skipping background emit")
+
+
 async def _emit_pieces_created(result: TextPipelineResult, piece_ids: list[str]) -> None:
     role = await _actor_role(result.workspace_id, result.user_id)
     for piece, piece_id in zip(result.pieces, piece_ids):

@@ -66,10 +66,12 @@ class LinkedInAnalyticsFetcher(AnalyticsFetcher):
                         impressions = stats.get("impressionCount", 0)
                         clicks      = stats.get("clickCount", 0)
 
+                both_refused = social_resp.status_code != 200 and stats_resp.status_code != 200
                 return PostMetrics(
                     platform=self.platform,
                     post_id=piece_id,
                     platform_post_id=platform_post_id,
+                    fetch_ok=not both_refused,
                     likes=likes,
                     comments=comments,
                     shares=shares,
@@ -86,6 +88,7 @@ class LinkedInAnalyticsFetcher(AnalyticsFetcher):
                 platform=self.platform,
                 post_id=piece_id,
                 platform_post_id=platform_post_id,
+                fetch_ok=False,
                 fetched_at=datetime.now(timezone.utc),
             )
 

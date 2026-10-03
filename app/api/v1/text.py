@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.middleware import limiter
 from app.shared.activity.runs import brand_label, run_label, tracked_run
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import audio_assets, brand_profiles, image_assets
+from app.db.mongo import audio_assets, brand_profiles, content_pieces, content_sessions, image_assets
 from app.models.text import (
     BatchGenerateRequest,
     GenerateTextRequest,
@@ -53,8 +53,9 @@ from app.pipelines.text.chips import apply_chip, get_chips_for_platform, CHIP_PR
 from app.pipelines.text.angles import run_angles_agent
 from app.pipelines.text.angle_sources import NO_TEXT_MESSAGE, text_for_angles
 from app.pipelines.text.repurpose_suggest import suggest_repurpose_targets
-from app.pipelines.text.storage import save_pipeline_result, update_piece_content
-from app.agents.text.nodes import _extract_enforcement_data
+from app.pipelines.text.storage import discard_generated_piece, save_pipeline_result, update_piece_content
+from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
+from app.prompts.safe import contains_banned, guard_output
 from app.models.refiner import RefineChatRequest, RefineChatResponse
 from app.pipelines.text.refiner import run_refinement_turn
 
@@ -87,12 +88,26 @@ async def _get_owned_brand(brand_id: str, workspace_id: str) -> dict:
     return brand
 
 
+async def _enforcement_for(brand_profile: dict, ctx: WorkspaceContext) -> dict:
+    """The brand's banned words, required phrases and the rest, with the calling member's own word lists on top, the same
+    as generation applies them. Refine, chat, angles and hook scoring used to use the brand's alone, so a word a member
+    had banned could come back in an edit."""
+    return await merge_member_lexicon_enforcement(
+        _extract_enforcement_data(brand_profile), workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+    )
+
+
 async def _resolve_request_language(
     request_language: str | None,
     ctx: WorkspaceContext,
     content_for_detection: str | None = None,
+    piece_id: str | None = None,
 ) -> str:
     """The precedence chain for this request's content language.
+
+    When the request is about an existing piece, the language that piece was made in comes first (after an explicit
+    override): a post generated as "ta+en" must not be rewritten in the workspace default by a refine or regenerate. A
+    piece with no stored language (made before it was kept) falls through to the chain below, exactly as before.
 
     request override > workspace default > caller's own account default >
     detected from the request's own source content > "en". See
@@ -104,8 +119,13 @@ async def _resolve_request_language(
     low-signal or mixed-script guess falls through to "en" rather than
     asserting a wrong language).
     """
+    piece_language = None
+    if piece_id and not request_language:
+        stored = await content_pieces.find_one({"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"language": 1})
+        piece_language = (stored or {}).get("language") or None
     explicit = first_present_or_none(
         request_language,
+        piece_language,
         await workspace_language(ctx.workspace_id),
         await user_language(ctx.user_id),
     )
@@ -509,7 +529,7 @@ async def score_hook_endpoint(
     brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
 
     brand_context = build_brand_context(brand_profile)
-    enforcement = _extract_enforcement_data(brand_profile)
+    enforcement = await _enforcement_for(brand_profile, ctx)
 
     result = await score_hook(
         content=body.content,
@@ -522,6 +542,9 @@ async def score_hook_endpoint(
 
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
+    if result.get("scoring_failed"):
+        # A score of 0 used to be returned here and shown as the post's real score.
+        raise HTTPException(status_code=503, detail="Scoring isn't available right now. Your text is unchanged. Try again in a moment.")
 
     return ScoreHookResponse(**result)
 
@@ -641,8 +664,8 @@ async def refine_content(
         brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
 
         brand_context = build_brand_context(brand_profile)
-        enforcement = _extract_enforcement_data(brand_profile)
-        language = await _resolve_request_language(None, ctx, content_for_detection=body.content)
+        enforcement = await _enforcement_for(brand_profile, ctx)
+        language = await _resolve_request_language(None, ctx, content_for_detection=body.content, piece_id=body.piece_id)
 
         result = await apply_chip(
             content=body.content,
@@ -699,7 +722,7 @@ async def generate_angles(
     """
     brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
     brand_context = build_brand_context(brand_profile)
-    enforcement = _extract_enforcement_data(brand_profile)
+    enforcement = await _enforcement_for(brand_profile, ctx)
 
     source_text = body.content.strip()
     if not source_text:
@@ -753,7 +776,7 @@ async def refine_chat(
     brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
 
     brand_context = build_brand_context(brand_profile)
-    enforcement = _extract_enforcement_data(brand_profile)
+    enforcement = await _enforcement_for(brand_profile, ctx)
 
     # Convert Pydantic models to plain dicts for llm.py
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
@@ -773,7 +796,7 @@ async def refine_chat(
             detail="Last message must be from the user.",
         )
 
-    language = await _resolve_request_language(None, ctx, content_for_detection=messages[-1]["content"])
+    language = await _resolve_request_language(None, ctx, content_for_detection=messages[-1]["content"], piece_id=body.piece_id)
 
     refined = await run_refinement_turn(
         messages=messages,
@@ -784,12 +807,28 @@ async def refine_chat(
         default_tone=brand_profile.get("default_tone"),
     )
 
-    refined = refined.strip()
+    # The answer must be real text, like a quick edit's: no wrapper or preamble, none of our instructions, no banned word
+    # (brand or the member's own). Otherwise the text stays as it was and nothing is saved, instead of a broken answer
+    # becoming the post.
+    # What the text was before this turn: the post itself when there is one, else the last answer in the chat.
+    previous = None
+    if body.piece_id:
+        saved = await content_pieces.find_one({"piece_id": body.piece_id, "workspace_id": ctx.workspace_id}, {"content": 1})
+        previous = (saved or {}).get("content")
+    if previous is None:
+        previous = next((m["content"] for m in reversed(messages) if m["role"] == "assistant"), messages[0]["content"])
+    guarded = guard_output(refined, source=" ".join(m["content"] for m in messages))
+    refine_problem = None
+    if guarded is None:
+        refine_problem = "That change came back unusable. Your text is unchanged. Try asking again."
+    elif contains_banned(guarded, enforcement.get("banned_words", [])):
+        refine_problem = "That change used a word on your banned list. Your text is unchanged. Try asking again."
+    refined = (previous if refine_problem else guarded).strip()
     turn = sum(1 for m in messages if m["role"] == "assistant") + 1
 
     # Save version if piece_id provided
     version_saved = False
-    if body.piece_id and refined:
+    if body.piece_id and refined and not refine_problem:
         try:
             await update_piece_content(
                 piece_id=body.piece_id,
@@ -818,6 +857,7 @@ async def refine_chat(
         turn=turn,
         piece_id=body.piece_id,
         version_saved=version_saved,
+        error=refine_problem,
     )
 
 @router.get("/chips", response_model=GetChipsResponse)
@@ -938,13 +978,32 @@ async def regenerate_content(
 
     from app.models.text import ToneOverride, ContentGoal, InputSourceType
 
+    # What the original run used (its toggles, tone and goal), so regenerating repeats that run. What the request itself
+    # carries wins; a card opened from History sends no tone or goal, and used to fall back to fixed defaults.
+    stored_run: dict = {}
+    if body.piece_id:
+        stored_piece = await content_pieces.find_one(
+            {"piece_id": body.piece_id, "workspace_id": ctx.workspace_id}, {"session_id": 1}
+        )
+        if stored_piece and stored_piece.get("session_id"):
+            stored_run = await content_sessions.find_one(
+                {"session_id": stored_piece["session_id"], "workspace_id": ctx.workspace_id}, {"extras": 1, "tone": 1, "goal": 1}
+            ) or {}
+
+    def _stored_value(value):
+        # tone and goal are stored as the enum's value, or as "ToneOverride.CASUAL" text on older sessions
+        return getattr(value, "value", value) if value else None
+
+    request_tone = body.tone or _stored_value(stored_run.get("tone"))
+    request_goal = body.goal or _stored_value(stored_run.get("goal"))
+
     try:
-        tone_enum = ToneOverride(body.tone) if body.tone else ToneOverride.BRAND
+        tone_enum = ToneOverride(request_tone) if request_tone else ToneOverride.BRAND
     except ValueError:
         tone_enum = ToneOverride.BRAND
 
     try:
-        goal_enum = ContentGoal(body.goal) if body.goal else None
+        goal_enum = ContentGoal(request_goal) if request_goal else None
     except ValueError:
         goal_enum = None
 
@@ -959,12 +1018,16 @@ async def regenerate_content(
         avoid_blacklist  = True
         pdf_export       = False
 
+    for _name, _value in (stored_run.get("extras") or {}).items():
+        if hasattr(_MinimalExtras, _name) and isinstance(_value, bool):
+            setattr(_MinimalExtras, _name, _value)
+
     # 5. Resolve language — same precedence chain /generate, /repurpose, and
     # /batch already use (request override > workspace > user > detected
     # from source content > "en"). Regenerate never called this before, so
     # it silently fell through to run_text_pipeline's own "en" default
     # regardless of the workspace/brand's real language.
-    language = await _resolve_request_language(None, ctx, content_for_detection=source_content)
+    language = await _resolve_request_language(None, ctx, content_for_detection=source_content, piece_id=body.piece_id)
 
     # 6. Run pipeline for the single platform
     try:
@@ -1027,6 +1090,13 @@ async def regenerate_content(
         )
         if updated:
             real_piece_id = body.piece_id
+            # The run saved its own copy as it finished; the new text now lives on the existing piece, so drop the copy.
+            extra_id = getattr(piece, "piece_id", None)
+            if extra_id and extra_id != body.piece_id:
+                try:
+                    await discard_generated_piece(extra_id, ctx.workspace_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Could not remove the extra copy %s made by regenerate: %s", extra_id, exc)
         else:
             logger.warning(
                 "Regenerate: piece_id %s did not resolve to a real piece in "
