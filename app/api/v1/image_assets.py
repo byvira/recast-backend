@@ -17,7 +17,7 @@ from uuid import uuid4
 import httpx
 from PIL import Image
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
@@ -355,6 +355,14 @@ class GenerateImageAssetRequest(BaseModel):
     headline: str
     accent_keyword: str = ""
     author: Optional[str] = None
+
+    @field_validator("headline", "accent_keyword", "author")
+    @classmethod
+    def _tidy_picture_words(cls, value):
+        from app.agents.content_guard.media import tidy_picture_text
+
+        return tidy_picture_text(value)
+
     # A Lucide icon name from GET /image-assets/icons, drawn above the headline.
     icon_name: Optional[str] = None
     # A large, faint icon behind the text (the chosen icon, or a default one).
@@ -823,6 +831,14 @@ class AddSlideRequest(BaseModel):
     headline: str
     accent_keyword: str = ""
     author: Optional[str] = None
+
+    @field_validator("headline", "accent_keyword", "author")
+    @classmethod
+    def _tidy_picture_words(cls, value):
+        from app.agents.content_guard.media import tidy_picture_text
+
+        return tidy_picture_text(value)
+
     icon_name: Optional[str] = None
     illustration_accent: bool = False
     show_logo: bool = False

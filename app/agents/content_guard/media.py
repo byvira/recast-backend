@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 IMAGE_CATEGORIES = ("sexual", "violence", "hate", "self_harm")
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 _VERDICTS: "OrderedDict[str, ScreenResult]" = OrderedDict()
+_WRITING: "OrderedDict[str, bool]" = OrderedDict()
 _CACHE = 500
 
 FRIENDLY = {
@@ -287,3 +288,52 @@ async def read_upload_speech(contents: bytes, filename: str, *, noun: str, works
     saved = [{"word": w.word, "start_s": w.start_s, "end_s": w.end_s} for w in words]
     await assert_speech_ok(transcript_text(saved), noun=noun, workspace_id=workspace_id, where="upload")
     return saved
+
+
+async def picture_has_writing(data: bytes, mime_type: str = "image/jpeg") -> Optional[bool]:
+    """Whether a picture shows letters, words, numbers or invented lettering (speech bubbles with writing, signs, labels, screens
+    with text). None when it could not be checked, so a provider problem never blocks a picture. Cached by the picture."""
+    if not data or not await _enabled():
+        return None
+    from app.shared.llm import call_vision
+    from app.utils.jsonparser import parse_llm_json
+
+    key = "writing:" + hashlib.sha256(data).hexdigest()
+    if key in _WRITING:
+        _WRITING.move_to_end(key)
+        return _WRITING[key]
+    try:
+        reply = await call_vision(
+            prompt=(
+                "Look for writing anywhere in this picture: letters, words, numbers, logos, captions, signs, labels, screens or speech "
+                "bubbles with text, and also invented or garbled lettering that only looks like text. "
+                'Answer with JSON only: {"has_text": true or false}.'
+            ),
+            image_bytes=data,
+            mime_type=mime_type,
+        )
+    except Exception as exc:
+        logger.warning("Content Guard could not check a picture for writing, letting it through: %s", exc)
+        return None
+    parsed = parse_llm_json(reply) if isinstance(reply, str) else {}
+    if not isinstance(parsed, dict) or "has_text" not in parsed:
+        return None
+    result = bool(parsed.get("has_text"))
+    _WRITING[key] = result
+    while len(_WRITING) > _CACHE:
+        _WRITING.popitem(last=False)
+    return result
+
+
+def tidy_picture_text(value: Optional[str]) -> Optional[str]:
+    """The words a member puts on a picture (headline, highlighted word, author), cleaned of dashes and filler, and refused with
+    a friendly message when they fail the content rules. Used where a picture request is read, so every picture is covered."""
+    if not value:
+        return value
+    from app.agents.content_guard.rules import clean_text
+
+    cleaned = clean_text(value, plain_wording=False)
+    problem = speech_problem(cleaned, "picture text")
+    if problem:
+        raise ContentRejected(*problem)
+    return cleaned

@@ -221,7 +221,9 @@ async def _safety_gate(prompt: str) -> bool:
 
 _TEXT_BEARING_WORDS = re.compile(
     r"\b(logos?|brand ?names?|wordmarks?|captions?|headlines?|slogans?|taglines?|typography|lettering|"
-    r"text overlay|signs?|signage|labels?|billboards?|posters?|screens? (?:showing|displaying|reading))\b",
+    r"text overlay|signs?|signage|labels?|billboards?|posters?|screens? (?:showing|displaying|reading)|"
+    r"(?:speech|chat|thought|dialogue|text|message|quote) (?:bubbles?|balloons?|boxes|windows?|clouds?)|"
+    r"conversations?|dialogues?|quotes?|quotation marks?|word clouds?|infographics?|banners?|stickers?|handwriting|notes? cards?)\b",
     re.IGNORECASE,
 )
 NO_TEXT_SUFFIX = load_prompt("media/image_no_text")
@@ -414,6 +416,34 @@ async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
     return None
 
 
+# Added to the prompt when the first picture came back with writing on it. Image models draw invented letters whenever a
+# scene calls for signs, bubbles, screens or labels, so the retry asks for a scene that has none of them.
+_STRICT_NO_WRITING = (
+    " Plain scene only: no speech bubbles, chat windows, signs, labels, books, posters, screens or anything that could carry "
+    "writing. Objects, light and space only."
+)
+
+
+async def _generate_text_free(prompt: str) -> Optional[bytes]:
+    """A picture with no writing in it. Each picture is looked at once; if it shows any letters or invented lettering it is
+    made again with a stricter prompt, and if that one has writing too no picture is used (the caller falls back to a plain
+    card), so garbled words never reach a post. Text on a post is added afterwards as real text. A check that cannot run
+    lets the picture through."""
+    from app.agents.content_guard.media import picture_has_writing
+
+    attempt_prompt = prompt
+    for attempt in range(2):
+        data = await _generate_image_bytes(attempt_prompt)
+        if not data:
+            return None
+        if await picture_has_writing(data, "image/jpeg") is not True:
+            return data
+        logger.info("Generated picture had writing in it (attempt %d); %s", attempt + 1, "trying again" if attempt == 0 else "not using it")
+        attempt_prompt = (prompt[: 2048 - len(_STRICT_NO_WRITING)] + _STRICT_NO_WRITING).strip()
+    _fail("The picture kept coming out with writing in it, so a plain card is used instead.")
+    return None
+
+
 _gemini_skip_until = 0.0  # time.monotonic() until which the Gemini picture fallback is not tried (it said no outright)
 
 
@@ -511,7 +541,7 @@ async def generate_brand_mascot(
         if not prompt:
             return None
 
-        image_bytes = await _generate_image_bytes(prompt)
+        image_bytes = await _generate_text_free(prompt)
         if not image_bytes:
             return None
         qa_flagged, qa_reason = await _qa_gate(image_bytes, brand_profile)
@@ -587,7 +617,7 @@ async def generate_image_from_prompt(
         polished = await _run_gates(prompt, brand_profile or {}, avoid)
         if not polished:
             return None
-        return await _generate_image_bytes(polished)
+        return await _generate_text_free(polished)
     except Exception as exc:  # noqa: BLE001
         _last_failure.set("The picture could not be made because of an unexpected error.")
         logger.error(
