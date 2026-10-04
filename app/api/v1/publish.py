@@ -25,8 +25,8 @@ from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles, content_pieces, users
 from app.models.media import MediaAsset
 from app.pipelines.publish.base import PublishRequest
-from app.pipelines.publish.registry import get_publisher
-from app.pipelines.publish.spine import check_gate, extra_media_note, media_for_publish, planned_media_note, platform_key, record_override
+from app.pipelines.publish.registry import adapter_for, get_publisher
+from app.pipelines.publish.spine import availability_block, check_gate, extra_media_note, media_for_publish, planned_media_note, platform_key, record_override
 from app.pipelines.publish.health import mark_healthy
 from app.workers.token_refresh import recover_connection
 from app.pipelines.publish.token_store import get_token
@@ -267,20 +267,30 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
     display_platform = piece["platform"]
     platform = platform_key(display_platform)
 
+    unavailable = await availability_block(display_platform, ws)
+    if unavailable:
+        await _release_claim(body.piece_id, ws, previous_status)
+        raise unavailable.http()
+
     # Check platform token exists for this workspace
     token_data = await get_token(ws, platform)
-    if not token_data:
+
+    # Get publisher. A webhook or manual-handoff platform with saved settings resolves to the thin adapter, which
+    # has no token; every real publisher resolves, and fails, exactly as before.
+    try:
+        publisher = get_publisher(platform)
+    except ValueError:
+        publisher = await adapter_for(platform, ws)
+    if publisher is not None and not getattr(publisher, "uses_oauth_token", True):
+        token_data = {}
+    elif not token_data:
         await _release_claim(body.piece_id, ws, previous_status)
         raise HTTPException(
             status_code=400,
             detail=f"{display_platform} is not connected. "
                    "Connect it in Settings to publish.",
         )
-
-    # Get publisher
-    try:
-        publisher = get_publisher(platform)
-    except ValueError:
+    if publisher is None:
         await _release_claim(body.piece_id, ws, previous_status)
         raise HTTPException(
             status_code=400,
@@ -318,7 +328,21 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
 
     while attempt < max_attempts:
         pub_request.content = content
-        result = await publisher.publish(pub_request, token_data["access_token"])
+        result = await publisher.publish(pub_request, token_data.get("access_token", ""))
+
+        if result.manual_action_url:
+            # A manual handoff never posts. The piece goes back to where it was and the member gets the link; it is
+            # only published when they confirm with "I posted this myself".
+            await _release_claim(body.piece_id, ws, previous_status)
+            return {
+                "success": False,
+                "manual": True,
+                "piece_id": body.piece_id,
+                "platform": platform,
+                "manual_action_url": result.manual_action_url,
+                "instructions": result.manual_instructions,
+                "message": "Ready to post. Open the link, post it, then tap I posted this myself.",
+            }
 
         if result.success:
             await _update_piece_status(

@@ -119,3 +119,27 @@ async def get_platform_config_secrets(workspace_id: str, platform: str) -> dict[
     if not doc:
         return {}
     return {k: decrypt_token(v) for k, v in doc.get("secrets", {}).items()}
+
+
+# The settings Ops saves once for every workspace (template, limits, compose link, instructions) live under this
+# pseudo workspace id. A workspace's own row, when it has one, overrides them (its own webhook address, for example).
+PLATFORM_WIDE = "__platform__"
+
+
+async def get_effective_config(workspace_id: str, platform: str) -> Optional[dict]:
+    """The settings a publish for this workspace should use: the platform-wide row with the workspace's own row
+    laid over it. Includes decrypted secrets, for a publisher's own use only. None when neither row exists or the
+    winning row is switched off."""
+    wide = await platform_configs.find_one({"workspace_id": PLATFORM_WIDE, "platform": platform})
+    own = await platform_configs.find_one({"workspace_id": workspace_id, "platform": platform})
+    if not wide and not own:
+        return None
+    enabled = bool((own or wide).get("enabled", True))
+    if not enabled:
+        return None
+    fields: dict[str, Any] = {**((wide or {}).get("fields") or {}), **((own or {}).get("fields") or {})}
+    secrets = {
+        **{k: decrypt_token(v) for k, v in ((wide or {}).get("secrets") or {}).items()},
+        **{k: decrypt_token(v) for k, v in ((own or {}).get("secrets") or {}).items()},
+    }
+    return {"enabled": True, "label": (own or wide).get("label"), "fields": fields, "secrets": secrets}

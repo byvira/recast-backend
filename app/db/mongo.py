@@ -40,6 +40,10 @@ workspace_connections: AsyncIOMotorCollection = get_client().get_default_databas
 # Ops Dashboard — admin-entered config for config-driven platforms (webhook /
 # manual-handoff / rss_pull), see app/pipelines/publish/platform_config_store.py
 platform_configs: AsyncIOMotorCollection = get_client().get_default_database()["platform_configs"]
+# What Ops allows for a platform (stage, rollout, live test). One document per registry key; none means the derived defaults.
+platform_ops: AsyncIOMotorCollection = get_client().get_default_database()["platform_ops"]
+# A workspace's RSS directory listing for a platform: the link they submitted and where it stands. Written by the member.
+platform_listings: AsyncIOMotorCollection = get_client().get_default_database()["platform_listings"]
 # Publish failure audit trail, written by app/pipelines/publish/supervisor/alerts.py
 # (previously only ever accessed there via db["publish_incidents"] ad hoc —
 # named here too so app/agents/supervisor/rules.py's platform_delivery_failing
@@ -260,6 +264,8 @@ async def create_indexes() -> None:
     await invites.create_index([("workspace_id", 1), ("status", 1)])
     await workspace_connections.create_index([("workspace_id", 1), ("platform", 1)], unique=True)
     await platform_configs.create_index([("workspace_id", 1), ("platform", 1)], unique=True)
+    await platform_ops.create_index("platform_key", unique=True)
+    await platform_listings.create_index([("workspace_id", 1), ("platform_key", 1)], unique=True)
 
     # ── Remy/Odette scaffolding ──────────────────────────────────────────
     await member_voice_settings.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)

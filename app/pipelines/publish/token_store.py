@@ -71,6 +71,7 @@ async def save_token(
     connected_by: str = "",
     profile_url: Optional[str] = None,
     recovered_via: str = "reconnecting",
+    scopes: Optional[list[str]] = None,
 ) -> None:
     """
     Save or update OAuth tokens for a workspace + platform.
@@ -89,9 +90,10 @@ async def save_token(
 
     now = datetime.now(timezone.utc)
     previous = await workspace_connections.find_one(
-        {"workspace_id": workspace_id, "platform": platform}, {"health.state": 1}
+        {"workspace_id": workspace_id, "platform": platform}, {"health.state": 1, "health.reason": 1}
     )
     previous_state = ((previous or {}).get("health") or {}).get("state", "healthy")
+    was_disconnected_by_ops = ((previous or {}).get("health") or {}).get("reason") == "ops_disconnected"
 
     await workspace_connections.update_one(
         {"workspace_id": workspace_id, "platform": platform},
@@ -107,6 +109,8 @@ async def save_token(
                 "profile_url": profile_url,
                 "is_active": True,
                 "last_refreshed_at": now,
+                # What the provider said it granted, when it tells us. A renewal does not send it, so an earlier value stays.
+                **({"scopes": scopes} if scopes else {}),
                 # A (re)connect or renewal is a fresh, working credential.
                 "health": {
                     "state": "healthy", "failures": 0, "reason": "",
@@ -118,6 +122,8 @@ async def save_token(
                 "connected_by": connected_by,
                 "connected_at": now,
             },
+            # Reconnecting clears a disconnect made by Ops.
+            "$unset": {"disconnected_by_ops": ""},
         },
         upsert=True,
     )
@@ -126,6 +132,13 @@ async def save_token(
 
     from app.pipelines.publish.health import note_recovered
     await note_recovered(workspace_id, platform, previous_state=previous_state, via=recovered_via)
+
+    if was_disconnected_by_ops:
+        # Posts held when Ops disconnected the account go back to the queue, if they are still allowed out.
+        from app.pipelines.platform_ops.holds import release_workspace_posts
+        definition = get_platform(platform)
+        if definition:
+            await release_workspace_posts(definition, workspace_id)
 
 
 async def get_token(workspace_id: str, platform: str) -> Optional[dict]:

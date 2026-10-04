@@ -508,6 +508,7 @@ async def google_callback(
         platform_user_id=token_data["platform_user_id"],
         username=token_data.get("username", ""),
         connected_by=user_id,
+        scopes=token_data.get("scopes"),
     )
     connected.append("google")
     logger.info("Google connected for user %s — %s", user_id, token_data.get("email"))
@@ -617,6 +618,7 @@ async def oauth_callback(
         profile_url=_derive_profile_url(
             platform, token_data.get("username", ""), token_data.get("platform_user_id", "")
         ),
+        scopes=token_data.get("scopes"),
     )
 
     return _oauth_popup_response(True, f"{platform} connected successfully.")

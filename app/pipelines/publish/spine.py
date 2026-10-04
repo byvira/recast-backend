@@ -23,7 +23,7 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 from app.db.mongo import content_pieces
-from app.pipelines.publish.registry import get_publisher
+from app.pipelines.publish.registry import adapter_for, get_publisher
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.validators import validate_for_platform
 from app.platforms.base import import_all, resolve_platform_by_display_value
@@ -110,11 +110,31 @@ def parse_schedule_time(raw: str) -> datetime:
 
 @dataclass
 class GateBlock:
-    code: str       # NOT_APPROVED | REJECTED | NEEDS_REVIEW
+    code: str       # NOT_APPROVED | REJECTED | NEEDS_REVIEW | PLATFORM_PAUSED | PLATFORM_RETIRED | PLATFORM_NOT_AVAILABLE
     message: str
 
     def http(self) -> HTTPException:
         return HTTPException(status_code=409, detail={"code": self.code, "message": self.message})
+
+
+async def availability_block(platform_text: str, workspace_id: str) -> Optional[GateBlock]:
+    """A block when Ops has paused or retired the platform, or has not opened it to this workspace. A platform
+    the code cannot publish to at all is left to the usual "not supported yet" checks, so those messages stay as they were."""
+    from app.pipelines.platform_ops.availability import platform_availability
+
+    slug = platform_key(platform_text)
+    result = await platform_availability(slug, workspace_id)
+    from app.platforms.base import get_platform
+
+    definition = get_platform(slug)
+    name = definition.label if definition else platform_text
+    if result.value == "paused":
+        return GateBlock("PLATFORM_PAUSED", f"{name} is paused by Recast for now. Nothing was cancelled. Try again once it is back.")
+    if result.value == "retired":
+        return GateBlock("PLATFORM_RETIRED", f"{name} is no longer available. You can still copy your post.")
+    if result.value == "hidden" and result.reason not in ("no_code", "unknown_platform"):
+        return GateBlock("PLATFORM_NOT_AVAILABLE", f"{name} isn't available for this workspace yet.")
+    return None
 
 
 def review_reason(piece: dict) -> Optional[str]:
@@ -243,12 +263,27 @@ async def schedule_blocker(piece: dict, workspace_id: str) -> Optional[tuple[int
     platform = piece["platform"]
     slug = platform_key(platform)
 
-    if not await get_token(workspace_id, slug):
-        return 400, f"{platform} is not connected. Connect it in Settings before scheduling."
+    unavailable = await availability_block(platform, workspace_id)
+    if unavailable:
+        return 409, unavailable.message
+
+    # A webhook or manual-handoff platform with saved settings has no sign in, so "connected" means its settings
+    # are complete. Every real publisher is checked exactly as before.
+    adapter = None
+    real_publisher = True
     try:
         get_publisher(slug)
     except ValueError:
-        return 400, f"Publishing to {platform} isn't supported yet."
+        real_publisher = False
+        adapter = await adapter_for(slug, workspace_id)
+    if adapter is not None:
+        if not adapter.is_manual and not (adapter.config.get("secrets") or {}).get("webhook_url"):
+            return 400, f"{platform} has no webhook address set yet. Ask the person who runs Recast to finish setting it up."
+    else:
+        if not await get_token(workspace_id, slug):
+            return 400, f"{platform} is not connected. Connect it in Settings before scheduling."
+        if not real_publisher:
+            return 400, f"Publishing to {platform} isn't supported yet."
     is_valid, issues = validate_for_platform(slug, piece["content"])
     if not is_valid:
         return 400, f"Content validation failed: {'; '.join(issues)}"

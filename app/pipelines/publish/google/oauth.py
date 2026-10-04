@@ -196,6 +196,8 @@ async def exchange_code(code: str, platform: str = "google") -> dict:
             "platform_user_id":    google_user_id,
             "username":            username,
             "email":               email,
+            # What Google says it granted, as a list.
+            "scopes":              str(token_data.get("scope", "")).split(),
             "youtube_channel_id":  youtube_channel_id,
             "youtube_channel_name": youtube_channel_name,
         }

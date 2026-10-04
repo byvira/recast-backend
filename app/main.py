@@ -41,6 +41,9 @@ from app.api.v1 import search as search_router
 from app.api.v1 import share as share_router
 from app.api.v1 import platforms as platforms_router
 from app.api.v1 import ops_platforms as ops_platforms_router
+from app.api.v1 import ops_platform_lifecycle as ops_platform_lifecycle_router
+from app.api.v1 import ops_platform_connections as ops_platform_connections_router
+from app.api.v1 import ops_platform_insights as ops_platform_insights_router
 from app.api.v1 import ops_cohorts as ops_cohorts_router
 from app.api.v1 import ops_ai_budget as ops_ai_budget_router
 from app.api.v1 import ops_llm_health as ops_llm_health_router
@@ -345,7 +348,12 @@ app.include_router(share_router.router, prefix="/api/v1/share", tags=["Share"])
 app.include_router(assistant_router.router, prefix="/api/v1/assistant", tags=["Assistant"])
 app.include_router(supervisor_router.router, prefix="/api/v1/supervisor", tags=["Supervisor"])
 app.include_router(platforms_router.router, prefix="/api/v1/platforms", tags=["Platforms"])
+# The settings routes come first: their fixed paths ("/configs", "/{key}/config") must be matched before the
+# overview router's "/{key}" detail route would take them.
 app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
+app.include_router(ops_platform_lifecycle_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
+app.include_router(ops_platform_connections_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
+app.include_router(ops_platform_insights_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
 app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"])

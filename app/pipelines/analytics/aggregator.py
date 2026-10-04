@@ -37,9 +37,15 @@ def _get_fetcher(platform: str) -> AnalyticsFetcher | None:
     return instance
 
 
-def _default_analytics_platforms() -> list[str]:
+async def _default_analytics_platforms() -> list[str]:
+    """Every platform with a results reader, except retired ones: their stored numbers stay readable but nothing new
+    is fetched. A paused platform keeps being read."""
+    from app.pipelines.platform_ops.store import get_ops_many
+
     import_all()
-    return [p.key for p in list_platforms() if p.analytics_fetcher_cls]
+    candidates = [p for p in list_platforms() if p.analytics_fetcher_cls]
+    ops = await get_ops_many(candidates)
+    return [p.key for p in candidates if ops[p.key]["ops_stage"] != "retired"]
 
 
 async def fetch_account_metrics_all(
@@ -53,7 +59,7 @@ async def fetch_account_metrics_all(
     Always persists results to MongoDB account_metrics collection, scoped by workspace.
     """
     if platforms is None:
-        platforms = _default_analytics_platforms()
+        platforms = await _default_analytics_platforms()
 
     db      = get_db()
     results = []

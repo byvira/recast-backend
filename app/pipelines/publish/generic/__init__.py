@@ -1,14 +1,12 @@
-"""
-Generic publishers for config-driven platforms — consume platform_configs
-instead of a per-platform OAuth token, so adding a new webhook or
-manual-handoff platform needs zero new Python code, only a PlatformDefinition
-(app/platforms/planned/) plus an admin filling in the Ops Dashboard form.
+"""Generic publishers for config-driven platforms.
 
-Deliberately NOT wired into app/pipelines/publish/registry.py's get_publisher()
-or the live /publish/now path yet — that's cross-cutting surgery on the
-currently-working publish flow (touches how PUBLISHERS is looked up, how
-PublishRequest carries a workspace_connections token vs. a platform_configs
-row) that belongs in its own reviewed pass, not bundled into standing up the
-Ops Dashboard's data layer. These classes are real and independently usable
-today; wiring them into the orchestrator is follow-up work.
+A webhook platform (Telegram, Slack, Discord, ...) or a manual-handoff platform (X, Reddit, ...) has no sign in, so
+it needs no per-platform Python code: a PlatformDefinition in app/platforms/ plus the settings Ops saves for it
+(platform_config_store). `adapter.ConfigPublisherAdapter` wraps WebhookPublisher or ManualHandoffPublisher and
+returns the same PublishResult the real publishers return.
+
+How it is reached: callers try registry.get_publisher() first (real publishers, unchanged) and, only when that
+says "not supported", ask registry.adapter_for(). It returns an adapter only for a platform with a webhook or
+manual-handoff pattern that has saved, enabled settings, so a platform with no settings stays "not supported yet".
+Publish Now, the scheduled worker and the scheduling gate all resolve this way.
 """

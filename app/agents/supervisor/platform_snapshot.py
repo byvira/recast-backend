@@ -24,6 +24,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.db.mongo import account_metrics, post_metrics, workspace_connections
+from app.pipelines.platform_ops.store import get_ops
 from app.platforms.base import get_platform, import_all
 
 PERFORMANCE_LOOKBACK_DAYS = 30
@@ -57,6 +58,8 @@ async def gather_platform_snapshot(workspace_id: str) -> dict:
         connected.append({
             "platform": key,
             "registry_status": definition.status if definition else "unregistered",
+            # What Ops has set (live, paused, retired ...), kept apart from what the code can do.
+            "ops_stage": (await get_ops(definition))["ops_stage"] if definition else None,
         })
         if definition:
             registry_notes[key] = {

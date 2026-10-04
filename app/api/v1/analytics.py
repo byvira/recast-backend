@@ -465,6 +465,9 @@ async def get_calendar(
             "stage":            compute_kanban_stage(piece),
             "platforms":        [piece.get("platform", "")] if piece.get("platform") else [],
             "scheduled_at":     iso_utc(piece.get("publish_scheduled_at")),
+            # True while the post's platform is paused, retired or its account was disconnected by Ops: the post is
+            # kept, not cancelled, and will not go out until the hold is released.
+            "held":             bool(piece.get("hold")),
             "created_at":       piece.get("created_at"),
             "platform_results": [platform_result],
             "campaign_id":      campaign_id,

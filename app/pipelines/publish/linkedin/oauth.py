@@ -93,6 +93,8 @@ async def exchange_code(code: str) -> dict:
             "platform_user_id": platform_user_id,
             "username":         username,
             "email":            email,
+            # What LinkedIn says it granted, as a list.
+            "scopes":           str(token_data.get("scope", "")).replace(",", " ").split(),
         }
 
 

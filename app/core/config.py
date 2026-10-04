@@ -293,5 +293,10 @@ class Settings(BaseSettings):
     # "publish anyway". Emergency switch only — set False to lift every check.
     PUBLISH_REQUIRE_APPROVAL: bool = True
 
+    # Comma separated workspace ids that count as the Ops workspace for the platforms module: a platform whose
+    # rollout is "Ops workspace only" is available only in these. Empty means the default workspaces of master
+    # admins (see app.pipelines.platform_ops.availability).
+    OPS_WORKSPACE_IDS: str = ""
+
 
 settings = Settings()

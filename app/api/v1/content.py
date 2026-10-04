@@ -33,6 +33,7 @@ from app.pipelines.publish.spine import (
     platform_key,
     promote_approved_intent,
     record_override,
+    availability_block,
     schedule_blocker,
 )
 from app.pipelines.text.storage import (
@@ -443,6 +444,9 @@ async def schedule_piece(
     # not a string one; a time already well past is refused up front.
     scheduled_at = parse_schedule_time(body.scheduled_at)
 
+    unavailable = await availability_block(platform, ctx.workspace_id)
+    if unavailable:
+        raise unavailable.http()
     blocker = await schedule_blocker(piece, ctx.workspace_id)
     if blocker:
         raise HTTPException(status_code=blocker[0], detail=blocker[1])

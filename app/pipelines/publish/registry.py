@@ -33,3 +33,28 @@ def get_publisher(platform: str) -> PlatformPublisher:
             f"Available: {', '.join(available) or 'none'}"
         )
     return publisher_class()
+
+async def adapter_for(platform: str, workspace_id: str):
+    """The thin adapter for a webhook or manual-handoff platform that has saved, enabled settings, else None.
+    Callers try get_publisher first and only ask here when it says "not supported", so real publishers resolve
+    exactly as before and a platform with no saved settings stays "not supported yet"."""
+    from app.pipelines.publish.generic.adapter import ConfigPublisherAdapter, is_adapter_pattern
+    from app.pipelines.publish.platform_config_store import get_effective_config
+
+    _import_all_platforms()
+    definition = _get_platform_definition(platform)
+    if not is_adapter_pattern(definition):
+        return None
+    config = await get_effective_config(workspace_id, definition.key)
+    return ConfigPublisherAdapter(definition, config) if config else None
+
+
+async def resolve_publisher(platform: str, workspace_id: str):
+    """get_publisher, then the adapter. Raises the same ValueError get_publisher does when neither applies."""
+    try:
+        return get_publisher(platform)
+    except ValueError:
+        adapter = await adapter_for(platform, workspace_id)
+        if adapter is None:
+            raise
+        return adapter

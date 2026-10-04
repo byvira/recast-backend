@@ -98,6 +98,8 @@ async def recover_connection(workspace_id: str, platform: str) -> bool:
     )
     if not account:
         return False
+    if (account.get("health") or {}).get("reason") == "ops_disconnected":
+        return False
     ok, error = await refresh_connection(account)
     if not ok:
         await health.record_failure(workspace_id, platform, reason=error, broken=True)
@@ -108,8 +110,9 @@ async def recover_connection(workspace_id: str, platform: str) -> bool:
 async def refresh_expiring_tokens() -> None:
     """Hourly: renew every due connection (see ``_is_due``)."""
     now = datetime.now(timezone.utc)
+    # A connection Ops disconnected is left alone until the member reconnects it; renewing it would undo that.
     connections = await workspace_connections.find(
-        {"is_active": True, "expires_at": {"$ne": None}}
+        {"is_active": True, "expires_at": {"$ne": None}, "health.reason": {"$ne": "ops_disconnected"}}
     ).to_list(length=5000)
 
     refreshed = failed = 0

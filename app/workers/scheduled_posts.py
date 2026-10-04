@@ -13,7 +13,7 @@ from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import content_pieces, users, workspaces
 from app.models.media import MediaAsset
 from app.pipelines.publish.base import PublishRequest
-from app.pipelines.publish.registry import get_publisher
+from app.pipelines.publish.registry import adapter_for, get_publisher
 from app.pipelines.publish.spine import check_gate, extra_media_note, iso_utc, media_for_publish, planned_media_note, platform_key
 from app.pipelines.publish.supervisor.alerts import alert_fatal
 from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
@@ -99,6 +99,8 @@ def _due_filter(now: datetime) -> dict:
     return {
         "publish_status": "queued",
         "deleted":        {"$ne": True},
+        # A post held because its platform is paused or retired is never claimed.
+        "hold":           {"$exists": False},
         "$or": [
             {"publish_scheduled_at": {"$lte": now}},
             {"publish_scheduled_at": {"$lte": now.isoformat()}},
@@ -259,6 +261,42 @@ async def _fail_before_publish(piece: dict, platform: str, user_id: str, workspa
     )
 
 
+async def _hold_for_manual_post(piece: dict, platform: str, workspace_id: str, result) -> None:
+    """A manual handoff cannot be posted by us. At the scheduled time the post goes back to waiting, with the
+    compose link and a plain note, and the member sees it in the Activity Log. It is only published when they
+    confirm with "I posted this myself". It is never marked published here."""
+    name = platform_name(platform)
+    note = f"Time to post this on {name} yourself. Open the link, post it, then tap I posted this myself."
+    await content_pieces.update_one(
+        {"piece_id": piece["piece_id"], "publish_status": "publishing"},
+        {"$set": {
+            "publish_status": "pending",
+            "publish_scheduled_at": "",
+            "schedule_note": note,
+            "manual_post_due": True,
+            "manual_action_url": result.manual_action_url,
+            "manual_instructions": result.manual_instructions,
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    try:
+        await record_system(
+            workspace_id=workspace_id,
+            key=f"publish:{piece['piece_id']}",
+            actor_name="Publishing scheduler",
+            category="post_published",
+            title=f"Time to post on {name} yourself",
+            description=note,
+            status="warning",
+            channel=platform,
+            target_id=piece["piece_id"],
+            target_type="Scheduled Post",
+            href="/dashboard/drafts",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("manual-post activity row failed for %s: %s", piece["piece_id"], exc)
+
+
 async def _publish_scheduled_piece(piece: dict) -> None:
     """Publish one scheduled piece."""
     piece_id     = piece["piece_id"]
@@ -287,9 +325,34 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         )
         return
 
+    # The platform may have been paused or retired after this post was claimed. Put it back in the queue, held, and
+    # do not send it.
+    from app.pipelines.platform_ops.availability import platform_availability
+    availability = await platform_availability(platform, workspace_id)
+    if availability.value in ("paused", "retired"):
+        reason = "platform_paused" if availability.value == "paused" else "platform_retired"
+        await content_pieces.update_one(
+            {"piece_id": piece_id, "publish_status": "publishing"},
+            {"$set": {
+                "publish_status": "queued",
+                "hold": {"reason": reason, "platform_key": platform, "held_at": datetime.now(timezone.utc)},
+                "schedule_note": "On hold while this platform is paused.",
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        return
+
     # Get token — scoped to the piece's workspace
     token_data = await get_token(workspace_id, platform)
-    if not token_data:
+
+    # Get publisher. A webhook or manual-handoff platform with saved settings resolves to the thin adapter (no token).
+    try:
+        publisher = get_publisher(platform)
+    except ValueError:
+        publisher = await adapter_for(platform, workspace_id)
+    if publisher is not None and not getattr(publisher, "uses_oauth_token", True):
+        token_data = {}
+    elif not token_data:
         logger.warning(
             "No token for workspace %s platform %s — piece %s skipped",
             workspace_id, platform, piece_id,
@@ -299,11 +362,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             f"{platform_name(platform)} isn't connected, so this post couldn't go out. Reconnect it in Settings.",
         )
         return
-
-    # Get publisher
-    try:
-        publisher = get_publisher(platform)
-    except ValueError:
+    if publisher is None:
         logger.error("No publisher for platform %s", platform)
         await _fail_before_publish(
             piece, platform, user_id, workspace_id,
@@ -342,7 +401,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
     )
 
     try:
-        result = await publisher.publish(pub_request, token_data["access_token"])
+        result = await publisher.publish(pub_request, token_data.get("access_token", ""))
     except Exception as exc:  # noqa: BLE001
         # An exception here must not leave the piece "publishing", and must not
         # be retried by itself: the platform may already have the post.
@@ -351,6 +410,10 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             piece, platform, user_id, workspace_id,
             "Publishing hit an unexpected problem. Check the platform before trying again.",
         )
+        return
+
+    if result.manual_action_url:
+        await _hold_for_manual_post(piece, platform, workspace_id, result)
         return
 
     if result.success:

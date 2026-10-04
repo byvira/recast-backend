@@ -61,6 +61,8 @@ class PublishResult:
     # a manual action (surface the link, let the user confirm) check this
     # field explicitly rather than treating success=False as a plain failure.
     manual_action_url: Optional[str] = None
+    # What the member should do with that link (set from the platform's config, plain text).
+    manual_instructions: Optional[str] = None
     # Set when the piece had media attached but this platform couldn't take
     # it (unsupported format, or the attach step itself failed) — success
     # can still be True (the text half published fine); this is what makes
