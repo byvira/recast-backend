@@ -322,3 +322,12 @@ def mock_llm(monkeypatch):
             state["chat"] = value
 
     return _MockLLMHandle()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_content_guard_checks(monkeypatch):
+    """No test spends real model quota on the Content Guard's text and picture reading. Its own tests turn this back on
+    and stub the models."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "CONTENT_GUARD_LIVE_CHECKS", False)

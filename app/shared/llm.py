@@ -46,6 +46,25 @@ from app.utils.jsonparser import parse_llm_json
 logger = logging.getLogger(__name__)
 
 
+def _tidy_output(fn):
+    """Every model reply passes through the Content Guard cleanup (dashes, invisible characters, filler openings) on its
+    way out, so no caller has to remember to do it. Text replies are cleaned as text, structured replies value by value."""
+    import functools
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        from app.agents.content_guard.rules import clean_text, clean_value
+
+        result = await fn(*args, **kwargs)
+        if isinstance(result, str):
+            return clean_text(result)
+        if isinstance(result, dict):
+            return clean_value(result)
+        return result
+
+    return wrapper
+
+
 # ─────────────────────────────────────────────────────────────
 # Models
 # ─────────────────────────────────────────────────────────────
@@ -524,6 +543,7 @@ async def _backoff_retry(
 # 1. Plain text generation — Groq
 # ─────────────────────────────────────────────────────────────
 
+@_tidy_output
 async def call_llm(
     prompt: str,
     model: GroqModel = GroqModel.BALANCED,
@@ -698,6 +718,7 @@ async def call_llm_stream(
 # 3. Structured JSON output — Groq
 # ─────────────────────────────────────────────────────────────
 
+@_tidy_output
 async def call_llm_structured(
     prompt: str,
     system: str = "",
@@ -805,6 +826,7 @@ async def call_llm_structured(
         return {}
 
 
+@_tidy_output
 async def call_llm_chat(
     messages: list[dict[str, str]],
     system: str = "",
@@ -1140,6 +1162,7 @@ def _skip_gemini_if_refused(exc: BaseException) -> None:
         pass
 
 
+@_tidy_output
 @traceable(run_type="llm", name="gemini.fallback")
 async def call_llm_fallback(
     prompt: str,

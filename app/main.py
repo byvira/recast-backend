@@ -44,6 +44,7 @@ from app.api.v1 import ops_platforms as ops_platforms_router
 from app.api.v1 import ops_platform_lifecycle as ops_platform_lifecycle_router
 from app.api.v1 import ops_platform_connections as ops_platform_connections_router
 from app.api.v1 import ops_platform_insights as ops_platform_insights_router
+from app.api.v1 import content_guard as content_guard_module
 from app.api.v1 import ops_cohorts as ops_cohorts_router
 from app.api.v1 import ops_ai_budget as ops_ai_budget_router
 from app.api.v1 import ops_llm_health as ops_llm_health_router
@@ -354,6 +355,8 @@ app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", 
 app.include_router(ops_platform_lifecycle_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
 app.include_router(ops_platform_connections_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
 app.include_router(ops_platform_insights_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
+app.include_router(content_guard_module.router, prefix="/api/v1/content-guard", tags=["Content Guard"])
+app.include_router(content_guard_module.ops_router, prefix="/api/v1/ops/content-safety", tags=["Ops"])
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
 app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"])

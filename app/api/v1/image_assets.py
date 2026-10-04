@@ -142,6 +142,9 @@ def _image_mime(data: bytes) -> str:
 
 async def _store_image(data: bytes, *, workspace_id: str, user_id: str, size: tuple[int, int], mime: str, source: MediaSource,
                        flagged_reason: Optional[str] = None) -> MediaAsset:
+    from app.agents.content_guard.media import assert_image_ok
+
+    await assert_image_ok(data, mime, workspace_id=workspace_id, where="generation")
     url = await upload_file(data, UploadContentType.IMAGE, user_id)
     media = MediaAsset(
         id=str(uuid4()), workspace_id=workspace_id, kind=MediaKind.IMAGE, url=url, mime_type=mime,
@@ -647,6 +650,10 @@ async def upload_image_asset(
         raise HTTPException(
             status_code=400, detail=f"Image must be {max_bytes // (1024 * 1024)}MB or smaller."
         )
+
+    from app.agents.content_guard.media import assert_image_ok
+
+    await assert_image_ok(contents, file.content_type or "image/jpeg", workspace_id=ctx.workspace_id, where="upload")
 
     try:
         url = await upload_file(contents, UploadContentType.IMAGE, ctx.user_id)

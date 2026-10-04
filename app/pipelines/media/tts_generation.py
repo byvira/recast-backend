@@ -506,6 +506,9 @@ async def synthesize_speech(
     user_id: str,
 ) -> Optional[bytes]:
     """Audio only. See _synthesize for the provider order and the lexicon."""
+    from app.agents.content_guard.media import assert_speech_ok
+
+    await assert_speech_ok(text, noun="script", workspace_id=workspace_id, where="narration")
     result = await _synthesize(
         text=text, voice_settings=voice_settings, lexicon=lexicon,
         workspace_id=workspace_id, user_id=user_id, timed=False,
@@ -523,6 +526,9 @@ async def synthesize_speech_timed(
 ) -> Optional[SpeechResult]:
     """Audio plus the exact time of every word when the provider gives it, so
     a recording made here has a real transcript from the start."""
+    from app.agents.content_guard.media import assert_speech_ok
+
+    await assert_speech_ok(text, noun="script", workspace_id=workspace_id, where="narration")
     return await _synthesize(
         text=text, voice_settings=voice_settings, lexicon=lexicon,
         workspace_id=workspace_id, user_id=user_id, timed=True,

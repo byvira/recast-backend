@@ -273,6 +273,11 @@ async def analyze_media(asset: dict) -> dict:
         return failed("No speech could be transcribed from this recording.")
 
     media_words = [MediaTranscriptWord(word=w.word, start_s=w.start_s, end_s=w.end_s) for w in words]
+    from app.agents.content_guard.media import speech_problem, transcript_text
+
+    problem = speech_problem(transcript_text(media_words), "video" if asset.get("kind") == "video" else "recording")
+    if problem:
+        return failed(problem[0])
     duration = duration_s or media_words[-1].end_s
     chapters = await generate_chapters(media_words, language, duration)
 

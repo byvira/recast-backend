@@ -115,6 +115,19 @@ async def upload_media(
             detail=f"{kind.value.capitalize()} must be {max_bytes // (1024 * 1024)}MB or smaller.",
         )
 
+    if kind == MediaKind.IMAGE:
+        from app.agents.content_guard.media import assert_image_ok
+
+        await assert_image_ok(contents, file.content_type or "image/jpeg", workspace_id=ctx.workspace_id, where="upload")
+    spoken_words = None
+    if kind in (MediaKind.AUDIO, MediaKind.VIDEO):
+        from app.agents.content_guard.media import read_upload_speech
+
+        spoken_words = await read_upload_speech(
+            contents, file.filename or "upload", noun="video" if kind == MediaKind.VIDEO else "recording",
+            workspace_id=ctx.workspace_id,
+        )
+
     try:
         uploaded = await upload_file_detailed(contents, _MIME_TO_UPLOAD_TYPE[kind], ctx.user_id)
     except Exception as exc:  # noqa: BLE001 — same tolerance as campaigns' thumbnail upload
@@ -135,7 +148,10 @@ async def upload_media(
         created_by=ctx.user_id,
         created_at=datetime.now(timezone.utc),
     )
-    await media_assets.insert_one(asset.model_dump())
+    document = asset.model_dump()
+    if spoken_words:
+        document["transcript"] = spoken_words  # already read for the content check, so publishing does not read it again
+    await media_assets.insert_one(document)
     return asset
 
 

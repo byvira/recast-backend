@@ -110,7 +110,7 @@ def parse_schedule_time(raw: str) -> datetime:
 
 @dataclass
 class GateBlock:
-    code: str       # NOT_APPROVED | REJECTED | NEEDS_REVIEW | PLATFORM_PAUSED | PLATFORM_RETIRED | PLATFORM_NOT_AVAILABLE
+    code: str       # NOT_APPROVED | REJECTED | NEEDS_REVIEW | UNSAFE_CONTENT | PLATFORM_PAUSED | PLATFORM_RETIRED | PLATFORM_NOT_AVAILABLE
     message: str
 
     def http(self) -> HTTPException:
@@ -120,8 +120,11 @@ class GateBlock:
 async def availability_block(platform_text: str, workspace_id: str) -> Optional[GateBlock]:
     """A block when Ops has paused or retired the platform, or has not opened it to this workspace. A platform
     the code cannot publish to at all is left to the usual "not supported yet" checks, so those messages stay as they were."""
+    from app.agents.content_guard.config import ensure_fresh
     from app.pipelines.platform_ops.availability import platform_availability
 
+    # Every publish and schedule path asks here first, so the safety settings Ops saved are current before the gate reads them.
+    await ensure_fresh()
     slug = platform_key(platform_text)
     result = await platform_availability(slug, workspace_id)
     from app.platforms.base import get_platform
@@ -148,6 +151,28 @@ def review_reason(piece: dict) -> Optional[str]:
     return None
 
 
+def unsafe_reason(piece: dict) -> Optional[str]:
+    """Why the post's own text may not go out (adult, hateful, violent or self harm content, or text left over from the
+    writing assistant), or None. Uses the free rule screen with the current Ops settings."""
+    from app.agents.content_guard.agent import rule_screen
+    from app.agents.content_guard.rules import CATEGORIES, content_hash
+
+    text = str(piece.get("content") or "")
+    verdict = rule_screen(text)
+    if not verdict.ok:
+        return verdict.message()
+    # The model's reading of exactly this text, if one was taken (see check_piece_before_send).
+    stored = piece.get("safety_check")
+    if isinstance(stored, dict) and stored.get("ok") is False and stored.get("hash") == content_hash(text):
+        names = ", ".join(CATEGORIES.get(c, c).lower() for c in stored.get("categories") or []) or "unsafe content"
+        return f"This post was held back because it may contain {names}. Edit it or ask for a rewrite."
+    for media_id, record in (piece.get("media_safety") or {}).items():
+        if isinstance(record, dict) and record.get("ok") is False:
+            names = ", ".join(CATEGORIES.get(c, c).lower() for c in record.get("categories") or []) or "unsafe content"
+            return f"An attached picture or recording may show {names}, so this post was held back. Remove it or choose another."
+    return None
+
+
 def check_gate(
     piece: dict, *, confirm_anyway: bool = False, honour_recorded_override: bool = False,
 ) -> Optional[GateBlock]:
@@ -157,6 +182,10 @@ def check_gate(
     blocked. Flagged / not quality-passed / flagged media is blocked unless the
     caller confirms "publish anyway", or (worker only) a person already did when
     scheduling. PUBLISH_REQUIRE_APPROVAL=False lifts all of it."""
+    # Unsafe text is refused whatever the approval setting says, and "Publish anyway" does not lift it: the text has to change.
+    unsafe = unsafe_reason(piece)
+    if unsafe:
+        return GateBlock("UNSAFE_CONTENT", unsafe)
     if not settings.PUBLISH_REQUIRE_APPROVAL:
         return None
     status = piece.get("approval_status") or "pending"
@@ -266,6 +295,12 @@ async def schedule_blocker(piece: dict, workspace_id: str) -> Optional[tuple[int
     unavailable = await availability_block(platform, workspace_id)
     if unavailable:
         return 409, unavailable.message
+    from app.agents.content_guard.agent import check_piece_before_send
+
+    await check_piece_before_send(piece, workspace_id)
+    unsafe = unsafe_reason(piece)
+    if unsafe:
+        return 409, unsafe
 
     # A webhook or manual-handoff platform with saved settings has no sign in, so "connected" means its settings
     # are complete. Every real publisher is checked exactly as before.

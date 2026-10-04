@@ -97,6 +97,7 @@ from app.pipelines.media import fit_script as script_fitting
 from app.pipelines.media.echo_reduction import BASIC_CLEANUP_NOTE, EchoReductionError, basic_cleanup, reduce_echo
 from app.pipelines.media.music_library import list_library_tracks
 from app.pipelines.media.soundbite_extraction import SoundbiteExtractionError, evaluate_quality, trim_span
+from app.agents.content_guard.media import assert_speech_ok, episode_is_safe, transcript_text
 from app.pipelines.media.tts_generation import is_language_supported, synthesize_speech, synthesize_speech_timed
 from app.shared.localized_strings import clean_translation, looks_leaked
 from app.pipelines.media.video_render import TranscriptWordLike, VideoRenderError, render_video
@@ -933,6 +934,7 @@ async def _ingest_audio(
     if run:
         await run.step("Transcribing what was said")
     transcript = await transcribe_audio_bytes(contents, filename=filename)
+    await assert_speech_ok(transcript_text(transcript), noun="recording", workspace_id=ctx.workspace_id, where="upload")
 
     now = datetime.now(timezone.utc)
     media = MediaAsset(
@@ -1716,6 +1718,8 @@ async def get_podcast_feed_xml(request: Request, token: str) -> Response:
         media = media_by_id.get(media_id)
         if not media:
             continue  # no real playable file — never list an episode with nothing to play
+        if not episode_is_safe(ep):
+            continue  # the title or what is said in it fails the content rules, so it never reaches the public feed
         pub_date = ep["created_at"]
         if isinstance(pub_date, str):
             pub_date = datetime.fromisoformat(pub_date)

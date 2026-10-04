@@ -216,6 +216,10 @@ async def process_scheduled_posts() -> None:
 
     logger.info("Found %d scheduled posts due for publishing", len(due))
 
+    from app.agents.content_guard.agent import check_piece_before_send
+    from app.agents.content_guard.config import ensure_fresh
+
+    await ensure_fresh()  # the gate below reads the current content safety settings
     for candidate in due:
         piece_id = candidate["piece_id"]
         piece = await _claim_due_piece(piece_id, now)
@@ -224,6 +228,7 @@ async def process_scheduled_posts() -> None:
         try:
             # Only approved posts go out; a flagged one only if a person already
             # chose "publish anyway" when scheduling it.
+            await check_piece_before_send(piece, piece.get("workspace_id") or "")
             block = check_gate(piece, honour_recorded_override=True)
             if block:
                 await _return_unapproved(piece, block.message)

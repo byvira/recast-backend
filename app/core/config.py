@@ -297,6 +297,9 @@ class Settings(BaseSettings):
     # rollout is "Ops workspace only" is available only in these. Empty means the default workspaces of master
     # admins (see app.pipelines.platform_ops.availability).
     OPS_WORKSPACE_IDS: str = ""
+    # Content Guard reads text with a model and pictures with a vision model. Tests switch this off so a test run never
+    # spends real provider quota; the guard's own tests switch it on and stub the models.
+    CONTENT_GUARD_LIVE_CHECKS: bool = True
 
 
 settings = Settings()

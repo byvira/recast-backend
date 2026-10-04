@@ -44,6 +44,9 @@ platform_configs: AsyncIOMotorCollection = get_client().get_default_database()["
 platform_ops: AsyncIOMotorCollection = get_client().get_default_database()["platform_ops"]
 # A workspace's RSS directory listing for a platform: the link they submitted and where it stands. Written by the member.
 platform_listings: AsyncIOMotorCollection = get_client().get_default_database()["platform_listings"]
+# Content Guard: the single settings document (_id "config") and one row per output it blocked or rewrote.
+content_safety: AsyncIOMotorCollection = get_client().get_default_database()["content_safety"]
+safety_events: AsyncIOMotorCollection = get_client().get_default_database()["safety_events"]
 # Publish failure audit trail, written by app/pipelines/publish/supervisor/alerts.py
 # (previously only ever accessed there via db["publish_incidents"] ad hoc —
 # named here too so app/agents/supervisor/rules.py's platform_delivery_failing
@@ -266,6 +269,8 @@ async def create_indexes() -> None:
     await platform_configs.create_index([("workspace_id", 1), ("platform", 1)], unique=True)
     await platform_ops.create_index("platform_key", unique=True)
     await platform_listings.create_index([("workspace_id", 1), ("platform_key", 1)], unique=True)
+    await safety_events.create_index([("created_at", -1)])
+    await safety_events.create_index("fingerprint", unique=True)
 
     # ── Remy/Odette scaffolding ──────────────────────────────────────────
     await member_voice_settings.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)

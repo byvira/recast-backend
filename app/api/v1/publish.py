@@ -299,6 +299,9 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
 
     # Server-side gate: only approved posts go out, and a flagged one needs an
     # explicit "publish anyway". The claim is put back, nothing was sent.
+    from app.agents.content_guard.agent import check_piece_before_send
+
+    await check_piece_before_send(piece, ws)
     block = check_gate(piece, confirm_anyway=body.confirm_publish_anyway)
     if block:
         await _release_claim(body.piece_id, ws, previous_status)

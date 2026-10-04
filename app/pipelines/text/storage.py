@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any, Optional
 
+from app.agents.content_guard.agent import guard_piece_doc
 from app.db.mongo import content_sessions, content_pieces, content_piece_versions, users, brand_profiles
 from app.pipelines.publish.spine import normalize_piece_dates
 from app.models.text import (
@@ -182,6 +183,7 @@ async def save_live_piece(
         "updated_at": now,
     }
     piece_doc.update(extra_fields or {})
+    await guard_piece_doc(piece_doc, where="generation")
     await content_pieces.insert_one(piece_doc)
     try:
         from app.pipelines.text.events import emit_live_piece_created
@@ -196,7 +198,7 @@ async def save_live_piece(
         "workspace_id": workspace_id,
         "user_id": user_id,
         "version_number": 1,
-        "content": content,
+        "content": piece_doc["content"],
         "word_count": word_count,
         "char_count": char_count,
         "action": "original",
@@ -374,6 +376,7 @@ async def save_pipeline_result(
         if getattr(piece, "media", None):
             piece_doc["media"] = [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in piece.media]
 
+        await guard_piece_doc(piece_doc, where="generation")
         await content_pieces.insert_one(piece_doc)
 
         # Version 1 — original generated content
@@ -384,7 +387,7 @@ async def save_pipeline_result(
             "workspace_id": workspace_id,
             "user_id": result.user_id,        # creator (audit)
             "version_number": 1,
-            "content": piece.content,
+            "content": piece_doc["content"],
             "word_count": piece.word_count,
             "char_count": piece.char_count,
             "action": "original",
