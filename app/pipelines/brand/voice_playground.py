@@ -45,8 +45,14 @@ async def preview_rewrite_in_voice(
     tone_line = _tone_summary(brand_profile.get("voice_tone") or {})
     style = (brand_profile.get("voice_tone") or {}).get("style", "")
 
+    from app.pipelines.text.generator import build_language_instruction
+    from app.pipelines.text.language_check import source_language
+
+    # The brand's own language when it has one, else the language the sample is already written in.
+    language = brand_profile.get("language") or source_language(sample_text)
     prompt = load_prompt(
         "brand/preview_rewrite",
+        language_line=build_language_instruction(language),
         brand_type=brand_type,
         identity_line=identity_line,
         audience_line=audience_line,

@@ -34,7 +34,7 @@ def test_no_platform_rule_or_chip_demands_numbers_or_made_up_stories():
 
 
 def test_the_research_brief_cannot_supply_figures_and_the_specificity_rule_forbids_made_up_dates():
-    brief = load_prompt("text/normalize/research_topic", topic="tone consistency", language="en")
+    brief = load_prompt("text/normalize/research_topic", topic="tone consistency", language_name="English")
     assert "Relevant statistics" not in brief and "anything invented here would be published as fact" in brief
     spec = (PROMPTS / "text/generate/specificity.jinja").read_text(encoding="utf-8")
     assert 'say "last Tuesday"' not in spec and "NO INVENTED FACTS" in spec
@@ -265,3 +265,11 @@ def test_the_members_avoid_list_reaches_the_prompt_writer_and_an_enlarged_pictur
     assert enlarged.tobytes() != plain.tobytes()
     same = _fit_background(buf.getvalue(), (256, 256))
     assert same.tobytes() == Image.open(io.BytesIO(buf.getvalue())).convert("RGB").tobytes()
+
+
+def test_the_writing_rules_tell_the_model_to_advise_and_not_to_report_what_the_brand_did():
+    from app.pipelines.text.generator import SPECIFICITY_INSTRUCTION as spec
+
+    assert "WRITE ADVICE, NOT A REPORT OF WHAT THE BRAND DID" in spec
+    assert '"our team"' in spec and "NEVER give a measured result" in spec
+    assert "Imagine a team that" in spec and "second person" in spec

@@ -17,6 +17,7 @@ Readability scoring:
 
 import logging
 import re
+from app.pipelines.text.language_check import infer_mixed_language
 from app.prompts.safe import hook_fits
 from app.pipelines.text.quality import flesch_reading_ease, is_latin_script
 from app.prompts.registry import load_fixture, load_prompt
@@ -160,9 +161,10 @@ async def score_hook(
     # than threaded from the API. Confirmed during the i18n investigation that
     # without this, the LLM defaulted to English alternatives even when scoring
     # non-English content, since nothing in the prompt said otherwise.
+    inferred_language = infer_mixed_language(content)
     prompt = load_prompt(
         "text/hooks/score",
-        language_note_active=not is_latin_script(content),
+        language_note_active=not is_latin_script(content) or inferred_language is not None,
         brand_context=brand_context,
         banned_words=banned_words,
         approved_openers=approved_openers,
@@ -207,7 +209,7 @@ async def score_hook(
     if alternatives and recommended_idx < len(alternatives):
         recommended_hook_text = alternatives[recommended_idx].get("text", "")
         # A hook is only applied when it is a real single line in the same script as the piece.
-        if recommended_hook_text and hook_fits(content, recommended_hook_text):
+        if recommended_hook_text and hook_fits(content, recommended_hook_text, language=inferred_language):
             recommended_content = _apply_hook_to_content(content, recommended_hook_text)
 
     return {

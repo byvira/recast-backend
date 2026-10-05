@@ -10,6 +10,7 @@ transcript   → source_type TRANSCRIPT → pass through (from audio/video pipel
 import logging
 from uuid import uuid4
 
+from app.db.mongo import brand_profiles
 from app.models.text import ContentIntent, InputSourceType, NormalisedInput, Platform
 from app.pipelines.text.scraper import scrape_url
 from app.prompts.registry import load_prompt
@@ -35,12 +36,47 @@ def detect_intent(platforms: list[Platform]) -> ContentIntent:
     return ContentIntent.POST
 
 
-async def research_topic(topic: str, language: str = "en") -> str:
+def brand_grounding(brand_profile: dict | None) -> str:
+    """The real facts the brand has already given (who it serves, what hurts, what it offers, its story), as short lines.
+    A topic brief built from these is concrete without inventing anything."""
+    profile = brand_profile or {}
+    identity = profile.get("identity") or {}
+    audience = profile.get("audience") or {}
+    pillars = profile.get("pillars") or profile.get("brand_pillars") or {}
+    icp = profile.get("icp") or {}
+    lines: list[str] = []
+
+    def add(label: str, value: object) -> None:
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value if v)
+        text = str(value or "").strip()
+        if text:
+            lines.append(f"{label}: {text[:400]}")
+
+    add("About the brand", identity.get("bio") or identity.get("description"))
+    add("Product", identity.get("product_name") or identity.get("productName"))
+    offerings = identity.get("offerings") or []
+    add("Offerings", [o.get("name") if isinstance(o, dict) else o for o in offerings][:8])
+    add("Who it serves, pain point", audience.get("primary_pain_point") or icp.get("painPoint"))
+    add("Audience interests", audience.get("interests"))
+    add("Audience goals", audience.get("goals"))
+    add("Audience knowledge level", audience.get("knowledge_base"))
+    add("Buying motivations", audience.get("buying_motivations") or audience.get("buyingMotivations"))
+    add("Story and angle", pillars.get("story") if isinstance(pillars, dict) else "")
+    return "\n".join(lines)
+
+
+async def research_topic(topic: str, language: str = "en", brand_facts: str = "") -> str:
     """
     Expand a bare keyword or topic into a 200-300 word research brief.
-    Used when frontend is in prompt mode.
+    Used when frontend is in prompt mode. `brand_facts` (see brand_grounding) is the only source of specifics.
     """
-    prompt = load_prompt("text/normalize/research_topic", topic=topic, language=language)
+    from app.pipelines.text.generator import resolve_language_directive_name
+
+    prompt = load_prompt(
+        "text/normalize/research_topic",
+        topic=topic, language_name=resolve_language_directive_name(language), brand_facts=brand_facts,
+    )
     return await call_llm(prompt, model=GroqModel.BALANCED)
 
 
@@ -69,7 +105,8 @@ async def normalise_input(
 
     elif source_type == InputSourceType.TOPIC:
         logger.info("Researching topic for session %s", session_id)
-        raw_content = await research_topic(content, language)
+        brand_doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id}) if brand_id and workspace_id else None
+        raw_content = await research_topic(content, language, brand_grounding(brand_doc))
 
     # Hard cap at 8000 chars — enough context for any platform without burning tokens
     if len(raw_content) > 8000:

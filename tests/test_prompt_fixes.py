@@ -112,12 +112,14 @@ def test_a_thread_tweet_over_the_limit_is_a_hard_issue():
     assert not ok and any("Thread tweet" in i for i in issues)
 
 
-def test_a_thread_within_the_limit_passes():
+def test_a_thread_within_the_limit_passes(monkeypatch):
+    monkeypatch.setattr("app.pipelines.text.generator.language_problem", lambda *a, **k: None)  # these check other rules, not the language
     ok, issues = _thread(["short one", "another short one"])
     assert ok, issues
 
 
-def test_placeholder_text_is_flagged_as_advice_not_a_failure():
+def test_placeholder_text_is_flagged_as_advice_not_a_failure(monkeypatch):
+    monkeypatch.setattr("app.pipelines.text.generator.language_problem", lambda *a, **k: None)  # these check other rules, not the language
     from app.pipelines.text.generator import validate_content
 
     ok, issues = validate_content(

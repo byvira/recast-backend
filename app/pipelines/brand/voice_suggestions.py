@@ -160,8 +160,16 @@ async def generate_voice_pattern_suggestions(
     tone_line = _tone_summary(brand_profile.get("voice_tone") or {})
     style = (brand_profile.get("voice_tone") or {}).get("style", "")
 
+    from app.pipelines.text.generator import build_language_instruction
+    from app.shared.language import resolve_content_language
+
+    language = await resolve_content_language(
+        brand=brand_profile.get("language"), workspace_id=brand_profile.get("workspace_id"),
+        text=f"{identity_line} {style}",
+    )
     prompt = load_prompt(
         "brand/suggest_voice_patterns",
+        language_line=build_language_instruction(language),
         brand_type=brand_type,
         identity_line=identity_line,
         audience_line=audience_line,

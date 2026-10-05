@@ -768,7 +768,7 @@ async def _run_single_repurpose(
             if hook_result.success:
                 hooks                  = hook_result.output.get("hooks", [])
                 recommended_hook_index = hook_result.output.get("recommended", 0)
-                content_str            = apply_recommended_hook(content_str, hooks, recommended_hook_index)
+                content_str            = apply_recommended_hook(content_str, hooks, recommended_hook_index, language=normalised.language)
                 logger.info("Repurpose hooks generated for %s — %d variants", platform, len(hooks))
         except Exception as e:
             logger.warning("Hook agent failed on repurpose path for %s: %s", platform, e)
@@ -932,6 +932,7 @@ async def run_batch_pipeline(
     outer_session_id: Optional[str] = None,
     platforms_by_day: Optional[list[list[Platform]]] = None,
     on_day_complete: Optional[Callable[[int, TextPipelineResult], Awaitable[None]]] = None,
+    before_day: Optional[Callable[[int], Awaitable[None]]] = None,
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
@@ -962,6 +963,9 @@ async def run_batch_pipeline(
     batch) persist pieces incrementally as each day completes instead of
     waiting for the whole batch, so progress can be polled mid-run. Purely
     additive: it doesn't touch the emitter/completion contract above.
+
+    before_day, when given, is awaited with the day's index before that day starts. A caller uses it to wait while a run
+    is paused or to stop by raising.
     """
     if emitter:
         await emitter.emit_log(f"Planning {days} days of content angles for this topic…")
@@ -996,6 +1000,8 @@ async def run_batch_pipeline(
 
     results = []
     for i, angle in enumerate(angles[:days]):
+        if before_day:
+            await before_day(i)
         logger.info("Batch day %d/%d — angle: %s", i + 1, days, angle[:60])
         if emitter:
             await emitter.emit_log(f"Day {i + 1}/{days} — {angle[:80]}")

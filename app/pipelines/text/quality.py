@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Optional
 from app.models.text import Platform, QualityResult
+from app.pipelines.text.language_check import language_problem
 
 logger = logging.getLogger(__name__)
 
@@ -157,18 +158,21 @@ def check_twitter_limits(content: str, platform: Platform) -> list[str]:
     return issues
 
 
-def check_minimum_length(content: str, platform: Platform) -> list[str]:
-    MIN_WORD_COUNTS = {
-        Platform.BLOG: 600,
-        Platform.NEWSLETTER: 200,
-        Platform.LINKEDIN: 150,
-        Platform.TWITTER: 0,          
-        Platform.TWITTER_THREAD: 150,
-        Platform.INSTAGRAM: 80,
-        Platform.FACEBOOK: 100,
-        Platform.YOUTUBE: 80,
-    }
+# The one place the shortest acceptable post for each platform is set. generator.validate_content reads it too, so the two
+# checks cannot disagree.
+MIN_WORD_COUNTS = {
+    Platform.BLOG: 600,
+    Platform.NEWSLETTER: 250,
+    Platform.LINKEDIN: 150,
+    Platform.TWITTER: 0,
+    Platform.TWITTER_THREAD: 200,
+    Platform.INSTAGRAM: 100,
+    Platform.FACEBOOK: 150,
+    Platform.YOUTUBE: 100,
+}
 
+
+def check_minimum_length(content: str, platform: Platform) -> list[str]:
     issues = []
     minimum = MIN_WORD_COUNTS.get(platform, 15)
     word_count = len(content.split())
@@ -193,6 +197,7 @@ async def run_quality_gate(
     banned_words: list[str],
     avoid_blacklist: bool = True,
     grammar_check: bool = False,
+    language: str = "en",
 ) -> QualityResult:
     """
     Run all quality checks. Returns QualityResult.
@@ -210,12 +215,23 @@ async def run_quality_gate(
     twitter_issues = check_twitter_limits(content, platform)
     hard_issues.extend(twitter_issues)
 
+    language_issue = language_problem(content, language)
+    if language_issue:
+        hard_issues.append(language_issue)
+        logger.warning("language_mismatch platform=%s language=%s", platform.value, language)
+
     length_issues = check_minimum_length(content, platform)
     hard_issues.extend(length_issues)
 
-    readability = flesch_reading_ease(content)
+    # The reading-ease formula and the call-to-action words are English. For a mix such as Tanglish they only give wrong
+    # advice, so they are left out.
+    mixed = "+" in (language or "")
+    english = not mixed and (language or "en").strip().lower().split("-")[0] in ("en", "")
+    readability = None if mixed else flesch_reading_ease(content)
     threshold = READABILITY_THRESHOLDS.get(platform, 45)
-    if readability is None:
+    if mixed:
+        pass
+    elif readability is None:
         advisory_issues.append(
             "Advisory: Readability scoring not available for this content's language "
             "(non-Latin script) — not evaluated, not penalised."
@@ -225,7 +241,7 @@ async def run_quality_gate(
 
     cta_markers_lower = [m.lower() for m in CTA_MARKERS]
     content_lower = content.lower()
-    if platform not in (Platform.BLOG, Platform.TWITTER) and not any(m in content_lower for m in cta_markers_lower):
+    if english and platform not in (Platform.BLOG, Platform.TWITTER) and not any(m in content_lower for m in cta_markers_lower):
         advisory_issues.append(f"Advisory: No CTA detected for {platform.value}")
 
     if grammar_check:

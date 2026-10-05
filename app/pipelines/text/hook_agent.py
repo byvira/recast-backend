@@ -59,7 +59,7 @@ def _starts_with_generic_opening(text: str) -> bool:
     return any(lowered.startswith(g) for g in GENERIC_OPENINGS)
 
 
-def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: int) -> str:
+def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: int, language: str | None = None) -> str:
     """
     Replace the opening line of generated content with the best hook that
     ISN'T a banned generic opener — not blindly whichever the model scored
@@ -88,7 +88,7 @@ def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: i
         if i < 0 or i >= len(hooks):
             continue
         text = hooks[i].get("text", "") if isinstance(hooks[i], dict) else ""
-        if text and hook_fits(content, text) and not _starts_with_generic_opening(text):
+        if text and hook_fits(content, text, language=language) and not _starts_with_generic_opening(text):
             recommended = text
             break
 

@@ -16,7 +16,7 @@ from app.models.text import AgentTask, AgentResult
 from app.pipelines.text.generator import build_language_instruction
 from app.prompts.registry import load_prompt
 from app.prompts.safe import contains_banned, guard_output
-from app.shared.language import detect_language
+from app.pipelines.text.language_check import source_language
 from app.shared.llm import call_llm_structured
 
 logger = logging.getLogger(__name__)
@@ -52,8 +52,7 @@ async def run_angles_agent(task: AgentTask) -> AgentResult:
     # every prompt in this file was English-only regardless of input, and
     # Tamil (or any non-English) source content came back rewritten in
     # English every time.
-    detected = detect_language(task.content)
-    language_instruction = build_language_instruction(detected or "en")
+    language_instruction = build_language_instruction(source_language(task.content, task.metadata.get("language")))
 
     prompt = load_prompt(
         "text/angles/generate",

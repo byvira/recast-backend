@@ -104,14 +104,16 @@ def test_english_wording_checks_still_apply_to_english():
     assert any("Generic opening" in i for i in issues) and any("Weasel" in i for i in issues)
 
 
-def test_english_wording_checks_do_not_judge_other_languages():
+def test_english_wording_checks_do_not_judge_other_languages(monkeypatch):
+    monkeypatch.setattr("app.pipelines.text.generator.language_problem", lambda *a, **k: None)  # these check other rules, not the language
     ok, issues = _validate("ta", "In today's fast-paced world " + LONG + " many people often feel stuck.")
     assert ok, issues
     ok, issues = _validate("ta+en", "In today's fast-paced world " + LONG + " many often")
     assert ok, issues
 
 
-def test_a_required_phrase_is_only_enforced_in_english():
+def test_a_required_phrase_is_only_enforced_in_english(monkeypatch):
+    monkeypatch.setattr("app.pipelines.text.generator.language_problem", lambda *a, **k: None)  # these check other rules, not the language
     phrases = [{"text": "Let's build", "placement": "any"}]
     assert not _validate("en", LONG, phrases=phrases)[0]
     assert _validate("ta", LONG, phrases=phrases)[0]

@@ -139,3 +139,32 @@ def first_present(*values: Optional[str]) -> str:
     configured. It is never substituted for an explicitly-set value.
     """
     return first_present_or_none(*values) or "en"
+
+
+async def resolve_content_language(
+    *,
+    explicit: Optional[str] = None,
+    piece: Optional[str] = None,
+    campaign: Optional[str] = None,
+    brand: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    text: Optional[str] = None,
+) -> str:
+    """The one order every generator uses to decide what language to write in.
+
+    explicit request > the piece's own stored language > the campaign's > the brand's > the workspace default >
+    detected from `text` > the member's own account default > "en".
+
+    The member's own default comes after detection on purpose: new accounts are saved with "en", which cannot be told
+    apart from a choice, so putting it before detection made every workspace without a language write English even for
+    Tamil source text. A member who really set a language still gets it whenever detection is inconclusive.
+    """
+    chosen = first_present_or_none(explicit, piece, campaign, brand, await workspace_language(workspace_id))
+    if chosen:
+        return chosen
+    if text:
+        detected = detect_language(text)
+        if detected:
+            return detected
+    return first_present(await user_language(user_id))

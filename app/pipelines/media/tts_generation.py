@@ -129,11 +129,15 @@ def _is_transient(exc: Exception) -> bool:
     return False
 
 
-def _deepgram_can_read(text: str) -> bool:
-    """False only when the script is clearly in a language Deepgram's voices do not support. When the language cannot be
-    told with confidence (short or mixed text) it is allowed, exactly as before."""
+def _deepgram_can_read(text: str, language: Optional[str] = None) -> bool:
+    """False when the script is in a language Deepgram's voices do not support. A language the caller states ("ta",
+    "ta+en") is trusted over detection, because romanised Tamil cannot be detected. Otherwise, when the language cannot
+    be told with confidence (short or mixed text) it is allowed, exactly as before."""
     from app.shared.language import detect_language
 
+    stated = [part.split("-")[0] for part in (language or "").strip().lower().split("+") if part]
+    if any(code not in _DEEPGRAM_LANGUAGE_CODES for code in stated):
+        return False
     detected = detect_language(text)
     return detected is None or detected in _DEEPGRAM_LANGUAGE_CODES
 
@@ -414,6 +418,7 @@ async def _synthesize(
     workspace_id: str,
     user_id: str,
     timed: bool,
+    language: Optional[str] = None,
 ) -> Optional[SpeechResult]:
     """Tries ElevenLabs first (the real product decision); on any
     failure — no key, no real voice configured, the free-plan library-
@@ -480,7 +485,7 @@ async def _synthesize(
 
     # The fallback voices read English (and a few other languages). A script they cannot read would be spoken by an
     # English voice and saved as that language with no sign anything was wrong, so it is refused here instead.
-    if not _deepgram_can_read(text):
+    if not _deepgram_can_read(text, language):
         logger.warning("Deepgram fallback refused for workspace %s: the script is in a language it cannot read.", workspace_id)
         return None
 
@@ -504,6 +509,7 @@ async def synthesize_speech(
     lexicon: Optional[MemberLexicon] = None,
     workspace_id: str,
     user_id: str,
+    language: Optional[str] = None,
 ) -> Optional[bytes]:
     """Audio only. See _synthesize for the provider order and the lexicon."""
     from app.agents.content_guard.media import assert_speech_ok
@@ -511,7 +517,7 @@ async def synthesize_speech(
     await assert_speech_ok(text, noun="script", workspace_id=workspace_id, where="narration")
     result = await _synthesize(
         text=text, voice_settings=voice_settings, lexicon=lexicon,
-        workspace_id=workspace_id, user_id=user_id, timed=False,
+        workspace_id=workspace_id, user_id=user_id, timed=False, language=language,
     )
     return result.audio if result else None
 
@@ -523,6 +529,7 @@ async def synthesize_speech_timed(
     lexicon: Optional[MemberLexicon] = None,
     workspace_id: str,
     user_id: str,
+    language: Optional[str] = None,
 ) -> Optional[SpeechResult]:
     """Audio plus the exact time of every word when the provider gives it, so
     a recording made here has a real transcript from the start."""
@@ -531,5 +538,5 @@ async def synthesize_speech_timed(
     await assert_speech_ok(text, noun="script", workspace_id=workspace_id, where="narration")
     return await _synthesize(
         text=text, voice_settings=voice_settings, lexicon=lexicon,
-        workspace_id=workspace_id, user_id=user_id, timed=True,
+        workspace_id=workspace_id, user_id=user_id, timed=True, language=language,
     )

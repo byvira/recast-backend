@@ -8,11 +8,11 @@ Writes require the ``edit_brand_voice`` permission; reads require membership onl
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -126,6 +126,7 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         onboarding_step=doc.get("onboarding_step", 1),
         is_default=doc.get("is_default", False),
         is_active=doc.get("is_active", True),
+        language=doc.get("language"),
         default_tone=doc.get("default_tone"),
         calibration=VoiceCalibration(**doc["calibration"]) if doc.get("calibration") else VoiceCalibration(),
         training_samples=doc.get("training_samples", []),
@@ -584,6 +585,29 @@ async def duplicate_brand_profile(
     copy["identity"] = identity
     await brand_profiles.insert_one(copy)
     return {"brand_profile_id": copy["id"]}
+
+
+class UpdateLanguageBody(BaseModel):
+    language: Optional[str] = Field(default=None, max_length=16)
+
+
+@router.patch("/{brand_id}/language")
+@limiter.limit("30/minute")
+async def update_brand_language(
+    request: Request,
+    brand_id: str,
+    body: UpdateLanguageBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, Any]:
+    """Set the language this brand writes in (for example "ta+en"), or clear it (empty) to follow the workspace language."""
+    language = (body.language or "").strip() or None
+    res = await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"language": language, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    return {"id": brand_id, "language": language}
 
 
 @router.patch("/{brand_id}/voice")

@@ -15,7 +15,7 @@ import logging
 from app.models.text import Platform
 from app.pipelines.text.generator import build_language_instruction
 from app.prompts.registry import load_prompt
-from app.shared.language import detect_language
+from app.pipelines.text.language_check import source_language
 from app.shared.llm import call_llm_structured
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ async def suggest_repurpose_targets(
     unusable, so a suggestion failure never blocks the user from just
     picking platforms manually, the way they always could before.
     """
-    language_instruction = build_language_instruction(detect_language(content) or "en")
+    language_instruction = build_language_instruction(source_language(content))
     candidates = [p.value for p in SUGGESTABLE_PLATFORMS if p != source_platform]
 
     prompt = load_prompt(

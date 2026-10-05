@@ -278,6 +278,8 @@ async def generate_node(state: TextAgentState) -> dict:
     Passes all context layers and enforcement data through task metadata.
     Writes: generated_content
     """
+    if state.get("emitter"):
+        await state["emitter"].pause_point()
     emitter: EventEmitter = state.get("emitter")
     platform_str = str(
         state["current_platform"].value
@@ -335,6 +337,8 @@ async def hooks_node(state: TextAgentState) -> dict:
     Applies recommended hook to generated_content.
     Writes: hooks, recommended_hook_index, generated_content (hook applied)
     """
+    if state.get("emitter"):
+        await state["emitter"].pause_point()
     emitter: EventEmitter = state.get("emitter")
     platform_str = str(
         state["current_platform"].value
@@ -392,7 +396,7 @@ async def hooks_node(state: TextAgentState) -> dict:
         await emitter.emit_log(msg.hook_selected(version=recommended_index + 1, score=hooks[recommended_index].get("score", 0) if hooks and isinstance(hooks[recommended_index], dict) else 0))
 
     content_with_hook = apply_recommended_hook(
-        state["generated_content"], hooks, recommended_index
+        state["generated_content"], hooks, recommended_index, language=state["language"],
     )
 
     return {
@@ -448,6 +452,8 @@ async def quality_check_node(state: TextAgentState) -> dict:
     Banned words come from extras — build_context_node stored them there.
     Writes: quality_passed, quality_issues, readability_score
     """
+    if state.get("emitter"):
+        await state["emitter"].pause_point()
     emitter: EventEmitter = state.get("emitter")
     banned_words = state["extras"].get("banned_words", [])
     platform_str = str(
@@ -474,6 +480,7 @@ async def quality_check_node(state: TextAgentState) -> dict:
         banned_words=banned_words,
         avoid_blacklist=state["extras"].get("avoid_blacklist", True),
         grammar_check=state["extras"].get("grammar_check", False),
+        language=state["language"],
     )
 
     # The platform's own hard limits (the same rules the schedule and publish steps enforce), so a piece that cannot be posted
@@ -509,12 +516,41 @@ async def quality_check_node(state: TextAgentState) -> dict:
     )
     quality.issues = [*quality.issues, *(f"Advisory: {w}" for w in claim_warnings)]
 
+    # In topic mode nothing but the brand's own facts can back a figure or a story, so an invented one is sent back once with
+    # the exact items to remove. On the rewrite it stays advisory, so a stubborn model never leaves a post flagged for this alone.
+    if topic_mode and claim_warnings and state["retry_count"] == 0:
+        found = []
+        for warning in claim_warnings:
+            quoted = warning.split('"')
+            if len(quoted) >= 2 and quoted[1] not in found:
+                found.append(quoted[1])
+        quality.issues = [
+            *quality.issues,
+            "Invented detail: remove every figure, time, price, score and personal story that is not in the brand facts. "
+            f"Found: {', '.join(found[:5])}.",
+        ]
+        quality.passed = False
+
     # The writing step already judged the brand's opening, closing and required-phrase rules. This gate did not, so a piece
     # that broke them passed here and was never rewritten.
     brand_rule_issues = [i for i in (state.get("generation_issues") or []) if i not in quality.issues]
     if brand_rule_issues:
         quality.issues = [*quality.issues, *brand_rule_issues]
         quality.passed = False
+
+    # A passing draft gets one review for depth. Weak ones go back through the same rewrite step with concrete fixes.
+    from app.pipelines.text.critique import review_draft, should_review
+    from app.pipelines.text.generator import build_language_instruction
+
+    if quality.passed and state["retry_count"] == 0 and should_review(state["current_platform"], state["generated_content"]):
+        fixes = await review_draft(
+            draft=state["generated_content"], platform=state["current_platform"], platform_label=platform_str,
+            brand_context=state.get("brand_context") or "", source_content=state.get("normalised_content") or "",
+            language_line=build_language_instruction(state["language"]),
+        )
+        if fixes:
+            quality.issues = [*quality.issues, *(f"Depth: {fix}" for fix in fixes)]
+            quality.passed = False
 
     if emitter:
         readability_level = getattr(quality, "readability_level", "Standard") or "Standard"
@@ -546,6 +582,8 @@ async def rewrite_node(state: TextAgentState) -> dict:
     included in retry feedback so LLM knows exactly what to fix and use instead.
     Writes: generated_content, retry_count, extras (updated with retry_feedback)
     """
+    if state.get("emitter"):
+        await state["emitter"].pause_point()
     hard_issues = [
         issue for issue in state["quality_issues"]
         if not issue.startswith("Advisory:")
@@ -815,5 +853,8 @@ def route_after_quality(state: TextAgentState) -> str:
     if state["quality_passed"]:
         return "passed"
     if state["retry_count"] < 1:
+        return "retry"
+    # A post in the wrong language gets one more try, since a second pass with the reminder usually fixes it.
+    if state["retry_count"] < 2 and any(i.startswith("The post is ") for i in state["quality_issues"]):
         return "retry"
     return "flag"

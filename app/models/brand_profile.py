@@ -382,6 +382,8 @@ class BrandProfile(BaseModel):
     # identity/voice_tone and fall back to the generic natural-voice line
     # instead, so the system keeps working with an inactive brand selected.
     is_active: bool = True
+    # The language this brand writes in, for example "ta+en". None means follow the workspace.
+    language: Optional[str] = None
     # My Voices > Calibration tab — a persistent tone applied to every
     # generation for this brand when no per-run ToneSelector override is
     # picked. None (or the stored value "brand") both mean "no persistent

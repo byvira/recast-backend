@@ -27,6 +27,8 @@ from typing import Dict, List, Tuple
 
 from app.models.text import AgentTask, AgentResult, Platform, LANGUAGE_NAMES
 from app.prompts.registry import load_fixture, load_prompt
+from app.pipelines.text.language_check import language_problem
+from app.pipelines.text.quality import MIN_WORD_COUNTS
 from app.prompts.safe import contains_banned, guard_output, is_english
 from app.shared.llm import GroqModel, call_llm, call_llm_structured
 
@@ -97,7 +99,9 @@ def resolve_language_directive_name(code: str) -> str:
     other = resolve_language_name(other_code)
     return (
         f"a natural blend of {native} and {other}, with the {native} words written in "
-        f"English (Latin) letters the way people type them in chat, never in {native} script"
+        f"English (Latin) letters the way people type them in chat, never in {native} script. Use only everyday "
+        f"{native} words that a native speaker really types, keep business and technical nouns in English, and when "
+        f"you are not sure of a {native} word, keep the English word instead of guessing one by sound"
     )
 
 
@@ -306,21 +310,17 @@ def validate_content(
     for word in contains_banned(content, banned_words):
         hard_issues.append(f"Banned word found: '{word}'")
 
+    # ── Hard gate 1b — the post must be in the language that was asked for ─
+    language_issue = language_problem(content, language)
+    if language_issue:
+        hard_issues.append(language_issue)
+
     # The opening, closing and filler-word checks below are English wording. They only make sense for
     # English output, so a Tamil, Hindi or Tanglish piece is not judged by them.
     english = is_english(language)
 
     # ── Hard gate 2 — minimum length ──────────────────────────────────────
-    min_words = {
-        Platform.LINKEDIN: 150,
-        Platform.TWITTER: 0,       # char-based
-        Platform.TWITTER_THREAD: 200,
-        Platform.INSTAGRAM: 100,
-        Platform.FACEBOOK: 150,
-        Platform.BLOG: 600,
-        Platform.NEWSLETTER: 250,
-        Platform.YOUTUBE: 100,
-    }
+    min_words = MIN_WORD_COUNTS
     min_chars = {
         Platform.TWITTER: 200,
     }
