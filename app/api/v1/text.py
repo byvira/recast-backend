@@ -1139,3 +1139,56 @@ async def regenerate_content(
         hashtags=list(seo.get("hashtags", []) or []),
         hook_alternatives=hook_alternatives,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# BACKGROUND VERSIONS
+#
+# The four routes above do their whole job inside the request, so closing the tab (or a slow model) drops the answer. Each has a
+# background twin that saves a run, answers at once and keeps going on the server: the member can leave the page, the run shows in
+# Control Tower with pause, resume and cancel, and a note lands in the Activity Log when it finishes, fails or is cancelled.
+# The finished result is on the run (`result.data`), in the same shape the plain route returns.
+# ──────────────────────────────────────────────────────────────────────
+
+async def _start_text_run(*, ctx: WorkspaceContext, action: str, body: Any) -> dict:
+    """Start the action as a job (see app.shared.jobs): at once, once at a time, permissions checked again when it starts."""
+    from app.shared import jobs
+
+    run, already = await jobs.submit(action_name=action, payload=body.model_dump(mode="json"), ctx=ctx)
+    return {**run, "already_running": already}
+
+
+@router.post("/repurpose/run", status_code=202)
+@limiter.limit("20/minute")
+async def repurpose_in_background(
+    request: Request, body: RepurposeRequest, ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    return await _start_text_run(ctx=ctx, action="text.repurpose", body=body)
+
+
+@router.post("/generate/run", status_code=202)
+@limiter.limit("20/minute")
+async def generate_in_background(
+    request: Request, body: GenerateTextRequest, ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    return await _start_text_run(ctx=ctx, action="text.generate", body=body)
+
+
+@router.post("/batch/run", status_code=202)
+@limiter.limit("5/minute")
+async def batch_in_background(
+    request: Request, body: BatchGenerateRequest, ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    return await _start_text_run(ctx=ctx, action="text.batch", body=body)
+
+
+@router.post("/regenerate/run", status_code=202)
+@limiter.limit("20/minute")
+async def regenerate_in_background(
+    request: Request, body: RegenerateRequest, ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    await _get_verified_brand(body.brand_id, ctx.workspace_id)
+    return await _start_text_run(ctx=ctx, action="text.regenerate", body=body)

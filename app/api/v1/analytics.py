@@ -192,6 +192,41 @@ async def pipeline_summary(
         video.update(total=row["total"], this_week=row["this_week"], prior_week=row["prior_week"],
                      last_created_at=iso_utc(row["last"]) if row.get("last") else None)
     out["video"] = video
+
+    # How the saved background runs of the last 30 days went, per kind: how long a finished one took and how many of the
+    # finished ones worked. Cancelled runs are the member's choice, so they count in neither.
+    stats = await _run_stats(ws, now - timedelta(days=30))
+    for kind, entry in out.items():
+        entry.update(stats.get(kind, {"runs_30d": 0, "avg_seconds": None, "success_rate": None}))
+    if out["text"]["avg_seconds"] is None:
+        from app.shared.activity.runs import median_run_seconds
+
+        median = await median_run_seconds(ws)
+        out["text"]["avg_seconds"] = round(median, 1) if median else None
+    return out
+
+
+async def _run_stats(workspace_id: str, since: datetime) -> dict[str, dict]:
+    rows = get_db()["pipeline_runs"].aggregate([
+        {"$match": {"workspace_id": workspace_id, "finished_at": {"$gte": since}, "status": {"$in": ["done", "failed"]}}},
+        {"$group": {
+            "_id": "$kind",
+            "done": {"$sum": {"$cond": [{"$eq": ["$status", "done"]}, 1, 0]}},
+            "failed": {"$sum": {"$cond": [{"$eq": ["$status", "failed"]}, 1, 0]}},
+            "avg_ms": {"$avg": {"$cond": [
+                {"$and": [{"$eq": ["$status", "done"]}, {"$ne": ["$started_at", None]}]},
+                {"$subtract": ["$finished_at", "$started_at"]}, None,
+            ]}},
+        }},
+    ])
+    out: dict[str, dict] = {}
+    async for row in rows:
+        total = row["done"] + row["failed"]
+        out[row["_id"]] = {
+            "runs_30d": total,
+            "avg_seconds": round(row["avg_ms"] / 1000, 1) if row.get("avg_ms") is not None else None,
+            "success_rate": round(100 * row["done"] / total, 1) if total else None,
+        }
     return out
 
 

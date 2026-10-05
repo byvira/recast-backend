@@ -72,8 +72,9 @@ def _snippet(text: str, limit: int = 140) -> str:
 
 
 async def _brand_name(brand: dict) -> str:
-    identity = brand.get("identity") or {}
-    return identity.get("name") or brand.get("brand_type") or "Brand voice"
+    from app.shared.brand_name import brand_display_name
+
+    return brand_display_name(brand) or brand.get("brand_type") or "Brand voice"
 
 
 async def _search_pool(workspace_id: str, pattern: Optional[re.Pattern], per_type: int) -> list[SearchItem]:

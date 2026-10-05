@@ -42,16 +42,10 @@ _baseline_cache: dict[str, tuple[float, Optional[float]]] = {}
 
 
 def brand_label(brand: Optional[dict]) -> str:
-    """Display name for a brand profile — same precedence as the Drafts
-    list (app.pipelines.text.storage)."""
-    identity = (brand or {}).get("identity") or {}
-    return (
-        identity.get("name")
-        or identity.get("productName")
-        or identity.get("company_name")
-        or identity.get("companyName")
-        or ""
-    )
+    """Display name for a brand profile (every brand type: see app.shared.brand_name)."""
+    from app.shared.brand_name import brand_display_name
+
+    return brand_display_name(brand)
 
 
 def _key(workspace_id: str) -> str:

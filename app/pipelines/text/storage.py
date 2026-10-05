@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any, Optional
 
+from app.shared.brand_name import brand_display_name
 from app.agents.content_guard.agent import guard_piece_doc
 from app.db.mongo import content_sessions, content_pieces, content_piece_versions, users, brand_profiles
 from app.pipelines.publish.spine import normalize_piece_dates
@@ -553,15 +554,8 @@ async def _attach_display_names(pieces: list[dict]) -> None:
 
     brand_names: dict[str, str] = {}
     if brand_ids:
-        async for b in brand_profiles.find({"id": {"$in": list(brand_ids)}}, {"id": 1, "identity": 1}):
-            identity = b.get("identity") or {}
-            brand_names[b["id"]] = (
-                identity.get("name")
-                or identity.get("productName")
-                or identity.get("company_name")
-                or identity.get("companyName")
-                or "Untitled Brand"
-            )
+        async for b in brand_profiles.find({"id": {"$in": list(brand_ids)}}, {"id": 1, "identity": 1, "brand_type": 1, "name": 1, "brand_name": 1}):
+            brand_names[b["id"]] = brand_display_name(b, "Untitled Brand")
 
     for p in pieces:
         p["author_name"] = user_names.get(p.get("user_id", ""), "Unknown")

@@ -67,6 +67,7 @@ import httpx
 from PIL import Image
 from pymongo import ReturnDocument
 
+from app.shared.brand_name import brand_display_name
 from app.shared.llm_health.track import fallback_scope, note_fallback_failed, track
 from app.core.config import settings
 from app.db.mongo import image_fallback_usage, media_assets
@@ -126,9 +127,7 @@ def _build_raw_prompt(topic: str, brand_profile: dict) -> str:
     brand's real identity/voice, not a generic template."""
     identity = brand_profile.get("identity") or {}
     visual_identity = brand_profile.get("visual_identity") or {}
-    brand_name = (
-        identity.get("name") or identity.get("company_name") or identity.get("product_name") or ""
-    )
+    brand_name = brand_display_name(brand_profile)
     style_notes = visual_identity.get("visual_style_notes") or ""
     colors = visual_identity.get("colors") or {}
     color_desc = ", ".join(
@@ -189,9 +188,7 @@ async def _brand_fit_gate(prompt: str, brand_profile: dict) -> bool:
     visual_identity = brand_profile.get("visual_identity") or {}
     style_notes = visual_identity.get("visual_style_notes") or ""
     identity = brand_profile.get("identity") or {}
-    brand_name = (
-        identity.get("name") or identity.get("company_name") or identity.get("product_name") or ""
-    )
+    brand_name = brand_display_name(brand_profile)
 
     if not style_notes and not brand_name:
         # Nothing real to check the prompt against yet.
@@ -395,7 +392,7 @@ async def _call_gemini_raw(prompt: str) -> bytes:
     raise RuntimeError("Gemini returned no image data")
 
 
-async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
+async def _generate_image_bytes(prompt: str, *, skip_primary: bool = False) -> Optional[bytes]:
     """The one place either provider is actually called. Tries Cloudflare
     (free, ~173 images/day for the whole app at this size — see
     settings.CLOUDFLARE_API_TOKEN's docstring) first; only on failure
@@ -405,7 +402,10 @@ async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
     quote-card template (generate_brand_image) or leaves mascot_url unset
     (generate_brand_mascot), never raises."""
     tried: list[str] = []
-    if settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID:
+    if skip_primary:
+        # The main model just drew writing into a picture, so a second try with it would likely do the same: use the backups.
+        tried.append("The main picture model was skipped for this try.")
+    elif settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID:
         try:
             return await _call_cloudflare(prompt)
         except Exception as exc:  # noqa: BLE001
@@ -472,15 +472,24 @@ async def _generate_text_free(prompt: str) -> Optional[bytes]:
     lets the picture through."""
     from app.agents.content_guard.media import picture_has_writing
 
-    attempt_prompt = prompt
-    for attempt in range(2):
-        data = await _generate_image_bytes(attempt_prompt)
+    strict_prompt = (prompt[: 2048 - len(_STRICT_NO_WRITING)] + _STRICT_NO_WRITING).strip()
+    # 1) the main model; 2) the backup models with the stricter prompt (a different model draws different things);
+    # 3) the main model again with the stricter prompt, only when no backup could make a picture at all.
+    plan = [(prompt, False), (strict_prompt, True), (strict_prompt, False)]
+    backup_made_a_picture = False
+    for attempt, (attempt_prompt, skip_primary) in enumerate(plan):
+        if attempt == 2 and backup_made_a_picture:
+            break
+        data = await _generate_image_bytes(attempt_prompt, skip_primary=skip_primary)
         if not data:
-            return None
+            if attempt == 0:
+                return None
+            continue
+        if attempt == 1:
+            backup_made_a_picture = True
         if await picture_has_writing(data, "image/jpeg") is not True:
             return data
-        logger.info("Generated picture had writing in it (attempt %d); %s", attempt + 1, "trying again" if attempt == 0 else "not using it")
-        attempt_prompt = (prompt[: 2048 - len(_STRICT_NO_WRITING)] + _STRICT_NO_WRITING).strip()
+        logger.info("Generated picture had writing in it (attempt %d); %s", attempt + 1, "trying again" if attempt < 2 else "not using it")
     _fail("The picture kept coming out with writing in it, so a plain card is used instead.")
     return None
 
@@ -544,9 +553,7 @@ def _build_mascot_raw_prompt(brand_profile: dict) -> str:
     voice_tone = brand_profile.get("voice_tone") or {}
     brand_type = brand_profile.get("brand_type") or ""
 
-    brand_name = (
-        identity.get("name") or identity.get("company_name") or identity.get("product_name") or ""
-    )
+    brand_name = brand_display_name(brand_profile)
     description = identity.get("bio") or identity.get("description") or ""
     style_notes = visual_identity.get("visual_style_notes") or ""
     colors = visual_identity.get("colors") or {}

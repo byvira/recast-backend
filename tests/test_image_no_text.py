@@ -97,6 +97,44 @@ async def test_no_provider_picture_means_no_check_and_no_retry():
     assert made.call_count == 1 and not checks.called
 
 
+async def test_after_writing_the_second_try_goes_to_the_backup_models_not_the_main_one_again():
+    made = AsyncMock(side_effect=[b"first", b"from-backup"])
+    checks = AsyncMock(side_effect=[True, False])
+    with patch.object(imagegen, "_generate_image_bytes", made), patch("app.agents.content_guard.media.picture_has_writing", checks):
+        result = await imagegen._generate_text_free("a calm desk")
+    assert result == b"from-backup"
+    assert made.call_args_list[0].kwargs["skip_primary"] is False
+    assert made.call_args_list[1].kwargs["skip_primary"] is True
+
+
+async def test_when_no_backup_can_make_a_picture_the_main_model_gets_one_more_try_with_the_stricter_prompt():
+    made = AsyncMock(side_effect=[b"first", None, b"third"])
+    checks = AsyncMock(side_effect=[True, False])
+    with patch.object(imagegen, "_generate_image_bytes", made), patch("app.agents.content_guard.media.picture_has_writing", checks):
+        result = await imagegen._generate_text_free("a calm desk")
+    assert result == b"third" and made.call_count == 3
+    assert [c.kwargs["skip_primary"] for c in made.call_args_list] == [False, True, False]
+    assert "no speech bubbles" in made.call_args_list[2].args[0]
+
+
+async def test_asking_to_skip_the_main_model_never_calls_it(monkeypatch):
+    monkeypatch.setattr(imagegen.settings, "CLOUDFLARE_API_TOKEN", "token")
+    monkeypatch.setattr(imagegen.settings, "CLOUDFLARE_ACCOUNT_ID", "account")
+    main = AsyncMock(side_effect=AssertionError("the main model must not be called"))
+    backup = AsyncMock(return_value=b"backup-picture")
+    with patch.object(imagegen, "_call_cloudflare", main), patch("app.shared.open_fallbacks.open_image_fallback", backup):
+        assert await imagegen._generate_image_bytes("a calm desk", skip_primary=True) == b"backup-picture"
+    assert not main.called
+
+
+async def test_without_the_skip_the_main_model_is_used_first(monkeypatch):
+    monkeypatch.setattr(imagegen.settings, "CLOUDFLARE_API_TOKEN", "token")
+    monkeypatch.setattr(imagegen.settings, "CLOUDFLARE_ACCOUNT_ID", "account")
+    main = AsyncMock(return_value=b"main-picture")
+    with patch.object(imagegen, "_call_cloudflare", main):
+        assert await imagegen._generate_image_bytes("a calm desk") == b"main-picture"
+
+
 # ── the words on a picture, and the rule on every prompt from the first try ───
 
 def test_every_picture_prompt_carries_the_strong_no_writing_rule_from_the_first_try():

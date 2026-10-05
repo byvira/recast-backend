@@ -12,6 +12,7 @@ from typing import Literal, Optional, Sequence
 
 from pydantic import BaseModel
 
+from app.shared.brand_name import brand_display_name
 from app.models.media import MediaChapter, MediaTranscriptWord
 from app.pipelines.media.video_analysis import chapters_block, transcript_text
 from app.shared.llm import call_llm, GroqModel
@@ -114,9 +115,7 @@ async def generate_youtube_metadata(
     content as description, no tags) on any LLM failure — never blocks
     the prepare step from returning something usable."""
     identity = brand_profile.get("identity") or {}
-    brand_name = (
-        identity.get("name") or identity.get("company_name") or identity.get("product_name") or ""
-    )
+    brand_name = brand_display_name(brand_profile)
     brand_type = brand_profile.get("brand_type") or ""
     category_id = category_id_for_brand_type(brand_type)
 

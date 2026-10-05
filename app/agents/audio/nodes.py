@@ -116,7 +116,9 @@ async def evaluate_node(state: BaseAgentState) -> dict:
     """
     brand_ctx = build_brand_context(state["brand"], "audio")
     content = state["intermediate_outputs"].get("generated_content", "")
-    brand_name = state["brand"].get("name", "")
+    from app.shared.brand_name import brand_display_name
+
+    brand_name = brand_display_name(state["brand"])
 
     prompt = load_prompt("media/shared/evaluate", domain="audio", brand_name=brand_name, content=content)
     scores_raw = await call_llm_structured(prompt=prompt, system=brand_ctx)

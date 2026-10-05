@@ -22,6 +22,7 @@ Node responsibilities:
 import logging
 from typing import Optional
 
+from app.shared.brand_name import brand_display_name
 from app.agents.text.state import TextAgentState
 from app.models.text import AgentTask, GeneratedPiece, Platform
 from app.pipelines.text.brand_context import build_goal_context, build_tone_and_terms, build_tone_override, build_engagement_context
@@ -249,11 +250,7 @@ async def build_context_node(state: TextAgentState) -> dict:
     emitter: EventEmitter = state.get("emitter")
     if emitter:
         identity = brand_profile.get("identity") or {}
-        brand_name = (
-            identity.get("productName")
-            or identity.get("name")
-            or "Brand"
-        )
+        brand_name = brand_display_name(brand_profile, "Brand")
         rules_count = (
             len(enforcement["banned_words"])
             + len(enforcement["approved_openers"])

@@ -163,6 +163,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Platform registry loaded")
 
     from app.shared import pipeline_runs
+    from app.shared.job_actions import register_all as register_job_actions
+    from app.shared.jobs import resume_interrupted
+
+    register_job_actions()
+    resumed = await resume_interrupted()
+    if resumed:
+        logger.info("%d safe-to-repeat background jobs were started again after the restart.", resumed)
     interrupted = await pipeline_runs.fail_interrupted()
     if interrupted:
         logger.warning("%d background runs were interrupted by the restart and were marked failed.", interrupted)
@@ -335,6 +342,8 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONRe
 app.include_router(auth_router.router,    prefix="/api/v1/auth",       tags=["Auth"])
 app.include_router(oauth.router,          prefix="/api/v1/oauth",      tags=["OAuth"])
 app.include_router(workspace.router, prefix="/api/v1/workspaces", tags=["Workspace"])
+from app.api.v1 import jobs as jobs_router
+app.include_router(jobs_router.router, prefix="/api/v1/jobs", tags=["Jobs"])
 app.include_router(invites.router, prefix="/api/v1/invites", tags=["Invites"])
 app.include_router(publish.router,        prefix="/api/v1/publish",    tags=["Publish"])
 app.include_router(users_router.router,   prefix="/api/v1/users",      tags=["Users"])

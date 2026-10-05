@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from pymongo.errors import DuplicateKeyError
 
+from app.shared.brand_name import brand_display_name
 from app.core.config import settings
 from app.core.middleware import limiter
 from app.db.mongo import (
@@ -112,10 +113,8 @@ def _live_link_or_404(link: Optional[dict]) -> dict:
 async def _brand_name(brand_id: Optional[str], workspace_id: str) -> Optional[str]:
     if not brand_id:
         return None
-    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id}, {"identity": 1})
-    identity = (doc or {}).get("identity") or {}
-    name = identity.get("productName") or identity.get("name")
-    return name if isinstance(name, str) and name.strip() else None
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id}, {"identity": 1, "brand_type": 1, "name": 1, "brand_name": 1})
+    return brand_display_name(doc) or None
 
 
 async def _media_by_id(media_ids: list[str]) -> dict[str, SharedMedia]:

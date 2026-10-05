@@ -10,6 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
+from app.shared.brand_name import brand_display_name
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.agents.text.graph import build_single_platform_graph
 from app.agents.text.state import build_initial_state
@@ -482,8 +483,7 @@ async def run_text_pipeline(
     pdf_export_url = None
     if metadata.get("pdf_export") and any(p.content.strip() for p in pieces):
         try:
-            identity = brand_profile.get("identity") or {}
-            brand_name = identity.get("name") or identity.get("productName") or identity.get("company_name") or ""
+            brand_name = brand_display_name(brand_profile)
             pdf_bytes = generate_pieces_pdf(pieces, brand_name=brand_name)
             pdf_export_url = await upload_file(
                 file=pdf_bytes,

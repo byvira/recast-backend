@@ -29,7 +29,7 @@ import contextvars
 import logging
 import time
 from enum import Enum
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import aiofiles
 from fastapi import HTTPException
@@ -46,6 +46,18 @@ from app.utils.jsonparser import parse_llm_json
 logger = logging.getLogger(__name__)
 
 
+def _gated(fn):
+    """Model calls that are not text replies (a picture check) also wait at the run gate, so a paused run stops here too."""
+    import functools
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        await _wait_at_run_gate()
+        return await fn(*args, **kwargs)
+
+    return wrapper
+
+
 def _tidy_output(fn):
     """Every model reply passes through the Content Guard cleanup (dashes, invisible characters, filler openings) on its
     way out, so no caller has to remember to do it. Text replies are cleaned as text, structured replies value by value."""
@@ -55,6 +67,7 @@ def _tidy_output(fn):
     async def wrapper(*args, **kwargs):
         from app.agents.content_guard.rules import clean_text, clean_value
 
+        await _wait_at_run_gate()
         result = await fn(*args, **kwargs)
         if isinstance(result, str):
             return clean_text(result)
@@ -126,6 +139,23 @@ EMBED_DIM = 768  # provisional — 768 keeps persona docs small; revisit if drif
 _current_workspace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_current_workspace_id", default=None
 )
+
+
+# A background run (a repurpose, a regenerate, a batch) can be paused or cancelled by the member. Every model call it makes first
+# asks this gate, which waits while the run is paused and raises when it was cancelled. A ContextVar for the same reason as the
+# workspace above: nothing in the pipelines needs a new parameter, and a run's own tasks (one per platform) all inherit it.
+_run_gate: contextvars.ContextVar["Callable[[], Awaitable[None]] | None"] = contextvars.ContextVar("_run_gate", default=None)
+
+
+def set_run_gate(gate: "Callable[[], Awaitable[None]] | None") -> None:
+    """Set the pause and cancel check for the current task and every task it starts. Pass None to clear it."""
+    _run_gate.set(gate)
+
+
+async def _wait_at_run_gate() -> None:
+    gate = _run_gate.get()
+    if gate is not None:
+        await gate()
 
 
 class usage_workspace:
@@ -648,9 +678,17 @@ async def call_llm(
             logger.error("Gemini fallback also failed: %s", fallback_exc)
             raise HTTPException(status_code=503, detail="LLM service unavailable.")
 
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.error("Unexpected call_llm error: %s", exc)
-        raise HTTPException(status_code=500, detail="Unexpected error during text generation.")
+        # Anything not handled above (a timeout subclass, a malformed reply, a client error) still gets the backup models,
+        # the same as the structured call does, before the member is told it failed.
+        logger.error("Unexpected call_llm error: %s: trying the backup models", exc)
+        try:
+            return await call_llm_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Backup models also failed after an unexpected error: %s", fallback_exc)
+            raise HTTPException(status_code=503, detail="LLM service unavailable.")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -967,6 +1005,7 @@ async def _gemini_generate(model_name: str, fn) -> Any:
     return result
 
 
+@_gated
 @traceable(run_type="llm", name="gemini.vision")
 async def call_vision(
     prompt: str,

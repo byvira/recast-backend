@@ -40,11 +40,15 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# What a job keeps for itself: the key that stops double starts and what it needs to start again after a restart.
+_INTERNAL_FIELDS = ("_id", "idem_key", "payload", "restartable", "restart_attempts", "action_secret")
+
+
 def public(doc: Optional[dict]) -> Optional[dict]:
     """The row as the API returns it: no internal id, plus a progress percentage when the number of steps is known."""
     if not doc:
         return None
-    out = {k: v for k, v in doc.items() if k != "_id"}
+    out = {k: v for k, v in doc.items() if k not in _INTERNAL_FIELDS}
     total = out.get("steps_total") or 0
     if out.get("status") == "done":
         out["progress"] = 100
@@ -73,7 +77,7 @@ async def assert_capacity(workspace_id: str) -> None:
 
 async def create_run(
     *, workspace_id: str, user_id: str, kind: str, title: str, ref: Optional[dict] = None,
-    steps_total: Optional[int] = None, href: Optional[str] = None,
+    steps_total: Optional[int] = None, href: Optional[str] = None, extra: Optional[dict] = None,
 ) -> dict:
     now = _now()
     doc = {
@@ -82,6 +86,7 @@ async def create_run(
         "result": None, "error": None, "pause_requested": False, "cancel_requested": False,
         "created_at": now, "updated_at": now, "started_at": None, "finished_at": None, "paused_at": None,
         "last_reminded_at": None, "reminders_sent": 0,
+        **(extra or {}),
     }
     await pipeline_runs.insert_one(dict(doc))
     return doc
@@ -117,6 +122,11 @@ async def active_run_for(workspace_id: str, kind: str, ref: dict) -> Optional[di
 async def _set(run_id: str, **fields: Any) -> None:
     fields["updated_at"] = _now()
     await pipeline_runs.update_one({"id": run_id}, {"$set": fields})
+
+
+async def set_stage(run_id: str, label: str, **fields: Any) -> None:
+    """What the run is doing now, in plain words (shown in Control Tower)."""
+    await _set(run_id, stage=label, **fields)
 
 
 async def mark_progress(run_id: str, steps_done: int, steps_total: Optional[int] = None) -> None:

@@ -357,7 +357,7 @@ async def generate_audio_asset_in_background(
 
     async def work(run: dict) -> dict:
         asset = await create_audio_from_script(body, ctx, pipeline_runs.StepReporter(run["id"]))
-        return {"asset_id": asset.id, "href": f"/dashboard/pipelines/audio?asset={asset.id}"}
+        return {"data": {"asset_id": asset.id, "version_count": asset.version_count}, "href": f"/dashboard/pipelines/audio?asset={asset.id}"}
 
     pipeline_runs.start(doc, work)
     return pipeline_runs.public(doc)
@@ -885,6 +885,42 @@ def _base_mime_type(content_type: str) -> str:
     recordings arrive as "audio/webm;codecs=opus", not bare "audio/webm")
     so the real file type still matches the allow-list."""
     return (content_type or "").split(";")[0].strip().lower()
+
+
+@router.post("/upload/background", status_code=202)
+@limiter.limit("10/minute")
+async def upload_audio_in_background(
+    request: Request,
+    title: str = Form(...),
+    brand_id: str = Form(...),
+    file: UploadFile = File(...),
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """The same upload, in the background: the file is read now, then the cleanup, transcription and saving carry on on the server,
+    so the member can leave the page. Progress, pause and cancel are on /api/v1/runs/{id}."""
+    from starlette.datastructures import Headers
+
+    from app.shared import jobs, pipeline_runs
+
+    data = await file.read()
+    name, content_type = file.filename, file.content_type
+    await pipeline_runs.assert_capacity(ctx.workspace_id)
+    doc = await pipeline_runs.create_run(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="audio", title=f"Upload: {title[:80]}", steps_total=4,
+    )
+    inner = getattr(upload_audio_asset, "__wrapped__", upload_audio_asset)
+
+    async def work(run: dict) -> dict:
+        member_ctx = await jobs.build_context(ctx.workspace_id, ctx.user_id)
+        upload = UploadFile(file=io.BytesIO(data), filename=name, headers=Headers({"content-type": content_type or ""}))
+        asset = await inner(request=None, title=title, brand_id=brand_id, file=upload, ctx=member_ctx, run=pipeline_runs.StepReporter(run["id"]))
+        return {
+            "data": {"asset_id": asset.id, "version_count": getattr(asset, "version_count", 1)},
+            "href": f"/dashboard/pipelines/audio?asset={asset.id}",
+        }
+
+    pipeline_runs.start(doc, work)
+    return pipeline_runs.public(doc)
 
 
 @router.post("/upload", response_model=AudioAsset, status_code=201)

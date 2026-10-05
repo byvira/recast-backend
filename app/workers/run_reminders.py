@@ -39,6 +39,9 @@ async def remind_about_paused_runs() -> int:
     from app.shared import pipeline_runs as run_layer
 
     # The same pass closes runs whose server died, so nothing looks busy for ever.
+    from app.shared.jobs import resume_interrupted
+
+    await resume_interrupted()
     await run_layer.fail_interrupted()
     now = datetime.now(timezone.utc)
     sent = 0
