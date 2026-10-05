@@ -336,7 +336,7 @@ async def read_inbox(
     if body.ids:
         await inbox_mod.set_read(ctx.workspace_id, ctx.user_id, body.ids)
     else:
-        await inbox_mod.mark_all_read(ctx.workspace_id, ctx.user_id)
+        await inbox_mod.mark_all_read(ctx.workspace_id, ctx.user_id, ctx.role)
     return {"ok": True}
 
 
@@ -360,7 +360,7 @@ async def mark_read(
     elif body.unread:
         raise HTTPException(status_code=400, detail="Pick the items to mark unread.")
     else:
-        await inbox_mod.mark_all_read(ctx.workspace_id, ctx.user_id)
+        await inbox_mod.mark_all_read(ctx.workspace_id, ctx.user_id, ctx.role)
     return {"ok": True, "unread": await inbox_mod.unread_count(ctx.workspace_id, ctx.user_id, ctx.role)}
 
 

@@ -99,7 +99,9 @@ async def set_read(workspace_id: str, user_id: str, ids: list[str], *, unread: b
     )
 
 
-async def mark_all_read(workspace_id: str, user_id: str) -> None:
+async def mark_all_read(workspace_id: str, user_id: str, role: str = "") -> None:
+    """Clears the unread count for this member. Items still waiting on a decision are marked read too: they stay in the
+    "needs your decision" group until someone decides, but they no longer count as unread, so the badge can reach zero."""
     await inbox_state.update_one(
         {"_id": _state_id(workspace_id, user_id)},
         {"$set": {"workspace_id": workspace_id, "user_id": user_id, "read_before": _now()}},
@@ -110,6 +112,11 @@ async def mark_all_read(workspace_id: str, user_id: str) -> None:
         {"workspace_id": workspace_id, "unread_by": user_id},
         {"$pull": {"unread_by": user_id}},
     )
+    # Pending decisions ignore the cursor above, so they are marked read one by one for this member.
+    pending = visibility_filter(workspace_id, user_id, role)
+    pending["lane"] = LANE_ACTIVE
+    pending["read_by"] = {"$ne": user_id}
+    await activity_entries.update_many(pending, {"$addToSet": {"read_by": user_id}})
 
 
 async def hide(workspace_id: str, user_id: str, ids: list[str]) -> int:
