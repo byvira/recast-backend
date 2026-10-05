@@ -735,3 +735,110 @@ async def test_length_preview_with_no_target_has_no_fit(signup_user, stubs):
     res = await client.post("/api/v1/audio-assets/length-preview", json={"script": "hello there"}, headers=_h(ws_id))
     assert res.status_code == 200
     assert res.json()["target_seconds"] is None and res.json()["fit"] is None
+
+
+async def test_a_refused_recording_does_not_leave_its_file_in_storage(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    removed: list[str] = []
+
+    async def _unsafe_words(data, *, filename):
+        return [TranscriptWord(word="buy", start_s=0.0, end_s=0.2), TranscriptWord(word="porn", start_s=0.2, end_s=0.5)]
+
+    async def _record_removal(url):
+        removed.append(url)
+        return True
+
+    monkeypatch.setattr(audio_module, "transcribe_audio_bytes", _unsafe_words)
+    monkeypatch.setattr(audio_module, "delete_file_by_url", _record_removal)
+
+    res = await _upload(client, ws_id, brand_id, _wav(0.5))
+    assert res.status_code >= 400
+    assert len(stubs["uploads"]) == 1
+    assert len(removed) == 1 and removed[0].startswith("https://res.cloudinary.com/")
+    assert await audio_assets.count_documents({"workspace_id": ws_id}) == 0
+    assert await media_assets.count_documents({"workspace_id": ws_id}) == 0
+
+
+def test_a_cloudinary_address_is_turned_into_the_id_needed_to_remove_it():
+    from app.shared.storage import cloudinary_file_ref
+
+    assert cloudinary_file_ref("https://res.cloudinary.com/demo/video/upload/v1/abc.mp3") == ("video", "abc")
+    assert cloudinary_file_ref("https://res.cloudinary.com/demo/video/upload/c_fill/v12/recast/audio/u1/take.wav?x=1") == (
+        "video", "recast/audio/u1/take")
+    assert cloudinary_file_ref("https://res.cloudinary.com/demo/raw/upload/v9/recast/exports/a.pdf") == ("raw", "recast/exports/a.pdf")
+    assert cloudinary_file_ref("https://example.com/a.png") is None
+    assert cloudinary_file_ref("") is None
+
+
+async def test_a_failed_transcription_is_recorded_on_the_upload_and_cleared_by_transcribe(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    audio = _wav(0.5)
+
+    async def _nothing(data, *, filename):
+        return []
+
+    monkeypatch.setattr(audio_module, "transcribe_audio_bytes", _nothing)
+    uploaded = await _upload(client, ws_id, brand_id, audio)
+    assert uploaded.status_code == 201, uploaded.text
+    asset = uploaded.json()
+    assert asset["transcript"] == []
+    assert "No transcript could be made" in asset["transcript_note"]
+
+    async def _words(data, *, filename):
+        return [TranscriptWord(word="hello", start_s=0.0, end_s=0.3)]
+
+    async def _download(url):
+        return audio
+
+    monkeypatch.setattr(audio_module, "transcribe_audio_bytes", _words)
+    monkeypatch.setattr(audio_module, "_download_media_bytes", _download)
+    again = await client.post(f"/api/v1/audio-assets/{asset['id']}/transcribe", headers=_h(ws_id))
+    assert again.status_code == 200, again.text
+    assert [w["word"] for w in again.json()["transcript"]] == ["hello"]
+    assert again.json()["transcript_note"] is None
+
+
+async def test_overlapping_saves_to_a_recording_get_distinct_version_numbers(signup_user, stubs):
+    import asyncio
+
+    from app.db.mongo import audio_asset_versions
+
+    client, profile, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()
+
+    await asyncio.gather(*[
+        audio_module._bump_audio_version(asset["id"], ws_id, asset["media_id"], asset.get("script"), "edit", profile["id"])
+        for _ in range(5)
+    ])
+
+    rows = await audio_asset_versions.find({"audio_asset_id": asset["id"]}).to_list(length=50)
+    assert sorted(r["version_number"] for r in rows) == [1, 2, 3, 4, 5, 6]
+    assert (await audio_assets.find_one({"id": asset["id"]}))["version_count"] == 6
+
+
+async def test_voicing_again_is_a_new_version_of_the_same_recording_and_an_approved_master_stays(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()
+    approved = (await client.patch(f"/api/v1/audio-assets/{asset['id']}/approve", headers=_h(ws_id))).json()
+
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/regenerate", json={"script": "A new, edited script."}, headers=_h(ws_id),
+    )
+    assert res.status_code == 200, res.text
+    again = res.json()
+
+    assert again["id"] == asset["id"] and again["version_count"] == 2
+    assert again["script"] == "A new, edited script."
+    assert again["media_id"] != asset["media_id"]
+    assert again["approved_master_media_id"] == approved["approved_master_media_id"]    # the approved master stays pinned
+    versions = (await client.get(f"/api/v1/audio-assets/{asset['id']}/versions", headers=_h(ws_id))).json()["versions"]
+    assert [v["action"] for v in versions] == ["created", "regenerated"]
+
+
+async def test_an_uploaded_recording_has_no_script_to_voice_again(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    uploaded = (await _upload(client, ws_id, brand_id, _wav(0.5))).json()
+
+    res = await client.post(f"/api/v1/audio-assets/{uploaded['id']}/regenerate", json={}, headers=_h(ws_id))
+    assert res.status_code == 400
+    assert "no script" in res.json()["detail"]

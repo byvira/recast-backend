@@ -269,3 +269,32 @@ async def test_cleanup_endpoint_validation(signup_user, stubs, cleanup_source):
 
     versions = await audio_asset_versions.count_documents({"audio_asset_id": asset["id"]})
     assert versions == 1  # every refused attempt left no trace
+
+
+async def test_when_the_full_echo_cleanup_is_not_available_the_basic_one_is_used_and_the_version_says_so(
+    signup_user, stubs, cleanup_source, monkeypatch,
+):
+    from app.pipelines.media.echo_reduction import EchoReductionError
+
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _uploaded_with_transcript(client, ws_id, brand_id)
+
+    async def _full_cleanup_unavailable(data):
+        raise EchoReductionError("The echo service is not available on this plan.")
+
+    async def _basic(data):
+        return data
+
+    monkeypatch.setattr(audio_module, "reduce_echo", _full_cleanup_unavailable)
+    monkeypatch.setattr(audio_module, "basic_cleanup", _basic)
+
+    res = await client.post(
+        f"/api/v1/audio-assets/{asset['id']}/cleanup", json={"remove_echo": True}, headers=_h(ws_id),
+    )
+    assert res.status_code == 200, res.text
+    cleanup = res.json()["dsp_settings"]["cleanup"]
+    assert cleanup["remove_echo"] == "basic"
+    assert cleanup["remove_echo_note"]
+
+    versions = (await client.get(f"/api/v1/audio-assets/{asset['id']}/versions", headers=_h(ws_id))).json()["versions"]
+    assert [v["action"] for v in versions] == ["created", "cleanup_basic_echo"]

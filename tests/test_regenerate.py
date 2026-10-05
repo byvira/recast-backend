@@ -286,3 +286,63 @@ async def test_regenerate_without_rules_keeps_the_plain_path(signup_user):
     kwargs = spy.await_args.kwargs
     assert kwargs["source_type"].value == "text"
     assert "is_repurpose" not in kwargs and "structure_rules" not in kwargs
+
+
+async def test_regenerate_reuses_the_extras_tone_and_goal_of_the_original_run(signup_user):
+    from app.db.mongo import content_pieces, content_sessions
+
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Regenerate Same Run WS")
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+    session_id = (await content_pieces.find_one({"piece_id": piece_id}))["session_id"]
+    await content_sessions.update_one(
+        {"session_id": session_id, "workspace_id": ws_id},
+        {"$set": {"extras": {"auto_cta": True, "seo_meta": True, "hashtags": False}, "tone": "casual", "goal": "promote"}},
+    )
+
+    fake_result = SimpleNamespace(pieces=[SimpleNamespace(
+        content="Same settings again.", hooks=[], seo={}, readability_score=60, readability_level="Standard",
+    )])
+    spy = AsyncMock(return_value=fake_result)
+    with patch("app.api.v1.text.run_text_pipeline", new=spy):
+        res = await client.post(
+            "/api/v1/text/regenerate",
+            json={"platform": "LinkedIn", "brand_id": brand_id, "piece_id": piece_id, "content": "Some source."},
+            headers={"X-Workspace-Id": ws_id},
+        )
+    assert res.status_code == 200, res.text
+    kwargs = spy.await_args.kwargs
+    assert kwargs["extras"].auto_cta is True and kwargs["extras"].seo_meta is True
+    assert kwargs["extras"].hashtags is False                       # a toggle the member turned off stays off
+    assert kwargs["extras"].hook_variations is True                 # one the run never stored keeps its default
+    assert kwargs["tone"].value == "casual"
+    assert kwargs["goal"].value == "promote"
+
+
+async def test_an_explicit_tone_and_goal_on_the_request_win_over_the_stored_ones(signup_user):
+    from app.db.mongo import content_pieces, content_sessions
+
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Regenerate Override WS")
+    brand_id = await _create_brand(client, ws_id)
+    piece_id = await _seed_piece(ws_id, profile["id"], brand_id)
+    session_id = (await content_pieces.find_one({"piece_id": piece_id}))["session_id"]
+    await content_sessions.update_one(
+        {"session_id": session_id, "workspace_id": ws_id}, {"$set": {"tone": "casual", "goal": "promote"}},
+    )
+
+    fake_result = SimpleNamespace(pieces=[SimpleNamespace(
+        content="Different settings.", hooks=[], seo={}, readability_score=60, readability_level="Standard",
+    )])
+    spy = AsyncMock(return_value=fake_result)
+    with patch("app.api.v1.text.run_text_pipeline", new=spy):
+        res = await client.post(
+            "/api/v1/text/regenerate",
+            json={"platform": "LinkedIn", "brand_id": brand_id, "piece_id": piece_id, "content": "Some source.",
+                  "tone": "formal", "goal": "educate"},
+            headers={"X-Workspace-Id": ws_id},
+        )
+    assert res.status_code == 200, res.text
+    kwargs = spy.await_args.kwargs
+    assert kwargs["tone"].value == "formal" and kwargs["goal"].value == "educate"

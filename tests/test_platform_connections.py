@@ -361,6 +361,10 @@ async def test_the_member_platform_list_says_what_this_workspace_may_do(make_cli
     assert platforms["slack"]["availability"]["value"] == "hidden"
     assert platforms["mastodon"]["availability"]["reason"] == "no_code"
     assert "ops_stage" not in platforms["linkedin"] and "rollout" not in platforms["linkedin"]
+    # The most characters a post may have is sent to members, so the screens need no copy of it.
+    assert platforms["linkedin"]["max_chars"] == 3000
+    assert platforms["blog"]["max_chars"] is None
+    assert platforms["instagram"]["requires_media"] is True and platforms["linkedin"]["requires_media"] is False
 
     # LinkedIn is live for everyone, so once it is paused every workspace sees it as paused.
     await owner.post(f"{B}/linkedin/stage", json={"to": "paused", "reason": "Checking", "version": 0})

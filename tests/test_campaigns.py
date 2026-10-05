@@ -3,7 +3,8 @@
 A campaign groups multiple generation runs under one tracked entity, with
 real aggregate progress computed from the pieces it generated. The
 Campaign model previously existed as a dead scaffold with no API route
-anywhere. Phase 1 is text-only, single-platform-set per campaign.
+anywhere. These cover the campaign itself; media plans and per-platform media are
+tested in test_campaign_media_plan.py and test_platform_modalities.py.
 
 Runs with the LLM mocked — never a real Groq call.
 """
@@ -106,11 +107,12 @@ async def test_create_campaign_rejects_unsupported_source_types(api_client):
     await signup_new_user(api_client)
     brand_id = await _create_brand(api_client)
 
-    for source_type in ("youtube", "audio_upload", "podcast_rss"):
+    for source_type in ("youtube", "podcast_rss"):
         res = await api_client.post(
             "/api/v1/campaigns/", json=_valid_body(brand_id, source_type=source_type),
         )
         assert res.status_code == 400, f"{source_type} should be rejected: {res.text}"
+        assert "Import it in the Audio pipeline first" in res.json()["detail"]
 
 
 async def test_create_campaign_400_for_invalid_platform(api_client):

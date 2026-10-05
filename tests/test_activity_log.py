@@ -390,7 +390,7 @@ async def test_inbox_shows_what_needs_noticing_not_your_own_clicks(api_client, m
     assert "Daily publishing cap reached" not in editor_titles
 
 
-async def test_mark_read_keeps_pending_decisions_unread(api_client):
+async def test_mark_all_read_clears_the_count_but_a_pending_decision_stays_in_the_list(api_client):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Inbox Read", tier="large")
     await _odette_flag(ws_id)
@@ -403,12 +403,23 @@ async def test_mark_read_keeps_pending_decisions_unread(api_client):
     res = await api_client.post("/api/v1/activity/inbox/read", json={}, headers=_ws_headers(ws_id))
     assert res.status_code == 200
     after = await _inbox(api_client, ws_id)
-    assert after["unread"] == 1                                          # the undecided flag
-    assert [i["type"] for i in after["items"] if i["unread"]] == ["failed"]
+    assert after["unread"] == 0
+    assert (await api_client.get("/api/v1/activity/unread-count", headers=_ws_headers(ws_id))).json()["unread"] == 0
+    assert not [i for i in after["items"] if i["unread"]]
+    # The decision itself is still there, still waiting for someone to act on it.
+    assert any(i["type"] == "failed" for i in after["items"])
 
-    flag_item = next(i for i in after["items"] if i["unread"])
-    await api_client.post("/api/v1/activity/inbox/read", json={"ids": [flag_item["id"]]},
-                          headers=_ws_headers(ws_id))
+    # A new decision that arrives later counts again.
+    await _odette_flag(ws_id)
+    assert (await _inbox(api_client, ws_id))["unread"] == 1
+
+
+async def test_a_single_item_can_be_marked_read_by_id(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Inbox One", tier="large")
+    await _odette_flag(ws_id)
+    only = next(i for i in (await _inbox(api_client, ws_id))["items"] if i["unread"])
+    await api_client.post("/api/v1/activity/inbox/read", json={"ids": [only["id"]]}, headers=_ws_headers(ws_id))
     assert (await _inbox(api_client, ws_id))["unread"] == 0
 
 

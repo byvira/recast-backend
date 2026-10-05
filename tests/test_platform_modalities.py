@@ -48,3 +48,8 @@ def test_every_planned_platform_has_a_documentation_check_and_hidden_ones_stay_i
     assert PLATFORM_REGISTRY["reddit"].has_official_post_api is None  # the official pages could not be opened
     assert PLATFORM_REGISTRY["nostr"].modality("image") == "link"
     assert "medium" in {p.key for p in list_platforms()}  # Ops still lists it
+
+
+def test_only_instagram_and_youtube_say_a_post_needs_a_picture_or_video():
+    needs = {key for key, definition in PLATFORM_REGISTRY.items() if definition.requires_media}
+    assert needs == {"instagram", "youtube"}

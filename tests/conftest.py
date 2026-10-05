@@ -39,7 +39,10 @@ def _test_mongo_url() -> str:
     base_url = match.group(1).strip()
     parts = urlsplit(base_url)
     db_name = parts.path.lstrip("/") or "saas_db"
-    test_db_name = db_name if db_name.endswith("_test") else f"{db_name}_test"
+    # A second run at the same time uses its own database: TEST_DB_SUFFIX=b gives <db>_b_test. Without it nothing changes.
+    suffix = os.environ.get("TEST_DB_SUFFIX", "").strip()
+    base_name = db_name[: -len("_test")] if db_name.endswith("_test") else db_name
+    test_db_name = f"{base_name}_{suffix}_test" if suffix else f"{base_name}_test"
     return urlunsplit((parts.scheme, parts.netloc, f"/{test_db_name}", parts.query, parts.fragment))
 
 
@@ -51,9 +54,11 @@ os.environ.setdefault("ENVIRONMENT", "development")
 # worker thread (which otherwise logs noisily on interpreter shutdown).
 os.environ["SENTRY_DSN"] = ""
 # Tests never call the open-model fallbacks: no keys, and the keyless picture service is off.
-for _name in ("MISTRAL_API_KEY", "OPENROUTER_API_KEY", "HUGGINGFACE_API_TOKEN"):
+for _name in ("MISTRAL_API_KEY", "OPENROUTER_API_KEY", "NVIDIA_API_KEY", "HUGGINGFACE_API_TOKEN"):
     os.environ[_name] = ""
 os.environ["POLLINATIONS_ENABLED"] = "false"
+# The guest-comment check is off unless a test switches it on, so the real site key in .env never decides a test.
+os.environ["TURNSTILE_SECRET_KEY"] = ""
 # Tests never make a real picture either: no Cloudflare picture service, and the paid Gemini picture fallback is capped at none.
 # A test that exercises one of these sets it itself.
 for _name in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):

@@ -198,10 +198,10 @@ def test_key_check_skips_providers_without_a_key_and_uses_no_network(monkeypatch
     from app.core.config import settings
     from app.shared.llm_health import keycheck
 
-    for name in ("CLOUDFLARE_API_TOKEN", "ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "HUGGINGFACE_API_TOKEN"):
+    for name in ("CLOUDFLARE_API_TOKEN", "ELEVENLABS_API_KEY", "DEEPGRAM_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY", "NVIDIA_API_KEY", "HUGGINGFACE_API_TOKEN"):
         monkeypatch.setattr(settings, name, "")
     out = asyncio.run(keycheck.check_keys())
-    assert {k: v["status"] for k, v in out.items()} == {k: "not_set" for k in ("cloudflare", "elevenlabs", "deepgram", "mistral", "openrouter", "huggingface")}
+    assert {k: v["status"] for k, v in out.items()} == {k: "not_set" for k in ("cloudflare", "elevenlabs", "deepgram", "mistral", "openrouter", "nvidia", "huggingface")}
 
 
 def test_key_check_reports_a_rejected_key(monkeypatch):

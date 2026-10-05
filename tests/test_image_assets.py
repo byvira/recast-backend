@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 
 from app.api.v1 import image_assets as image_module
-from app.db.mongo import brand_profiles, image_asset_versions, media_assets
+from app.db.mongo import brand_profiles, image_asset_versions, image_assets, media_assets
 from app.models.image_asset import LayoutPreset
 from app.pipelines.media.image_render import LAYOUT_DIMS
 from app.pipelines.text.storage import ensure_session_exists, save_live_piece
@@ -495,3 +495,94 @@ async def test_generate_rejects_an_unknown_icon_before_rendering(signup_user, st
     assert res.status_code == 400
     assert "icon" in res.json()["detail"].lower()
     assert stubs["uploads"] == [], "nothing may be rendered or uploaded on a rejected request"
+
+
+async def test_the_headline_and_author_are_saved_with_the_picture(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+
+    res = await _generate(client, ws_id, brand_id, author="Asha Rao")
+    assert res.status_code == 201, res.text
+    asset_id = res.json()["id"]
+
+    reopened = await client.get(f"/api/v1/image-assets/{asset_id}", headers={"X-Workspace-Id": ws_id})
+    assert reopened.status_code == 200, reopened.text
+    text = reopened.json()["slides"][0]["text_content"]
+    assert text["headline"] == "Clarity beats scale"
+    assert text["author"] == "Asha Rao"
+    assert text["accent_keyword"] == "Clarity"
+
+
+async def test_a_new_picture_has_its_first_version_recorded_and_the_count_matches(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()
+
+    assert asset["version_count"] == 1
+    versions = (await client.get(f"/api/v1/image-assets/{asset['id']}/versions", headers=_h(ws_id))).json()
+    assert versions["total"] == 1
+    assert versions["versions"][0]["version_number"] == 1
+    assert versions["versions"][0]["action"] == "created"
+
+
+async def test_a_set_of_pictures_that_all_get_made_is_not_flagged(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    res = await _generate(client, ws_id, brand_id, count=3)
+    assert res.status_code == 201, res.text
+    asset = res.json()
+
+    assert len(asset["slides"]) == 3
+    assert not asset["qa_flagged"]
+    assert len(stubs["backgrounds"]) == 3
+
+
+async def test_a_set_that_stops_part_way_says_how_many_were_made(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    calls = {"n": 0}
+    real = image_module.generate_image_from_prompt
+
+    async def _second_one_fails(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("provider quota used up")
+        return await real(**kwargs)
+
+    monkeypatch.setattr(image_module, "generate_image_from_prompt", _second_one_fails)
+
+    res = await _generate(client, ws_id, brand_id, count=3)
+    assert res.status_code == 201, res.text
+    asset = res.json()
+
+    assert len(asset["slides"]) == 1
+    assert asset["qa_flagged"] is True
+    assert "Only 1 of 3" in asset["qa_flag_reason"]
+    stored = await image_assets.find_one({"id": asset["id"]})
+    assert stored["qa_flagged"] is True and "Only 1 of 3" in stored["qa_flag_reason"]
+
+
+async def test_overlapping_saves_to_a_picture_get_distinct_version_numbers(signup_user, stubs):
+    import asyncio
+
+    from app.models.image_asset import Slide
+
+    client, profile, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()
+    slides = [Slide(**s) for s in asset["slides"]]
+
+    await asyncio.gather(*[
+        image_module._bump_version(asset["id"], ws_id, slides, "edit", profile["id"]) for _ in range(5)
+    ])
+
+    rows = await image_asset_versions.find({"image_asset_id": asset["id"]}).to_list(length=50)
+    assert sorted(r["version_number"] for r in rows) == [1, 2, 3, 4, 5, 6]
+    assert (await image_assets.find_one({"id": asset["id"]}))["version_count"] == 6
+
+
+async def test_an_added_slide_keeps_the_mascot_choice_of_the_first_slide(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id, show_mascot=True)).json()
+    assert asset["slides"][0]["text_content"]["show_mascot"] is True
+
+    res = await client.post(
+        f"/api/v1/image-assets/{asset['id']}/slides", json={"headline": "Slide 2"}, headers=_h(ws_id),
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["slides"][1]["text_content"]["show_mascot"] is True

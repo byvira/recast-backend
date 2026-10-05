@@ -212,3 +212,30 @@ async def test_save_live_piece_defaults_match_save_pipeline_result_shape():
     assert piece["quality_issues"] == []
     assert piece["flagged_for_review"] is False
     assert piece["repurposed"] is False
+
+
+async def test_overlapping_edits_to_a_post_get_distinct_version_numbers():
+    import asyncio
+
+    from app.pipelines.text.storage import update_piece_content
+
+    ids = _ids()
+    await ensure_session_exists(
+        session_id=ids["session_id"], workspace_id=ids["workspace_id"], user_id=ids["user_id"],
+        brand_id=ids["brand_id"], source_type="text",
+    )
+    piece_id = await save_live_piece(
+        session_id=ids["session_id"], workspace_id=ids["workspace_id"], user_id=ids["user_id"],
+        brand_id=ids["brand_id"], platform="linkedin", content="Start.", word_count=1, char_count=6,
+    )
+
+    await asyncio.gather(*[
+        update_piece_content(piece_id, ids["workspace_id"], f"Edit number {i}.", "manual_edit", f"change {i}")
+        for i in range(5)
+    ])
+
+    versions = await get_versions(piece_id, ids["workspace_id"])
+    numbers = sorted(v["version_number"] for v in versions)
+    assert numbers == [1, 2, 3, 4, 5, 6]
+    piece = await get_piece(piece_id, ids["workspace_id"])
+    assert piece["version_count"] == 6
