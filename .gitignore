@@ -48,6 +48,7 @@ logs/
 scripts/*
 !scripts/rotate_fernet_key.py
 !scripts/seed_presets.py
+!scripts/export_prompt_library_mock.py
 
 # ── Local launch tracking (personal checklist, not for the repo) ─────────────
 LAUNCH_CHECKLIST.md

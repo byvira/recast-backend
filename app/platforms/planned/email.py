@@ -26,10 +26,8 @@ ROWS = [
         rate_limits="Free plan has real limits (verify).",
         policy_constraints=[],
         access_notes=(
-            "Large template library and audience tools. A dead placeholder client exists at "
-            "app/integrations/mailchimp.py with zero imports anywhere (see docs/STATUS.md) — "
-            "a real integration would be a fresh build against Mailchimp's actual API, not a "
-            "revival of that file."
+            "Large template library and audience tools. No client exists yet; a real "
+            "integration would be a fresh build against Mailchimp's actual API."
         ),
         confidence="unverified",
     ),
