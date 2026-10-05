@@ -106,6 +106,12 @@ _HEALTH_TEXT = {
 }
 
 
+_HOLD_TEXT = {
+    "platform_paused": "on hold because Recast has paused that platform",
+    "platform_retired": "on hold because that platform was retired",
+}
+
+
 async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
     """Facts from the context snapshot that may explain the ticket. Each item
     is {"level": "problem" | "note", "text": str}. Plain code, no AI."""
@@ -140,6 +146,27 @@ async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
         findings.append({"level": "problem", "text": "The workspace has used up its AI writing limit, so new writing is paused until usage drops."})
     except Exception:
         logger.debug("Couldn't check the AI limit for the diagnosis", exc_info=True)
+
+    schedule = snapshot.get("schedule") or {}
+    overdue = int(schedule.get("overdue") or 0)
+    if overdue:
+        findings.append({"level": "problem", "text": (
+            f"{overdue} scheduled post{'s are' if overdue != 1 else ' is'} overdue: the time passed more than 15 minutes ago and "
+            "they are still waiting. Check the connection for that platform first.")})
+    for reason, count in sorted((schedule.get("held") or {}).items()):
+        why = _HOLD_TEXT.get(reason, "held back")
+        findings.append({"level": "note", "text": f"{count} post{'s are' if count != 1 else ' is'} {why}."})
+    for failed in (schedule.get("recent_failed") or [])[:3]:
+        label = str(failed.get("platform") or "A")
+        reason = failed.get("error") or "no reason was recorded"
+        findings.append({"level": "problem", "text": f"A {label} post failed in the last 7 days: {reason}"})
+    for campaign in snapshot.get("campaigns") or []:
+        if campaign.get("status") == "paused":
+            named_campaign = source.get("type") == "campaign" and source.get("id") == campaign.get("id")
+            asked = " (the one the member reported)" if named_campaign else ""
+            findings.append({"level": "note" if not named_campaign else "problem", "text": (
+                f"The campaign \"{campaign.get('name') or 'Untitled'}\" is paused{asked}. A paused campaign makes and schedules "
+                "nothing until someone resumes it.")})
 
     errors = snapshot.get("errors") or []
     if errors:

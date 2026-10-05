@@ -8,7 +8,7 @@ through ``member_view`` so internal notes and staff-only fields never leave.
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -500,6 +500,23 @@ async def rate_ticket(
     return member_view(
         await support_tickets.find_one({"id": ticket_id}), viewer_id=ctx.user_id, limit=rules.MESSAGE_PAGE_SIZE
     )
+
+
+@router.get("/my-data/export")
+@limiter.limit("5/hour")
+async def export_my_support_data(
+    request: Request, format: Literal["json", "csv"] = "json", ctx: WorkspaceContext = Depends(get_current_workspace),
+):
+    """A copy of the caller's own support data: their tickets, the messages they could see, ratings and file names."""
+    data = await support_privacy.export_member_data(ctx.user_id)
+    if format == "csv":
+        from fastapi.responses import Response
+
+        return Response(
+            support_privacy.export_to_csv(data), media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="my-support-data.csv"'},
+        )
+    return data
 
 
 class SupportEraseRequest(BaseModel):

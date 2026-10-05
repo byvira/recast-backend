@@ -20,6 +20,7 @@ from app.db.mongo import (
     activity_entries,
     brand_profiles,
     content_pieces,
+    get_campaigns_collection,
     support_ticket_context,
     support_tickets,
     workspace_connections,
@@ -34,6 +35,10 @@ _BACKOFF_SECONDS = (1.0, 3.0)
 _MAX_ERRORS = 10
 _ERROR_WINDOW = timedelta(hours=24)
 _TEXT_LIMIT = 200
+_OVERDUE_AFTER = timedelta(minutes=15)
+_FAILED_WINDOW = timedelta(days=7)
+_MAX_FAILED_POSTS = 5
+_MAX_CAMPAIGNS = 5
 
 # The only fields of a linked post that are ever copied. Never the body.
 _LINKED_PIECE_FIELDS = (
@@ -60,6 +65,53 @@ def _connection_health(conn: dict, now: datetime) -> str:
         if expires - now < timedelta(days=2):
             return "expiring_soon"
     return "healthy"
+
+
+async def _schedule_state(workspace_id: str, now: datetime) -> dict:
+    """Where the workspace's scheduled posts stand, as counts and short facts only: how many are waiting, how many are
+    overdue, how many are held and why, and the latest failures with their error. Never the text of a post."""
+    base = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
+    cutoff = now - _OVERDUE_AFTER
+    queued = await content_pieces.count_documents({**base, "publish_status": "queued"})
+    overdue = await content_pieces.count_documents({
+        **base, "publish_status": "queued", "hold": {"$exists": False},
+        "$or": [{"publish_scheduled_at": {"$lte": cutoff}}, {"publish_scheduled_at": {"$lte": cutoff.isoformat()}}],
+    })
+    held_rows = await content_pieces.find({**base, "publish_status": "queued", "hold": {"$exists": True}}, {"hold": 1}).to_list(50)
+    held: dict[str, int] = {}
+    for row in held_rows:
+        reason = (row.get("hold") or {}).get("reason") or "held"
+        held[reason] = held.get(reason, 0) + 1
+    failed_rows = (
+        await content_pieces.find(
+            {**base, "publish_status": "failed", "updated_at": {"$gte": now - _FAILED_WINDOW}},
+            {"platform": 1, "last_error": 1, "publish_scheduled_at": 1, "updated_at": 1},
+        )
+        .sort("updated_at", -1)
+        .to_list(_MAX_FAILED_POSTS)
+    )
+    failed = [
+        {"platform": r.get("platform"), "error": _short(r.get("last_error") or ""), "scheduled_at": r.get("publish_scheduled_at"),
+         "failed_at": r.get("updated_at")}
+        for r in failed_rows
+    ]
+    return {"queued": queued, "overdue": overdue, "held": held, "recent_failed": failed}
+
+
+async def _campaign_state(workspace_id: str) -> list[dict]:
+    rows = (
+        await get_campaigns_collection().find({"workspace_id": workspace_id, "status": {"$in": ["active", "paused"]}, "deleted": {"$ne": True}})
+        .sort("updated_at", -1)
+        .to_list(_MAX_CAMPAIGNS)
+    )
+    out = []
+    for r in rows:
+        cadence = r.get("cadence") or {}
+        out.append({
+            "id": r.get("id"), "name": _short(r.get("name", ""), 80), "status": r.get("status"),
+            "frequency": cadence.get("frequency"), "next_run_at": cadence.get("next_run_at"),
+        })
+    return out
 
 
 async def build_snapshot(ticket: dict) -> dict:
@@ -105,6 +157,9 @@ async def build_snapshot(ticket: dict) -> dict:
         for r in error_rows
     ]
 
+    schedule = await _schedule_state(workspace_id, now)
+    campaign_rows = await _campaign_state(workspace_id)
+
     linked: Optional[dict] = None
     source = ticket.get("source_context") or {}
     if source.get("type") in ("post", "generation") and source.get("id"):
@@ -116,6 +171,11 @@ async def build_snapshot(ticket: dict) -> dict:
                     linked[key] = _short(piece[key])
     elif source.get("type") == "platform" and source.get("id"):
         linked = {"type": "platform", "id": source["id"]}
+    elif source.get("type") == "campaign" and source.get("id"):
+        linked = {"type": "campaign", "id": source["id"]}
+        match = next((c for c in campaign_rows if c.get("id") == source["id"]), None)
+        if match:
+            linked.update({k: v for k, v in match.items() if k != "id" and v is not None})
 
     return {
         "workspace": {
@@ -132,6 +192,8 @@ async def build_snapshot(ticket: dict) -> dict:
         "platforms": platforms,
         "brand": {"profiles": brand_total, "active": brand_active},
         "errors": errors,
+        "schedule": schedule,
+        "campaigns": campaign_rows,
         "linked_object": linked,
         "route": source.get("route"),
         "env": ticket.get("client_env") or None,

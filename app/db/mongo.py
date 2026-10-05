@@ -288,6 +288,8 @@ async def create_indexes() -> None:
     await support_tickets.create_index([("status", 1), ("created_at", -1)])
     await support_tickets.create_index([("created_by", 1), ("created_at", -1)])
     await support_tickets.create_index([("status", 1), ("assignee_id", 1)])
+    # The retention job looks for tickets closed longer ago than the retention period.
+    await support_tickets.create_index([("status", 1), ("closed_at", 1)])
     # Tickets filed before numbering existed have no number; only index the ones that do.
     await support_tickets.create_index(
         "number", unique=True, partialFilterExpression={"number": {"$type": "int"}}

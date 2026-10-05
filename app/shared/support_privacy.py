@@ -137,6 +137,72 @@ async def erase_member_data(user_id: str) -> dict:
     return {"tickets": erased, "chats": chats.deleted_count, "files": len(loose)}
 
 
+_ATTACHMENT_KEYS = ("name", "filename", "size", "size_bytes", "content_type", "mime_type")
+
+
+def _iso(value) -> Optional[str]:
+    if isinstance(value, datetime):
+        value = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
+    return value
+
+
+async def export_member_data(user_id: str) -> dict:
+    """Everything a member has in support, as plain data they can keep: their tickets with the messages they could see,
+    ratings and file names. Staff-only notes are never included, and neither are storage paths or anything about other members."""
+    tickets = await support_tickets.find({"created_by": user_id}).sort("created_at", 1).to_list(2000)
+    out_tickets = []
+    for t in tickets:
+        messages = []
+        for m in t.get("messages", []):
+            if m.get("is_internal"):
+                continue
+            messages.append({
+                "from": m.get("sender"),
+                "name": m.get("sender_name"),
+                "text": m.get("text"),
+                "sent_at": _iso(m.get("created_at")),
+                "removed": bool(m.get("is_deleted")),
+                "attachments": [{k: a.get(k) for k in _ATTACHMENT_KEYS if k in a} for a in (m.get("attachments") or [])],
+            })
+        out_tickets.append({
+            "id": t.get("id"),
+            "number": t.get("number"),
+            "subject": t.get("subject"),
+            "category": t.get("category"),
+            "severity": t.get("severity"),
+            "status": t.get("status"),
+            "created_at": _iso(t.get("created_at")),
+            "closed_at": _iso(t.get("closed_at")),
+            "erased": bool(t.get("anonymized_at")),
+            "rating": {"score": (t.get("rating") or {}).get("score"), "comment": (t.get("rating") or {}).get("comment")} if t.get("rating") else None,
+            "messages": messages,
+        })
+    chats = await support_chats.count_documents({"user_id": user_id})
+    return {"exported_at": datetime.now(timezone.utc).isoformat(), "tickets": out_tickets, "assistant_chats": chats}
+
+
+def export_to_csv(data: dict) -> str:
+    """One row per message, with the ticket's own details repeated, for a spreadsheet."""
+    import csv
+    import io
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["ticket_number", "ticket_id", "subject", "category", "status", "ticket_created_at", "from", "name", "sent_at", "text"])
+    for t in data.get("tickets", []):
+        base = [t.get("number"), t.get("id"), t.get("subject"), t.get("category"), t.get("status"), t.get("created_at")]
+        if not t.get("messages"):
+            writer.writerow([*base, "", "", "", ""])
+        for m in t.get("messages", []):
+            # A cell that starts with = + - or @ would run as a formula in a spreadsheet, so it is made plain text first.
+            text = str(m.get("text") or "")
+            if text[:1] in ("=", "+", "-", "@"):
+                text = "'" + text
+            writer.writerow([*base, m.get("from"), m.get("name"), m.get("sent_at"), text])
+    return buffer.getvalue()
+
+
 async def enforce_retention(now: Optional[datetime] = None) -> int:
     """Clean tickets that have been closed longer than the retention period."""
     now = now or datetime.now(timezone.utc)

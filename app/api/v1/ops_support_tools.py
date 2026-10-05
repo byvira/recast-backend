@@ -413,6 +413,36 @@ async def erase_member(
     return result
 
 
+class ExportBody(BaseModel):
+    # Why: who asked and how, e.g. "Requested by email on 3 March".
+    reason: str = Field(min_length=10, max_length=300)
+
+
+@router.post("/tickets/{ticket_id}/export-member")
+@limiter.limit("10/hour")
+async def export_member(
+    request: Request, ticket_id: str, body: ExportBody, format: Literal["json", "csv"] = "json",
+    staff: dict = Depends(require_platform_staff),
+):
+    """Admin only. Hands over a member's support data when they ask for a copy (see app.shared.support_privacy). The ticket this
+    was done from keeps a record of who did it and why. Staff-only notes are not included."""
+    _require_role(staff, "admin", "Only an admin can export a member's support data.")
+    ticket = await _get_ticket(ticket_id)
+    data = await support_privacy.export_member_data(ticket["created_by"])
+    await log_event(
+        ticket_id, type="member_data_exported_by_staff",
+        data={"reason": body.reason.strip(), "tickets": len(data["tickets"]), "format": format}, **_actor(staff),
+    )
+    if format == "csv":
+        from fastapi.responses import Response
+
+        return Response(
+            support_privacy.export_to_csv(data), media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="support-data.csv"'},
+        )
+    return data
+
+
 # ── SLA targets ──────────────────────────────────────────────────────────────
 class SlaBody(BaseModel):
     first_response_hours: dict[SupportTicketSeverity, float]
