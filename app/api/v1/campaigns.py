@@ -7,7 +7,9 @@ progress computed from the pieces it generated, and optional recurring
 auto-generation (cadence.frequency + cadence.next_run_at, polled by
 app.workers.campaign_scheduler).
 
-Still text-only — content_types is hardcoded to ["text"] at creation.
+Every post is a text post. A campaign can also make pictures and narration for each post
+(its `media_plan`, off by default); `content_types` is derived from that plan. Video is accepted
+in the plan but not generated yet.
 Workspace-scoped. Reads require membership; create/update/delete/
 generate-next-batch require ``create_content`` (the same gate content
 generation itself already uses — a campaign is a coordination layer on
@@ -130,9 +132,8 @@ async def create_campaign(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"{body.source_type.value.replace('_', ' ').title()} campaigns aren't "
-                "available yet — audio/video transcription isn't wired up. Use a topic "
-                "brief or article URL for now."
+                f"A {body.source_type.value.replace('_', ' ')} can't be pasted in here. Import it in the Audio pipeline first "
+                "(paste the link there), then choose that recording as the source. You can also use a topic brief or an article link."
             ),
         )
 
@@ -152,6 +153,15 @@ async def create_campaign(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+    source_ref = None
+    if body.source_type == CampaignSourceType.AUDIO_UPLOAD:
+        from app.pipelines.campaigns.sources import SourceError, topic_from_recording
+
+        try:
+            topic_cluster, source_ref = await topic_from_recording(body.topic_cluster, ctx.workspace_id)
+        except SourceError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     now = datetime.now(timezone.utc)
     cadence = body.cadence.model_dump()
     # next_run_at is server-computed only — CampaignCadence is embedded
@@ -166,6 +176,7 @@ async def create_campaign(
         "topic_cluster": topic_cluster,
         "source_type": body.source_type.value,
         "source_url": source_url,
+        "source_ref": source_ref,
         "content_types": _content_types(body.media_plan.model_dump()),
         "platforms": [p.value for p in platforms],
         "platforms_by_day": body.platforms_by_day,

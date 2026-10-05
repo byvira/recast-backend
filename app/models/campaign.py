@@ -7,9 +7,9 @@ aggregate progress across its pieces, optional per-day platform variation
 (`cadence.frequency` + `cadence.next_run_at`, polled by
 app.workers.campaign_scheduler).
 
-Still text-only — `content_types` is hardcoded to `["text"]` at creation
-time; audio/video/image support has no real pipeline behind it yet
-(app/api/v1/audio.py and video.py are unimplemented stubs).
+Every post is a text post. A campaign can also make pictures and narration for each post
+(`media_plan`, off by default); `content_types` is derived from that plan. Video is accepted in
+the plan but not generated yet.
 """
 
 from datetime import datetime
@@ -44,9 +44,10 @@ class CampaignSourceType(str, Enum):
     PODCAST_RSS = "podcast_rss"
 
 
+# A recording (AUDIO_UPLOAD) is a source: its topic_cluster is the id of a recording in the workspace. A YouTube or podcast link
+# is imported into a recording in the Audio pipeline first, so those two are asked to do that rather than accepted as a link.
 UNSUPPORTED_CAMPAIGN_SOURCES = {
     CampaignSourceType.YOUTUBE,
-    CampaignSourceType.AUDIO_UPLOAD,
     CampaignSourceType.PODCAST_RSS,
 }
 
@@ -151,6 +152,8 @@ class Campaign(BaseModel):
     topic_cluster: str
     source_type: CampaignSourceType = CampaignSourceType.RAW_TEXT
     source_url: Optional[str] = None
+    # For a recording source: which recording, its title and length. The text itself is in topic_cluster.
+    source_ref: Optional[dict] = None
     content_types: list[ContentType] = Field(default_factory=lambda: [ContentType.TEXT])
     platforms: list[str] = Field(default_factory=list)  # real Platform values, e.g. "LinkedIn"
     # Optional per-day platform override — platforms_by_day[i] is used for
