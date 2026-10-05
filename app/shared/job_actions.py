@@ -178,6 +178,29 @@ def _register_audio() -> None:
                   description="Voice a conversation between several speakers.")
 
 
+class CampaignRef(BaseModel):
+    campaign_id: str = Field(min_length=1, max_length=64)
+
+
+class CampaignPieceRef(CampaignRef):
+    piece_id: str = Field(min_length=1, max_length=64)
+
+
+def _campaign_action(name: str, model: type[BaseModel], handler_name: str, title, steps: int, description: str) -> None:
+    async def run(ctx: Any, payload: Any, reporter: Any) -> Any:
+        from app.api.v1 import campaigns
+
+        handler = getattr(campaigns, handler_name)
+        args = [payload.campaign_id] + ([payload.piece_id] if hasattr(payload, "piece_id") else [])
+        await reporter.step("Working on it")
+        return await getattr(handler, "__wrapped__", handler)(None, *args, ctx)
+
+    register(JobAction(
+        name=name, permission="create_content", payload_model=model, run=run, kind="campaign", title=title,
+        steps=lambda p: steps, href="/dashboard/pipelines/new", gated=True, retries=0, description=description,
+    ))
+
+
 def register_all() -> None:
     from app.shared.activity.runs import run_label
 
@@ -199,4 +222,10 @@ def register_all() -> None:
                  lambda p: f"Week of posts: {run_label(p.topic_cluster)}", lambda p: max(1, p.days))
     _text_action("text.regenerate", RegenerateRequest, "regenerate_content",
                  lambda p: f"Regenerate {p.platform}", lambda p: 1)
+    _campaign_action("campaign.next_batch", CampaignRef, "generate_next_batch", lambda p: "Campaign: next batch", 1,
+                     "Make the next batch of posts for a campaign.")
+    _campaign_action("campaign.retry_media", CampaignPieceRef, "retry_post_media", lambda p: "Campaign: retry media", 1,
+                     "Make again the media that failed for one post.")
+    _campaign_action("campaign.regenerate_media", CampaignPieceRef, "regenerate_post_image", lambda p: "Campaign: new picture", 1,
+                     "Make one post's picture again.")
     _register_audio()
