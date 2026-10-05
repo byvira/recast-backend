@@ -588,7 +588,8 @@ class RegenerateRequest(BaseModel):
     brand_id:  str
     piece_id:  Optional[str] = None   # used to pull original source content
     content:   Optional[str] = None   # fallback if piece_id not provided
-    tone:      Optional[str] = "brand"
+    # Nothing sent means "the same as the original run" (then the brand's own tone); an explicit value, including "brand", wins.
+    tone:      Optional[str] = None
     goal:      Optional[str] = None
     # How `content` should be read (a pasted link is fetched, not treated as
     # prose) and the section rules of the preset it came from. Both default to
