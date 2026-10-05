@@ -54,6 +54,11 @@ os.environ["SENTRY_DSN"] = ""
 for _name in ("MISTRAL_API_KEY", "OPENROUTER_API_KEY", "HUGGINGFACE_API_TOKEN"):
     os.environ[_name] = ""
 os.environ["POLLINATIONS_ENABLED"] = "false"
+# Tests never make a real picture either: no Cloudflare picture service, and the paid Gemini picture fallback is capped at none.
+# A test that exercises one of these sets it itself.
+for _name in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+    os.environ[_name] = ""
+os.environ["GEMINI_IMAGE_FALLBACK_DAILY_CAP"] = "0"
 
 import httpx  # noqa: E402
 

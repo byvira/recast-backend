@@ -112,11 +112,13 @@ async def test_a_failed_run_keeps_a_plain_reason(api_client, mock_llm):
     assert "Brand profile is not complete" in done["error"]
 
 
-async def test_only_members_who_can_create_may_control_a_run(api_client, make_client):
+async def test_only_members_who_can_create_may_control_a_run(api_client, make_client, mock_llm):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Run Perms", tier="large")
     campaign_id = await _campaign(api_client, ws_id=ws_id)
     headers = {"X-Workspace-Id": ws_id}
+    mock_llm.set_structured({"angles": ["Only angle"]})
+    mock_llm.set_plain("Real generated content for this campaign day.")
     run = (await api_client.post(f"/api/v1/campaigns/{campaign_id}/runs", headers=headers)).json()
 
     viewer, _ = await invite_and_accept(api_client, make_client, ws_id, "viewer")
