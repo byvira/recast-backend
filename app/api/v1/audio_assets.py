@@ -357,7 +357,7 @@ async def generate_audio_asset_in_background(
 
     async def work(run: dict) -> dict:
         asset = await create_audio_from_script(body, ctx, pipeline_runs.StepReporter(run["id"]))
-        return {"data": {"asset_id": asset.id, "version_count": asset.version_count}, "href": f"/dashboard/pipelines/audio?asset={asset.id}"}
+        return {"asset_id": asset.id, "href": f"/dashboard/pipelines/audio?asset={asset.id}"}
 
     pipeline_runs.start(doc, work)
     return pipeline_runs.public(doc)
