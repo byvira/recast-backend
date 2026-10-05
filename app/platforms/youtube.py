@@ -24,6 +24,7 @@ def _youtube() -> PlatformDefinition:
         analytics_fetcher_cls="app.pipelines.analytics.youtube.YouTubeAnalyticsFetcher",
         validator_fn="app.pipelines.publish.validators.validate_youtube",
         max_chars=5000,
+        requires_media=True,
         audit_required=True,
         rate_limits="Default 100 video uploads/day; extra quota needs an audit (Google quota page, checked 2026-09-20).",
         policy_constraints=[

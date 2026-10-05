@@ -82,6 +82,8 @@ class PlatformDefinition(BaseModel):
     # The most characters a post to this platform may have, where the platform sets one. The auto-fixer trims to it. None
     # means no single limit applies (or none is declared yet), and nothing is trimmed on its account.
     max_chars: Optional[int] = None
+    # True where a post cannot go out without a picture or a video (the member is asked to add one before publishing).
+    requires_media: bool = False
 
     # What the platform's own developer documentation says. `has_official_post_api` is None until someone checks.
     # `official_doc_url` is the page that backs the answer, and `verified_at` the date it was checked (YYYY-MM-DD).

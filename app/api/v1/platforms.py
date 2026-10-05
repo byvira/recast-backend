@@ -52,6 +52,8 @@ def _serialize(p: PlatformDefinition) -> dict[str, Any]:
         "status": p.status,
         "audit_required": p.audit_required,
         "rate_limits": p.rate_limits,
+        "max_chars": p.max_chars,
+        "requires_media": p.requires_media,
         "policy_constraints": p.policy_constraints,
         "tone_profile": p.tone_profile,
         "access_notes": p.access_notes,

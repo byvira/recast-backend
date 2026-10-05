@@ -16,6 +16,7 @@ def _instagram() -> PlatformDefinition:
         analytics_fetcher_cls="app.pipelines.analytics.instagram.InstagramAnalyticsFetcher",
         validator_fn="app.pipelines.publish.validators.validate_instagram",
         max_chars=2200,
+        requires_media=True,
         audit_required=True,
         policy_constraints=[
             "Image-first — needs a Business or Creator account linked to a Facebook Page.",
