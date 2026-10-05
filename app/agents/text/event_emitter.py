@@ -29,6 +29,12 @@ class EventEmitter:
         self.queue: asyncio.Queue = asyncio.Queue()
         self._resume_event: asyncio.Event = asyncio.Event()
         self._resume_choice: str | None = None
+        # Member-driven pause and cancel. The gate is open while the run may go on; pause_point() waits at it.
+        self._gate: asyncio.Event = asyncio.Event()
+        self._gate.set()
+        self._pause_requested = False
+        self._cancel_requested = False
+        self._cancel_announced = False
         # Run bookkeeping read after the pipeline finishes (Activity Log's
         # run summary) and while it runs (Control Tower progress). Plain
         # counters — the queue itself is drained by the SSE route.
@@ -206,6 +212,46 @@ class EventEmitter:
             "recoverable": recoverable,
         })
         await self.queue.put(self.DONE)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pause, resume and cancel by the member (the run's own controls)
+    #
+    # The run stops at pause_point(), which nodes call before each unit of work, so a pause takes effect at the next one
+    # and nothing half-made is thrown away. A cancel ends the run there and keeps every post already made.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def is_paused(self) -> bool:
+        return self._pause_requested and not self._cancel_requested
+
+    def request_pause(self) -> None:
+        if not self._cancel_requested:
+            self._pause_requested = True
+            self._gate.clear()
+
+    def request_resume(self) -> None:
+        self._pause_requested = False
+        self._gate.set()
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+        self._pause_requested = False
+        self._gate.set()
+
+    async def pause_point(self) -> None:
+        """Call between units of work. Returns when the run may go on, waits while paused, and ends the run if it was cancelled
+        (by raising CancelledError after telling the client, so no code treats it as a failure to retry)."""
+        if not self._cancel_requested and not self._gate.is_set():
+            await self.emit("pipeline_paused", {})
+            await self._gate.wait()
+            if not self._cancel_requested:
+                await self.emit("pipeline_resumed", {})
+        if self._cancel_requested:
+            if not self._cancel_announced:
+                self._cancel_announced = True
+                await self.emit("pipeline_cancelled", {"completed": list(self.completed_platforms)})
+                await self.queue.put(self.DONE)
+            raise asyncio.CancelledError()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Human-in-the-loop pause/resume

@@ -18,7 +18,7 @@ async def test_generate_reports_its_step_while_running_and_clears_after(signup_u
     run_id = "run-" + uuid4().hex
     seen: dict = {}
 
-    async def _synth_that_looks_around(*, text, voice_settings, lexicon=None, workspace_id, user_id):
+    async def _synth_that_looks_around(*, text, voice_settings, lexicon=None, workspace_id, user_id, language=None):
         mid_request = await client.get(f"/api/v1/audio-assets/runs/{run_id}", headers=_h(ws_id))
         seen["status"] = mid_request.status_code
         seen["body"] = mid_request.json()
@@ -101,7 +101,7 @@ async def test_run_ids_are_validated_and_workspace_scoped(signup_user, stubs, mo
     run_id = "run-" + uuid4().hex
     seen: dict = {}
 
-    async def _synth(*, text, voice_settings, lexicon=None, workspace_id, user_id):
+    async def _synth(*, text, voice_settings, lexicon=None, workspace_id, user_id, language=None):
         seen["other_workspace"] = (await other.get(f"/api/v1/audio-assets/runs/{run_id}", headers=_h(other_ws))).status_code
         seen["by_bad_id"] = (await client.get("/api/v1/audio-assets/runs/x", headers=_h(ws_id))).status_code
         return SpeechResult(audio=_wav(0.3), words=None)

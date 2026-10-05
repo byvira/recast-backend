@@ -219,6 +219,8 @@ class GenerateAudioAssetRequest(BaseModel):
     # Speaking pace in words a minute (100 to 200). Left out, the member's saved
     # narration speed and the standard pace are used.
     words_per_minute: Optional[int] = Field(None, ge=spoken_length.MIN_WORDS_PER_MINUTE, le=spoken_length.MAX_WORDS_PER_MINUTE)
+    # What language the script is in, for example "ta+en". Left out, the source post's language is used.
+    language: Optional[str] = Field(None, max_length=16)
 
 
 class LengthPreviewRequest(BaseModel):
@@ -337,6 +339,30 @@ async def generate_audio_asset(
     return await create_audio_from_script(body, ctx, run)
 
 
+@router.post("/generate/background", status_code=202)
+@limiter.limit("10/minute")
+async def generate_audio_asset_in_background(
+    request: Request,
+    body: GenerateAudioAssetRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """The same work as POST /generate, but it returns at once with a saved run. The member can leave the page; the run's
+    progress, pause, resume and cancel are on /api/v1/runs/{id}, and when it finishes the Activity Log links to the recording."""
+    from app.shared import pipeline_runs
+
+    await pipeline_runs.assert_capacity(ctx.workspace_id)
+    doc = await pipeline_runs.create_run(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="audio", title=f"Narration \"{body.title}\"", steps_total=2,
+    )
+
+    async def work(run: dict) -> dict:
+        asset = await create_audio_from_script(body, ctx, pipeline_runs.StepReporter(run["id"]))
+        return {"asset_id": asset.id, "href": f"/dashboard/pipelines/audio?asset={asset.id}"}
+
+    pipeline_runs.start(doc, work)
+    return pipeline_runs.public(doc)
+
+
 def _spoken_text(content: str) -> str:
     """A post's text as it should be read aloud: hashtags, markdown marks and bullet or heading signs are written for the
     eye and would be spoken as noise, so they are dropped. Only used when the script comes from a post, never for a script
@@ -390,12 +416,14 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
             "speech_speed": round(min(1.5, max(0.8, body.words_per_minute / spoken_length.DEFAULT_WORDS_PER_MINUTE)), 2)
         })
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
+    language = (body.language or (piece.get("language") if body.source_piece_id else None) or "").strip() or None
     speech = await synthesize_speech_timed(
         text=script,
         voice_settings=voice_settings,
         lexicon=lexicon,
         workspace_id=ctx.workspace_id,
         user_id=ctx.user_id,
+        language=language,
     )
     if not speech:
         raise HTTPException(
@@ -447,6 +475,7 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
         approval_status=AudioApprovalStatus.PENDING,
         source_piece_id=body.source_piece_id,
         source_content_hash=source_content_hash,
+        language=language or "en",
     )
     await audio_assets.insert_one(asset.model_dump())
     await _record_initial_version(asset)

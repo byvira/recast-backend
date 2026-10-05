@@ -171,6 +171,7 @@ async def create_campaign(
         "platforms_by_day": body.platforms_by_day,
         "cadence": cadence,
         "media_plan": body.media_plan.model_dump(),
+        "language": (body.language or "").strip() or None,
         "status": CampaignStatus.DRAFT.value,
         "piece_ids": [],
         "last_generated_at": None,
@@ -246,6 +247,9 @@ async def update_campaign(
     for field in ("name", "topic_cluster", "status", "cadence", "platforms_by_day"):
         if field in payload and payload[field] is not None:
             update[field] = payload[field]
+
+    if "language" in payload:
+        update["language"] = (payload["language"] or "").strip() or None
 
     if payload.get("media_plan") is not None:
         update["media_plan"] = payload["media_plan"]
@@ -433,6 +437,42 @@ async def export_campaign(
         media_type="application/zip",
         headers={"Content-Disposition": 'attachment; filename="recast-campaign.zip"'},
     )
+
+
+@router.post("/{campaign_id}/runs", status_code=202)
+@limiter.limit("5/minute")
+async def start_campaign_run(
+    request: Request,
+    campaign_id: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict[str, Any]:
+    """Start one more batch for this campaign in the background and return at once with the run. The member can leave the
+    page; progress, pause, resume and cancel are on /api/v1/runs/{id}, and the finished batch shows in the Activity Log."""
+    from app.shared import pipeline_runs
+
+    campaign = await get_campaigns_collection().find_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    running = await pipeline_runs.active_run_for(ctx.workspace_id, "campaign", {"campaign_id": campaign_id})
+    if running:
+        raise HTTPException(status_code=409, detail="This campaign is already making a batch.")
+
+    await pipeline_runs.assert_capacity(ctx.workspace_id)
+    days = (campaign.get("cadence") or {}).get("days_per_batch", 7)
+    doc = await pipeline_runs.create_run(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="campaign",
+        title=f"Campaign \"{campaign.get('name') or 'Untitled'}\"", ref={"campaign_id": campaign_id},
+        steps_total=days, href=f"/dashboard/pipelines/new?campaignId={campaign_id}",
+    )
+
+    async def work(run: dict) -> dict:
+        result = await generate_campaign_batch(campaign, workspace_id=ctx.workspace_id, user_id=ctx.user_id, run_id=run["id"])
+        return {"new_piece_count": len(result["new_piece_ids"])}
+
+    pipeline_runs.start(doc, work)
+    return pipeline_runs.public(doc)
 
 
 @router.post("/{campaign_id}/generate-next-batch")

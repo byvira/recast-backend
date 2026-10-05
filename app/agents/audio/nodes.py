@@ -2,7 +2,7 @@
 
 from app.prompts.safe import clamp_score
 from datetime import datetime
-from app.agents.base import BaseAgentState
+from app.agents.base import weakest_dimension, BaseAgentState
 from app.prompts.registry import load_prompt
 from app.utils.brand import build_brand_context
 from app.utils.llm import call_llm, call_llm_structured, transcribe_audio, GroqModel
@@ -92,7 +92,7 @@ async def generate_node(state: BaseAgentState) -> dict:
     prompt = load_prompt(
         "media/shared/generate", domain="audio", output_type=output_type,
         topics=analysis.get("topics", []), key_quotes=analysis.get("key_quotes", []),
-        transcript_excerpt=transcript.get("text", "")[:2000], retry=retry,
+        transcript_excerpt=transcript.get("text", "")[:2000], retry=retry, retry_focus=state["intermediate_outputs"].get("retry_focus", ""),
     )
     content = await call_llm(prompt=prompt, system=brand_ctx, model=GroqModel.BALANCED)
 
@@ -142,6 +142,10 @@ async def retry_node(state: BaseAgentState) -> dict:
     return {
         "retry_count": state["retry_count"] + 1,
         "current_step": "generate",
+        "intermediate_outputs": {
+            **state["intermediate_outputs"],
+            "retry_focus": weakest_dimension(state["quality_scores"]),
+        },
         "errors": [
             *state["errors"],
             f"Audio content quality below threshold on attempt {state['retry_count'] + 1}. Retrying.",

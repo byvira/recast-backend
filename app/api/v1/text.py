@@ -44,7 +44,7 @@ from app.models.scorer import (
     ScoreReadabilityResponse,
 )
 from app.models.chips import ApplyChipRequest, ApplyChipResponse, GetChipsResponse
-from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
+from app.shared.language import resolve_content_language
 from app.pipelines.text.orchestrator import run_batch_pipeline, run_text_pipeline
 from app.pipelines.text.scraper import preview_url, scrape_url
 from app.pipelines.text.scorer import score_hook, score_readability
@@ -102,6 +102,7 @@ async def _resolve_request_language(
     ctx: WorkspaceContext,
     content_for_detection: str | None = None,
     piece_id: str | None = None,
+    brand_id: str | None = None,
 ) -> str:
     """The precedence chain for this request's content language.
 
@@ -109,8 +110,8 @@ async def _resolve_request_language(
     override): a post generated as "ta+en" must not be rewritten in the workspace default by a refine or regenerate. A
     piece with no stored language (made before it was kept) falls through to the chain below, exactly as before.
 
-    request override > workspace default > caller's own account default >
-    detected from the request's own source content > "en". See
+    request override > piece > workspace default > detected from the request's own source content > caller's own
+    account default > "en". See
     app.shared.language for why generation uses this order (the workspace's
     audience, not the clicking staff member, is what matters) — different
     from Remy's or Odette's own chains, and for why detection only fires
@@ -120,22 +121,23 @@ async def _resolve_request_language(
     asserting a wrong language).
     """
     piece_language = None
-    if piece_id and not request_language:
-        stored = await content_pieces.find_one({"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"language": 1})
-        piece_language = (stored or {}).get("language") or None
-    explicit = first_present_or_none(
-        request_language,
-        piece_language,
-        await workspace_language(ctx.workspace_id),
-        await user_language(ctx.user_id),
+    if piece_id and (not request_language or not brand_id):
+        stored = await content_pieces.find_one({"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"language": 1, "brand_id": 1})
+        if not request_language:
+            piece_language = (stored or {}).get("language") or None
+        brand_id = brand_id or (stored or {}).get("brand_id")
+    brand_language = None
+    if brand_id:
+        brand_doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id}, {"language": 1})
+        brand_language = (brand_doc or {}).get("language") or None
+    return await resolve_content_language(
+        explicit=request_language,
+        piece=piece_language,
+        brand=brand_language,
+        workspace_id=ctx.workspace_id,
+        user_id=ctx.user_id,
+        text=content_for_detection,
     )
-    if explicit:
-        return explicit
-    if content_for_detection:
-        detected = detect_language(content_for_detection)
-        if detected:
-            return detected
-    return "en"
 
 
 async def _save_result(
@@ -239,7 +241,7 @@ async def generate_text_content(
     Supports all four frontend input modes: write, prompt, url, repurpose.
     """
     brand = await _get_verified_brand(body.brand_id, ctx.workspace_id)
-    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.content)
+    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.content, brand_id=body.brand_id)
     started = time.monotonic()
 
     if body.batch_mode:
@@ -357,7 +359,7 @@ async def repurpose_content(
     Brand voice is always re-applied — never copy-paste.
     """
     brand = await _get_verified_brand(body.brand_id, ctx.workspace_id)
-    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.source_content)
+    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.source_content, brand_id=body.brand_id)
     started = time.monotonic()
 
     try:
@@ -467,7 +469,7 @@ async def batch_generate(
     Rate limited to 5/minute — expensive operation.
     """
     brand = await _get_verified_brand(body.brand_id, ctx.workspace_id)
-    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.topic_cluster)
+    language = await _resolve_request_language(body.language, ctx, content_for_detection=body.topic_cluster, brand_id=body.brand_id)
     started = time.monotonic()
 
     try:

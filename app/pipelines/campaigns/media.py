@@ -76,16 +76,30 @@ async def _image_request(campaign: dict[str, Any], piece: dict):
     title = _headline(content)  # the asset's name in the library
     show_text = image_plan.get("text", "headline") != "none"
     # The headline is written in the language the post was written in (it used to always be English).
-    from app.pipelines.text.generator import resolve_language_name
+    from app.pipelines.text.generator import resolve_language_directive_name
 
     language = (piece.get("language") or "").strip()
-    language_name = resolve_language_name(language) if language and language != "en" else "English"
+    language_name = resolve_language_directive_name(language) if language and language != "en" else "English"
     headline = (await make_headline(content, language_name=language_name)) if show_text else ""
     return GenerateImageAssetRequest(
         title=title, brand_id=campaign["brand_id"], headline=headline, show_text=show_text,
         show_logo=image_plan.get("logo", True), show_mascot=bool(image_plan.get("mascot", False)),
         source_piece_id=piece["piece_id"], count=min(count, 5), active_layout=layout,
     )
+
+
+def _kinds_this_platform_takes(piece: dict, kinds: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Splits `kinds` into the ones the post's platform can carry and the ones it cannot (marked "skipped", so no picture,
+    recording or video is made that could never be attached). A platform the registry does not know keeps every kind."""
+    from app.platforms.base import PLATFORM_REGISTRY, import_all
+    from app.pipelines.publish.spine import platform_key
+
+    import_all()
+    definition = PLATFORM_REGISTRY.get(platform_key(piece.get("platform")))
+    if definition is None:
+        return kinds, {}
+    usable = [k for k in kinds if definition.modality(k) != "none"]  # type: ignore[arg-type]
+    return usable, {k: "skipped" for k in kinds if k not in usable}
 
 
 async def _make_for_piece(
@@ -102,7 +116,7 @@ async def _make_for_piece(
     layout = (plan.get("image") or {}).get("layout") or "quote_1_1"
     content = (piece.get("content") or "").strip()
     title = _headline(content)
-    states: dict[str, str] = {}
+    kinds, states = _kinds_this_platform_takes(piece, kinds)
     if "image" in kinds:
         try:
             made = await create_image_asset(await _image_request(campaign, piece), ctx)
@@ -129,7 +143,7 @@ async def _make_for_piece(
                 made_audio = await create_audio_from_script(
                     GenerateAudioAssetRequest(
                         title=title, brand_id=campaign["brand_id"], source_piece_id=piece["piece_id"],
-                        script=script, words_per_minute=wpm,
+                        script=script, words_per_minute=wpm, language=piece.get("language"),
                     ),
                     ctx,
                     _NoRun(),

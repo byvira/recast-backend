@@ -453,6 +453,32 @@ async def generate_image_asset(
     return await create_image_asset(body, ctx)
 
 
+@router.post("/generate/background", status_code=202)
+@limiter.limit("20/minute")
+async def generate_image_asset_in_background(
+    request: Request,
+    body: GenerateImageAssetRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+    _guard: None = Depends(_generate_guard),
+) -> dict:
+    """The same work as POST /generate, but it returns at once with a saved run. The member can leave the page; the run's
+    progress and cancel are on /api/v1/runs/{id}, and when it finishes the Activity Log links to the picture."""
+    from app.shared import pipeline_runs
+
+    await pipeline_runs.assert_capacity(ctx.workspace_id)
+    doc = await pipeline_runs.create_run(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="image", title=f"Picture \"{body.title}\"", steps_total=1,
+    )
+
+    async def work(run: dict) -> dict:
+        await pipeline_runs.checkpoint(run["id"])
+        asset = await create_image_asset(body, ctx)
+        return {"asset_id": asset.id, "href": f"/dashboard/pipelines/image?asset={asset.id}"}
+
+    pipeline_runs.start(doc, work)
+    return pipeline_runs.public(doc)
+
+
 async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceContext) -> ImageAsset:
     """The work behind POST /generate, callable without a request (campaign runs use it)."""
     _check_icon(body.icon_name)

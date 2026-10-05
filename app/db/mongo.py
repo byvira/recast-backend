@@ -47,6 +47,8 @@ platform_listings: AsyncIOMotorCollection = get_client().get_default_database()[
 # Content Guard: the single settings document (_id "config") and one row per output it blocked or rewrote.
 content_safety: AsyncIOMotorCollection = get_client().get_default_database()["content_safety"]
 safety_events: AsyncIOMotorCollection = get_client().get_default_database()["safety_events"]
+# One row for each long piece of work that runs in the background (a campaign batch, a recording, a set of pictures): its state, progress and outcome.
+pipeline_runs: AsyncIOMotorCollection = get_client().get_default_database()["pipeline_runs"]
 # Publish failure audit trail, written by app/pipelines/publish/supervisor/alerts.py
 # (previously only ever accessed there via db["publish_incidents"] ad hoc —
 # named here too so app/agents/supervisor/rules.py's platform_delivery_failing
@@ -271,6 +273,8 @@ async def create_indexes() -> None:
     await platform_listings.create_index([("workspace_id", 1), ("platform_key", 1)], unique=True)
     await safety_events.create_index([("created_at", -1)])
     await safety_events.create_index("fingerprint", unique=True)
+    await pipeline_runs.create_index("id", unique=True)
+    await pipeline_runs.create_index([("workspace_id", 1), ("status", 1), ("created_at", -1)])
 
     # ── Remy/Odette scaffolding ──────────────────────────────────────────
     await member_voice_settings.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)

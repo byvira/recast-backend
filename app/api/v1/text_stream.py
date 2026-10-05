@@ -27,7 +27,7 @@ from app.core.workspace import WorkspaceContext, get_current_workspace, require_
 from app.db.mongo import brand_profiles
 from app.db.redis import get_cache, set_cache
 from app.models.text import ExtrasConfig, GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
-from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
+from app.shared.language import resolve_content_language
 from app.agents.text import session_relay
 from app.agents.text.event_emitter import EventEmitter
 from app.shared.activity.runs import brand_label, end_run, start_run, update_run
@@ -88,12 +88,22 @@ async def _register_session(session_id: str, workspace_id: str) -> None:
     )
 
 
+_CONTROL_CHOICES = {"__pause__": "pause", "__resume__": "resume", "__cancel__": "cancel"}
+
+
+def _apply_control(emitter: EventEmitter, action: str) -> None:
+    {"pause": emitter.request_pause, "resume": emitter.request_resume, "cancel": emitter.request_cancel}[action]()
+
+
 async def _apply_local_resume(session_id: str, workspace_id: str, choice: str) -> bool:
-    """Relay target (app.agents.text.session_relay): apply a resume that
+    """Relay target (app.agents.text.session_relay): apply a resume, or a pause or cancel (sent as a special choice), that
     arrived on another instance, if this instance owns the session."""
     entry = _active_sessions.get(session_id)
     if not entry or entry[1] != workspace_id:
         return False
+    if choice in _CONTROL_CHOICES:
+        _apply_control(entry[0], _CONTROL_CHOICES[choice])
+        return True
     await entry[0].resume(choice=choice)
     logger.info("Session %s resumed via relay with choice: %s", session_id, choice)
     return True
@@ -177,16 +187,10 @@ async def generate_stream(
     if not brand.get("is_complete"):
         raise HTTPException(status_code=400, detail="Brand profile is not complete.")
 
-    # Precedence chain: explicit query param > workspace default > caller's
-    # own account default > detected from `content` > "en" — identical order
-    # to the JSON /generate endpoint (see
-    # api/v1/text.py::_resolve_request_language).
-    explicit_language = first_present_or_none(
-        language,
-        await workspace_language(ctx.workspace_id),
-        await user_language(ctx.user_id),
+    # Same order as the JSON /generate endpoint, see app.shared.language.resolve_content_language.
+    effective_language = await resolve_content_language(
+        explicit=language, brand=brand.get("language"), workspace_id=ctx.workspace_id, user_id=ctx.user_id, text=content,
     )
-    effective_language = explicit_language or detect_language(content) or "en"
 
     # Build GenerateTextRequest from query params
     try:
@@ -368,6 +372,37 @@ async def resume_pipeline(
 # Session status — for reconnect after page refresh
 # ─────────────────────────────────────────────────────────────────────────────
 
+@router.post("/session/{session_id}/control")
+@limiter.limit("60/minute")
+async def control_session(
+    request:    Request,
+    session_id: str,
+    body:       dict[str, Any],
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Pause, resume or cancel a run that is going. body: { "action": "pause" | "resume" | "cancel" }.
+    A pause takes effect at the next step of the run, and a cancel keeps every post already made. Works across instances."""
+    action = body.get("action")
+    if action not in ("pause", "resume", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be pause, resume or cancel.")
+    entry = _active_sessions.get(session_id)
+    if entry and entry[1] == ctx.workspace_id:
+        _apply_control(entry[0], action)
+        return {"session_id": session_id, "action": action}
+    cached = await get_cache(_session_cache_key(session_id))
+    if not cached or cached.get("workspace_id") != ctx.workspace_id:
+        raise HTTPException(status_code=404, detail="Session not found or already complete.")
+    if cached.get("status") == "ended":
+        raise HTTPException(status_code=409, detail="Session already finished.")
+    live_owner = await session_relay.owner(session_id)
+    token = {v: k for k, v in _CONTROL_CHOICES.items()}[action]
+    if live_owner and live_owner.get("workspace_id") == ctx.workspace_id and await session_relay.relay_resume(
+        session_id, ctx.workspace_id, token,
+    ):
+        return {"session_id": session_id, "action": action, "relayed": True}
+    raise HTTPException(status_code=410, detail="Session was lost when the server restarted. Please start a new generation.")
+
+
 @router.get("/session/{session_id}/status")
 @limiter.limit("30/minute")
 async def get_session_status(
@@ -475,6 +510,7 @@ async def _run_and_report(
                 language=body.language,
                 emitter=emitter,
                 outer_session_id=session_id,
+                before_day=lambda _day: emitter.pause_point(),
             )
         else:
             await run_text_pipeline(

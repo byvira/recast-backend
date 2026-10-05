@@ -59,7 +59,7 @@ def stubs(monkeypatch):
         record["synth"].append({"text": text, "voice": voice_settings.tts_voice, "lexicon": lexicon})
         return None if record["tts_returns_none"] else _wav(0.4)
 
-    async def _fake_synth_timed(*, text, voice_settings, lexicon=None, workspace_id, user_id):
+    async def _fake_synth_timed(*, text, voice_settings, lexicon=None, workspace_id, user_id, language=None):
         record["synth"].append({"text": text, "voice": voice_settings.tts_voice, "lexicon": lexicon})
         if record["tts_returns_none"]:
             return None
@@ -121,6 +121,30 @@ async def _generate(client, ws_id: str, brand_id: str, **overrides):
 
 
 # ── script -> TTS ────────────────────────────────────────────────────────────
+
+async def test_generate_in_the_background_returns_a_run_and_ends_with_the_asset(signup_user, stubs):
+    import asyncio
+
+    client, profile, ws_id, brand_id = await _setup(signup_user)
+    res = await client.post(
+        "/api/v1/audio-assets/generate/background",
+        json={"title": "Episode 1", "brand_id": brand_id, "script": "Welcome to the show."}, headers=_h(ws_id),
+    )
+    assert res.status_code == 202, res.text
+    run = res.json()
+    assert run["kind"] == "audio" and run["status"] in ("queued", "running")
+
+    for _ in range(120):
+        run = (await client.get(f"/api/v1/runs/{run['id']}", headers=_h(ws_id))).json()
+        if run["status"] in ("done", "failed"):
+            break
+        await asyncio.sleep(0.25)
+    assert run["status"] == "done", run
+    asset_id = run["result"]["asset_id"]
+    assert run["href"] == f"/dashboard/pipelines/audio?asset={asset_id}"
+    asset = (await client.get(f"/api/v1/audio-assets/{asset_id}", headers=_h(ws_id))).json()
+    assert asset["script"] == "Welcome to the show." and asset["source_type"] == "script_tts"
+
 
 async def test_generate_persists_a_real_synthesized_asset(signup_user, stubs):
     client, profile, ws_id, brand_id = await _setup(signup_user)

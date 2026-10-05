@@ -200,7 +200,9 @@ async def test_make_video_validation(signup_user, stubs):
     assert (await client.post(url, json={"start_s": 5, "end_s": 2, "style": "solid", "size": "square"}, headers=_h(ws_id))).status_code == 400
     assert (await client.post("/api/v1/audio-assets/nope/video", json={"style": "solid", "size": "square"}, headers=_h(ws_id))).status_code == 404
 
-    # No duration known and no end_s given: honestly refused, not a 0-length video.
+    # No duration known and no end_s given: honestly refused, not a 0-length video. (A generated recording now carries its
+    # real length, so the length is cleared here to make this the unknown-length case the check is about.)
+    await media_assets.update_one({"id": asset["media_id"]}, {"$unset": {"duration_s": ""}})
     no_duration = await client.post(url, json={"style": "solid", "size": "square"}, headers=_h(ws_id))
     assert no_duration.status_code == 400
 

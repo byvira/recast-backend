@@ -160,6 +160,8 @@ class Campaign(BaseModel):
     platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
     media_plan: CampaignMediaPlan = Field(default_factory=CampaignMediaPlan)
+    # The language every post of this campaign is written in, for example "ta+en". None means follow the workspace.
+    language: Optional[str] = None
     status: CampaignStatus = CampaignStatus.DRAFT
     # Cloudinary secure_url, set via POST /{campaign_id}/thumbnail. User-
     # uploaded only — there is no real image-generation pipeline to derive
@@ -188,6 +190,7 @@ class CreateCampaignRequest(BaseModel):
     platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
     media_plan: CampaignMediaPlan = Field(default_factory=CampaignMediaPlan)
+    language: Optional[str] = Field(default=None, max_length=16)
 
 
 class UpdateCampaignRequest(BaseModel):
@@ -198,3 +201,4 @@ class UpdateCampaignRequest(BaseModel):
     status: Optional[CampaignStatus] = None
     cadence: Optional[CampaignCadence] = None
     media_plan: Optional[CampaignMediaPlan] = None
+    language: Optional[str] = Field(default=None, max_length=16)

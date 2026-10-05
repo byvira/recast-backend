@@ -11,7 +11,7 @@ rule failures rather than HTTPException — the route translates that to a
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 
 from app.db.mongo import brand_profiles, get_campaigns_collection
 from app.models.campaign import CampaignStatus
@@ -20,9 +20,10 @@ from app.pipelines.text.orchestrator import run_batch_pipeline
 from app.pipelines.text.events import emit_run_completed
 from app.shared.activity.runs import brand_label, run_label, tracked_run, update_run
 from app.pipelines.text.storage import save_pipeline_result
-from app.shared.language import detect_language, first_present_or_none, user_language, workspace_language
+from app.shared.language import resolve_content_language
 
 from app.pipelines.campaigns import media as campaign_media
+from app.shared import pipeline_runs
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,16 @@ _CADENCE_DELTA = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
 
 
 async def generate_campaign_batch(
-    campaign: dict[str, Any], *, workspace_id: str, user_id: str,
+    campaign: dict[str, Any], *, workspace_id: str, user_id: str, run_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Run one more batch for `campaign`, tagging every resulting piece with
     its campaign_id. Returns {"new_piece_ids": [...]}. Raises ValueError for
     every business-rule failure (unsupported content type, incomplete
     brand, invalid stored platform) — never an HTTPException, since the
-    scheduler has no request to attach one to."""
+    scheduler has no request to attach one to.
+
+    With `run_id` (a saved background run), the batch waits while the run is paused and stops when it is cancelled, between
+    days. Days already made are kept either way, and RunCancelled is raised once they are saved."""
     if "text" not in (campaign.get("content_types") or ["text"]):
         raise ValueError("A campaign always makes text; media is added on top of it.")
 
@@ -44,10 +48,10 @@ async def generate_campaign_batch(
     if not brand or not brand.get("is_complete"):
         raise ValueError("Brand profile is not complete. Finish onboarding first.")
 
-    language = first_present_or_none(
-        await workspace_language(workspace_id),
-        await user_language(user_id),
-    ) or detect_language(campaign["topic_cluster"]) or "en"
+    language = await resolve_content_language(
+        campaign=campaign.get("language"), brand=brand.get("language"),
+        workspace_id=workspace_id, user_id=user_id, text=campaign["topic_cluster"],
+    )
 
     days = campaign.get("cadence", {}).get("days_per_batch", 7)
 
@@ -61,6 +65,7 @@ async def generate_campaign_batch(
         raise ValueError(f"Invalid platform on campaign: {e}")
 
     new_piece_ids: list[str] = []
+    cancelled = False
 
     day_started = [time.monotonic()]
 
@@ -105,24 +110,30 @@ async def generate_campaign_batch(
         )
         day_started[0] = time.monotonic()
         await update_run(workspace_id, f"campaign:{campaign['id']}", steps_done=day_index + 1)
+        if run_id:
+            await pipeline_runs.mark_progress(run_id, day_index + 1, days)
 
     async with tracked_run(
         workspace_id=workspace_id, run_id=f"campaign:{campaign['id']}", kind="campaign",
         title=campaign.get("name") or run_label(campaign["topic_cluster"]),
         project=brand_label(brand), steps_total=days,
     ):
-        await run_batch_pipeline(
-            topic_cluster=campaign["topic_cluster"],
-            platforms=platforms,
-            platforms_by_day=platforms_by_day,
-            brand_id=campaign["brand_id"],
-            workspace_id=workspace_id,
-            user_id=user_id,
-            extras=ExtrasConfig(),
-            days=days,
-            language=language,
-            on_day_complete=persist_day,
-        )
+        try:
+            await run_batch_pipeline(
+                topic_cluster=campaign["topic_cluster"],
+                platforms=platforms,
+                platforms_by_day=platforms_by_day,
+                brand_id=campaign["brand_id"],
+                workspace_id=workspace_id,
+                user_id=user_id,
+                extras=ExtrasConfig(),
+                days=days,
+                language=language,
+                on_day_complete=persist_day,
+                before_day=(lambda _i: pipeline_runs.checkpoint(run_id)) if run_id else None,
+            )
+        except pipeline_runs.RunCancelled:
+            cancelled = True
 
     now = datetime.now(timezone.utc)
     frequency = campaign.get("cadence", {}).get("frequency", "manual")
@@ -141,4 +152,6 @@ async def generate_campaign_batch(
         {"$push": {"piece_ids": {"$each": new_piece_ids}}, "$set": update},
     )
 
+    if cancelled:
+        raise pipeline_runs.RunCancelled()
     return {"new_piece_ids": new_piece_ids}
