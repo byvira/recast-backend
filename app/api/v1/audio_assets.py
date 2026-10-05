@@ -108,7 +108,7 @@ from app.shared.activity.runs import end_run, get_run, start_run, update_run
 from app.shared.events import emit_event_background
 from app.shared.llm import call_llm, call_llm_structured, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
-from app.shared.storage import ContentType as UploadContentType, upload_file
+from app.shared.storage import ContentType as UploadContentType, delete_file_by_url, upload_file
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -963,7 +963,11 @@ async def _ingest_audio(
     if run:
         await run.step("Transcribing what was said")
     transcript = await transcribe_audio_bytes(contents, filename=filename)
-    await assert_speech_ok(transcript_text(transcript), noun="recording", workspace_id=ctx.workspace_id, where="upload")
+    try:
+        await assert_speech_ok(transcript_text(transcript), noun="recording", workspace_id=ctx.workspace_id, where="upload")
+    except Exception:
+        await delete_file_by_url(url)
+        raise
 
     now = datetime.now(timezone.utc)
     media = MediaAsset(

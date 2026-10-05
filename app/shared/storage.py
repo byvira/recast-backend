@@ -1,10 +1,16 @@
 """Shared file storage helpers using Cloudinary."""
 
-import cloudinary
-import cloudinary.uploader
+import logging
+import re
 from enum import Enum
 
+import cloudinary
+import cloudinary.uploader
+
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
 
 class ContentType(str, Enum):
     IMAGE = "recast_images"
@@ -135,6 +141,36 @@ async def delete_file(public_id: str, content_type: ContentType) -> bool:
         resource_type=_get_resource_type(content_type)
     )
     return result.get("result") == "ok"
+
+
+_CLOUDINARY_FILE = re.compile(r"^https?://res\.cloudinary\.com/[^/]+/(?P<kind>image|video|raw)/upload/(?:[^/]+/)*?v\d+/(?P<path>.+)$")
+
+
+def cloudinary_file_ref(url: str) -> tuple[str, str] | None:
+    """The resource type and public id of a Cloudinary file URL, or None for any other address."""
+    match = _CLOUDINARY_FILE.match(url or "")
+    if not match:
+        return None
+    kind, path = match.group("kind"), match.group("path").split("?")[0]
+    if kind != "raw" and "." in path.rsplit("/", 1)[-1]:
+        path = path.rsplit(".", 1)[0]
+    return kind, path
+
+
+async def delete_file_by_url(url: str) -> bool:
+    """Best-effort removal of a stored file from its URL. Never raises: a file that cannot be removed is
+    logged and left, because the caller is already handling a more important failure."""
+    ref = cloudinary_file_ref(url)
+    if ref is None:
+        return False
+    kind, public_id = ref
+    try:
+        _ensure_configured()
+        result = cloudinary.uploader.destroy(public_id, resource_type=kind)
+        return result.get("result") == "ok"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not remove stored file %s: %s", public_id, exc)
+        return False
 
 
 # ── Private files (support attachments) ──────────────────────────────────────
