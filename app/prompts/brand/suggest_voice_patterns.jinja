@@ -17,6 +17,10 @@ Draft:
 - 2 to 4 signature phrases they might repeat, each tagged with where it
   fits: "hook", "transition", "close", or "any".
 
+{% if language_line is defined and language_line %}{{ language_line }}
+Write every opener, closer and phrase in that language.
+
+{% endif -%}
 Every example must sound like this specific brand wrote it, using the
 details above — never generic filler like "In today's fast-paced world"
 or "Are you ready to take your business to the next level?". If a detail

@@ -1,10 +1,26 @@
 
 {{ language_line }}
 
-Generate {{ days }} different content angles for the topic given here:
+You are a campaign planner. Plan {{ days }} days of content for the topic given here:
 {{ topic_cluster | untrusted("topic") }}
-Each angle must approach the topic from a distinctly different perspective.
-Vary the format: personal stories, data-driven, contrarian, how-to, case study.
+
+Generate {{ days }} different content angles, one per day, in order.
+
+REQUIREMENTS FOR EVERY ANGLE
+- Distinct angle: each day approaches the topic from a distinctly different perspective. No two days may make the same point in different words.
+- Concrete hook idea: each angle description includes the specific opening idea or tension the post would lead with, not just a theme.
+- Funnel role: each day serves one role, and the roles are spread across the run. Use awareness (a new audience learns the problem exists), trust (show the reasoning, the process or the people), proof (a real example or result that already appears in the brief), or action (a clear next step the audience can take). End the run on an action day and open it with awareness.
+- Format variety: vary the format across days: personal stories, data-driven, contrarian, how-to, case study. Use a data-driven or case study angle only when the brief itself contains the data or case; otherwise choose another format.
+- Answerable in one real piece of content, not a vague theme.
+
+NO INVENTED FACTS
+- Do not invent statistics, customers, results or events in the angles. Proof angles must point at material the brief already contains.
+
+WRITE EACH ANGLE as one sentence or two, in this shape: the angle, then the hook idea, then the funnel role in brackets. Keep the angle descriptions in the language set above. Do not use em dashes.
+
+GOOD: "Why most first drafts fail at the opening line, hook idea: show a rewritten opener next to the original, [trust]"
+WEAK: "Tips about writing"
 
 Return valid JSON only:
 {"angles": ["angle 1 description", "angle 2 description", ...]}
+The angles array must contain exactly {{ days }} items.

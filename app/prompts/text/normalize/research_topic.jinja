@@ -1,14 +1,18 @@
 
 Generate a detailed content brief for the topic given here:
 {{ topic | untrusted("topic") }}
-Language: {{ language }}
+Write the whole brief in {{ language_name }}. If the topic text above is in another language, still write the brief in {{ language_name }}.
 
-Include:
+{% if brand_facts is defined and brand_facts %}WHAT THE BRAND HAS TOLD US (the only source of specifics. Use it to make the brief concrete for this audience. Do not add anything that is not here or in the topic text):
+{{ brand_facts | untrusted("brand_facts") }}
+
+{% endif %}Include:
 - The core idea and angle
 - 3-5 key points or insights
 - What kind of evidence would back this up (a type of data or an example), described in words with no figures
-- The audience pain points this topic addresses
-- Actionable takeaways
+- The audience pain points this topic addresses, in the audience's own terms where the brand facts name them
+- Actionable takeaways, each one a concrete step a reader can take this week
+- Two or three distinct angles a writer could take, so posts on this topic do not all sound the same
 
 Do not state any statistic, percentage, price, date, named study, company or customer story unless it is in the topic text above. This brief is used as source material, so anything invented here would be published as fact.
 

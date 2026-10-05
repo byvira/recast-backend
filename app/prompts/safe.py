@@ -107,7 +107,7 @@ def contains_banned(text: str, words: object) -> list[str]:
     return found
 
 
-def hook_fits(content: str, hook: object, max_chars: int = 220) -> bool:
+def hook_fits(content: str, hook: object, max_chars: int = 220, language: str | None = None) -> bool:
     """Whether a new opening line can replace the first line of `content`: one real line of sensible
     length, no instruction text, and in the same kind of script as the piece (an English hook must not
     land on top of Tamil writing, or the other way round)."""
@@ -121,4 +121,11 @@ def hook_fits(content: str, hook: object, max_chars: int = 220) -> bool:
         return False
     if body < 0.1 and line > 0.5:
         return False
+    # A post written as a mix such as Tanglish must not get a plain English opening line.
+    if language:
+        from app.pipelines.text.language_check import mix_hits
+
+        post_hits = mix_hits(content, language)
+        if post_hits is not None and post_hits >= 2 and (mix_hits(text, language) or 0) == 0:
+            return False
     return True

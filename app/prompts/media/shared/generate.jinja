@@ -1,14 +1,88 @@
 {%- if domain == "audio" %}
-{%- set quality_note = "\nIMPORTANT: Previous attempt was below quality threshold. Improve depth and engagement." if retry > 0 else "" %}
-Generate {{ output_type }} for this audio content:
+{%- set quality_note = "\nIMPORTANT: Previous attempt was below quality threshold. Improve depth and engagement. Add more specific detail from the transcript, sharpen the opening, and make every section useful on its own." if retry > 0 else "" %}
+{%- if retry > 0 and retry_focus is defined and retry_focus %}{% set quality_note = quality_note ~ "
+The weakest part last time was " ~ retry_focus ~ ". Fix that first." %}{% endif %}
+ROLE: You are an editor who turns spoken audio into written content that a reader can use without ever listening to the recording.
+
+TASK: Generate {{ output_type }} for this audio content.
+
+SOURCE MATERIAL
 Topics: {{ topics }}
 Key quotes: {{ key_quotes | untrusted("key_quotes") }}
-Full transcript excerpt: {{ transcript_excerpt | untrusted("transcript_excerpt") }}{{ quality_note }}
+Full transcript excerpt: {{ transcript_excerpt | untrusted("transcript_excerpt") }}
+
+LANGUAGE: Write the whole output in the language of the transcript unless the brand instructions name another language. Do not translate quotes; keep them in the language they were spoken in.
+
+STRUCTURE
+{%- if output_type == "show_notes" %}
+1. A one-line episode headline that states the specific promise of the episode, not a generic label.
+2. A summary of 2 to 3 sentences: who this is for, the main question or tension, and what the listener walks away knowing.
+3. "In this episode": 4 to 6 bullet points. Each bullet names one concrete idea, decision or example from the transcript, in plain words.
+4. Chapter markers only if the transcript excerpt gives real timestamps; never invent a time.
+5. One or two standout quotes, copied exactly from the key quotes or transcript, each with a one-line note on why it matters.
+6. A closing takeaway: one specific thing the listener can do or think about after listening.
+{%- else %}
+1. Open with the single strongest idea in the transcript, stated as a specific claim or observation.
+2. Develop it in short sections, each built on one topic from the list above, with a concrete detail or quote from the transcript as support.
+3. Keep the structure that fits {{ output_type }} (headings, paragraphs or bullets as that format normally uses).
+4. Close with one specific takeaway or next step for the reader.
+{%- endif %}
+
+DEPTH REQUIREMENTS
+- Every section must carry a detail that only applies to THIS recording: a named idea, a real quote, a stated reason, a specific example the speaker gave.
+- Write for a reader who has not heard the audio. Explain the context of a point in one clause before using it.
+- Prefer the speaker's own words and examples over paraphrase. Quote only what appears in the transcript.
+- Cover the topics in the order that helps a reader, not necessarily the order they were spoken.
+
+NO INVENTED FACTS
+- Do not add names, numbers, dates, guests, links, products or results that are not in the transcript or topics.
+- Do not attribute opinions to the speaker that the transcript does not support.
+- If the excerpt is thin, write a shorter piece of true statements rather than padding.
+
+AVOID
+- Generic filler such as "a great conversation" or "packed with insights" with nothing specific after it.
+- Opening with "In this episode we" followed by a vague topic. Name the topic and the stake.
+- Em dashes anywhere in the output.
+
+WEAK: "A wide-ranging chat about growth with lots of useful tips."
+GOOD: "Why the guest stopped chasing new listeners and started rewriting their three most popular episodes, and what changed in how they plan the season."{{ quality_note }}
 {%- elif domain == "video" %}
-{%- set quality_note = "\nIMPORTANT: Previous attempt scored below quality threshold. Improve hooks, structure, and platform optimization." if retry > 0 else "" %}
-Generate {{ output_type }} content for {{ platform }} from this video:
+{%- set quality_note = "\nIMPORTANT: Previous attempt scored below quality threshold. Improve hooks, structure, and platform optimization. Make the first line stronger, tie each section to a real moment from the video, and fit the format of the platform more closely." if retry > 0 else "" %}
+{%- if retry > 0 and retry_focus is defined and retry_focus %}{% set quality_note = quality_note ~ "
+The weakest part last time was " ~ retry_focus ~ ". Fix that first." %}{% endif %}
+ROLE: You are a video repurposing editor. You turn one video into content built natively for {{ platform }}, so it reads as made for that platform and not as a pasted transcript.
+
+TASK: Generate {{ output_type }} content for {{ platform }} from this video.
+
+SOURCE MATERIAL
 Key moments: {{ key_moments }}
 Topics: {{ topics }}
 Repurpose angles: {{ repurpose_angles }}
-Transcript excerpt: {{ transcript_excerpt | untrusted("transcript_excerpt") }}{{ quality_note }}
+Transcript excerpt: {{ transcript_excerpt | untrusted("transcript_excerpt") }}
+
+LANGUAGE: Write the whole output in the language of the transcript unless the brand instructions name another language.
+
+STRUCTURE
+1. Hook: the first line (or first spoken beat for a script) is the most specific, surprising or useful moment from the video, stated in a way that stops a scroll on {{ platform }}. Never open with a greeting or a label.
+2. Body: pick ONE repurpose angle from the list and build the piece around it. Each section ties to one key moment, shows the point and gives the reason it matters to the viewer.
+3. Value beat: include the single most useful idea or step from the video in plain, concrete words.
+4. Close: one specific action for the viewer that fits {{ platform }} (watch the full video, comment with a named answer, save, follow), tied to what the video covered.
+5. Format the output the way {{ platform }} content is normally formatted: line length, paragraph breaks, headings and any tags or hashtags in the native style.
+
+DEPTH REQUIREMENTS
+- Reference real moments from the key moments list by what was said or shown. Include a timestamp only if the key moments give one.
+- Write for someone who has not watched the video and may never watch it. The piece must still be worth reading.
+- Choose one angle and go deep rather than summarising everything.
+
+NO INVENTED FACTS
+- Do not add names, numbers, dates, results, products or claims that are not in the transcript, key moments or topics.
+- If the material is thin, produce a shorter, true piece instead of padding.
+
+AVOID
+- Generic openers ("In this video", "Check this out") and filler praise.
+- Summarising the video in chronological order with no angle.
+- Em dashes anywhere in the output.
+
+WEAK: "Here are the key takeaways from my latest video."
+GOOD: A first line naming the one specific mistake or decision the video is about, followed by the reason it matters to the viewer.{{ quality_note }}
 {%- endif -%}

@@ -1,2 +1,31 @@
 LANGUAGE: Write as {{ blend }}. Switch between {{ lang1 }} and {{ lang2 }} the way real bilingual people text, post and talk, at the sentence or clause level, not just borrowing the occasional word. This is not a translation exercise, and it is not "{{ lang1 }} with a few {{ lang2 }} words sprinkled in": write originally, in your own voice, in this mixed register from the start. Every part of the output (hook, body, closing, hashtags) should reflect this natural mix, and no part should be in a native script.
 Everything English you see anywhere below this point (instructions, example sentences, hook-pattern templates, required or approved phrases, content-goal instructions, any other prompt text) exists only to tell you WHAT to do or WHAT idea to convey, never something to copy, quote or leave as-is in your output. Convey the MEANING of every instruction and phrase in your own original wording in this blend, and never paste literal English prompt text, even inside quotes. The only exception is a genuine proper noun, brand name or product name with no natural equivalent: keep only that specific word as-is, never a whole phrase or sentence.
+
+HOW THE MIX SHOULD READ:
+- Roughly half the words come from each language. Every sentence carries at least a few words of the non-English language, not only the odd greeting or the closing line.
+- Keep brand names, product names and technical terms in English. Use the non-English language for connecting words, verbs, feelings, questions and opinions, because that is where people switch naturally.
+- The hook, the middle and the last line must all be in the mix. If any one of them reads as plain English, rewrite it.
+- If your draft is entirely English, you have failed this instruction. Rewrite it before you answer.
+{% if 'Tamil' in lang1 or 'Tamil' in lang2 %}
+TANGLISH RULES:
+- Write Tamil words in English letters the way people type them in chat: "irukku", "illa", "romba", "pannunga", "adhu", "namma", "unga", "vendam", "venum", "podhum", "theriyum", "aana".
+- Typical sentence shape: an English noun or phrase, then Tamil verbs and connectors. Example of the shape: "Namma brand story-ya simple-a sollunga."
+- Never use Tamil script. Never write a whole sentence in formal, bookish Tamil. Keep it like a friendly chat message.
+
+GOOD (mixed throughout, this is the register to match; the topic here is only an illustration):
+"Oru customer-ku reply panna romba late aachu. Adhukulla avanga vera brand-ku poitaanga. Idhu unga team-oda speed problem illa, process problem. Muthalla oru simple checklist ready pannunga."
+"Daily post pannanum nu stress aagadheenga. Oru nalla idea-va eduthu, naalu vidhama sollunga. Adhu podhum, audience-ku purinjidum."
+
+WRONG (plain English, do not write like this):
+"Replying late to customers hurts retention. Fix your process and build a simple checklist."
+WRONG (only a token Tamil word added to English sentences, do not write like this):
+"Replying late to customers hurts retention, romba important. Fix your process, super."
+{% endif %}
+
+PROPER WORDS ONLY:
+- Use only everyday words that a native speaker really types in chat. Never invent a word, never turn an English word into the other language by sound, and never use a word whose real meaning is different from what you mean.
+- When you are not sure of the right word, keep the English word. A wrong word is worse than an English one.
+- Business, product and technical nouns stay in English: board, team, customer, feedback, lead, dashboard, sprint, workflow, email, meeting, plan, budget, report, strategy.
+{% if 'Tamil' in lang1 or 'Tamil' in lang2 %}- Real Tamil words you can rely on: velai (work), neram (time), panam (money), mukkiyam (important), nambikkai (trust), problem or prachanai (problem), seiyalam (can do), theriyum (know), puriyum (understand), venum (need), vendam (do not want), romba (very), konjam (a little), ippo (now), appuram (later). "kanavu" means a dream. It never means a board, a plan or kanban.
+{% endif %}{% if 'Hindi' in lang1 or 'Hindi' in lang2 %}- Real Hindi words you can rely on: kaam (work), samay (time), paisa (money), zaroori (important), bharosa (trust), samasya (problem), kar sakte hain (can do), pata hai (know), samajh (understand), chahiye (need), bahut (very), thoda (a little), abhi (now), baad mein (later). Write them in English letters only.
+{% endif %}

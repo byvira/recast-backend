@@ -8,6 +8,15 @@ You are an SEO specialist. Analyse the content and generate a complete SEO packa
 CONTENT:
 {{ content | untrusted("source_content") }}
 
+HOW TO WORK
+1. Identify the search intent behind the content: what would a real person type to find exactly this piece, and what do they want to know or do when they land on it?
+2. Choose the primary keyword as the most specific phrase that matches that intent and that the content genuinely covers. Prefer a specific phrase over a single broad word. Never pick a keyword the content does not discuss.
+3. Choose secondary keywords that are related phrases, questions or variations a reader might also search. Do not repeat the primary keyword with small changes.
+4. Write the title so the primary keyword appears naturally near the front and the title promises what the content delivers. It must read like a human headline, not a keyword list.
+5. Write the meta description as a complete, benefit-led sentence or two: what the reader gets, why it is worth the click, with the primary keyword used once. No clickbait and no claim the content does not support.
+6. Build the slug from the primary keyword plus at most two other words, with stop words removed where possible.
+7. Choose hashtags and tags from the actual subject of the content, specific to its niche and audience.
+
 Return valid JSON only:
 {
   "title": "SEO title with primary keyword, 60 chars max",
@@ -23,3 +32,10 @@ Rules:
 - Meta description MUST be under 160 characters
 - Hashtags must be specific, never generic like #content or #marketing
 - Slug lowercase with hyphens only, no special characters
+- Write the title, meta description, keywords, hashtags and tags in the language set above; the slug uses plain lowercase letters, digits and hyphens
+- Do not invent statistics, claims, names or results in the title or meta description
+- No keyword stuffing and no em dashes
+- Title and meta description must be different from each other and must not just repeat the content's first line
+
+GOOD title: a specific promise with the keyword early.
+WEAK title: a list of keywords separated by pipes.

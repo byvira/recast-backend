@@ -1,6 +1,6 @@
 {%- set language_note = "" %}
 {%- if language_note_active %}
-{%- set ln_lines = ["", "LANGUAGE: The CURRENT CONTENT below is not in English. Write current_reason and all 3 alternative hooks in the SAME language as the current content — do not translate to English.", ""] %}
+{%- set ln_lines = ["", "LANGUAGE: The CURRENT CONTENT below is not plain English (it is another language, or a mix such as Tanglish or Hinglish written in English letters). Write current_reason and all 3 alternative hooks in the SAME language and the SAME mix as the current content. Do not translate to English.", ""] %}
 {%- set language_note = ln_lines | join("\n") %}
 {%- endif %}
 {%- set banned_enforcement = "" %}

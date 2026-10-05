@@ -1,25 +1,57 @@
 {% if pair == "blog_linkedin" %}
-Extract the single strongest insight. Rewrite as a hook-led LinkedIn post. Do not summarise — find the most shareable angle.
+Extract the single strongest insight. Rewrite as a hook-led LinkedIn post. Do not summarise, find the most shareable angle.
+Structure: a hook first line that states the insight or the tension behind it, short paragraphs of 1 to 2 sentences each, one reason or example from the blog that proves the point, and a closing question or action tied to that point.
+Depth: pick one idea only and develop it fully. Drop the blog's background, section headings and secondary points. Keep a specific example from the blog if it has one.
+Length: follow the LinkedIn platform rules given in this prompt.
+GOOD: opens on the one decision or mistake the blog is really about.
+WEAK: opens "I just published a new blog post about..." and lists its sections.
 {%- elif pair == "blog_twitter_thread" %}
 Break this blog into a 7-tweet thread. Tweet 1 is a standalone hook. Each middle tweet covers one key point. Final tweet is a CTA.
+Structure: tweet 1 states the main claim or problem so a stranger wants the rest. Tweets 2 to 6 each carry one distinct point from the blog, with its reason or example, in order of the reader's understanding. Tweet 7 closes with the takeaway and one specific action.
+Depth: each tweet must say something concrete, not a label. Drop the blog's intro and transitions. Follow the Twitter/X thread platform rules for tweet length and numbering.
+GOOD: "Most teams fix this at the wrong step. Here is the step that actually decides it."
+WEAK: "Point 3: communication is important."
 {%- elif pair == "blog_newsletter" %}
 Rewrite as a conversational newsletter section. Remove formal blog structure. Add a personal angle and one concrete takeaway.
+Structure: a direct opening that speaks to the reader, the one main idea in short paragraphs, one example from the blog, then a takeaway the reader can use this week.
+Depth: write as one person talking to one reader. Remove headings, the table-of-contents feel and any "in this article" phrasing. The personal angle must be a belief or an observation, not an invented event. Follow the newsletter platform rules for length and format.
 {%- elif pair == "blog_instagram" %}
-Extract the strongest insight. Rewrite as an Instagram caption with a hook first line, 100-130 words, CTA, and hashtags.
+Extract the strongest insight. Rewrite as an Instagram caption with a hook first line, CTA, and hashtags.
+Structure: a first line that stops the scroll on its own, 2 to 3 short paragraphs of story or insight, a direct CTA, then hashtags after two blank lines as the Instagram rules describe.
+Depth: one insight, told warmly and concretely, with one detail from the blog. Follow the Instagram platform rules given in this prompt for word count and hashtag count; do not use any other length.
+GOOD: a first line with a specific moment or claim from the blog.
+WEAK: "New blog post is live! Link in bio."
 {%- elif pair == "linkedin_twitter" %}
-Rewrite as a Twitter/X tweet. HARD REQUIREMENT: minimum 200 characters, maximum 280 characters. Count characters before outputting — if under 200, add a specific detail, outcome, or follow-up thought. One complete punchy idea. Hook first. Do not just compress — expand the idea if needed.
+Rewrite as a Twitter/X tweet. HARD REQUIREMENT: minimum 200 characters, maximum 280 characters. Count characters before outputting. If under 200, add a specific detail, outcome, or follow-up thought. One complete punchy idea. Hook first. Do not just compress; expand the idea if needed.
+Structure: a bold specific first clause, then the reason or consequence, then a closing thought that earns its place. Do not end on a stand-alone question with nothing before it.
+Depth: choose the single sharpest line of the LinkedIn post and build the tweet around it. Keep only details the post already states.
 {%- elif pair == "linkedin_twitter_thread" %}
 Expand this LinkedIn post into a 7-tweet thread. Each tweet unpacks one idea from the post.
+Structure: tweet 1 is the post's hook as a standalone claim. Tweets 2 to 6 each take one sentence or idea from the post and add its reason, consequence or example. Tweet 7 closes with the takeaway and one action.
+Depth: unpack the reasoning that the post compressed; do not invent new examples, numbers or events beyond the post and the brand facts. Follow the Twitter/X thread platform rules for tweet length and numbering.
 {%- elif pair == "linkedin_instagram" %}
 Rewrite as an Instagram caption. More conversational. Add a hook line and hashtags.
+Structure: a hook first line that works alone in the feed, 2 to 3 short warm paragraphs, a clear CTA, then hashtags the way the Instagram rules describe.
+Depth: drop the professional framing and corporate vocabulary; keep the specific point and any real detail. Follow the Instagram platform rules given in this prompt for length and hashtag count.
+WEAK: the LinkedIn post pasted with emojis added.
 {%- elif pair == "linkedin_blog" %}
 Expand this LinkedIn post into a full blog post. Add depth, examples, and structure.
+Structure: a title, an intro that names the problem or claim, subheadings that each develop one idea from the post, and a conclusion with the key takeaway.
+Depth: for each idea explain why it is true, what it looks like in practice and what to do about it. Use examples that appear in the post or brand facts, or a clearly marked scenario ("Imagine a team that..."). Never add invented statistics, customers or events. Follow the blog platform rules given in this prompt for format and length.
 {%- elif pair == "newsletter_linkedin" %}
 Extract the main insight. Rewrite as a hook-led LinkedIn post.
+Structure: a hook first line, short paragraphs of 1 to 2 sentences, one concrete example from the newsletter, and a closing question or action.
+Depth: drop the newsletter's greeting, asides and sign-off. Make the insight stand alone for someone who never read the newsletter. Follow the LinkedIn platform rules given in this prompt for length.
 {%- elif pair == "newsletter_twitter_thread" %}
 Convert to a Twitter thread. Each key point becomes one tweet.
+Structure: tweet 1 is a standalone hook, then one key point per tweet with its reason or example, then a final tweet with the takeaway or CTA.
+Depth: each tweet must carry a concrete detail, not a heading. Cut greetings, asides and filler from the newsletter. Follow the Twitter/X thread platform rules for tweet count, length and numbering.
 {%- elif pair == "twitter_thread_blog" %}
 Expand this thread into a full blog post. Each tweet becomes a section with full detail.
+Structure: a title, an intro built from the thread's hook, one subheading per tweet or group of related tweets, and a conclusion with the takeaway and CTA if enabled.
+Depth: tweets are compressed arguments, so unpack each one with its reasoning, a practical example and what the reader should do. Do not invent facts, numbers or customers that the thread and brand facts do not contain. Follow the blog platform rules given in this prompt for format and length.
 {%- elif pair == "twitter_thread_linkedin" %}
 Compress the thread's core argument into a single powerful LinkedIn post.
+Structure: a hook first line stating the core argument, short paragraphs that carry the 2 or 3 strongest steps of the reasoning, and a closing question or action.
+Depth: do not list every tweet. Keep the sequence of the argument and one concrete example from the thread. Follow the LinkedIn platform rules given in this prompt for length.
 {%- endif -%}

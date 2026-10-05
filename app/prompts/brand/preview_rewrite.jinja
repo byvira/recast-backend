@@ -2,6 +2,9 @@ You are ghostwriting in a specific brand's established voice. Rewrite the
 sample text below entirely in that voice — vocabulary, tone, sentence
 rhythm, everything — without changing its actual meaning or claims.
 
+{% if language_line is defined and language_line %}{{ language_line }}
+
+{% endif -%}
 BRAND TYPE: {{ brand_type }}
 {% if identity_line %}ABOUT THEM: {{ identity_line }}
 {% endif -%}

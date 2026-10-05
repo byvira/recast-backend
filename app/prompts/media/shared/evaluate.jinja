@@ -1,20 +1,52 @@
 {% if domain == "image" and variant == "vision" %}
-Evaluate this image for brand '{{ brand_name }}'. Rate brand alignment, visual quality, composition, and mood match (0-1 each). Return only JSON.
+You are a strict brand creative reviewer. Evaluate this image for brand '{{ brand_name }}'.
+
+Rate each dimension from 0 to 1 using these anchors:
+- brand alignment: 0.9 to 1.0 clearly on-brand in palette, style and subject; 0.6 to 0.8 mostly on-brand with minor drift; 0.3 to 0.5 generic or partly off-brand; 0.0 to 0.2 contradicts the brand.
+- visual quality: 0.9 to 1.0 sharp, clean, no artifacts; 0.6 to 0.8 good with small flaws; 0.3 to 0.5 noticeable artifacts, blur or distortion; 0.0 to 0.2 unusable.
+- composition: 0.9 to 1.0 clear focal point, balanced, room for text if needed; 0.6 to 0.8 solid; 0.3 to 0.5 cluttered or unbalanced; 0.0 to 0.2 no readable structure.
+- mood match: 0.9 to 1.0 the feeling fits the brand voice and purpose; 0.5 or below the feeling is off or neutral.
+
+Be critical. Do not give 0.8 or above unless you can name what is strong. Return only JSON.
 {%- elif domain == "image" and variant == "text" %}
-Evaluate this image prompt for brand '{{ brand_name }}':
+You are a strict brand creative reviewer. Evaluate this image prompt for brand '{{ brand_name }}':
 {{ enhanced_prompt }}
+
+Judge whether this prompt would produce an image that fits the brand, is visually strong and is well composed.
+
+Scoring anchors for each key (0 to 1):
+- brand_alignment: 0.9 to 1.0 names palette, style and subject that fit the brand; 0.6 to 0.8 mostly fits; 0.3 to 0.5 generic; 0.0 to 0.2 conflicts with the brand.
+- visual_quality: 0.9 to 1.0 specific about lighting, detail and finish; 0.6 to 0.8 adequate; 0.3 to 0.5 vague; 0.0 to 0.2 likely to give a poor image.
+- composition: 0.9 to 1.0 states focal point, framing and space; 0.6 to 0.8 some framing guidance; 0.3 to 0.5 none; 0.0 to 0.2 contradictory.
+- overall: your honest overall judgement, not an average rounded up.
 
 Return JSON with keys: 'brand_alignment' (0-1), 'visual_quality' (0-1), 'composition' (0-1), 'overall' (0-1).
 {%- elif domain == "audio" %}
-Evaluate this audio content output for brand '{{ brand_name }}':
+You are a strict content quality reviewer. Evaluate this audio content output for brand '{{ brand_name }}':
 
 {{ content | untrusted("content") }}
+
+Score each dimension from 0 to 1 using these anchors:
+- completeness: 0.9 to 1.0 has a clear headline, summary, specific section points and a closing takeaway, with no missing parts; 0.6 to 0.8 one weak or missing part; 0.3 to 0.5 several parts missing or very thin; 0.0 to 0.2 fragment.
+- brand_alignment: 0.9 to 1.0 voice, vocabulary and terms match the brand and no banned or off-brand phrasing; 0.6 to 0.8 mostly on-brand; 0.3 to 0.5 generic voice; 0.0 to 0.2 conflicts with the brand.
+- accuracy: 0.9 to 1.0 every claim is specific and plausibly grounded in the source, with no invented names, numbers or quotes; 0.6 to 0.8 minor unsupported detail; 0.3 to 0.5 several unsupported claims; 0.0 to 0.2 fabricated facts. Any invented statistic, name or quote caps accuracy at 0.4.
+- overall: your honest overall judgement. It must not exceed the lowest dimension by more than 0.2.
+
+Be critical. Generic filler, vague summaries and em dashes lower the scores. Do not give 0.8 or above without being able to name what is strong.
 
 Return JSON with keys: 'completeness' (0-1), 'brand_alignment' (0-1), 'accuracy' (0-1), 'overall' (0-1).
 {%- elif domain == "video" %}
-Evaluate this video content for brand '{{ brand_name }}' on {{ platform }}:
+You are a strict content quality reviewer. Evaluate this video content for brand '{{ brand_name }}' on {{ platform }}:
 
 {{ content | untrusted("content") }}
+
+Score each dimension from 0 to 1 using these anchors:
+- platform_fit: 0.9 to 1.0 format, length, line breaks and style are native to {{ platform }}; 0.6 to 0.8 mostly native with minor mismatch; 0.3 to 0.5 reads like generic text pasted onto the platform; 0.0 to 0.2 wrong format.
+- brand_alignment: 0.9 to 1.0 voice, vocabulary and terms match the brand with no banned or off-brand phrasing; 0.6 to 0.8 mostly on-brand; 0.3 to 0.5 generic voice; 0.0 to 0.2 conflicts with the brand.
+- engagement_potential: 0.9 to 1.0 specific hook in the first line, one clear angle, concrete value and a fitting call to action; 0.6 to 0.8 good hook or value but not both; 0.3 to 0.5 generic opener or no angle; 0.0 to 0.2 nothing a viewer would act on. Invented statistics or claims cap this at 0.4.
+- overall: your honest overall judgement. It must not exceed the lowest dimension by more than 0.2.
+
+Be critical. Do not give 0.8 or above without being able to name what is strong.
 
 Return JSON with keys: 'platform_fit' (0-1), 'brand_alignment' (0-1), 'engagement_potential' (0-1), 'overall' (0-1).
 {%- endif -%}

@@ -1,5 +1,7 @@
 {{ brand_context }}
 
+You are a campaign strategist helping fill gaps in a content plan.
+
 The user is setting up a content campaign around this topic cluster / brief:
 
 TOPIC CLUSTER:
@@ -10,13 +12,25 @@ They've already listed these specific angles/topics to cover:
 {% for t in existing_topics %}
 - {{ t }}
 {% endfor %}
-Suggest angles that are genuinely different from these — don't repeat them.
+Suggest angles that are genuinely different from these. Don't repeat them, and don't rephrase them.
+Before suggesting, notice what the existing list does not cover (for example the audience stage, the format, or the objection it ignores) and fill that gap.
 {% endif %}
 
 Suggest 3 additional specific angles or topics that would make this
-campaign stronger — concrete, non-generic, each answerable in one real
+campaign stronger. Concrete, non-generic, each answerable in one real
 piece of content (not vague themes). Also suggest one overall tone this
 campaign should lean into.
+
+HOW TO CHOOSE
+- Each suggestion names a specific audience problem, question, objection or moment, and the point of view the content would take on it.
+- The three suggestions differ from each other in purpose, for example one that builds awareness, one that builds trust through reasoning or process, and one that moves the audience toward an action.
+- Fit the brand: use the brand voice, audience and offer above. A suggestion that any brand in any industry could publish is too generic.
+- Write each topic as a short phrase or one sentence that a writer could start from tomorrow.
+- Do not invent statistics, customers, results or events. Suggest angles that rely on what the brief and brand facts already contain.
+- Write the topics, tone and rationale in the same language as the brief above. Do not use em dashes.
+
+GOOD: "The objection a first-time buyer has before booking, and how to answer it honestly"
+WEAK: "Customer success tips"
 
 Return valid JSON only:
 {

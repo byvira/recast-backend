@@ -1,7 +1,10 @@
 {% if platform == "BLOG" %}
 Focus on blog search intent. Keywords should match what a reader searches to find this article.
+Think about the question the article answers. The primary keyword should be the phrase that question would be searched as, and the secondary keywords should include related questions and long-tail variations. The title should promise the answer, and the meta description should say what the reader will know after reading.
 {%- elif platform == "NEWSLETTER" %}
 Focus on newsletter discoverability and email subject line SEO.
+The title doubles as a subject line: make it specific, curiosity-driven without clickbait, and short enough to survive truncation in an inbox. The meta description works as the preview text and should add something the subject line does not say. Keywords should match what a reader would search to find the archive page for this issue.
 {%- elif platform == "YOUTUBE" %}
 Focus on YouTube search. Generate 8-12 video tags mixing broad and specific terms.
+Put the primary keyword in the title near the front, with a title that promises a clear outcome for the viewer. Tags should include the exact primary phrase, several specific long-tail phrases about what the video covers, and a few broader topic terms. Do not use tags for topics the video does not cover.
 {%- endif -%}
