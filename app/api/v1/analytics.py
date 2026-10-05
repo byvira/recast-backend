@@ -14,11 +14,11 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, get_current_workspace
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import get_db
 from app.pipelines.publish.spine import iso_utc
 from app.pipelines.text.storage import compute_kanban_stage
@@ -232,6 +232,52 @@ async def trigger_refresh_post(
 
 
 _COUNT_FIELDS = ("likes", "comments", "shares", "reposts", "saves", "clicks", "impressions", "reach", "views")
+
+
+class SelfReportedMetrics(BaseModel):
+    """Numbers a member read off the platform themselves, for places Recast cannot read results from."""
+
+    views: int = Field(0, ge=0, le=1_000_000_000)
+    clicks: int = Field(0, ge=0, le=1_000_000_000)
+    likes: int = Field(0, ge=0, le=1_000_000_000)
+    comments: int = Field(0, ge=0, le=1_000_000_000)
+    shares: int = Field(0, ge=0, le=1_000_000_000)
+
+
+@router.put("/posts/{piece_id}/self-reported")
+@limiter.limit("60/minute")
+async def save_self_reported_metrics(
+    request: Request,
+    piece_id: str,
+    body: SelfReportedMetrics,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Saves results typed in by hand for a published post (X, a blog, a newsletter, anywhere with no connected results). They are
+    marked self-reported so nobody mistakes them for numbers Recast read, and they replace the previous typed-in figures."""
+    from app.db.mongo import content_pieces
+
+    piece = await content_pieces.find_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"platform": 1, "publish_status": 1},
+    )
+    from app.pipelines.publish.spine import platform_key
+
+    if not piece:
+        raise HTTPException(status_code=404, detail="That post wasn't found.")
+    if piece.get("publish_status") != "published":
+        raise HTTPException(status_code=400, detail="Results can be entered once the post is published.")
+
+    now = datetime.now(timezone.utc)
+    values = body.model_dump()
+    values["impressions"] = values["views"]
+    await get_db()["post_metrics"].update_one(
+        {"workspace_id": ctx.workspace_id, "post_id": piece_id, "source": "self_reported"},
+        {"$set": {
+            **values, "workspace_id": ctx.workspace_id, "post_id": piece_id, "platform": platform_key(piece.get("platform")), "platform_post_id": piece_id,
+            "source": "self_reported", "entered_by": ctx.user_id, "fetched_at": now, "fetch_ok": True,
+        }},
+        upsert=True,
+    )
+    return {"piece_id": piece_id, "source": "self_reported", "metrics": values, "saved_at": iso_utc(now)}
 
 
 @router.get("/assets/{asset_type}/{asset_id}")
