@@ -87,6 +87,24 @@ def last_failure_reason() -> Optional[str]:
     return _last_failure.get()
 
 
+def image_tiers_in_use() -> list[str]:
+    """The picture services that are switched on, in the order they are tried."""
+    tiers = []
+    if settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID:
+        tiers.append("cloudflare")
+    if settings.GEMINI_API_KEY:
+        tiers.append("gemini")
+    if settings.HUGGINGFACE_API_TOKEN:
+        tiers.append("huggingface")
+    if settings.POLLINATIONS_ENABLED:
+        tiers.append("pollinations")
+    return tiers
+
+
+def _image_provider_configured() -> bool:
+    return bool(image_tiers_in_use())
+
+
 def _fail(reason: str) -> None:
     _last_failure.set(reason)
     logger.warning("Image generation fell back: %s", reason)
@@ -386,34 +404,57 @@ async def _generate_image_bytes(prompt: str) -> Optional[bytes]:
     None if both are unavailable — the caller falls through to the
     quote-card template (generate_brand_image) or leaves mascot_url unset
     (generate_brand_mascot), never raises."""
-    try:
-        return await _call_cloudflare(prompt)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Cloudflare image generation failed, checking Gemini fallback: %s", exc)
+    tried: list[str] = []
+    if settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID:
+        try:
+            return await _call_cloudflare(prompt)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cloudflare image generation failed, checking Gemini fallback: %s", exc)
+            tried.append(f"Cloudflare did not return a picture ({_brief_error(exc)}).")
+    else:
+        tried.append("Cloudflare is not set up.")
 
-    reason = "The image service did not return a picture. It may be busy or out of free use for today."
-    if settings.GEMINI_API_KEY and time.monotonic() >= _gemini_skip_until:
-        if not await _gemini_fallback_slot_available():
-            logger.info("Gemini fallback daily cap reached, trying the open-model fallbacks.")
-            reason = "Today's image limit is used up."
-        else:
-            try:
-                with fallback_scope():
-                    image_bytes = await _call_gemini(prompt)
-                logger.info("Cloudflare exhausted — served this image via the capped Gemini fallback.")
-                return image_bytes
-            except Exception as exc:  # noqa: BLE001
-                logger.error("Gemini fallback image generation also failed: %s", exc)
-                _skip_gemini_for_a_while(exc)
+    if not settings.GEMINI_API_KEY:
+        tried.append("Gemini is not set up.")
+    elif time.monotonic() < _gemini_skip_until:
+        tried.append("Gemini was skipped because it refused a moment ago.")
+    elif not await _gemini_fallback_slot_available():
+        logger.info("Gemini fallback daily cap reached, trying the open-model fallbacks.")
+        tried.append("Today's Gemini picture limit is used up.")
+    else:
+        try:
+            with fallback_scope():
+                image_bytes = await _call_gemini(prompt)
+            logger.info("Cloudflare exhausted — served this image via the capped Gemini fallback.")
+            return image_bytes
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Gemini fallback image generation also failed: %s", exc)
+            await _refund_gemini_slot()
+            _skip_gemini_for_a_while(exc)
+            tried.append(f"Gemini did not return a picture ({_brief_error(exc)}).")
 
     from app.shared.open_fallbacks import open_image_fallback
 
-    image_bytes = await open_image_fallback(prompt)
+    image_bytes = await open_image_fallback(prompt, tried)
     if image_bytes is not None:
         return image_bytes
-    _fail(reason)
+    _fail("No picture service could make this picture. " + " ".join(tried))
     note_fallback_failed("pollinations", "flux", "image_generation", "Cloudflare failed and no fallback could make the picture.")
     return None
+
+
+def _brief_error(exc: BaseException) -> str:
+    status = getattr(getattr(exc, "response", None), "status_code", None) or getattr(exc, "status_code", None)
+    return f"error {status}" if status else exc.__class__.__name__
+
+
+async def _refund_gemini_slot() -> None:
+    """A Gemini call that failed made no picture, so it gives its daily slot back."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    try:
+        await image_fallback_usage.update_one({"_id": today, "gemini_calls": {"$gt": 0}}, {"$inc": {"gemini_calls": -1}})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not give back the Gemini slot: %s", exc)
 
 
 # Added to the prompt when the first picture came back with writing on it. Image models draw invented letters whenever a
@@ -456,6 +497,8 @@ def _skip_gemini_for_a_while(exc: BaseException) -> None:
         kind = classify(http_status=_status_of(exc), error_class=exc.__class__.__name__, message=_message_of(exc))
         if kind in ("auth_invalid_key", "billing_or_access", "model_unavailable"):
             _gemini_skip_until = time.monotonic() + 600.0
+        elif kind in ("quota_daily", "quota_exhausted"):
+            _gemini_skip_until = time.monotonic() + 3600.0
     except Exception:  # noqa: BLE001
         pass
 
@@ -478,6 +521,9 @@ async def _qa_gate(image_bytes: bytes, brand_profile: dict) -> tuple[bool, Optio
     try:
         result = await call_vision(prompt, image_bytes, mime_type="image/jpeg")
         result = result.strip()
+        if not result:
+            # Every vision provider failed, so nothing was checked. An unchecked picture is not a flagged one.
+            return False, None
         if result.upper().startswith("Y"):
             return False, None
         reason = result.split(":", 1)[1].strip() if ":" in result else "Doesn't match the brand's visual style."
@@ -531,7 +577,7 @@ async def generate_brand_mascot(
     (Cloudflare free tier first, capped Gemini fallback second). Never
     raises — a failed mascot generation just leaves mascot_url unset,
     never blocks brand creation/completion."""
-    if not settings.CLOUDFLARE_API_TOKEN and not settings.GEMINI_API_KEY:
+    if not _image_provider_configured():
         logger.warning("No image generation provider configured — skipping mascot generation.")
         return None
 
@@ -608,7 +654,7 @@ async def generate_image_from_prompt(
         )
         return None
 
-    if not settings.CLOUDFLARE_API_TOKEN and not settings.GEMINI_API_KEY:
+    if not _image_provider_configured():
         logger.warning("No image generation provider configured — skipping AI image generation.")
         _fail("No image service is set up.")
         return None

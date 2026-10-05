@@ -5,6 +5,7 @@ Ops (`/api/v1/ops/content-safety`): read and change the settings, see what was b
 the rules. Settings apply to every workspace, so changing them is for the Ops owner and reading them is for platform staff.
 """
 
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
 from uuid import uuid4
@@ -104,20 +105,116 @@ async def save_settings(request: Request, body: SettingsBody, user: dict = Depen
     return _public(saved)
 
 
+async def _staff_name(user_id: Optional[str]) -> Optional[str]:
+    """The name of the staff member who reviewed an event, or None when there is none to show."""
+    if not user_id:
+        return None
+    from app.db.mongo import users
+
+    doc = await users.find_one({"id": user_id}, {"full_name": 1, "name": 1, "email": 1})
+    return ((doc or {}).get("full_name") or (doc or {}).get("name") or (doc or {}).get("email")) or None
+
+
+def _event_row(row: dict[str, Any]) -> dict[str, Any]:
+    row["id"] = str(row.pop("_id"))
+    row.pop("fingerprint", None)
+    row["category_names"] = [CATEGORIES.get(c, c) for c in row.get("categories", [])]
+    return row
+
+
 @ops_router.get("/events")
 @limiter.limit("30/minute")
 async def list_events(
     request: Request,
     outcome: Optional[Literal["blocked", "rewritten"]] = None,
+    category: Optional[str] = None,
+    where: Optional[str] = None,
+    platform: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    status: Optional[Literal["open", "reviewed"]] = None,
+    since: Optional[datetime] = None,
     limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=10000),
     user: dict = Depends(require_platform_staff),
 ) -> dict[str, Any]:
-    flt: dict[str, Any] = {"outcome": outcome} if outcome else {}
-    rows = []
-    async for row in safety_events.find(flt, {"_id": 0, "fingerprint": 0}).sort("created_at", -1).limit(limit):
-        row["category_names"] = [CATEGORIES.get(c, c) for c in row.get("categories", [])]
-        rows.append(row)
+    flt: dict[str, Any] = {}
+    for key, value in (("outcome", outcome), ("categories", category), ("where", where), ("platform", platform),
+                       ("workspace_id", workspace_id)):
+        if value:
+            flt[key] = value
+    if status == "reviewed":
+        flt["status"] = "reviewed"
+    elif status == "open":
+        flt["status"] = {"$ne": "reviewed"}
+    if since:
+        flt["created_at"] = {"$gte": since}
+    rows = [
+        _event_row(row)
+        async for row in safety_events.find(flt, {"fingerprint": 0}).sort("created_at", -1).skip(offset).limit(limit)
+    ]
     return {"events": rows, "total": await safety_events.count_documents(flt)}
+
+
+@ops_router.get("/events/{event_id}")
+@limiter.limit("60/minute")
+async def get_event(request: Request, event_id: str, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """One caught item with everything stored about it, plus the post as it is now (so a reviewer can see whether it was
+    edited or published since), and the workspace and brand names."""
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    from app.db.mongo import brand_profiles, content_pieces, workspaces
+
+    try:
+        row = await safety_events.find_one({"_id": ObjectId(event_id)}, {"fingerprint": 0})
+    except InvalidId:
+        raise HTTPException(status_code=404, detail="That safety event was not found.")
+    if not row:
+        raise HTTPException(status_code=404, detail="That safety event was not found.")
+    event = _event_row(row)
+
+    workspace = await workspaces.find_one({"id": event.get("workspace_id")}, {"name": 1}) if event.get("workspace_id") else None
+    brand = await brand_profiles.find_one({"id": event.get("brand_id")}, {"identity": 1}) if event.get("brand_id") else None
+    event["workspace_name"] = (workspace or {}).get("name")
+    event["reviewed_by_name"] = await _staff_name(event.get("reviewed_by"))
+    event["brand_name"] = ((brand or {}).get("identity") or {}).get("name")
+
+    piece = None
+    if event.get("piece_id"):
+        doc = await content_pieces.find_one(
+            {"piece_id": event["piece_id"]},
+            {"_id": 0, "piece_id": 1, "content": 1, "platform": 1, "approval_status": 1, "publish_status": 1,
+             "flagged_for_review": 1, "quality_issues": 1, "updated_at": 1, "deleted": 1},
+        )
+        if doc:
+            doc["content"] = (doc.get("content") or "")[:MAX_TEXT]
+            piece = doc
+    event["piece"] = piece
+    return event
+
+
+class ReviewBody(BaseModel):
+    note: str = Field("", max_length=1000)
+
+
+@ops_router.patch("/events/{event_id}/review")
+@limiter.limit("60/minute")
+async def review_event(request: Request, event_id: str, body: ReviewBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """Mark a caught item as looked at, with an optional note."""
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        oid = ObjectId(event_id)
+    except InvalidId:
+        raise HTTPException(status_code=404, detail="That safety event was not found.")
+    res = await safety_events.update_one(
+        {"_id": oid},
+        {"$set": {"status": "reviewed", "reviewed_by": str(user.get("id")), "reviewed_at": datetime.now(timezone.utc), "note": body.note.strip()}},
+    )
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="That safety event was not found.")
+    return {"id": event_id, "status": "reviewed"}
 
 
 class TryBody(BaseModel):

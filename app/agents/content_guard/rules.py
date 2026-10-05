@@ -18,6 +18,13 @@ from typing import Any, Iterable
 _EM_DASH = re.compile(r"\s*[—―﹘﹣－]\s*")
 # An en dash with spaces around it is used as a pause. Between digits or words with no spaces it is a range and stays.
 _SPACED_EN_DASH = re.compile(r"\s+–\s+")
+# Models sometimes emit look-alike characters that break copy and paste and word counts: a non-breaking hyphen between the
+# parts of a word, and thin or no-break spaces around numbers. They become the ordinary character.
+_TYPOGRAPHY = str.maketrans({
+    "\u2010": "-", "\u2011": "-", "\u2012": "-",
+    "\u00a0": " ", "\u2007": " ", "\u2009": " ", "\u202f": " ",
+})
+
 _INVISIBLE = re.compile("[​‌‍⁠﻿­]")
 
 # Opening and closing lines a chat model adds around the answer.
@@ -62,7 +69,7 @@ def clean_text(text: str, *, plain_wording: bool = True) -> str:
     """The text without dashes, invisible characters, chat preambles and filler wording."""
     if not isinstance(text, str) or not text:
         return text
-    out = _INVISIBLE.sub("", text).replace(" ", " ")
+    out = _INVISIBLE.sub("", text).translate(_TYPOGRAPHY)
     out = _PREAMBLE.sub("", out, count=1)
     out = _POSTAMBLE.sub("", out, count=1)
     if plain_wording:

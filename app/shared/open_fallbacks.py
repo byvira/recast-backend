@@ -138,8 +138,9 @@ async def _pollinations(prompt: str) -> bytes:
         return r.content
 
 
-async def open_image_fallback(prompt: str) -> bytes | None:
-    """A picture from the first open-model provider that answers, or None."""
+async def open_image_fallback(prompt: str, errors: list[str] | None = None) -> bytes | None:
+    """A picture from the first open-model provider that answers, or None. Each provider that fails adds a plain note to
+    `errors` when given."""
     steps = []
     if settings.HUGGINGFACE_API_TOKEN:
         steps.append(("huggingface", _huggingface))
@@ -153,4 +154,13 @@ async def open_image_fallback(prompt: str) -> bytes | None:
             return data
         except Exception as exc:  # noqa: BLE001
             logger.warning("%s image fallback failed: %s", name, exc)
+            if errors is not None:
+                errors.append(f"{name.capitalize()} did not return a picture ({_brief(exc)}).")
+    if not steps and errors is not None:
+        errors.append("No backup picture service is switched on.")
     return None
+
+
+def _brief(exc: BaseException) -> str:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return f"error {status}" if status else exc.__class__.__name__

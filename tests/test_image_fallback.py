@@ -56,6 +56,8 @@ def test_a_safety_check_that_could_not_run_says_so(monkeypatch):
 def test_no_provider_is_reported(monkeypatch):
     monkeypatch.setattr(ig.settings, "CLOUDFLARE_API_TOKEN", "", raising=False)
     monkeypatch.setattr(ig.settings, "GEMINI_API_KEY", "", raising=False)
+    monkeypatch.setattr(ig.settings, "HUGGINGFACE_API_TOKEN", "", raising=False)
+    monkeypatch.setattr(ig.settings, "POLLINATIONS_ENABLED", False, raising=False)
     out, reason = with_reason(lambda: ig.generate_image_from_prompt(prompt="x", workspace_id="w", user_id="u", target_size=(1024, 1024)))
     assert out is None
     assert reason == "No image service is set up."
@@ -66,10 +68,84 @@ def test_a_provider_failure_is_reported(monkeypatch):
         raise RuntimeError("429")
 
     monkeypatch.setattr(ig, "_call_cloudflare", boom)
+    monkeypatch.setattr(ig.settings, "CLOUDFLARE_API_TOKEN", "t", raising=False)
+    monkeypatch.setattr(ig.settings, "CLOUDFLARE_ACCOUNT_ID", "a", raising=False)
     monkeypatch.setattr(ig.settings, "GEMINI_API_KEY", "", raising=False)
+    monkeypatch.setattr(ig.settings, "HUGGINGFACE_API_TOKEN", "", raising=False)
+    monkeypatch.setattr(ig.settings, "POLLINATIONS_ENABLED", False, raising=False)
     out, reason = with_reason(lambda: ig._generate_image_bytes("p"))
     assert out is None
-    assert "did not return a picture" in (reason or "")
+    assert "Cloudflare did not return a picture" in (reason or "")
+
+
+def test_a_missing_cloudflare_token_still_reaches_the_backups(monkeypatch):
+    async def never(prompt):
+        raise AssertionError("Cloudflare must not be called without a token")
+
+    async def gemini(prompt):
+        return b"gemini-picture"
+
+    async def slot():
+        return True
+
+    monkeypatch.setattr(ig, "_call_cloudflare", never)
+    monkeypatch.setattr(ig, "_call_gemini", gemini)
+    monkeypatch.setattr(ig, "_gemini_fallback_slot_available", slot)
+    monkeypatch.setattr(ig, "_gemini_skip_until", 0.0)
+    monkeypatch.setattr(ig.settings, "CLOUDFLARE_API_TOKEN", "", raising=False)
+    monkeypatch.setattr(ig.settings, "GEMINI_API_KEY", "k", raising=False)
+    out, _ = with_reason(lambda: ig._generate_image_bytes("p"))
+    assert out == b"gemini-picture"
+
+
+def test_open_backups_are_tried_when_cloudflare_and_gemini_are_both_unusable(monkeypatch):
+    from app.shared import open_fallbacks
+
+    async def open_pic(prompt, errors=None):
+        return b"open-picture"
+
+    monkeypatch.setattr(open_fallbacks, "open_image_fallback", open_pic)
+    monkeypatch.setattr(ig.settings, "CLOUDFLARE_API_TOKEN", "", raising=False)
+    monkeypatch.setattr(ig.settings, "GEMINI_API_KEY", "", raising=False)
+    monkeypatch.setattr(ig.settings, "POLLINATIONS_ENABLED", True, raising=False)
+
+    out, _ = with_reason(lambda: ig._generate_image_bytes("p"))
+    assert out == b"open-picture"
+
+
+def test_a_failed_gemini_call_gives_its_slot_back_and_a_daily_quota_pauses_it(monkeypatch):
+    refunded = []
+
+    async def gemini(prompt):
+        raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded for metric PerDay limit: 0")
+
+    async def slot():
+        return True
+
+    async def refund():
+        refunded.append(1)
+
+    monkeypatch.setattr(ig, "_call_gemini", gemini)
+    monkeypatch.setattr(ig, "_gemini_fallback_slot_available", slot)
+    monkeypatch.setattr(ig, "_refund_gemini_slot", refund)
+    monkeypatch.setattr(ig, "_gemini_skip_until", 0.0)
+    monkeypatch.setattr(ig.settings, "CLOUDFLARE_API_TOKEN", "", raising=False)
+    monkeypatch.setattr(ig.settings, "GEMINI_API_KEY", "k", raising=False)
+    monkeypatch.setattr(ig.settings, "HUGGINGFACE_API_TOKEN", "", raising=False)
+    monkeypatch.setattr(ig.settings, "POLLINATIONS_ENABLED", False, raising=False)
+    out, reason = with_reason(lambda: ig._generate_image_bytes("p"))
+    assert out is None and refunded == [1]
+    assert "Gemini did not return a picture" in (reason or "")
+    assert ig._gemini_skip_until > 0.0
+
+
+def test_a_vision_check_that_returned_nothing_does_not_flag_the_picture(monkeypatch):
+    async def blank(*a, **k):
+        return ""
+
+    monkeypatch.setattr(ig, "call_vision", blank)
+    flagged, reason = run(ig._qa_gate(b"x", {"visual_identity": {"visual_style_notes": "calm and minimal"}}))
+    assert flagged is False and reason is None
 
 
 def test_the_reason_is_cleared_at_the_start_of_each_call(monkeypatch):

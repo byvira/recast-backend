@@ -150,13 +150,19 @@ async def review_text(
         return result
 
     screened = rule_screen(cleaned, cfg)
+    caught_by = "rules"
     if screened.ok and _wants_model(cleaned, cfg, stage):
         try:
             screened = await _model_screen(cleaned)
+            caught_by = "model"
         except Exception as exc:
             logger.warning("Content Guard model check failed, rules only: %s", exc)
     if screened.ok:
         return result
+    context = dict(
+        source=caught_by, model_reason=(screened.matches[0] if caught_by == "model" and screened.matches else None),
+        stage=stage, strictness=cfg.get("strictness"), model_check=cfg.get("model_check"),
+    )
 
     result.categories, result.matches = screened.categories, screened.matches
     if allow_rewrite and cfg.get("rewrite_flagged", True):
@@ -166,14 +172,15 @@ async def review_text(
             if rewritten.strip() and again.ok and not (_wants_model(rewritten, cfg, stage) and not (await _model_screen(rewritten)).ok):
                 result.text, result.outcome = rewritten, "rewritten"
                 await record_event(outcome="rewritten", categories=screened.categories, matches=screened.matches, text=text,
-                                   where=where, workspace_id=workspace_id, piece_id=piece_id, platform=platform)
+                                   where=where, workspace_id=workspace_id, piece_id=piece_id, platform=platform,
+                                   rewritten_text=rewritten, **context)
                 return result
         except Exception as exc:
             logger.warning("Content Guard rewrite failed: %s", exc)
 
     result.outcome, result.message = "blocked", screened.message()
     await record_event(outcome="blocked", categories=screened.categories, matches=screened.matches, text=text,
-                       where=where, workspace_id=workspace_id, piece_id=piece_id, platform=platform)
+                       where=where, workspace_id=workspace_id, piece_id=piece_id, platform=platform, **context)
     return result
 
 
@@ -185,6 +192,7 @@ async def guard_piece_doc(doc: dict[str, Any], *, where: str) -> dict[str, Any]:
 
     ids = {"workspace_id": doc.get("workspace_id"), "piece_id": doc.get("piece_id"), "platform": doc.get("platform")}
     blocked: list[str] = []
+    found: list[str] = []
 
     async def review(value: Any) -> Any:
         if not isinstance(value, str) or not value.strip():
@@ -192,6 +200,7 @@ async def guard_piece_doc(doc: dict[str, Any], *, where: str) -> dict[str, Any]:
         outcome = await review_text(value, where=where, **ids)
         if outcome.blocked:
             blocked.extend(c for c in outcome.categories if c not in blocked)
+            found.extend(m for m in outcome.matches if m and m not in found)
             return outcome.text
         return outcome.text
 
@@ -209,6 +218,12 @@ async def guard_piece_doc(doc: dict[str, Any], *, where: str) -> dict[str, Any]:
         doc["quality_passed"] = False
         doc["flagged_for_review"] = True
         doc["quality_issues"] = [*(doc.get("quality_issues") or []), f"May contain {names}."]
+        # What the member sees on the post: why it was held back, which words set it off, and what to do.
+        doc["safety_reason"] = {
+            "categories": [CATEGORIES.get(c, c) for c in blocked],
+            "matches": found[:6],
+            "message": f"This post was held back because it may contain {names}. Edit the wording, or ask for a rewrite, and it can go out.",
+        }
     return doc
 
 
@@ -253,6 +268,8 @@ async def _check_text_before_send(piece: dict[str, Any], workspace_id: str, cfg:
         await record_event(
             outcome="blocked", categories=verdict.categories, matches=verdict.matches, text=text, where="publish",
             workspace_id=workspace_id, piece_id=piece.get("piece_id"), platform=piece.get("platform"),
+            source="model", model_reason=(verdict.matches[0] if verdict.matches else None), stage="publish",
+            brand_id=piece.get("brand_id"), user_id=piece.get("created_by"),
         )
 
 
@@ -280,6 +297,7 @@ async def _check_media_before_send(piece: dict[str, Any], workspace_id: str) -> 
             await record_event(
                 outcome="blocked", categories=record["categories"], matches=[], text=f"[{item.get('kind')}] {media_id}",
                 where="publish", workspace_id=workspace_id, piece_id=piece.get("piece_id"), platform=piece.get("platform"),
+                source="media", stage="publish", media_kind=item.get("kind"), media_id=media_id, brand_id=piece.get("brand_id"),
             )
     if changed:
         piece["media_safety"] = known

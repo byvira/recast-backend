@@ -99,7 +99,7 @@ async def assert_image_ok(data: bytes, mime_type: str, *, workspace_id: Optional
     if not verdict.ok:
         await record_event(
             outcome="blocked", categories=verdict.categories, matches=verdict.matches, text="[picture]", where=where,
-            workspace_id=workspace_id,
+            workspace_id=workspace_id, source="media", media_kind="image",
         )
         raise ContentRejected(FRIENDLY["picture"].format(names=_names(verdict.categories)), verdict.categories)
 
@@ -131,7 +131,7 @@ async def assert_speech_ok(text: str, *, noun: str, workspace_id: Optional[str],
     if problem:
         await record_event(
             outcome="blocked", categories=problem[1], matches=rule_screen(text).matches, text=text, where=where,
-            workspace_id=workspace_id,
+            workspace_id=workspace_id, source="rules", media_kind="audio",
         )
         raise ContentRejected(*problem)
 

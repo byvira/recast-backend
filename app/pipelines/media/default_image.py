@@ -32,7 +32,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.db.mongo import media_assets
 from app.models.media import MediaAsset, MediaKind, MediaSource
-from app.pipelines.media.image_generation import generate_brand_image
+from app.pipelines.media.image_generation import generate_brand_image, last_failure_reason
 from app.shared.storage import ContentType as UploadContentType, upload_file
 
 logger = logging.getLogger(__name__)
@@ -206,6 +206,8 @@ async def pick_default_image(
             source=MediaSource.GENERATED_TEMPLATE,
             created_by=user_id,
             created_at=datetime.now(timezone.utc),
+            qa_flagged=True,
+            qa_flag_reason=f"No AI picture, so this is a text card. {last_failure_reason() or 'The picture could not be made.'}",
         )
         await media_assets.insert_one(asset.model_dump())
         return asset

@@ -358,6 +358,51 @@ async def test_ops_can_try_a_text_and_read_what_was_caught(make_client):
     assert (await staff.get(f"{base}/events", params={"outcome": "other"})).status_code == 422
 
 
+async def test_a_caught_item_keeps_the_full_text_and_the_rewrite_and_opens_in_detail(make_client):
+    staff, _ = await _staff(make_client, master=False)
+    base = "/api/v1/ops/content-safety"
+    long_text = "Hot porn inside. " + "More words here. " * 40
+    with patch("app.shared.llm.call_llm", new=AsyncMock(return_value="A safe version of the post.")):
+        await review_text(long_text, where="check", workspace_id="w1", piece_id="p1", platform="LinkedIn")
+    events = (await staff.get(f"{base}/events")).json()
+    row = events["events"][0]
+    assert row["outcome"] == "rewritten" and row["id"] and row["source"] == "rules"
+    assert row["stage"] == "generation" and row["strictness"] == "standard"
+
+    detail = (await staff.get(f"{base}/events/{row['id']}")).json()
+    assert detail["original_text"] == long_text and detail["rewritten_text"] == "A safe version of the post."
+    assert detail["occurrences"] == 1 and detail["status"] == "open" and detail["piece"] is None
+
+    assert (await staff.get(f"{base}/events/{'0' * 24}")).status_code == 404
+    assert (await staff.get(f"{base}/events/not-an-id")).status_code == 404
+
+
+async def test_the_same_text_caught_again_is_counted_and_events_can_be_filtered_paged_and_reviewed(make_client):
+    staff, _ = await _staff(make_client, master=False)
+    base = "/api/v1/ops/content-safety"
+    await guard_config.save({"rewrite_flagged": False}, expected_version=0, user_id="u")
+    for _ in range(3):
+        await review_text("Some porn here.", where="check", workspace_id="w1", piece_id="p1", platform="LinkedIn")
+    await review_text("More porn there.", where="publish", workspace_id="w2", piece_id="p2", platform="Instagram")
+
+    everything = (await staff.get(f"{base}/events")).json()
+    assert everything["total"] == 2
+    first = next(e for e in everything["events"] if e["piece_id"] == "p1")
+    assert first["occurrences"] == 3 and first["last_seen_at"]
+
+    assert (await staff.get(f"{base}/events", params={"platform": "Instagram"})).json()["total"] == 1
+    assert (await staff.get(f"{base}/events", params={"where": "publish"})).json()["total"] == 1
+    assert (await staff.get(f"{base}/events", params={"category": "sexual", "workspace_id": "w1"})).json()["total"] == 1
+    assert len((await staff.get(f"{base}/events", params={"limit": 1, "offset": 1})).json()["events"]) == 1
+
+    done = await staff.patch(f"{base}/events/{first['id']}/review", json={"note": "Checked, fine."})
+    assert done.status_code == 200
+    assert (await staff.get(f"{base}/events", params={"status": "reviewed"})).json()["total"] == 1
+    assert (await staff.get(f"{base}/events", params={"status": "open"})).json()["total"] == 1
+    reviewed = (await staff.get(f"{base}/events/{first['id']}")).json()
+    assert reviewed["note"] == "Checked, fine." and reviewed["reviewed_by"] and "reviewed_by_name" in reviewed
+
+
 async def test_members_cannot_read_the_ops_settings(make_client):
     client = make_client()
     await signup_new_user(client)

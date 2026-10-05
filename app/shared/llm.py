@@ -784,7 +784,14 @@ async def call_llm_structured(
             label=f"call_llm_structured({model.name})",
         )
         _groq_breaker.record_success()
-        return result
+        if result:
+            return result
+        logger.warning("Groq structured call returned nothing readable — trying the backup models")
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as exc:
+            logger.error("Structured fallback after an empty Groq reply also failed: %s", exc)
+            return {}
 
     except RateLimitError:
         _groq_breaker.record_failure()
@@ -823,7 +830,11 @@ async def call_llm_structured(
 
     except Exception as exc:
         logger.error("Unexpected call_llm_structured error: %s", exc)
-        return {}
+        try:
+            return await call_llm_structured_fallback(prompt=prompt, system=system)
+        except Exception as fallback_exc:
+            logger.error("Structured fallback after an unexpected error also failed: %s", fallback_exc)
+            return {}
 
 
 @_tidy_output
