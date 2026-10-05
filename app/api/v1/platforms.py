@@ -44,6 +44,7 @@ def _serialize(p: PlatformDefinition) -> dict[str, Any]:
         "label": p.label,
         "category": p.category,
         "pipelines": sorted(p.pipelines),
+        "modalities": p.modalities,
         "native_formats": p.native_formats,
         "shapes": p.shapes,
         "mode": p.mode,
@@ -55,6 +56,10 @@ def _serialize(p: PlatformDefinition) -> dict[str, Any]:
         "tone_profile": p.tone_profile,
         "access_notes": p.access_notes,
         "confidence": p.confidence,
+        "has_official_post_api": p.has_official_post_api,
+        "official_doc_url": p.official_doc_url,
+        "verified_at": p.verified_at,
+        "verification_note": p.verification_note,
         "connectable": p.publisher_cls is not None,
         "has_analytics": p.analytics_fetcher_cls is not None,
         # The content Platform value text generation uses for this platform
@@ -112,11 +117,13 @@ async def _member_extras(definitions: list[PlatformDefinition], workspace_id: st
 async def get_platforms(
     status: Optional[str] = Query(None, description="Filter by status: active | partial | planned"),
     pipeline: Optional[str] = Query(None, description="Filter by pipeline: text | image | video | audio"),
+    modality: Optional[str] = Query(None, description="Only platforms that can really take this kind of content: text | image | video | audio"),
     user: dict = Depends(get_current_user),
     x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
 ) -> dict[str, Any]:
     import_all()
-    platforms = list_platforms(status=status, pipeline=pipeline)  # type: ignore[arg-type]
+    # `visibility` is recorded for later but is not applied yet: every platform is still listed.
+    platforms = list_platforms(status=status, pipeline=pipeline, modality=modality)  # type: ignore[arg-type]
     workspace_id = await _caller_workspace(user, x_workspace_id)
     availability = await availability_for_all(workspace_id, platforms) if workspace_id else {}
     extras = await _member_extras(platforms, workspace_id) if workspace_id else {}

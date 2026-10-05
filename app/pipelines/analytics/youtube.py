@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from app.pipelines.analytics.base import AnalyticsFetcher, PostMetrics, AccountMetrics
+from app.pipelines.analytics.base import AnalyticsFetcher, PostMetrics, AccountMetrics, classify_failure
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,13 @@ class YouTubeAnalyticsFetcher(AnalyticsFetcher):
                 resp.raise_for_status()
 
                 items = resp.json().get("items", [])
-                stats = items[0].get("statistics", {}) if items else {}
+                if not items:
+                    # YouTube answers 200 with an empty list for a video that was deleted or made private.
+                    return PostMetrics(
+                        platform=self.platform, post_id=piece_id, platform_post_id=platform_post_id,
+                        fetch_ok=False, failure="not_found", fetched_at=datetime.now(timezone.utc),
+                    )
+                stats = items[0].get("statistics", {})
 
                 views    = int(stats.get("viewCount",    0))
                 likes    = int(stats.get("likeCount",    0))
@@ -71,6 +77,7 @@ class YouTubeAnalyticsFetcher(AnalyticsFetcher):
                 post_id=piece_id,
                 platform_post_id=platform_post_id,
                 fetch_ok=False,
+                failure=classify_failure(exc),
                 fetched_at=datetime.now(timezone.utc),
             )
 

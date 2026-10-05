@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from app.pipelines.analytics.base import AnalyticsFetcher, PostMetrics, AccountMetrics
+from app.pipelines.analytics.base import AnalyticsFetcher, PostMetrics, AccountMetrics, classify_failure
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +99,7 @@ class FacebookAnalyticsFetcher(AnalyticsFetcher):
                 post_id=piece_id,
                 platform_post_id=platform_post_id,
                 fetch_ok=False,
+                failure=classify_failure(exc),
                 fetched_at=datetime.now(timezone.utc),
             )
 

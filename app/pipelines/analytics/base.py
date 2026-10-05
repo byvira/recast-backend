@@ -6,7 +6,7 @@ PostMetrics / AccountMetrics so the aggregator can unify them.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -41,6 +41,9 @@ class PostMetrics(BaseModel):
     # False when the platform could not be read (error, timeout, no answer). The numbers are then NOT real: nothing
     # may store them, or a failed read would overwrite real figures with zeros.
     fetch_ok: bool = True
+    # Why the platform could not be read, when it could not: "not_found" (the post is gone), "auth_error" (the connection
+    # is refused) or "transient" (an error or timeout that may pass).
+    failure: Optional[Literal["not_found", "auth_error", "transient"]] = None
 
 
 # ── Account-level metrics ─────────────────────────────────────────────────────
@@ -116,3 +119,34 @@ class AnalyticsFetcher(ABC):
         if reach == 0:
             return 0.0
         return round((likes + comments + shares) / reach * 100, 2)
+
+def classify_failure(exc: BaseException) -> str:
+    """Tells a post that is gone from a connection that is refused and from an error that may pass. Platforms report a
+    deleted post in different ways: a 404, or a 400 with a "does not exist" body (Meta's error 100 with subcode 33,
+    Bluesky's missing record). A refused token is a 401, or Meta's error 190."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    try:
+        body = (response.text or "")[:600].lower() if response is not None else ""
+    except Exception:  # noqa: BLE001
+        body = ""
+    text = f"{body} {str(exc).lower()}"
+    if status in (404, 410):
+        return "not_found"
+    if status == 401 or '"code":190' in text.replace(" ", "") or "invalid oauth" in text or "token" in text and "expired" in text:
+        return "auth_error"
+    if status in (400, 403) and any(
+        marker in text for marker in ("does not exist", "recordnotfound", "could not locate record", "not found", "has been deleted", "unsupported get request")
+    ):
+        return "not_found"
+    return "transient"
+
+
+def failure_from_status(*codes: int) -> str:
+    """For a platform that answers with plain status codes: all of them 404 or 410 means the post is gone, any 401 means the
+    connection is refused, anything else may pass."""
+    if codes and all(c in (404, 410) for c in codes):
+        return "not_found"
+    if any(c == 401 for c in codes):
+        return "auth_error"
+    return "transient"

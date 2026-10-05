@@ -75,6 +75,19 @@ def _clean_description(doc: dict) -> str:
     return description
 
 
+def _scalar_metadata(metadata: Optional[dict]) -> Optional[dict]:
+    """The screen reads metadata as plain text and numbers only. Empty values are dropped and true or false become words, so
+    one row with an empty field never makes the whole page fail to load."""
+    if not isinstance(metadata, dict):
+        return None
+    clean: dict = {}
+    for key, value in metadata.items():
+        if value is None or isinstance(value, (dict, list, tuple, set)):
+            continue
+        clean[str(key)] = ("true" if value else "false") if isinstance(value, bool) else value if isinstance(value, (str, int, float)) else str(value)
+    return clean or None
+
+
 def present(doc: dict, *, user_id: Optional[str] = None, read_before=None) -> dict:
     """Row → the frontend's ``ActivityLogEntry`` shape (plus lane/decision).
     ``timestamp`` / ``relativeTime`` are formatted client-side from
@@ -99,7 +112,7 @@ def present(doc: dict, *, user_id: Optional[str] = None, read_before=None) -> di
         "targetLabel": doc.get("target_label") or doc.get("subject"),
         "href": doc.get("href"),
         "diff": doc.get("diff"),
-        "metadata": doc.get("metadata"),
+        "metadata": _scalar_metadata(doc.get("metadata")),
         "decision": (doc.get("decision") or {}).get("outcome"),
         "snoozedUntil": _iso(doc.get("snoozed_until")),
         "source": (doc.get("source") or {}).get("kind"),

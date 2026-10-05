@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import audio_assets, content_pieces, image_assets, media_assets, users
+from app.db.mongo import audio_assets, brand_profiles, content_pieces, image_assets, media_assets, users
 from app.models.media import MediaAsset
 from app.models.attachment import AttachRequest, RefreshAttachmentsRequest
 from app.pipelines.export import library_archive
@@ -262,6 +262,70 @@ async def update_piece_media(
     # Keep the post's attachment list in step with what it now carries.
     await piece_attachments.replace_all_with_media(piece, ctx.workspace_id, ctx.user_id, body.media_id)
     return await get_piece(piece_id, ctx.workspace_id)
+
+
+@router.post("/pieces/{piece_id}/check-link")
+@limiter.limit("20/minute")
+async def check_piece_link(
+    request: Request,
+    piece_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Ask the platform whether this published post is still there. Returns its state: live, removed (the platform no longer
+    shows it), unreachable (the connection to the platform is refused) or unknown (it could not be asked)."""
+    from app.pipelines.analytics import link_health
+
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    if piece.get("publish_status") != "published" or not piece.get("platform_post_id"):
+        raise HTTPException(status_code=400, detail="Only a published post can be checked.")
+    return {"piece_id": piece_id, **await link_health.check_now(ctx.workspace_id, piece)}
+
+
+@router.post("/pieces/{piece_id}/regenerate-picture")
+@limiter.limit("6/minute")
+async def regenerate_piece_picture(
+    request: Request,
+    piece_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Make this post's picture again. A new real picture replaces the current one. If the new one comes out as a text
+    card and the post already has a real picture, the real one is kept.
+
+    Returns {"state": "ready" | "kept" | "card" | "failed", "note": str | None, "piece": the post}."""
+    from app.pipelines.media.default_image import _scene_topic
+    from app.pipelines.media.image_generation import generate_brand_image, last_failure_reason
+
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece or not (piece.get("content") or "").strip():
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    brand = await brand_profiles.find_one({"id": piece.get("brand_id"), "workspace_id": ctx.workspace_id}) if piece.get("brand_id") else None
+    if not brand:
+        raise HTTPException(status_code=400, detail="This post has no brand voice to make a picture from.")
+
+    asset = await generate_brand_image(
+        topic=_scene_topic(piece["content"]), brand_profile=brand,
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+    )
+    if asset is None:
+        return {"state": "failed", "note": last_failure_reason() or "The picture could not be made. Try again in a moment.", "piece": piece}
+
+    current = piece.get("media") or []
+    has_real = any(not m.get("qa_flagged") and m.get("source") != "generated_template" for m in current)
+    if asset.qa_flagged and has_real:
+        return {"state": "kept", "note": asset.qa_flag_reason, "piece": piece}
+
+    await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"media": [asset.model_dump()], "updated_at": datetime.now(timezone.utc)}},
+    )
+    await piece_attachments.replace_all_with_media(piece, ctx.workspace_id, ctx.user_id, asset.id)
+    return {
+        "state": "card" if asset.qa_flagged else "ready",
+        "note": asset.qa_flag_reason,
+        "piece": await get_piece(piece_id, ctx.workspace_id),
+    }
 
 
 # ── Attachments: images, audio and video attached to a post ──────────────────

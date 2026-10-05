@@ -47,6 +47,10 @@ Status = Literal["active", "partial", "planned"]
 Confidence = Literal["verified", "third_party", "unverified"]
 
 
+# Formats that mean a member gets a link or does the posting themselves, so nothing is attached for them.
+_HANDOFF_FORMATS = {"link", "manual", "embedded"}
+
+
 class PlatformDefinition(BaseModel):
     key: str                             # stable id, e.g. "linkedin" — matches workspace_connections.platform
     label: str                           # display name, e.g. "LinkedIn"
@@ -79,6 +83,16 @@ class PlatformDefinition(BaseModel):
     # means no single limit applies (or none is declared yet), and nothing is trimmed on its account.
     max_chars: Optional[int] = None
 
+    # What the platform's own developer documentation says. `has_official_post_api` is None until someone checks.
+    # `official_doc_url` is the page that backs the answer, and `verified_at` the date it was checked (YYYY-MM-DD).
+    has_official_post_api: Optional[bool] = None
+    official_doc_url: Optional[str] = None
+    verified_at: Optional[str] = None
+    verification_note: str = ""
+    # "staff_only" keeps a platform out of every member screen while it stays visible in Ops, for platforms that are
+    # defunct, have no way to post for a member, or are not used for publishing to an audience.
+    visibility: Literal["member", "staff_only"] = "member"
+
     audit_required: bool = False
     rate_limits: Optional[str] = None          # free text — values are too heterogeneous for a typed field
     policy_constraints: list[str] = Field(default_factory=list)
@@ -106,6 +120,27 @@ class PlatformDefinition(BaseModel):
     # registry-level flag instead of a real migration of the enum-keyed
     # generator dicts.
     thread_enum_value: Optional[str] = None
+
+    def modality(self, kind: Pipeline) -> str:
+        """How this platform takes `kind` of content:
+        "native"    posts it as part of its own post (or its description, thumbnail, cover or show notes),
+        "via_video" takes audio only as a video made from it,
+        "link"      only a link or a manual hand-off (nothing is attached for the member),
+        "none"      does not take it."""
+        if kind not in self.pipelines:
+            return "none"
+        fmt = self.native_formats.get(kind)
+        if fmt in _HANDOFF_FORMATS:
+            return "link"
+        if fmt:
+            return "native"
+        if kind == "audio" and self.native_formats.get("video") and self.native_formats["video"] not in _HANDOFF_FORMATS:
+            return "via_video"
+        return "none"
+
+    @property
+    def modalities(self) -> dict[str, str]:
+        return {kind: self.modality(kind) for kind in ("text", "image", "audio", "video")}
 
     def resolve_publisher_cls(self):
         return _resolve(self.publisher_cls)
@@ -184,12 +219,17 @@ def resolve_platform_by_display_value(value: str) -> Optional[PlatformDefinition
 def list_platforms(
     status: Optional[Status] = None,
     pipeline: Optional[Pipeline] = None,
+    modality: Optional[Pipeline] = None,
 ) -> list[PlatformDefinition]:
+    """`pipeline` keeps every platform the source directory lists for that kind. `modality` keeps only the platforms that can
+    really take that kind of content (see PlatformDefinition.modality)."""
     values = list(PLATFORM_REGISTRY.values())
     if status is not None:
         values = [p for p in values if p.status == status]
     if pipeline is not None:
         values = [p for p in values if pipeline in p.pipelines]
+    if modality is not None:
+        values = [p for p in values if p.modality(modality) != "none"]
     return sorted(values, key=lambda p: (p.category, p.label))
 
 
@@ -216,6 +256,26 @@ def build_text_platform_enum(enum_name: str = "Platform"):
 _IMPORTED = False
 
 
+def _apply_verification() -> None:
+    """Lay what the official documentation says (app.platforms.verification_data) over the registered platforms."""
+    from app.platforms.verification_data import VERDICTS, VERIFIED_AT
+
+    for key, verdict in VERDICTS.items():
+        definition = PLATFORM_REGISTRY.get(key)
+        if definition is None:
+            continue
+        update = {
+            "has_official_post_api": verdict.get("has_official_post_api"),
+            "official_doc_url": verdict.get("official_doc_url"),
+            "verification_note": verdict.get("verification_note", ""),
+            "verified_at": VERIFIED_AT,
+            "visibility": verdict.get("visibility", "member"),
+        }
+        if verdict.get("native_formats"):
+            update["native_formats"] = {**definition.native_formats, **verdict["native_formats"]}
+        PLATFORM_REGISTRY[key] = definition.model_copy(update=update)
+
+
 def import_all() -> None:
     """Import every module under app.platforms (and app.platforms.planned) so
     their @register_platform / register_platform() calls run. Idempotent —
@@ -229,4 +289,5 @@ def import_all() -> None:
         if module_info.name.endswith(".base"):
             continue
         importlib.import_module(module_info.name)
+    _apply_verification()
     _IMPORTED = True

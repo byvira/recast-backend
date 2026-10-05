@@ -85,6 +85,8 @@ async def _refresh_workspace_analytics(db, workspace_id: str):
             "workspace_id":     workspace_id,
             "publish_status":   "published",
             "platform_post_id": {"$exists": True, "$ne": None},
+            # A post that is gone from its platform is no longer checked.
+            "platform_state": {"$ne": "removed"},
             "$and": [
                 {"$or": [
                     {"metrics_fetched_at": {"$lt": cutoff}},

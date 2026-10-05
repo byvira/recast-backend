@@ -113,6 +113,9 @@ class Settings(BaseSettings):
     # Denoising steps for Cloudflare FLUX schnell (1 to 8). 4 costs about 57.6 neurons a picture (about 173 a day on the
     # free allowance); 8 looks cleaner, costs about 96 (about 104 a day). Leave at 4 on the free plan.
     CLOUDFLARE_IMAGE_STEPS: int = 4
+    # A second model reviews each finished long-form draft and sends weak ones back for one targeted rewrite. It costs one
+    # small model call per post; turn it off to save quota.
+    TEXT_CRITIQUE_ENABLED: bool = True
 
     # Open-model fallbacks for when Gemini and Cloudflare are not answering (app/shared/open_fallbacks.py).
     # Each one is skipped when its key is empty. Model names are settings because free model lists change often.

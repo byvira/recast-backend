@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.pipelines.analytics import link_health
 from app.pipelines.analytics.base import PostMetrics, AccountMetrics, AnalyticsFetcher
 from app.pipelines.publish.token_store import get_token
 from app.platforms.base import get_platform, import_all, list_platforms
@@ -137,7 +138,9 @@ async def fetch_post_metrics_all(
         if not metrics.fetch_ok:
             # The platform could not be read. Keep what is already stored; never replace real numbers with zeros.
             logger.warning("Post metrics unavailable for %s %s, kept the earlier numbers", platform, post.get("platform_post_id"))
+            await link_health.note_unreadable(workspace_id, post, metrics.failure)
             continue
+        await link_health.note_readable(workspace_id, post.get("piece_id", ""))
         metrics.workspace_id = workspace_id
         results.append(metrics)
 

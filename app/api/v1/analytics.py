@@ -92,12 +92,16 @@ async def get_post_metrics(
         pieces = await db["content_pieces"].find(
             # Scoped to this workspace: a post id must never pull in another workspace's text.
             {"piece_id": {"$in": piece_ids}, "workspace_id": ctx.workspace_id},
-            {"piece_id": 1, "content": 1, "publish_status": 1, "updated_at": 1},
+            {"piece_id": 1, "content": 1, "publish_status": 1, "updated_at": 1, "platform_state": 1, "platform_post_url": 1},
         ).to_list(length=len(piece_ids))
         piece_by_id = {p["piece_id"]: p for p in pieces}
     for m in metrics:
         piece = piece_by_id.get(m.get("post_id"), {})
         m["content"] = piece.get("content", "")
+        m["piece_id"] = m.get("post_id")
+        m["platform_state"] = piece.get("platform_state")
+        # A post that is gone from its platform has no link to offer.
+        m["platform_post_url"] = None if piece.get("platform_state") == "removed" else piece.get("platform_post_url")
         m["published_at"] = (
             piece["updated_at"] if piece.get("publish_status") == "published" and piece.get("updated_at") else None
         )
@@ -120,8 +124,14 @@ async def get_summary(
         sort=[("fetched_at", -1)],
     ).to_list(length=100)
     from app.pipelines.analytics.base import AccountMetrics, PostMetrics
+    # Posts that were removed on their platform are left out of the totals: their last numbers are history, not current reach.
+    removed = {
+        p["piece_id"] async for p in db["content_pieces"].find(
+            {"workspace_id": ctx.workspace_id, "platform_state": "removed"}, {"piece_id": 1},
+        )
+    }
     account_metrics = [AccountMetrics(**d) for d in account_docs]
-    post_metrics    = [PostMetrics(**d)    for d in post_docs]
+    post_metrics    = [PostMetrics(**d)    for d in post_docs if d.get("post_id") not in removed]
     summary = summarize(account_metrics, post_metrics)
 
     # Real week-over-week delta for the Home page's Insights Strip — None
@@ -131,6 +141,58 @@ async def get_summary(
     summary["previous_totals"] = previous_totals
     summary["deltas"] = compute_deltas(summary["totals"], previous_totals)
     return summary
+
+
+async def _window_counts(coll, base: dict, since_week: datetime, since_prior: datetime, field: str = "created_at") -> dict:
+    """How many documents exist in total, in the last 7 days, and in the 7 days before that, plus the newest date."""
+    total = await coll.count_documents(base)
+    this_week = await coll.count_documents({**base, field: {"$gte": since_week}})
+    prior_week = await coll.count_documents({**base, field: {"$gte": since_prior, "$lt": since_week}})
+    newest = await coll.find(base, {field: 1, "_id": 0}).sort(field, -1).limit(1).to_list(length=1)
+    last = newest[0].get(field) if newest else None
+    return {"total": total, "this_week": this_week, "prior_week": prior_week, "last_created_at": iso_utc(last) if last else None}
+
+
+@router.get("/pipeline-summary")
+@limiter.limit("30/minute")
+async def pipeline_summary(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """What each pipeline has made: totals, the last 7 days against the 7 before, the newest item, and how many wait for
+    approval. Counts only, so Home does not have to load every item."""
+    db = get_db()
+    ws = ctx.workspace_id
+    now = datetime.now(timezone.utc)
+    week, prior = now - timedelta(days=7), now - timedelta(days=14)
+
+    text = await _window_counts(
+        db["content_pieces"], {"workspace_id": ws, "deleted": {"$ne": True}, "archived": {"$ne": True}}, week, prior,
+    )
+    text["pending_approval"] = await db["content_pieces"].count_documents(
+        {"workspace_id": ws, "deleted": {"$ne": True}, "archived": {"$ne": True}, "approval_status": "pending"},
+    )
+
+    out = {"text": text}
+    for kind, coll in (("audio", "audio_assets"), ("image", "image_assets")):
+        base = {"workspace_id": ws, "replaced_by": {"$exists": False}} if kind == "image" else {"workspace_id": ws}
+        counts = await _window_counts(db[coll], base, week, prior)
+        counts["pending_approval"] = await db[coll].count_documents({**base, "approval_status": "pending"})
+        out[kind] = counts
+
+    clips_base = [{"$match": {"workspace_id": ws, "video_clips.0": {"$exists": True}}}, {"$unwind": "$video_clips"}]
+    video = {"total": 0, "this_week": 0, "prior_week": 0, "last_created_at": None, "pending_approval": 0}
+    async for row in db["audio_assets"].aggregate(clips_base + [{"$group": {
+        "_id": None,
+        "total": {"$sum": 1},
+        "this_week": {"$sum": {"$cond": [{"$gte": ["$video_clips.created_at", week]}, 1, 0]}},
+        "prior_week": {"$sum": {"$cond": [{"$and": [{"$gte": ["$video_clips.created_at", prior]}, {"$lt": ["$video_clips.created_at", week]}]}, 1, 0]}},
+        "last": {"$max": "$video_clips.created_at"},
+    }}]):
+        video.update(total=row["total"], this_week=row["this_week"], prior_week=row["prior_week"],
+                     last_created_at=iso_utc(row["last"]) if row.get("last") else None)
+    out["video"] = video
+    return out
 
 
 async def _refresh_now(ctx: WorkspaceContext) -> dict:

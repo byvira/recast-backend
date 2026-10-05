@@ -28,6 +28,8 @@ from app.agents.feedback.trust import autonomy_trust_refresh
 from app.pipelines.analytics.checkpoints import capture_metric_checkpoints
 from app.pipelines.analytics.scheduler import refresh_analytics
 from app.workers.campaign_scheduler import run_due_campaign_batches
+from app.workers.link_checks import check_old_post_links
+from app.workers.run_reminders import remind_about_paused_runs
 from app.workers.scheduled_posts import process_scheduled_posts
 from app.workers.support_lifecycle import support_lifecycle_tick
 from app.workers.token_refresh import refresh_expiring_tokens
@@ -59,6 +61,8 @@ JOBS: list[Job] = [
     # Publishing & campaigns — every minute (each job holds its own lock).
     Job("scheduled_posts", _no_ctx(process_scheduled_posts)),
     Job("campaign_batches", _no_ctx(run_due_campaign_batches)),
+    # Paused work that was forgotten: a note after 1, 3 and 7 days.
+    Job("run_reminders", _no_ctx(remind_about_paused_runs), minute=_every(10, offset=4)),
     # Token renewal — hourly; it only renews connections that are due.
     Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=frozenset({11})),
     # Latest post/account metrics — every 6h.
@@ -77,6 +81,8 @@ JOBS: list[Job] = [
     # Feedback loop — engagement patterns into Remy/Odette, daily at 02:23 UTC.
     Job("performance_feedback_sweep", performance_feedback_sweep,
         minute=frozenset({23}), hour=frozenset({2})),
+    # Older published posts: is the post still on its platform? Daily at 03:13 UTC.
+    Job("link_checks", _no_ctx(check_old_post_links), minute=frozenset({13}), hour=frozenset({3})),
     # Trust score (shadow mode) — daily at 02:41 UTC.
     Job("autonomy_trust_refresh", autonomy_trust_refresh,
         minute=frozenset({41}), hour=frozenset({2})),

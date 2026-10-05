@@ -104,7 +104,14 @@ def _require_master(user: dict) -> None:
 @router.get("/health")
 @limiter.limit("60/minute")
 async def get_health(request: Request, range: Literal["1h", "24h", "7d"] = "24h", user: dict = Depends(require_platform_staff)) -> dict:
-    return await service.overview(range)
+    from app.pipelines.media.image_generation import image_tiers_in_use
+
+    tiers = image_tiers_in_use()
+    return {
+        **await service.overview(range),
+        # Which picture services are switched on. With none, every picture is a plain text card.
+        "picture_services": {"in_use": tiers, "none_on": not tiers},
+    }
 
 
 @router.get("/providers")

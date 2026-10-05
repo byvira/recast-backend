@@ -23,6 +23,7 @@ from app.api.v1 import users as users_router
 from app.api.v1 import audio_assets, content, image_assets, media, oauth, publish
 from app.api.v1 import presets as presets_router
 from app.api.v1 import campaigns as campaigns_router
+from app.api.v1 import runs as runs_router
 from app.core.config import settings
 from app.api.v1 import workspace, invites
 from app.core.logger import logger, setup_logging
@@ -160,6 +161,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     from app.platforms.base import import_all as import_all_platforms
     import_all_platforms()
     logger.info("Platform registry loaded")
+
+    from app.shared import pipeline_runs
+    interrupted = await pipeline_runs.fail_interrupted()
+    if interrupted:
+        logger.warning("%d background runs were interrupted by the restart and were marked failed.", interrupted)
+
+    from app.pipelines.media.image_generation import image_tiers_in_use
+    if not image_tiers_in_use():
+        logger.warning("No picture service is switched on, so every picture will be a text card.")
 
     # Start scheduler — every background job (publishing, campaigns, token
     # renewal, analytics, Remy/Odette, autonomy) is registered from one list,
@@ -334,6 +344,7 @@ app.include_router(content.router,        prefix="/api/v1/content",    tags=["Co
 app.include_router(media.router,          prefix="/api/v1/media",      tags=["Media"])
 app.include_router(presets_router.router, prefix="/api/v1/presets",    tags=["Presets"])
 app.include_router(campaigns_router.router, prefix="/api/v1/campaigns", tags=["Campaigns"])
+app.include_router(runs_router.router, prefix="/api/v1/runs", tags=["Runs"])
 app.include_router(text.router,           prefix="/api/v1/text",       tags=["Text Pipeline"])
 app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Audio"])
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
