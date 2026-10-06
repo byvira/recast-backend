@@ -20,7 +20,7 @@ from app.api.v1 import auth as auth_router
 from app.api.v1 import brand as brand_router
 from app.api.v1 import onboarding_draft as drafts_router
 from app.api.v1 import users as users_router
-from app.api.v1 import audio_assets, content, image_assets, media, oauth, publish
+from app.api.v1 import audio_assets, content, destinations, image_assets, media, oauth, publish
 from app.api.v1 import presets as presets_router
 from app.api.v1 import campaigns as campaigns_router
 from app.api.v1 import runs as runs_router
@@ -348,6 +348,7 @@ from app.api.v1 import jobs as jobs_router
 app.include_router(jobs_router.router, prefix="/api/v1/jobs", tags=["Jobs"])
 app.include_router(invites.router, prefix="/api/v1/invites", tags=["Invites"])
 app.include_router(publish.router,        prefix="/api/v1/publish",    tags=["Publish"])
+app.include_router(destinations.router,    prefix="/api/v1/destinations", tags=["Destinations"])
 app.include_router(users_router.router,   prefix="/api/v1/users",      tags=["Users"])
 app.include_router(brand_router.router,   prefix="/api/v1/brand",      tags=["Brand"])
 app.include_router(drafts_router.router,  prefix="/api/v1/onboarding", tags=["Drafts"])

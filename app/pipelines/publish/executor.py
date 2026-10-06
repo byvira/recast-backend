@@ -73,6 +73,12 @@ async def build_request(
     return request
 
 
+async def pictures_for(piece: dict, workspace_id: str) -> list[MediaAsset]:
+    """The pictures attached to a post, in the order chosen, for a destination that places them itself."""
+    found = [MediaAsset(**m) for m in await media_for_publish(piece, workspace_id, "")]
+    return [m for m in found if getattr(m.kind, "value", m.kind) == "image"]
+
+
 def dropped_note(result, piece: dict, platform: str) -> Optional[str]:
     """What was left out of a post that went out, in plain words: the platform's own note, more pictures than it takes, or a planned picture
     that could not be made."""

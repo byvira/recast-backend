@@ -128,6 +128,15 @@ ALLOWED: dict[str, dict[str, Callable[[Any], Any]]] = {
     "facebook": {"link": _https("The link")},
     "linkedin": {"visibility": _one_of("visibility", LINKEDIN_VISIBILITY), "link_card_url": _https("The link card address")},
     "threads": {"reply_control": _one_of("reply control", THREADS_REPLY_CONTROLS), "topic_tag": _topic_tag},
+    # Where a Blog or Newsletter post goes, and how the destination should treat it.
+    "blog": {
+        "destination": _one_of("destination", ("wordpress", "ghost")), "post_status": _one_of("status", ("draft", "publish")),
+        "category_id": _digits("The category"), "author_id": _digits("The author"),
+    },
+    "newsletter": {
+        "destination": _one_of("destination", ("mailchimp",)), "audience_id": _text("The audience", 64),
+        "send_mode": _one_of("send mode", ("draft", "send")),
+    },
     "bluesky": {
         "languages": _languages, "link_card_url": _https("The link card address"),
         "reply_control": _one_of("reply control", BLUESKY_REPLY_CONTROLS),
