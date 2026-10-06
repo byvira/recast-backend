@@ -1,7 +1,7 @@
 """
 SEO enrichment for long-form content.
 Maps to extras.seoMeta toggle in ConfigPanel ExtrasToggles.
-Only runs when seoMeta is True AND platform is Blog, Newsletter, or YouTube.
+Always runs for Blog and Newsletter; for YouTube only when seoMeta is True.
 """
 
 import logging
@@ -17,7 +17,14 @@ logger = logging.getLogger(__name__)
 SEO_PLATFORMS = {Platform.BLOG, Platform.NEWSLETTER, Platform.YOUTUBE}
 
 
+#: A Blog post always has a title, summary and tags, and a Newsletter always has a subject and preview line: the editors for them
+#: read these, so they are made with the post whether or not the optional SEO extra is switched on. YouTube keeps the option.
+ALWAYS_PLATFORMS = {Platform.BLOG, Platform.NEWSLETTER}
+
+
 def should_run_seo(platform: Platform, seo_meta: bool) -> bool:
+    if platform in ALWAYS_PLATFORMS:
+        return True
     return seo_meta and platform in SEO_PLATFORMS
 
 
