@@ -91,6 +91,12 @@ def _derive_profile_url(platform: str, username: str, platform_user_id: str = ""
     return None
 
 
+def _js(value: str) -> str:
+    """A value as a JavaScript string literal that is safe inside a script tag: every angle bracket is written as an escape, so
+    nothing in it can end the script or start a tag."""
+    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e")
+
+
 def _oauth_popup_response(success: bool, message: str) -> HTMLResponse:
     """The OAuth callback runs inside the small popup window
     openOAuthPopup() (Frontend/Recast/lib/api/social.connect.ts) opened —
@@ -109,7 +115,12 @@ def _oauth_popup_response(success: bool, message: str) -> HTMLResponse:
     <p style="color:{color}; font-size:16px; font-weight:600;">{escape(message)}</p>
     <p style="color:#6b7280; font-size:13px;">This window will close automatically.</p>
   </div>
-  <script>setTimeout(function() {{ window.close(); }}, 1500);</script>
+  <script>
+    try {{
+      if (window.opener) window.opener.postMessage({{ type: "recast_oauth", success: {json.dumps(success)}, message: {_js(message)} }}, {_js(settings.FRONTEND_URL.rstrip("/"))});
+    }} catch (e) {{}}
+    setTimeout(function() {{ window.close(); }}, 1500);
+  </script>
 </body></html>"""
     return HTMLResponse(content=html, status_code=200 if success else 400)
 

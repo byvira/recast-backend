@@ -389,6 +389,8 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
                 "platform_post_id": result.platform_post_id,
                 "platform_post_url": result.platform_post_url,
                 "attempts":         attempt + 1,
+                # What was left out of a post that did go out, in plain words (a picture that was too large, a failed first comment).
+                "note":             result.media_dropped_reason or extra_media_note(piece, platform) or planned_media_note(piece),
             }
 
         error_type = classify_error(

@@ -178,6 +178,62 @@ def _register_audio() -> None:
                   description="Voice a conversation between several speakers.")
 
 
+class PublishPostPayload(BaseModel):
+    piece_id: str = Field(min_length=1, max_length=64)
+    confirm_publish_anyway: bool = False
+    youtube_metadata: Optional[dict] = None
+
+
+class PublishBatchPayload(BaseModel):
+    piece_ids: list[str] = Field(min_length=1, max_length=50)
+    confirm_publish_anyway: bool = False
+
+
+async def _publish_one(ctx: Any, piece_id: str, confirm: bool = False, youtube_metadata: Optional[dict] = None) -> dict:
+    """Publish one post the way the Publish now button does, and always answer with a plain result: a refusal (not approved, platform
+    paused, flagged) comes back with its code and reason instead of stopping everything."""
+    from fastapi import HTTPException
+
+    from app.api.v1 import publish
+
+    handler = getattr(publish.publish_now, "__wrapped__", publish.publish_now)
+    body = publish.PublishNowRequest(piece_id=piece_id, confirm_publish_anyway=confirm, youtube_metadata=youtube_metadata)
+    try:
+        result = await handler(None, body, ctx)
+    except HTTPException as exc:
+        detail = exc.detail
+        code = detail.get("code") if isinstance(detail, dict) else None
+        reason = detail.get("message") if isinstance(detail, dict) else str(detail)
+        return {"success": False, "piece_id": piece_id, "status": "blocked", "code": code or "blocked", "reason": reason, "retryable": False}
+    return dict(result)
+
+
+async def _publish_post(ctx: Any, payload: PublishPostPayload, reporter: Any) -> dict:
+    await reporter.step("Publishing")
+    return await _publish_one(ctx, payload.piece_id, payload.confirm_publish_anyway, payload.youtube_metadata)
+
+
+async def _publish_batch(ctx: Any, payload: PublishBatchPayload, reporter: Any) -> dict:
+    from app.db.mongo import content_pieces
+    from app.pipelines.publish.spine import platform_key
+
+    ids = list(dict.fromkeys(payload.piece_ids))
+    platforms = {p["piece_id"]: p.get("platform", "") async for p in content_pieces.find({"piece_id": {"$in": ids}, "workspace_id": ctx.workspace_id}, {"piece_id": 1, "platform": 1})}
+    results: list[dict] = []
+    for number, piece_id in enumerate(ids, start=1):
+        await reporter.step(f"Publishing {number} of {len(ids)}")
+        if piece_id not in platforms:
+            results.append({"success": False, "piece_id": piece_id, "status": "blocked", "code": "not_found", "reason": "This post could not be found."})
+        elif platform_key(platforms[piece_id]) == "youtube":
+            # A YouTube upload is reviewed (title, visibility, thumbnail) one post at a time, never sent in bulk.
+            results.append({"success": False, "piece_id": piece_id, "status": "skipped", "code": "review_first", "reason": "YouTube posts are reviewed one at a time."})
+        else:
+            results.append(await _publish_one(ctx, piece_id, payload.confirm_publish_anyway))
+    published = sum(1 for r in results if r.get("success"))
+    retrying = sum(1 for r in results if r.get("status") == "retry_scheduled")
+    return {"results": results, "published": published, "retrying": retrying, "left_out": len(results) - published - retrying}
+
+
 class CampaignRef(BaseModel):
     campaign_id: str = Field(min_length=1, max_length=64)
 
@@ -228,4 +284,15 @@ def register_all() -> None:
                      "Make again the media that failed for one post.")
     _campaign_action("campaign.regenerate_media", CampaignPieceRef, "regenerate_post_image", lambda p: "Campaign: new picture", 1,
                      "Make one post's picture again.")
+    register(JobAction(
+        name="publish.now", permission="publish_content", payload_model=PublishPostPayload, run=_publish_post, kind="text",
+        title=lambda p: "Publish a post", steps=lambda p: 1, href="/dashboard/drafts", restartable=False, retries=0,
+        description="Publish one post now. Never started again after a restart, so a post is never sent twice.",
+    ))
+    register(JobAction(
+        name="publish.batch", permission="publish_content", payload_model=PublishBatchPayload, run=_publish_batch, kind="text",
+        title=lambda p: f"Publish {len(set(p.piece_ids))} posts", steps=lambda p: len(set(p.piece_ids)), href="/dashboard/drafts",
+        restartable=False, retries=0,
+        description="Publish several posts one after another. Each post reports its own result; one failing never stops the others.",
+    ))
     _register_audio()
