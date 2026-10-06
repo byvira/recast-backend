@@ -5,6 +5,7 @@ Handles all platform OAuth flows through one unified router.
 
 import json
 import logging
+import re
 import secrets
 from typing import Any
 
@@ -13,7 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from html import escape
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 import httpx
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -76,19 +77,57 @@ def _derive_profile_url(platform: str, username: str, platform_user_id: str = ""
     reliable public-profile pattern from what we have (LinkedIn's OAuth
     response has no public vanity URL; Google's "username" is an email/name,
     not a public profile slug)."""
-    if platform == "instagram" and username:
-        return f"https://instagram.com/{username}"
-    if platform == "facebook" and platform_user_id:
-        return f"https://facebook.com/{platform_user_id}"
-    if platform == "threads" and username:
-        return f"https://www.threads.net/@{username}"
-    if platform == "youtube" and platform_user_id:
-        return f"https://www.youtube.com/channel/{platform_user_id}"
-    if platform == "bluesky" and username:
-        return f"https://bsky.app/profile/{username}"
-    if platform == "reddit" and username:
-        return f"https://reddit.com/user/{username}"
+    name = _clean_profile_part(username)
+    ident = _clean_profile_part(platform_user_id)
+    if platform == "instagram" and name:
+        return f"https://www.instagram.com/{quote(name, safe='')}"
+    if platform == "facebook" and ident:
+        return f"https://www.facebook.com/{quote(ident, safe='')}"
+    if platform == "threads" and name:
+        return f"https://www.threads.com/@{quote(name, safe='')}"
+    if platform == "youtube" and ident:
+        return f"https://www.youtube.com/channel/{quote(ident, safe='')}"
+    if platform == "bluesky" and name:
+        return f"https://bsky.app/profile/{quote(name, safe='')}"
+    if platform == "reddit" and name:
+        return f"https://www.reddit.com/user/{quote(name, safe='')}"
+    if platform == "twitter" and name:
+        return f"https://x.com/{quote(name, safe='')}"
     return None
+
+
+_PROFILE_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _clean_profile_part(value: str | None) -> str | None:
+    """A username or id with surrounding whitespace and a leading "@" removed,
+    or None when it is empty or holds anything beyond letters, digits, dot,
+    underscore and hyphen."""
+    cleaned = (value or "").strip().lstrip("@").strip()
+    return cleaned if _PROFILE_PART_RE.match(cleaned) else None
+
+
+_PROFILE_HOST_REWRITES = {
+    "threads.net": "www.threads.com",
+    "www.threads.net": "www.threads.com",
+    "threads.com": "www.threads.com",
+    "instagram.com": "www.instagram.com",
+    "facebook.com": "www.facebook.com",
+    "reddit.com": "www.reddit.com",
+}
+
+
+def normalize_profile_url(url: str | None) -> str | None:
+    """Rewrite a saved profile address from an older form to the current one.
+    Returns None for anything that is not an http(s) address."""
+    if not url or not isinstance(url, str):
+        return None
+    parts = urlsplit(url.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    host = parts.netloc.lower()
+    host = _PROFILE_HOST_REWRITES.get(host, host)
+    return urlunsplit(("https", host, parts.path, parts.query, parts.fragment))
 
 
 def _js(value: str) -> str:
@@ -146,6 +185,7 @@ async def list_accounts(
     }
     for a in accounts:
         a["connected_by_name"] = connectors.get(a.get("connected_by", ""), {}).get("name", "")
+        a["profile_url"] = normalize_profile_url(a.get("profile_url"))
 
     return {
         "accounts": accounts,
