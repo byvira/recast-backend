@@ -7,6 +7,16 @@ the generate node missed or that changed during editing.
 import re
 from typing import Tuple
 
+import regex
+
+_GRAPHEME = regex.compile(r"\X")
+
+
+def grapheme_count(text: str) -> int:
+    """How many characters a person sees: an emoji with a skin tone, a flag or a letter with an accent is one, however many code points it
+    takes. Bluesky's limit counts these."""
+    return sum(1 for _ in _GRAPHEME.finditer(text))
+
 
 def validate_linkedin(content: str) -> Tuple[bool, list[str]]:
     issues = []
@@ -55,8 +65,9 @@ def validate_reddit(content: str) -> Tuple[bool, list[str]]:
 
 def validate_bluesky(content: str) -> Tuple[bool, list[str]]:
     issues = []
-    if len(content) > 300:
-        issues.append(f"Content too long: {len(content)} chars (max 300)")
+    count = grapheme_count(content)
+    if count > 300:
+        issues.append(f"Content too long: {count} chars (max 300)")
     if not content.strip():
         issues.append("Content is empty")
     return len(issues) == 0, issues

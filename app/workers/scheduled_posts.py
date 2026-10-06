@@ -11,15 +11,12 @@ from app.core.config import settings
 from app.core.notifications import send_templated_email
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import content_pieces, users, workspaces
-from app.models.media import MediaAsset
-from app.pipelines.publish.base import PublishRequest
-from app.pipelines.publish.registry import adapter_for, get_publisher
-from app.pipelines.publish.spine import check_gate, extra_media_note, iso_utc, media_for_publish, planned_media_note, platform_key
+from app.pipelines.publish import executor
+from app.pipelines.publish.media_limits import media_problem
+from app.pipelines.publish.spine import check_gate, iso_utc, platform_key
 from app.pipelines.publish.supervisor.alerts import alert_fatal
 from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType, failure_code
 from app.pipelines.publish.supervisor.retry import get_retry_delay, should_retry
-from app.pipelines.publish.token_store import get_token
-from app.pipelines.publish.health import mark_healthy
 from pymongo import ReturnDocument
 from app.workers.token_refresh import recover_connection
 from app.shared.activity import record_system
@@ -347,17 +344,10 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         )
         return
 
-    # Get token — scoped to the piece's workspace
-    token_data = await get_token(workspace_id, platform)
-
-    # Get publisher. A webhook or manual-handoff platform with saved settings resolves to the thin adapter (no token).
-    try:
-        publisher = get_publisher(platform)
-    except ValueError:
-        publisher = await adapter_for(platform, workspace_id)
-    if publisher is not None and not getattr(publisher, "uses_oauth_token", True):
-        token_data = {}
-    elif not token_data:
+    # The publisher and sign-in, scoped to the piece's workspace (shared with Publish Now, see pipelines/publish/executor.py).
+    resolved = await executor.resolve_publisher(platform, workspace_id)
+    publisher, token_data = resolved.publisher, resolved.token
+    if resolved.problem == "not_connected":
         logger.warning(
             "No token for workspace %s platform %s — piece %s skipped",
             workspace_id, platform, piece_id,
@@ -367,7 +357,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             f"{platform_name(platform)} isn't connected, so this post couldn't go out. Reconnect it in Settings.",
         )
         return
-    if publisher is None:
+    if resolved.problem == "unsupported":
         logger.error("No publisher for platform %s", platform)
         await _fail_before_publish(
             piece, platform, user_id, workspace_id,
@@ -378,21 +368,17 @@ async def _publish_scheduled_piece(piece: dict) -> None:
     # Build request — media populated for real, same fix as the publish-now
     # path (app/api/v1/publish.py); this was the other of the two real
     # construction sites that always left it empty.
-    pub_request = PublishRequest(
-        piece_id=piece_id,
-        workspace_id=workspace_id,
-        user_id=user_id,
-        brand_id=piece["brand_id"],
-        platform=platform,
+    pub_request = await executor.build_request(
+        piece, workspace_id, user_id, platform, token_data,
         # The text to send: a fixed version made by an earlier failed attempt (see the FIXABLE branch below), else the post as written.
         content=piece.get("publish_content_override") or piece["content"],
-        media=[MediaAsset(**m) for m in await media_for_publish(piece, workspace_id, platform)],
-        # The title, description and tags the member reviewed when scheduling a
-        # YouTube upload. Without them the publisher makes its own.
+        # The title, description and tags the member reviewed when scheduling a YouTube upload. Without them the publisher makes its own.
         youtube_metadata=piece.get("publish_youtube_metadata"),
-        options=piece.get("publish_options") or {},
     )
-    pub_request.platform_user_id = token_data.get("platform_user_id", "")
+    media_issue = media_problem(platform, pub_request.media)
+    if media_issue:
+        await _fail_before_publish(piece, platform, user_id, workspace_id, media_issue)
+        return
 
     # Mark as publishing (the loop already claimed it; this also records the
     # derived target and refreshes the start time the reaper reads)
@@ -423,36 +409,8 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         return
 
     if result.success:
-        await content_pieces.update_one(
-            {"piece_id": piece_id},
-            {"$set": {
-                "publish_status":    "published",
-                "platform_post_id":  result.platform_post_id,
-                "platform_post_url": result.platform_post_url,
-                "updated_at":        datetime.now(timezone.utc),
-                "published_at":      datetime.now(timezone.utc),
-                # Row 9: same outcome the Activity Log already shows (see
-                # emit_content_published below), also on the piece itself so
-                # Drafts/Library/Calendar can render a real badge.
-                "media_dropped_reason": result.media_dropped_reason or extra_media_note(piece, platform) or planned_media_note(piece) or None,
-                # What went out and which version of the post it was (see _update_piece_status in api/v1/publish.py).
-                "published_content": pub_request.content,
-                "published_version": piece.get("version_count"),
-            }},
-        )
-        try:
-            from app.shared.governance_events import emit_content_published
-            emit_content_published(
-                workspace_id, pipeline_type=piece.get("pipeline_type", "text"),
-                actor_user_id=user_id, actor_role="",
-                content_id=piece_id, target=platform,
-                external_url=result.platform_post_url or "",
-                via="scheduled",
-                media_dropped_reason=result.media_dropped_reason or "",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("emit content.published failed for %s: %s", piece_id, exc)
-        await mark_healthy(workspace_id, platform, via="a successful publish")
+        await executor.mark_published(piece, workspace_id, platform, result, pub_request.content)
+        await executor.after_published(piece, workspace_id, platform, result, user_id=user_id, via="scheduled")
         if piece.get("publish_attempts"):
             # Close out the retry chain row with the recovery.
             await record_system(

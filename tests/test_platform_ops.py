@@ -448,7 +448,7 @@ async def test_the_worker_never_sends_a_held_post(make_client, signup_user):
     await content_pieces.update_one({"piece_id": piece_id}, {"$set": {"publish_scheduled_at": datetime.now(timezone.utc) - timedelta(minutes=1)}})
 
     fake = _ok_publisher(piece_id)
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         await worker.process_scheduled_posts.__wrapped__()
     fake.publish.assert_not_awaited()
     doc = await content_pieces.find_one({"piece_id": piece_id})
@@ -463,7 +463,7 @@ async def test_a_post_claimed_just_before_the_pause_is_put_back_not_sent(make_cl
     await content_pieces.update_one({"piece_id": piece_id}, {"$set": {"publish_scheduled_at": datetime.now(timezone.utc) - timedelta(minutes=1)}})
 
     fake = _ok_publisher(piece_id)
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         await worker.process_scheduled_posts.__wrapped__()
     fake.publish.assert_not_awaited()
     doc = await content_pieces.find_one({"piece_id": piece_id})

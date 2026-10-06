@@ -66,7 +66,7 @@ async def test_transient_failure_requeues_instead_of_failing(signup_user):
         error_code=503, error_message="Service temporarily unavailable",
     ))
 
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake_publisher):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher):
         await _publish_scheduled_piece(piece)
 
     updated = await content_pieces.find_one({"piece_id": piece_id})
@@ -89,7 +89,7 @@ async def test_auth_failure_fails_immediately_no_retry(signup_user):
         error_code=401, error_message="Token expired",
     ))
 
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake_publisher):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher):
         await _publish_scheduled_piece(piece)
 
     updated = await content_pieces.find_one({"piece_id": piece_id})
@@ -110,7 +110,7 @@ async def test_transient_failure_fails_after_max_retries(signup_user):
     ))
 
     # MAX_RETRIES[TRANSIENT] == 3 — run one more attempt than that.
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake_publisher):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher):
         for _ in range(4):
             piece = await content_pieces.find_one({"piece_id": piece_id})
             await _publish_scheduled_piece(piece)

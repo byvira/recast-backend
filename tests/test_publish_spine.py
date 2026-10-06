@@ -212,7 +212,7 @@ async def test_publish_now_needs_an_approved_piece(signup_user):
     piece_id = await _seed(ws_id, profile["id"])
     fake = _ok_publisher(piece_id)
 
-    with patch("app.api.v1.publish.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         res = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers=H(ws_id))
     assert res.status_code == 409, res.text
     assert res.json()["detail"]["code"] == "NOT_APPROVED"
@@ -221,7 +221,7 @@ async def test_publish_now_needs_an_approved_piece(signup_user):
     # the claim was put back, so approving then publishing works
     assert (await content_pieces.find_one({"piece_id": piece_id}))["publish_status"] == "pending"
     await _approve(client, ws_id, piece_id)
-    with patch("app.api.v1.publish.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         again = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers=H(ws_id))
     assert again.status_code == 200, again.text
 
@@ -235,7 +235,7 @@ async def test_a_rejected_piece_is_blocked_for_publish_and_schedule(signup_user)
     assert rej.status_code == 200, rej.text
     fake = _ok_publisher(piece_id)
 
-    with patch("app.api.v1.publish.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         # even "publish anyway" cannot get a rejected piece out
         res = await client.post(
             "/api/v1/publish/now", json={"piece_id": piece_id, "confirm_publish_anyway": True}, headers=H(ws_id),
@@ -266,7 +266,7 @@ async def test_a_flagged_piece_needs_publish_anyway_and_the_override_is_recorded
     await content_pieces.update_one({"piece_id": piece_id}, {"$set": flag})
     fake = _ok_publisher(piece_id)
 
-    with patch("app.api.v1.publish.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         refused = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers=H(ws_id))
         assert refused.status_code == 409 and refused.json()["detail"]["code"] == "NEEDS_REVIEW"
         fake.publish.assert_not_awaited()
@@ -306,7 +306,7 @@ async def test_schedule_gate_and_the_worker_honours_a_recorded_override(signup_u
         {"piece_id": piece_id}, {"$set": {"publish_scheduled_at": datetime.now(timezone.utc) - timedelta(minutes=1)}},
     )
     fake = _ok_publisher(piece_id)
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         await worker.process_scheduled_posts.__wrapped__()
     assert (await content_pieces.find_one({"piece_id": piece_id}))["publish_status"] == "published"
 
@@ -319,7 +319,7 @@ async def test_the_emergency_switch_lifts_the_gate(signup_user, monkeypatch):
     await _connect(ws_id)
     piece_id = await _seed(ws_id, profile["id"])
     monkeypatch.setattr(settings, "PUBLISH_REQUIRE_APPROVAL", False)
-    with patch("app.api.v1.publish.get_publisher", return_value=_ok_publisher(piece_id)):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=_ok_publisher(piece_id)):
         res = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers=H(ws_id))
     assert res.status_code == 200, res.text
 
@@ -439,7 +439,7 @@ async def test_the_worker_publishes_both_real_datetimes_and_old_iso_strings(sign
     }})
 
     fake = _ok_publisher()
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         await worker.process_scheduled_posts.__wrapped__()
 
     assert (await content_pieces.find_one({"piece_id": new_row}))["publish_status"] == "published"
@@ -456,7 +456,7 @@ async def test_the_worker_holds_back_unapproved_and_rejected_pieces(signup_user)
     flagged = await _due(ws_id, profile["id"], as_string=False, flagged_for_review=True)
 
     fake = _ok_publisher()
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         await worker.process_scheduled_posts.__wrapped__()
         await worker.process_scheduled_posts.__wrapped__()  # a second tick must not pick them up again
 
@@ -483,7 +483,7 @@ async def test_a_missing_publisher_fails_the_piece_and_does_not_repeat(signup_us
     ws_id = await create_workspace(client, "Worker WS 4")
     await _connect(ws_id)
     piece_id = await _due(ws_id, profile["id"], as_string=False)
-    with patch("app.workers.scheduled_posts.get_publisher", side_effect=ValueError("none")):
+    with patch("app.pipelines.publish.executor.get_publisher", side_effect=ValueError("none")):
         await worker.process_scheduled_posts.__wrapped__()
     doc = await content_pieces.find_one({"piece_id": piece_id})
     assert doc["publish_status"] == "failed"
@@ -496,7 +496,7 @@ async def test_the_worker_derives_a_missing_publish_target(signup_user):
     await _connect(ws_id)
     piece_id = await _due(ws_id, profile["id"], as_string=False, publish_target=None)
     fake = _ok_publisher()
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake) as getter:
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake) as getter:
         await worker.process_scheduled_posts.__wrapped__()
     getter.assert_called_with("linkedin")
     doc = await content_pieces.find_one({"piece_id": piece_id})
@@ -510,7 +510,7 @@ async def test_a_publisher_that_raises_cannot_leave_the_piece_publishing(signup_
     piece_id = await _due(ws_id, profile["id"], as_string=False)
     fake = AsyncMock()
     fake.publish = AsyncMock(side_effect=RuntimeError("boom"))
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         await worker.process_scheduled_posts.__wrapped__()
     doc = await content_pieces.find_one({"piece_id": piece_id})
     assert doc["publish_status"] == "failed"
@@ -558,7 +558,7 @@ async def test_the_reaper_fails_posts_stuck_publishing_and_never_republishes(sig
         "publish_status": "publishing", "updated_at": now - timedelta(hours=2)}})
 
     fake = _ok_publisher()
-    with patch("app.workers.scheduled_posts.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         await worker.process_scheduled_posts.__wrapped__()
 
     for pid in (old, legacy):
@@ -602,10 +602,7 @@ def test_audio_is_refused_honestly_and_video_still_works(platform):
     assert not audio.has_media
     assert audio.dropped_reason == AUDIO_ALONE_MESSAGE == "Audio can't be posted on its own. Render it as a video and attach that."
     video = publisher.attach_media(_request(platform, _media("video", "video/mp4")))
-    if platform in ("bluesky",):
-        assert not video.has_media  # Bluesky declares no native video; unchanged behaviour
-    else:
-        assert video.has_media
+    assert video.has_media
 
 
 async def test_instagram_and_youtube_give_the_same_plain_message_for_audio_only():

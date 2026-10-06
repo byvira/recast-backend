@@ -18,16 +18,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from pymongo import ReturnDocument
 
-from app.core.config import settings
 from app.core.middleware import limiter
-from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import brand_profiles, content_pieces, post_metric_checkpoints, users
-from app.models.media import MediaAsset
-from app.pipelines.publish.base import PublishRequest
-from app.pipelines.publish.registry import adapter_for, get_publisher
-from app.pipelines.publish.spine import availability_block, check_gate, extra_media_note, media_for_publish, planned_media_note, platform_key, record_override
-from app.pipelines.publish.health import mark_healthy
+from app.db.mongo import brand_profiles, content_pieces, post_metric_checkpoints
+from app.pipelines.publish import executor
+from app.pipelines.publish.media_limits import media_problem
+from app.pipelines.publish.spine import availability_block, check_gate, platform_key, record_override
 from app.workers.token_refresh import recover_connection
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.supervisor.alerts import alert_fatal, save_incident
@@ -286,30 +282,22 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
             await _release_claim(body.piece_id, ws, previous_status)
             raise HTTPException(status_code=422, detail=problem)
 
-    # Check platform token exists for this workspace
-    token_data = await get_token(ws, platform)
-
-    # Get publisher. A webhook or manual-handoff platform with saved settings resolves to the thin adapter, which
-    # has no token; every real publisher resolves, and fails, exactly as before.
-    try:
-        publisher = get_publisher(platform)
-    except ValueError:
-        publisher = await adapter_for(platform, ws)
-    if publisher is not None and not getattr(publisher, "uses_oauth_token", True):
-        token_data = {}
-    elif not token_data:
+    # The publisher and sign-in for this platform (shared with the scheduled worker, see pipelines/publish/executor.py).
+    resolved = await executor.resolve_publisher(platform, ws)
+    if resolved.problem == "not_connected":
         await _release_claim(body.piece_id, ws, previous_status)
         raise HTTPException(
             status_code=400,
             detail=f"{display_platform} is not connected. "
                    "Connect it in Settings to publish.",
         )
-    if publisher is None:
+    if resolved.problem == "unsupported":
         await _release_claim(body.piece_id, ws, previous_status)
         raise HTTPException(
             status_code=400,
             detail=f"Platform '{display_platform}' not supported.",
         )
+    publisher, token_data = resolved.publisher, resolved.token
 
     # Server-side gate: only approved posts go out, and a flagged one needs an
     # explicit "publish anyway". The claim is put back, nothing was sent.
@@ -323,21 +311,13 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
     if body.confirm_publish_anyway:
         await record_override(piece, ws, ctx.user_id)
 
-    # Build publish request — media populated for real (was always empty,
-    # PublishRequest.media_urls existed but neither construction site ever
-    # passed it) from whatever the piece actually has attached.
-    pub_request = PublishRequest(
-        piece_id=body.piece_id,
-        workspace_id=ws,
-        user_id=ctx.user_id,
-        brand_id=piece["brand_id"],
-        platform=platform,
-        content=piece["content"],
-        media=[MediaAsset(**m) for m in await media_for_publish(piece, ws, platform)],
-        youtube_metadata=body.youtube_metadata,
-        options=piece.get("publish_options") or {},
+    pub_request = await executor.build_request(
+        piece, ws, ctx.user_id, platform, token_data, youtube_metadata=body.youtube_metadata,
     )
-    pub_request.platform_user_id = token_data.get("platform_user_id", "")
+    media_issue = media_problem(platform, pub_request.media)
+    if media_issue:
+        await _release_claim(body.piece_id, ws, previous_status)
+        raise HTTPException(status_code=422, detail=media_issue)
 
     content    = piece["content"]
     attempt    = 0
@@ -363,25 +343,8 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
             }
 
         if result.success:
-            await _update_piece_status(
-                body.piece_id, ws,
-                "published",
-                platform_post_id=result.platform_post_id,
-                platform_post_url=result.platform_post_url,
-                increment_attempts=True,
-                media_dropped_reason=result.media_dropped_reason or extra_media_note(piece, platform) or planned_media_note(piece),
-                published_content=content,
-                published_version=piece.get("version_count"),
-            )
-            from app.shared.governance_events import emit_content_published
-            emit_content_published(
-                ws, pipeline_type=piece.get("pipeline_type", "text"),
-                actor_user_id=ctx.user_id, actor_role=ctx.role,
-                content_id=body.piece_id, target=platform,
-                external_url=result.platform_post_url or "",
-                media_dropped_reason=result.media_dropped_reason or "",
-            )
-            await mark_healthy(ws, platform, via="a successful publish")
+            await executor.mark_published(piece, ws, platform, result, content, increment_attempts=True)
+            await executor.after_published(piece, ws, platform, result, user_id=ctx.user_id, role=ctx.role)
             return {
                 "success":          True,
                 "piece_id":         body.piece_id,
@@ -390,7 +353,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
                 "platform_post_url": result.platform_post_url,
                 "attempts":         attempt + 1,
                 # What was left out of a post that did go out, in plain words (a picture that was too large, a failed first comment).
-                "note":             result.media_dropped_reason or extra_media_note(piece, platform) or planned_media_note(piece),
+                "note":             executor.dropped_note(result, piece, platform),
             }
 
         error_type = classify_error(
@@ -425,19 +388,8 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
                 error_message=result.error_message,
                 increment_attempts=True,
             )
-            owner_id = ctx.workspace.get("owner_id")
-            if owner_id:
-                owner = await users.find_one({"id": owner_id}, {"email": 1})
-                if owner and owner.get("email"):
-                    await send_templated_email(
-                        "platform-reconnect-needed",
-                        owner["email"],
-                        {
-                            "PLATFORM": display_platform,
-                            "WORKSPACE_NAME": ctx.workspace.get("name", "your workspace"),
-                            "RECONNECT_URL": f"{settings.FRONTEND_URL}/dashboard/settings",
-                        },
-                    )
+            # No email from here: recover_connection above already told the connection health monitor, which emails the owner
+            # once per outage (not on every attempt), the same as for a scheduled post.
             await _record_publish_failure(
                 ws, ctx.user_id, body.piece_id, platform,
                 f"{display_platform} connection expired or was revoked — reconnect it in Settings.",

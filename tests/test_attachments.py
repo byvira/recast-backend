@@ -299,7 +299,7 @@ async def test_an_attached_image_is_what_publish_now_sends(signup_user):
 
     fake = AsyncMock()
     fake.publish = AsyncMock(return_value=PublishResult(success=True, platform="linkedin", piece_id=piece_id, platform_post_id="p"))
-    with patch("app.api.v1.publish.get_publisher", return_value=fake):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake):
         res = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers=H(ws_id))
     assert res.status_code == 200, res.text
     sent = fake.publish.call_args.args[0]

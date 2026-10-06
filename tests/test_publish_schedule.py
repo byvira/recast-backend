@@ -154,7 +154,7 @@ async def test_publish_now_success_marks_published(signup_user):
         platform_post_id="post-123", platform_post_url="https://linkedin.com/post-123",
     ))
 
-    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher):
         res = await client.post(
             "/api/v1/publish/now",
             json={"piece_id": piece_id},
@@ -198,7 +198,7 @@ async def test_failed_piece_shows_as_failed_stage_not_staging(signup_user):
         error_type="AUTH", error_code=401, error_message="Token expired",
     ))
 
-    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher):
         res = await client.post(
             "/api/v1/publish/now",
             json={"piece_id": piece_id},
@@ -234,7 +234,7 @@ async def test_a_dead_platform_token_is_attempted_exactly_once(signup_user):
         error_type="AUTH", error_code=401, error_message="Token expired",
     ))
 
-    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher), \
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher), \
          patch("app.api.v1.publish.recover_connection", new=AsyncMock(return_value=False)):
         res = await client.post(
             "/api/v1/publish/now", json={"piece_id": piece_id}, headers={"X-Workspace-Id": ws_id},
@@ -264,7 +264,7 @@ async def test_a_refused_publish_does_not_leave_the_piece_stuck(signup_user):
     fake_publisher.publish = AsyncMock(return_value=PublishResult(
         success=True, platform="linkedin", piece_id=piece_id, platform_post_id="p1",
     ))
-    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher):
         again = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers={"X-Workspace-Id": ws_id})
     assert again.status_code == 200, again.text
 
@@ -278,7 +278,7 @@ async def test_a_publisher_crash_does_not_leave_the_piece_publishing(signup_user
 
     fake_publisher = AsyncMock()
     fake_publisher.publish = AsyncMock(side_effect=RuntimeError("boom"))
-    with patch("app.api.v1.publish.get_publisher", return_value=fake_publisher):
+    with patch("app.pipelines.publish.executor.get_publisher", return_value=fake_publisher):
         try:
             res = await client.post("/api/v1/publish/now", json={"piece_id": piece_id}, headers={"X-Workspace-Id": ws_id})
             assert res.status_code == 500
