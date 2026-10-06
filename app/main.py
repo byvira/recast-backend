@@ -322,6 +322,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
 
 # Outermost middleware — runs before CORS/rate-limiting/logging, so an
@@ -330,12 +331,13 @@ app.add_middleware(MaxBodySizeMiddleware, allowed_origins=origins)
 
 
 # --- Exception Handlers ---
-@app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
-    logger.warning("Rate limit exceeded | PATH=%s | IP=%s",
-                   request.url.path,
-                   request.client.host if request.client else "unknown")
-    return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded. Please slow down."})
+# Both add the CORS headers themselves: an unhandled error is answered outside the CORS layer, and without them the browser would
+# report a CORS failure instead of the real problem (see app/core/errors.py).
+from app.core.errors import make_handlers  # noqa: E402
+
+_rate_limit_handler, _unhandled_handler = make_handlers(origins)
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+app.add_exception_handler(Exception, _unhandled_handler)
 
 
 # --- Routers ---
