@@ -41,3 +41,60 @@ def test_normalize_rejects_non_http():
     assert norm("javascript:alert(1)") is None
     assert norm("ftp://x.com/a") is None
     assert norm("acme") is None
+
+
+
+def test_an_address_saved_from_a_display_name_with_spaces_is_never_shown():
+    assert norm("https://www.instagram.com/Recast_other%20System%20User") is None
+    assert norm("https://www.instagram.com/Recast_other System User") is None
+    assert norm("https://www.instagram.com/virastudio2026") == "https://www.instagram.com/virastudio2026"
+
+
+async def test_an_old_instagram_connection_is_repaired_with_the_real_handle(monkeypatch):
+    from app.api.v1 import oauth
+    from app.pipelines.publish.meta import oauth as meta_oauth
+
+    saved = {}
+
+    class _Collection:
+        async def update_one(self, flt, update):
+            saved["filter"], saved["update"] = flt, update
+
+    async def handle(ig_user_id, access_token):
+        assert (ig_user_id, access_token) == ("1789", "tok")
+        return "virastudio2026"
+
+    async def token(workspace_id, platform):
+        return {"access_token": "tok"}
+
+    import app.db.mongo as mongo
+    import app.pipelines.publish.token_store as token_store
+
+    monkeypatch.setattr(mongo, "workspace_connections", _Collection())
+    monkeypatch.setattr(token_store, "get_token", token)
+    monkeypatch.setattr(meta_oauth, "fetch_instagram_username", handle)
+
+    account = {"platform": "instagram", "platform_user_id": "1789", "username": "Recast_other System User", "profile_url": None}
+    await oauth._heal_instagram("w1", account)
+
+    assert account["username"] == "virastudio2026" and account["profile_url"] == "https://www.instagram.com/virastudio2026"
+    assert saved["update"]["$set"] == {"username": "virastudio2026", "profile_url": "https://www.instagram.com/virastudio2026"}
+
+
+async def test_a_failed_repair_leaves_the_list_as_it_was(monkeypatch):
+    from app.api.v1 import oauth
+    from app.pipelines.publish.meta import oauth as meta_oauth
+
+    async def nothing(ig_user_id, access_token):
+        return None
+
+    async def token(workspace_id, platform):
+        return {"access_token": "tok"}
+
+    import app.pipelines.publish.token_store as token_store
+
+    monkeypatch.setattr(token_store, "get_token", token)
+    monkeypatch.setattr(meta_oauth, "fetch_instagram_username", nothing)
+    account = {"platform": "instagram", "platform_user_id": "1789", "username": "Name With Spaces", "profile_url": None}
+    await oauth._heal_instagram("w1", account)
+    assert account["profile_url"] is None and account["username"] == "Name With Spaces"

@@ -239,6 +239,7 @@ async def exchange_code(code: str, platform: str) -> dict:
             if ig_candidate:
                 ig_id = ig_candidate
                 result["ig_user_id"] = ig_id
+                result["ig_username"] = await fetch_instagram_username(ig_id, access_token)
                 logger.info(
                     "[Step 5] ✅ Instagram found — ig_id=%s on page=%s (%s)",
                     ig_id,
@@ -267,6 +268,19 @@ async def exchange_code(code: str, platform: str) -> dict:
         logger.info("=" * 60)
 
         return result
+
+
+async def fetch_instagram_username(ig_user_id: str, access_token: str) -> Optional[str]:
+    """The Instagram handle (for example virastudio2026) of a connected Instagram account. The sign in only gives the Facebook person's
+    display name, which is not the handle. Best effort: None when it cannot be read."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{GRAPH_BASE}/{ig_user_id}", params={"fields": "username", "access_token": access_token})
+        if response.status_code == 200:
+            return (response.json().get("username") or "").strip() or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Instagram handle lookup failed: %s", exc)
+    return None
 
 
 THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"

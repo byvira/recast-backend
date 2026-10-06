@@ -125,6 +125,8 @@ def normalize_profile_url(url: str | None) -> str | None:
     parts = urlsplit(url.strip())
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return None
+    if re.search(r"%20|\s", parts.path):
+        return None
     host = parts.netloc.lower()
     host = _PROFILE_HOST_REWRITES.get(host, host)
     return urlunsplit(("https", host, parts.path, parts.query, parts.fragment))
@@ -186,11 +188,33 @@ async def list_accounts(
     for a in accounts:
         a["connected_by_name"] = connectors.get(a.get("connected_by", ""), {}).get("name", "")
         a["profile_url"] = normalize_profile_url(a.get("profile_url"))
+        if a["platform"] == "instagram" and not a["profile_url"]:
+            await _heal_instagram(ctx.workspace_id, a)
 
     return {
         "accounts": accounts,
         "total":    len(accounts),
     }
+
+
+async def _heal_instagram(workspace_id: str, account: dict) -> None:
+    """An Instagram connection saved before the handle was looked up carries the Facebook display name and no usable address. Ask Instagram
+    for the real handle once, save it, and show it. Best effort: the list is returned either way."""
+    try:
+        from app.db.mongo import workspace_connections
+        from app.pipelines.publish.meta.oauth import fetch_instagram_username
+        from app.pipelines.publish.token_store import get_token
+
+        token = await get_token(workspace_id, "instagram")
+        handle = await fetch_instagram_username(account.get("platform_user_id") or "", token["access_token"]) if token else None
+        url = _derive_profile_url("instagram", handle or "")
+        if handle and url:
+            await workspace_connections.update_one(
+                {"workspace_id": workspace_id, "platform": "instagram"}, {"$set": {"username": handle, "profile_url": url}},
+            )
+            account["username"], account["profile_url"] = handle, url
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Instagram handle repair failed for %s: %s", workspace_id, exc)
 
 
 @router.post("/bluesky/connect")
@@ -313,9 +337,10 @@ async def meta_callback(
             refresh_token=None,
             expires_at=token_data.get("expires_at"),
             platform_user_id=token_data["ig_user_id"],
-            username=token_data.get("username", ""),
+            # The Instagram handle, not the Facebook person's display name (the display name is only the fallback label).
+            username=token_data.get("ig_username") or token_data.get("username", ""),
             connected_by=user_id,
-            profile_url=_derive_profile_url("instagram", token_data.get("username", "")),
+            profile_url=_derive_profile_url("instagram", token_data.get("ig_username") or ""),
         )
         connected.append("instagram")
         logger.info("Instagram connected for user %s", user_id)
