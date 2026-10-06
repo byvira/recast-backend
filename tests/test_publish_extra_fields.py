@@ -408,3 +408,56 @@ async def test_a_bluesky_post_with_a_video_names_it_in_the_post_and_a_failure_le
     monkeypatch.setattr(video, "upload_video", broken)
     text_only = await bluesky_module.BlueSkyPublisher().publish(_request("bluesky", [clip], "Watch this"), "token")
     assert text_only.success and "embed" not in posted[-1]["record"] and "without the video" in text_only.media_dropped_reason
+
+
+# ── Facebook several pictures and Bluesky reply limits ────────────────
+
+async def test_several_facebook_pictures_are_saved_unposted_then_posted_together(recorder):
+    request = _request("facebook", [_image("a", "One"), _image("b"), _image("c")], content="Three photos")
+    result = await facebook_module.FacebookPublisher().publish(request, "token")
+
+    assert result.success
+    photos = [c[2]["params"] for c in _Recorder.calls if c[0] == "post" and c[1].endswith("/photos")]
+    assert len(photos) == 3 and all(p["published"] == "false" for p in photos) and photos[0]["alt_text_custom"] == "One"
+    feed = next(c[2]["params"] for c in _Recorder.calls if c[0] == "post" and c[1].endswith("/feed"))
+    assert feed["message"] == "Three photos"
+    assert [feed[f"attached_media[{i}]"] for i in range(3)] == ['{"media_fbid": "obj-1"}'] * 3
+
+
+async def test_a_failed_facebook_picture_fails_the_post_without_posting(recorder):
+    _Recorder.status = 400
+    result = await facebook_module.FacebookPublisher().publish(_request("facebook", [_image("a"), _image("b")]), "token")
+    assert result.success is False
+    assert not any(c[1].endswith("/feed") for c in _Recorder.calls)
+
+
+def test_bluesky_reply_choices_are_checked():
+    assert publish_options.clean_options("bluesky", {"reply_control": "nobody"}) == {"reply_control": "nobody"}
+    with pytest.raises(ValueError):
+        publish_options.clean_options("bluesky", {"reply_control": "friends"})
+
+
+async def test_a_bluesky_reply_limit_is_saved_under_the_posts_own_key(recorder):
+    result = await bluesky_module.BlueSkyPublisher().publish(_request("bluesky", reply_control="nobody"), "token")
+
+    assert result.success and not result.media_dropped_reason
+    gate = [c[2]["json"] for c in _Recorder.calls if c[0] == "post" and c[2].get("json", {}).get("collection") == "app.bsky.feed.threadgate"]
+    assert len(gate) == 1
+    assert gate[0]["rkey"] == "1" and gate[0]["record"]["post"] == "at://did/x/1" and gate[0]["record"]["allow"] == []
+
+
+async def test_anyone_can_reply_writes_no_record_and_a_failed_record_is_only_a_note(recorder, monkeypatch):
+    await bluesky_module.BlueSkyPublisher().publish(_request("bluesky"), "token")
+    assert not any("threadgate" in str(c[2].get("json", "")) for c in _Recorder.calls)
+
+    calls_before = len(_Recorder.calls)
+
+    class _Failing(_Recorder):
+        async def post(self, url, **kwargs):
+            _Recorder.calls.append(("post", url, kwargs))
+            return self._reply("POST", url, status=400 if kwargs.get("json", {}).get("collection", "").endswith("threadgate") else 200)
+
+    monkeypatch.setattr(bluesky_module.httpx, "AsyncClient", _Failing)
+    result = await bluesky_module.BlueSkyPublisher().publish(_request("bluesky", reply_control="followers"), "token")
+    assert result.success and "reply limit could not be set" in result.media_dropped_reason
+    assert len(_Recorder.calls) > calls_before

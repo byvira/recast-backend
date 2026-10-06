@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 _LANGUAGE = re.compile(r"^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$")
 THREADS_REPLY_CONTROLS = ("everyone", "accounts_you_follow", "mentioned_only", "parent_post_author_only", "followers_only")
+BLUESKY_REPLY_CONTROLS = ("everyone", "nobody", "mentioned", "followers", "following")
 LINKEDIN_VISIBILITY = ("PUBLIC", "CONNECTIONS", "LOGGED_IN")
 
 
@@ -127,7 +128,10 @@ ALLOWED: dict[str, dict[str, Callable[[Any], Any]]] = {
     "facebook": {"link": _https("The link")},
     "linkedin": {"visibility": _one_of("visibility", LINKEDIN_VISIBILITY), "link_card_url": _https("The link card address")},
     "threads": {"reply_control": _one_of("reply control", THREADS_REPLY_CONTROLS), "topic_tag": _topic_tag},
-    "bluesky": {"languages": _languages, "link_card_url": _https("The link card address")},
+    "bluesky": {
+        "languages": _languages, "link_card_url": _https("The link card address"),
+        "reply_control": _one_of("reply control", BLUESKY_REPLY_CONTROLS),
+    },
 }
 
 

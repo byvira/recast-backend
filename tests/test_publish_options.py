@@ -362,6 +362,6 @@ async def test_the_platform_list_carries_the_picture_limits_and_whether_youtube_
 
     assert platforms["instagram"]["max_images"] == 10 and platforms["bluesky"]["max_images"] == 4
     assert platforms["linkedin"]["max_images"] == 20 and platforms["threads"]["max_images"] == 20
-    assert platforms["facebook"]["max_images"] is None
+    assert platforms["facebook"]["max_images"] == 10 and platforms["youtube"]["max_images"] is None
     assert platforms["youtube"]["publish_unlocked"] is False
     assert platforms["linkedin"]["publish_unlocked"] is None

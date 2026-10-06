@@ -16,6 +16,7 @@ from app.pipelines.publish.base import (
     PublishRequest,
     PublishResult,
 )
+from app.pipelines.publish.bluesky.reply_limits import limit_replies
 from app.pipelines.publish.bluesky.facets import build_facets, language_tags
 from app.pipelines.publish.media_fit import fit_image_for_bluesky
 from app.pipelines.publish.validators import validate_bluesky
@@ -269,6 +270,15 @@ class BlueSkyPublisher(PlatformPublisher):
                         "Bluesky post published: %s for piece %s",
                         post_uri, request.piece_id,
                     )
+
+                    # Who can reply is a separate record that shares the post's key. The post is already out, so a failure here
+                    # is told to the member, not treated as a failed post.
+                    gate_note = await limit_replies(
+                        client, pds_base=ATP_BASE_URL, access_token=access_token, did=request.platform_user_id,
+                        post_uri=post_uri, choice=(request.options or {}).get("reply_control"),
+                    )
+                    if gate_note:
+                        blob_dropped_reason = f"{blob_dropped_reason} {gate_note}".strip() if blob_dropped_reason else gate_note
 
                     return PublishResult(
                         success=True,

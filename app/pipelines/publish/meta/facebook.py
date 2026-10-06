@@ -5,6 +5,7 @@ User must manage at least one Facebook Page.
 Page access token used for posting (not user token).
 """
 
+import json
 import logging
 import httpx
 
@@ -77,7 +78,12 @@ class FacebookPublisher(PlatformPublisher):
         # A link attaches to a text post. A picture or video post has no link field, so the link goes at the end of its text.
         with_link = f"{request.content}\n\n{link}" if link and link not in request.content else request.content
 
-        if media_result.has_media and media_result.asset.kind.value == "image":
+        pictures = [m for m in request.media if m.kind.value == "image"][:10]
+        several = media_result.has_media and media_result.asset.kind.value == "image" and len(pictures) >= 2
+        if several:
+            # Several pictures: each is saved without being posted, then one post names them all.
+            endpoint, params = f"{GRAPH_BASE}/{page_id}/feed", {"message": with_link, "access_token": access_token}
+        elif media_result.has_media and media_result.asset.kind.value == "image":
             endpoint, params = f"{GRAPH_BASE}/{page_id}/photos", {
                 "url": media_result.asset.url, "caption": with_link, "access_token": access_token,
             }
@@ -96,7 +102,20 @@ class FacebookPublisher(PlatformPublisher):
 
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(endpoint, params=params)
+                if several:
+                    for index, picture in enumerate(pictures):
+                        photo_params = {"url": picture.url, "published": "false", "access_token": access_token}
+                        if getattr(picture, "alt_text", None):
+                            photo_params["alt_text_custom"] = picture.alt_text[:1000]
+                        saved = await client.post(f"{GRAPH_BASE}/{page_id}/photos", params=photo_params)
+                        if saved.status_code != 200:
+                            response = saved
+                            break
+                        params[f"attached_media[{index}]"] = json.dumps({"media_fbid": saved.json()["id"]})
+                    else:
+                        response = await client.post(endpoint, params=params)
+                else:
+                    response = await client.post(endpoint, params=params)
 
                 if response.status_code == 200:
                     post_id  = response.json()["id"]
