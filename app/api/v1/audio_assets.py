@@ -349,10 +349,10 @@ async def list_video_clips(
     it came from. This is the Video pipeline's history."""
     docs = await audio_assets.find(
         {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "video_clips.0": {"$exists": True}},
-        {"_id": 0, "id": 1, "title": 1, "brand_id": 1, "video_clips": 1},
+        {"_id": 0, "id": 1, "title": 1, "brand_id": 1, "video_clips": 1, "approval_status": 1},
     ).to_list(length=500)
     clips = [
-        {"audio_asset_id": d["id"], "audio_title": d.get("title", ""), "brand_id": d.get("brand_id"), **{k: v for k, v in dict(c).items()}}
+        {"audio_asset_id": d["id"], "audio_title": d.get("title", ""), "brand_id": d.get("brand_id"), "approval_status": d.get("approval_status"), **{k: v for k, v in dict(c).items()}}
         for d in docs for c in (d.get("video_clips") or [])
     ]
     clips.sort(key=lambda c: str(c.get("created_at") or ""), reverse=True)
@@ -2733,6 +2733,8 @@ async def send_clip_to_draft(
     clip = next((c for c in doc.get("video_clips") or [] if c.get("id") == body.clip_id), None)
     if not clip:
         raise HTTPException(status_code=404, detail="Video not found.")
+    if doc.get("approval_status") != AudioApprovalStatus.APPROVED.value:
+        raise HTTPException(status_code=409, detail="Approve this recording before its video can be posted.")
 
     preset = video_presets.PRESETS.get(clip.get("platform") or "")
     platform_text = (body.platform or "").strip() or (preset or {}).get("platform") or "YouTube"

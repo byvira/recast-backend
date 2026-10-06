@@ -1371,6 +1371,8 @@ async def send_image_to_draft(
     doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
+    if doc.get("approval_status") != ImageApprovalStatus.APPROVED.value:
+        raise HTTPException(status_code=409, detail="Approve this picture before it can be posted.")
     try:
         platform = Platform((body.platform or "").strip() or "Instagram").value
     except ValueError:

@@ -159,3 +159,30 @@ async def test_a_video_can_be_renamed_and_removed_without_touching_the_recording
     assert (await client.get("/api/v1/audio-assets/", headers=H(ws))).json()["total"] == 1
     assert (await client.delete(base, headers=H(ws))).status_code == 404
     assert (await client.patch(f"/api/v1/audio-assets/{audio['id']}/video-clips/nope", json={"title": "A"}, headers=H(ws))).status_code == 404
+
+
+# ── Only approved work can be drafted for posting ─────────────────────
+
+async def test_an_unapproved_picture_or_video_cannot_be_drafted_until_it_is_approved(signup_user):
+    client, _ = await signup_user()
+    ws = await create_workspace(client, "History Actions 10")
+    image_id, _ = await _image(ws, approval_status="pending")
+    audio = await _audio(ws, with_clip=True, approval_status="pending")
+
+    picture = await client.post(f"/api/v1/image-assets/{image_id}/send-to-draft", json={}, headers=H(ws))
+    video = await client.post(f"/api/v1/audio-assets/{audio['id']}/send-to-draft", json={"clip_id": audio["clip_id"]}, headers=H(ws))
+    assert picture.status_code == 409 and "Approve" in picture.json()["detail"]
+    assert video.status_code == 409 and "Approve" in video.json()["detail"]
+
+    await image_assets.update_one({"id": image_id}, {"$set": {"approval_status": "approved"}})
+    await audio_assets.update_one({"id": audio["id"]}, {"$set": {"approval_status": "approved"}})
+    assert (await client.post(f"/api/v1/image-assets/{image_id}/send-to-draft", json={}, headers=H(ws))).status_code == 200
+    assert (await client.post(f"/api/v1/audio-assets/{audio['id']}/send-to-draft", json={"clip_id": audio["clip_id"]}, headers=H(ws))).status_code == 200
+
+
+async def test_the_video_history_says_whether_each_video_may_be_posted(signup_user):
+    client, _ = await signup_user()
+    ws = await create_workspace(client, "History Actions 11")
+    await _audio(ws, with_clip=True, approval_status="pending")
+    items = (await client.get("/api/v1/audio-assets/video-clips", headers=H(ws))).json()["items"]
+    assert items[0]["approval_status"] == "pending"

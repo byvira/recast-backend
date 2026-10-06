@@ -42,7 +42,7 @@ async def _image(ws_id: str, *, slides: int = 1, **extra) -> tuple[str, list[str
     aid = uuid4().hex
     media = [await _media(ws_id) for _ in range(slides)]
     await image_assets.insert_one({
-        "id": aid, "workspace_id": ws_id, "brand_id": "brand-1", "title": "Card", "version_count": 1,
+        "id": aid, "workspace_id": ws_id, "brand_id": "brand-1", "title": "Card", "version_count": 1, "approval_status": "approved",
         "slides": [{"slide_number": i + 1, "title": f"s{i}", "slide_type": "x", "media_id": m} for i, m in enumerate(media)],
         **extra,
     })
@@ -53,7 +53,7 @@ async def _audio(ws_id: str, *, with_clip: bool = False, **extra) -> dict:
     aid = uuid4().hex
     media = await _media(ws_id, "audio")
     doc = {
-        "id": aid, "workspace_id": ws_id, "brand_id": "brand-1", "title": "Episode", "version_count": 1,
+        "id": aid, "workspace_id": ws_id, "brand_id": "brand-1", "title": "Episode", "version_count": 1, "approval_status": "approved",
         "media_id": media, "video_clips": [], **extra,
     }
     clip_media = clip_id = None
