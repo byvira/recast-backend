@@ -16,6 +16,7 @@ from app.pipelines.publish.base import (
     PublishRequest,
     PublishResult,
 )
+from app.pipelines.publish.bluesky.facets import build_facets, language_tags
 from app.pipelines.publish.media_fit import fit_image_for_bluesky
 from app.pipelines.publish.validators import validate_bluesky
 from app.pipelines.publish.supervisor.classifier import classify_error
@@ -174,6 +175,13 @@ class BlueSkyPublisher(PlatformPublisher):
         }
         if embed:
             record["embed"] = embed
+        # Links and hashtags are only clickable when the post names them as facets.
+        facets = build_facets(request.content)
+        if facets:
+            record["facets"] = facets
+        langs = language_tags(request.options)
+        if langs:
+            record["langs"] = langs
 
         payload = {
             "repo":       request.platform_user_id,   # DID

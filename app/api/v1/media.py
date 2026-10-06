@@ -140,6 +140,7 @@ async def upload_media(
         kind=kind,
         url=uploaded["url"],
         mime_type=file.content_type,
+        size_bytes=len(contents),
         width=uploaded.get("width") if kind != MediaKind.AUDIO else None,
         height=uploaded.get("height") if kind != MediaKind.AUDIO else None,
         duration_s=uploaded.get("duration_s") if kind != MediaKind.IMAGE else None,

@@ -225,9 +225,10 @@ async def _drop_backlink_if_unused(att: dict, remaining: list[dict], piece_id: s
 # ATTACH / DETACH / REFRESH
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def attach(piece: dict, workspace_id: str, user_id: str, resolved: dict) -> tuple[dict, bool]:
+async def attach(piece: dict, workspace_id: str, user_id: str, resolved: dict, alt_text: Optional[str] = None) -> tuple[dict, bool]:
     """Attach a resolved asset to a post. Returns (attachment, created); attaching
-    the same asset again returns the attachment already there."""
+    the same asset again returns the attachment already there. `alt_text` describes the picture; without one, an image from the
+    library brings its own description."""
     existing = piece.get("attachments") or []
     for att in existing:
         if _same_target(att, resolved):
@@ -236,6 +237,7 @@ async def attach(piece: dict, workspace_id: str, user_id: str, resolved: dict) -
         raise AttachmentError(409, "This post is already published or being published, so its attachments can't change.")
 
     now = datetime.now(timezone.utc)
+    own_alt = (alt_text or "").strip() or ((resolved.get("asset") or {}).get("alt_text") if resolved["asset_type"] == "image" else None)
     attachment = {
         "id": uuid4().hex,
         "asset_type": resolved["asset_type"],
@@ -248,11 +250,12 @@ async def attach(piece: dict, workspace_id: str, user_id: str, resolved: dict) -
         "attached_at": now,
         "attached_by": user_id,
         "refreshed_at": None,
+        "alt_text": own_alt,
     }
     update: dict = {"$push": {"attachments": attachment}, "$set": {"updated_at": now}}
     if not existing:
         # The first attachment is the primary one: it is what gets published.
-        update["$set"]["media"] = [media_snapshot(resolved["media"], resolved["qa_flagged"], alt_text=((resolved.get("asset") or {}).get("alt_text") if resolved["asset_type"] == "image" else None))]
+        update["$set"]["media"] = [media_snapshot(resolved["media"], resolved["qa_flagged"], alt_text=own_alt)]
     # The same-target check is repeated inside the update, so two requests at the
     # same moment cannot both add it.
     result = await content_pieces.update_one(
@@ -285,10 +288,47 @@ async def detach(piece: dict, workspace_id: str, attachment_id: str) -> None:
         if remaining:
             doc = await media_assets.find_one({"id": remaining[0]["media_id"], "workspace_id": workspace_id})
             if doc:
-                media = [media_snapshot(doc)]
+                media = [media_snapshot(doc, alt_text=remaining[0].get("alt_text"))]
         updates["media"] = media
     await content_pieces.update_one({"piece_id": piece["piece_id"], "workspace_id": workspace_id}, {"$set": updates})
     await _drop_backlink_if_unused(target, remaining, piece["piece_id"], workspace_id)
+
+
+async def reorder(piece: dict, workspace_id: str, attachment_ids: list[str]) -> None:
+    """Put the post's attachments in a new order. The ids must be exactly the ones on the post. The first one becomes the primary
+    (what a platform that takes one picture sends, and where several pictures start)."""
+    if _locked(piece):
+        raise AttachmentError(409, "This post is already published or being published, so its attachments can't change.")
+    existing = piece.get("attachments") or []
+    by_id = {a.get("id"): a for a in existing}
+    if len(set(attachment_ids)) != len(attachment_ids) or set(attachment_ids) != set(by_id):
+        raise AttachmentError(422, "Send every attachment on this post, once each.")
+    ordered = [by_id[i] for i in attachment_ids]
+    updates: dict = {"attachments": ordered, "updated_at": datetime.now(timezone.utc)}
+    if existing and ordered[0].get("id") != existing[0].get("id"):
+        doc = await media_assets.find_one({"id": ordered[0]["media_id"], "workspace_id": workspace_id})
+        if doc:
+            updates["media"] = [media_snapshot(doc, alt_text=ordered[0].get("alt_text"))]
+    await content_pieces.update_one({"piece_id": piece["piece_id"], "workspace_id": workspace_id}, {"$set": updates})
+
+
+async def set_alt_text(piece: dict, workspace_id: str, attachment_id: str, alt_text: Optional[str]) -> None:
+    """Save (or clear) the description of one attached picture. Kept on the attachment, and on the primary's snapshot when it is the
+    first one, so what is published matches what was written."""
+    if _locked(piece):
+        raise AttachmentError(409, "This post is already published or being published, so its attachments can't change.")
+    existing = piece.get("attachments") or []
+    index = next((i for i, a in enumerate(existing) if a.get("id") == attachment_id), None)
+    if index is None:
+        raise AttachmentError(404, "That attachment isn't on this post.")
+    value = (alt_text or "").strip() or None
+    updates: dict = {f"attachments.{index}.alt_text": value, "updated_at": datetime.now(timezone.utc)}
+    if index == 0 and (piece.get("media") or []):
+        updates["media.0.alt_text"] = value
+    await content_pieces.update_one(
+        {"piece_id": piece["piece_id"], "workspace_id": workspace_id, "attachments.id": attachment_id},
+        {"$set": updates},
+    )
 
 
 async def refresh(piece: dict, workspace_id: str, asset_id: Optional[str] = None) -> tuple[list[dict], list[str]]:
@@ -389,6 +429,10 @@ async def list_with_status(piece: dict, workspace_id: str) -> list[dict]:
         out.append({
             **att, "stale": stale, "stale_reason": reason,
             "media_url": media.get("url"), "media_kind": media.get("kind"),
+            # What a form needs to check a picture against a platform's rules without another call.
+            "mime_type": media.get("mime_type"), "width": media.get("width"), "height": media.get("height"),
+            "size_bytes": media.get("size_bytes"), "duration_s": media.get("duration_s"),
+            "alt_text": att.get("alt_text") or media.get("alt_text"),
         })
     return out
 

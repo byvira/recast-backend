@@ -40,6 +40,9 @@ class PublishRequest:
     # generates it fresh from the same function — always real, never a
     # blank/guessed default either way.
     youtube_metadata: Optional[dict] = None
+    # The post's own settings for this platform (see pipelines/publish/options.py): a Facebook link, LinkedIn visibility, Threads
+    # reply control, YouTube language, Instagram first comment, Bluesky languages. Empty when nothing was set.
+    options: dict = field(default_factory=dict)
 
 
 @dataclass

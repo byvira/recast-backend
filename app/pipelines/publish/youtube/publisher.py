@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 
 YOUTUBE_UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_CAPTIONS_URL = "https://www.googleapis.com/upload/youtube/v3/captions"
+YOUTUBE_THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 
 
 class YouTubePublisher(PlatformPublisher):
@@ -73,21 +74,29 @@ class YouTubePublisher(PlatformPublisher):
 
     async def _upload_video(
         self, client: httpx.AsyncClient, access_token: str, video_bytes: bytes,
-        mime_type: str, metadata: YouTubeMetadata,
+        mime_type: str, metadata: YouTubeMetadata, options: Optional[dict] = None,
     ) -> str:
         """Real resumable upload: init call (gets a session URL back in the
         Location header) -> PUT the actual bytes. Returns the new video's
         id. Raises on any failure — the caller classifies and reports it."""
+        options = options or {}
+        query = {"uploadType": "resumable", "part": "snippet,status"}
+        if "notify_subscribers" in options:
+            query["notifySubscribers"] = "true" if options["notify_subscribers"] else "false"
+        snippet = {
+            "title": metadata.title,
+            "description": metadata.description,
+            "tags": metadata.tags,
+            "categoryId": metadata.category_id,
+        }
+        if options.get("language"):
+            snippet["defaultLanguage"] = options["language"]
+            snippet["defaultAudioLanguage"] = options["language"]
         init_resp = await client.post(
             YOUTUBE_UPLOAD_INIT_URL,
-            params={"uploadType": "resumable", "part": "snippet,status"},
+            params=query,
             json={
-                "snippet": {
-                    "title": metadata.title,
-                    "description": metadata.description,
-                    "tags": metadata.tags,
-                    "categoryId": metadata.category_id,
-                },
+                "snippet": snippet,
                 "status": {
                     "privacyStatus": metadata.privacy_status,
                     "selfDeclaredMadeForKids": metadata.made_for_kids,
@@ -115,6 +124,31 @@ class YouTubePublisher(PlatformPublisher):
         if not video_id:
             raise RuntimeError("YouTube upload succeeded but returned no video id")
         return video_id
+
+    async def _set_thumbnail(
+        self, client: httpx.AsyncClient, access_token: str, video_id: str, media_id: str, workspace_id: str,
+    ) -> Optional[str]:
+        """Put the chosen picture on the video as its thumbnail. The video is already up, so a problem here is reported to the member
+        as a plain sentence and never fails the post."""
+        picture = await media_assets.find_one({"id": media_id, "workspace_id": workspace_id, "kind": "image"})
+        if not picture:
+            return "Your video is up, but the thumbnail picture couldn't be found. You can add one in YouTube Studio."
+        try:
+            image = await client.get(picture["url"])
+            image.raise_for_status()
+            resp = await client.post(
+                YOUTUBE_THUMBNAIL_URL,
+                params={"videoId": video_id, "uploadType": "media"},
+                headers={"Authorization": f"Bearer {access_token}", "Content-Type": picture.get("mime_type") or "image/jpeg"},
+                content=image.content,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("YouTube thumbnail upload failed for video %s: %s", video_id, exc)
+            return "Your video is up, but the thumbnail couldn't be added. You can add one in YouTube Studio."
+        if not resp.is_success:
+            logger.warning("YouTube thumbnail upload returned %s for video %s", resp.status_code, video_id)
+            return "Your video is up, but YouTube didn't accept the thumbnail. You can add one in YouTube Studio."
+        return None
 
     async def _upload_captions(
         self, client: httpx.AsyncClient, access_token: str, video_id: str, media_doc: dict,
@@ -233,12 +267,16 @@ class YouTubePublisher(PlatformPublisher):
 
                 video_id = await self._upload_video(
                     client, access_token, video_resp.content,
-                    asset.mime_type or "video/*", metadata,
+                    asset.mime_type or "video/*", metadata, request.options,
                 )
 
-                # Subtitles are a bonus on top of a video that's already up:
-                # a failure here is reported, never allowed to fail the post.
+                # Subtitles and the thumbnail are bonuses on top of a video that's already up:
+                # a failure in either is reported, never allowed to fail the post.
                 caption_note = await self._upload_captions(client, access_token, video_id, fresh_media)
+                thumbnail_id = (request.options or {}).get("thumbnail_media_id")
+                if thumbnail_id:
+                    thumbnail_note = await self._set_thumbnail(client, access_token, video_id, thumbnail_id, request.workspace_id)
+                    caption_note = " ".join(n for n in (caption_note, thumbnail_note) if n) or None
 
                 post_url = f"https://youtube.com/watch?v={video_id}"
                 logger.info("YouTube video published: %s for piece %s", video_id, request.piece_id)

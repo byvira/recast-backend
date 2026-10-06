@@ -76,6 +76,13 @@ class ThreadsPublisher(PlatformPublisher):
             container_params["video_url"] = media_result.asset.url
         else:
             container_params["media_type"] = "TEXT"
+        options = request.options or {}
+        if options.get("reply_control"):
+            container_params["reply_control"] = options["reply_control"]
+        if options.get("topic_tag"):
+            container_params["topic_tag"] = options["topic_tag"]
+        if media_result.has_media and getattr(media_result.asset, "alt_text", None):
+            container_params["alt_text"] = media_result.asset.alt_text[:1000]
 
         try:
             async with httpx.AsyncClient() as client:

@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import brand_profiles, content_pieces, users
+from app.db.mongo import brand_profiles, content_pieces, post_metric_checkpoints, users
 from app.models.media import MediaAsset
 from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import adapter_for, get_publisher
@@ -335,6 +335,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
         content=piece["content"],
         media=[MediaAsset(**m) for m in await media_for_publish(piece, ws, platform)],
         youtube_metadata=body.youtube_metadata,
+        options=piece.get("publish_options") or {},
     )
     pub_request.platform_user_id = token_data.get("platform_user_id", "")
 
@@ -593,6 +594,38 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 # YOUTUBE — REVIEW STEP
 # ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/suggest-times")
+@limiter.limit("30/minute")
+async def suggest_times(
+    request: Request,
+    piece_id: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Up to three good times to publish this post, in the member's time zone. Uses this workspace's own results on the platform when
+    there are enough, otherwise common times for the platform, and says which. Posts already planned for the platform are checked so a
+    clash is shown. A suggestion is never a promise of results."""
+    from app.pipelines.publish.timing import rank_slots
+
+    piece = await content_pieces.find_one({"piece_id": piece_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"platform": 1})
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    slug = platform_key(piece["platform"])
+    since = datetime.now(timezone.utc) - timedelta(days=90)
+    rows = await post_metric_checkpoints.find(
+        {"workspace_id": ctx.workspace_id, "checkpoint": "24h", "platform": slug, "published_at": {"$gte": since}},
+        {"published_at": 1, "metrics.engagement_rate": 1},
+    ).sort("published_at", -1).limit(300).to_list(length=300)
+    samples = [{"published_at": r.get("published_at"), "engagement": (r.get("metrics") or {}).get("engagement_rate") or 0.0} for r in rows]
+    planned = [
+        p.get("publish_scheduled_at")
+        for p in await content_pieces.find(
+            {"workspace_id": ctx.workspace_id, "publish_status": "queued", "publish_target": slug, "piece_id": {"$ne": piece_id}, "deleted": {"$ne": True}},
+            {"publish_scheduled_at": 1},
+        ).to_list(length=500)
+    ]
+    return rank_slots(platform=slug, label=piece["platform"], samples=samples, planned=planned, tz_name=ctx.user.get("timezone"))
+
 
 @router.post("/youtube/prepare")
 @limiter.limit("20/minute")

@@ -110,16 +110,22 @@ class InstagramPublisher(PlatformPublisher):
         # same container-create endpoint, a different param shape per kind.
         # Extends this publisher beyond the single-image-only it was before.
         container_params = {"caption": request.content, "access_token": access_token}
+        options = request.options or {}
+        if options.get("location_id"):
+            container_params["location_id"] = options["location_id"]
         if asset.kind.value == "video":
             container_params["video_url"] = asset.url
             container_params["media_type"] = "REELS"
         else:
             # Instagram photo posts take JPEG; our pictures are PNG, so ask for the JPEG version of the same picture.
             container_params["image_url"] = jpeg_url(asset.url)
+            if getattr(asset, "alt_text", None):
+                container_params["alt_text"] = asset.alt_text[:1000]
 
         # Several pictures on one post go out as an Instagram carousel (2 to 10 pictures). Built from Meta's documented carousel
         # steps (a container per picture, then one carousel container naming them); not yet confirmed against a live account.
-        carousel_urls = [jpeg_url(m.url) for m in request.media if m.kind.value == "image"][:10]
+        carousel_pictures = [m for m in request.media if m.kind.value == "image"][:10]
+        carousel_urls = [jpeg_url(m.url) for m in carousel_pictures]
         is_carousel = asset.kind.value == "image" and len(carousel_urls) >= 2
 
         try:
@@ -128,11 +134,11 @@ class InstagramPublisher(PlatformPublisher):
             async with httpx.AsyncClient(timeout=60.0) as client:
                 if is_carousel:
                     child_ids: list[str] = []
-                    for url in carousel_urls:
-                        child = await client.post(
-                            f"{GRAPH_BASE}/{ig_user_id}/media",
-                            params={"image_url": url, "is_carousel_item": "true", "access_token": access_token},
-                        )
+                    for url, picture in zip(carousel_urls, carousel_pictures):
+                        child_params = {"image_url": url, "is_carousel_item": "true", "access_token": access_token}
+                        if getattr(picture, "alt_text", None):
+                            child_params["alt_text"] = picture.alt_text[:1000]
+                        child = await client.post(f"{GRAPH_BASE}/{ig_user_id}/media", params=child_params)
                         if child.status_code != 200:
                             error_data = child.json()
                             error_message = error_data.get("error", {}).get("message", child.text)
@@ -154,6 +160,8 @@ class InstagramPublisher(PlatformPublisher):
                         "caption": request.content, "access_token": access_token,
                         "media_type": "CAROUSEL", "children": ",".join(child_ids),
                     }
+                    if options.get("location_id"):
+                        container_params["location_id"] = options["location_id"]
 
                 # Step 1 — Create media container
                 container_response = await client.post(
@@ -216,12 +224,26 @@ class InstagramPublisher(PlatformPublisher):
                         "Instagram post published: %s for piece %s",
                         post_id, request.piece_id,
                     )
+                    # The first comment is a separate step after the post is up. If it fails the post still stands, and the member
+                    # is told, so it is never lost silently.
+                    comment_note = None
+                    if options.get("first_comment"):
+                        try:
+                            comment = await client.post(
+                                f"{GRAPH_BASE}/{post_id}/comments",
+                                params={"message": options["first_comment"], "access_token": access_token},
+                            )
+                            if comment.status_code != 200:
+                                comment_note = "Your post is up, but the first comment couldn't be added. You can add it on Instagram."
+                        except Exception:  # noqa: BLE001
+                            comment_note = "Your post is up, but the first comment couldn't be added. You can add it on Instagram."
                     return PublishResult(
                         success=True,
                         platform="instagram",
                         piece_id=request.piece_id,
                         platform_post_id=post_id,
                         platform_post_url=post_url,
+                        media_dropped_reason=comment_note,
                     )
 
                 error_data    = publish_response.json()

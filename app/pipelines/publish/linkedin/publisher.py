@@ -144,7 +144,7 @@ class LinkedInPublisher(PlatformPublisher):
                 "com.linkedin.ugc.ShareContent": share_content
             },
             "visibility": {
-                "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+                "com.linkedin.ugc.MemberNetworkVisibility": (request.options or {}).get("visibility") or "PUBLIC"
             },
         }
 

@@ -23,7 +23,7 @@ from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import audio_assets, brand_profiles, content_pieces, image_assets, media_assets, users
 from app.models.media import MediaAsset
-from app.models.attachment import AttachRequest, RefreshAttachmentsRequest
+from app.models.attachment import AttachRequest, RefreshAttachmentsRequest, ReorderAttachmentsRequest, UpdateAttachmentRequest
 from app.pipelines.export import library_archive
 from app.pipelines.publish import attachments as piece_attachments
 from app.pipelines.publish.registry import get_publisher
@@ -82,7 +82,11 @@ async def _notify_approval_decision(piece: dict, ctx: WorkspaceContext, action_t
 # ─────────────────────────────────────────────────────────────────────────────
 
 class EditPieceRequest(BaseModel):
-    content: str
+    # Any of the three can be sent. `content` is the post's text; `seo` the details of a Blog or Newsletter post (title or subject,
+    # summary or preview line, tags); `publish_options` the settings for the platform it is going to (see pipelines/publish/options.py).
+    content: Optional[str] = None
+    seo: Optional[dict] = None
+    publish_options: Optional[dict] = None
 
 
 class UpdatePieceMediaRequest(BaseModel):
@@ -213,18 +217,45 @@ async def edit_piece(
     body: EditPieceRequest,
     ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> dict:
-    """Edit piece content inline. Creates a new version automatically."""
-    if not body.content or not body.content.strip():
+    """Edit a post inline: its text (which creates a new version), its Blog or Newsletter details, or its platform settings."""
+    from app.pipelines.publish import options as publish_options
+
+    if body.content is None and body.seo is None and body.publish_options is None:
+        raise HTTPException(status_code=400, detail="Send the text, the details or the settings to change.")
+    if body.content is not None and not body.content.strip():
         raise HTTPException(status_code=400, detail="Content cannot be empty.")
 
-    updated = await update_piece_content(
-        piece_id=piece_id,
-        workspace_id=ctx.workspace_id,
-        new_content=body.content.strip(),
-        action="manual_edit",
-        instruction="User edited content manually",
-        actor_user_id=ctx.user_id,
-    )
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    if body.seo is not None or body.publish_options is not None:
+        if piece.get("publish_status") in ("published", "publishing"):
+            raise HTTPException(status_code=409, detail="This post is already published or being published, so it can't change.")
+        updates: dict = {}
+        try:
+            if body.seo is not None:
+                for key, value in publish_options.clean_seo(body.seo).items():
+                    updates[f"seo.{key}"] = value
+            if body.publish_options is not None:
+                updates["publish_options"] = publish_options.clean_options(platform_key(piece.get("platform", "")), body.publish_options)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        if updates:
+            updates["updated_at"] = datetime.now(timezone.utc)
+            await content_pieces.update_one({"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$set": updates})
+
+    updated = piece
+    if body.content is not None:
+        updated = await update_piece_content(
+            piece_id=piece_id,
+            workspace_id=ctx.workspace_id,
+            new_content=body.content.strip(),
+            action="manual_edit",
+            instruction="User edited content manually",
+            actor_user_id=ctx.user_id,
+        )
+    else:
+        updated = await get_piece(piece_id, ctx.workspace_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
     return updated
@@ -373,7 +404,7 @@ async def attach_to_piece(
             ctx.workspace_id, body.asset_type, asset_id=body.asset_id,
             slide_number=body.slide_number, clip_id=body.clip_id, media_id=body.media_id,
         )
-        attachment, created = await piece_attachments.attach(piece, ctx.workspace_id, ctx.user_id, resolved)
+        attachment, created = await piece_attachments.attach(piece, ctx.workspace_id, ctx.user_id, resolved, alt_text=body.alt_text)
     except piece_attachments.AttachmentError as exc:
         raise _attachment_http(exc)
     fresh = await get_piece(piece_id, ctx.workspace_id) or piece
@@ -387,6 +418,49 @@ async def attach_to_piece(
         # advice about how well this suits the post's platform (shape, length); never blocks
         "notes": piece_attachments.attach_advice(resolved, fresh),
     }
+
+
+@router.put("/pieces/{piece_id}/attachments/order")
+@limiter.limit("30/minute")
+async def reorder_piece_attachments(
+    request: Request,
+    piece_id: str,
+    body: ReorderAttachmentsRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Put a post's attachments in a new order. The first one is the primary picture."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    try:
+        await piece_attachments.reorder(piece, ctx.workspace_id, body.attachment_ids)
+    except piece_attachments.AttachmentError as exc:
+        raise _attachment_http(exc)
+    fresh = await get_piece(piece_id, ctx.workspace_id) or piece
+    items = await piece_attachments.list_with_status(fresh, ctx.workspace_id)
+    return {"piece_id": piece_id, "attachments": items, "total": len(items)}
+
+
+@router.patch("/pieces/{piece_id}/attachments/{attachment_id}")
+@limiter.limit("60/minute")
+async def update_piece_attachment(
+    request: Request,
+    piece_id: str,
+    attachment_id: str,
+    body: UpdateAttachmentRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Write or clear the description (alt text) of one attached picture."""
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    try:
+        await piece_attachments.set_alt_text(piece, ctx.workspace_id, attachment_id, body.alt_text)
+    except piece_attachments.AttachmentError as exc:
+        raise _attachment_http(exc)
+    fresh = await get_piece(piece_id, ctx.workspace_id) or piece
+    items = await piece_attachments.list_with_status(fresh, ctx.workspace_id)
+    return {"piece_id": piece_id, "attachment": next((a for a in items if a["id"] == attachment_id), None), "attachments": items}
 
 
 @router.delete("/pieces/{piece_id}/attachments/{attachment_id}")

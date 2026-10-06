@@ -216,13 +216,17 @@ async def media_for_publish(piece: dict, workspace_id: str, platform: str) -> li
     if not limit or not base or first_kind != "image":
         return base
     primary_id = base[0].get("id")
+    # What the member wrote for each picture on this post wins over the library's own description.
+    alt_by_media = {a["media_id"]: a.get("alt_text") for a in (piece.get("attachments") or []) if a.get("media_id") and a.get("alt_text")}
+    if primary_id in alt_by_media:
+        base[0] = {**base[0], "alt_text": alt_by_media[primary_id]}
     extra_ids = [a["media_id"] for a in (piece.get("attachments") or []) if a.get("media_id") and a["media_id"] != primary_id]
     if not extra_ids:
         return base
     from app.db.mongo import media_assets
 
     docs = await media_assets.find({"id": {"$in": extra_ids}, "workspace_id": workspace_id, "kind": "image"}, {"_id": 0}).to_list(length=limit)
-    by_id = {d["id"]: d for d in docs}
+    by_id = {d["id"]: ({**d, "alt_text": alt_by_media[d["id"]]} if d["id"] in alt_by_media else d) for d in docs}
     ordered = [by_id[i] for i in extra_ids if i in by_id]
     return (base + ordered)[:limit]
 

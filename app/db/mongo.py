@@ -415,6 +415,8 @@ async def create_indexes() -> None:
     # at one checkpoint age.
     await post_metric_checkpoints.create_index([("workspace_id", 1), ("checkpoint", 1), ("captured_at", -1)])
     await post_metric_checkpoints.create_index([("workspace_id", 1), ("user_id", 1), ("checkpoint", 1)])
+    # Suggested publish times read one platform's results by when each post went out.
+    await post_metric_checkpoints.create_index([("workspace_id", 1), ("checkpoint", 1), ("platform", 1), ("published_at", -1)])
     # content_pieces — the checkpoint job's "recently published" scan.
     await content_pieces.create_index([("workspace_id", 1), ("publish_status", 1), ("published_at", -1)])
     # Trust score aggregation — one tuple's drafts in the 60-day window.

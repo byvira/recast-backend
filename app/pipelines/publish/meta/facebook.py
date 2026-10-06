@@ -73,19 +73,24 @@ class FacebookPublisher(PlatformPublisher):
         # media_result.dropped_reason carries the honest reason onto the
         # result below, never a silent drop.
         media_result = self.attach_media(request)
+        link = (request.options or {}).get("link")
+        # A link attaches to a text post. A picture or video post has no link field, so the link goes at the end of its text.
+        with_link = f"{request.content}\n\n{link}" if link and link not in request.content else request.content
 
         if media_result.has_media and media_result.asset.kind.value == "image":
             endpoint, params = f"{GRAPH_BASE}/{page_id}/photos", {
-                "url": media_result.asset.url, "caption": request.content, "access_token": access_token,
+                "url": media_result.asset.url, "caption": with_link, "access_token": access_token,
             }
         elif media_result.has_media and media_result.asset.kind.value == "video":
             endpoint, params = f"{GRAPH_BASE}/{page_id}/videos", {
-                "file_url": media_result.asset.url, "description": request.content, "access_token": access_token,
+                "file_url": media_result.asset.url, "description": with_link, "access_token": access_token,
             }
         else:
             endpoint, params = f"{GRAPH_BASE}/{page_id}/feed", {
                 "message": request.content, "access_token": access_token,
             }
+            if link:
+                params["link"] = link
 
         try:
             async with httpx.AsyncClient() as client:
