@@ -141,6 +141,8 @@ class Settings(BaseSettings):
     HUGGINGFACE_IMAGE_PROVIDER: str = "nscale"
     # Pollinations needs no key. Turn it off here if you would rather show "no picture" than a free-service picture.
     POLLINATIONS_ENABLED: bool = True
+    # Read each connected account's picture, display name and follower count from its platform (in the background, at most once a day).
+    PROFILE_REFRESH_ENABLED: bool = True
 
     # Cloudflare Turnstile — spam protection on the public share page's
     # guest comment form (an anonymous form with no account behind it).

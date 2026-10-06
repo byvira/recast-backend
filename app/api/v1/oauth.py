@@ -191,6 +191,13 @@ async def list_accounts(
         if a["platform"] == "instagram" and not a["profile_url"]:
             await _heal_instagram(ctx.workspace_id, a)
 
+    # Accounts with no picture yet are read from their platform in the background, so this list is never held up.
+    from app.pipelines.publish.profile import needs_refresh, schedule_refresh
+
+    schedule_refresh(ctx.workspace_id, [a["platform"] for a in accounts if needs_refresh(a)])
+    for a in accounts:
+        a.pop("profile_checked_at", None)
+
     return {
         "accounts": accounts,
         "total":    len(accounts),

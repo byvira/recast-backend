@@ -204,6 +204,11 @@ async def get_all_tokens(workspace_id: str) -> list[dict]:
             "expires_at": a.get("expires_at"),
             "connected_by": a.get("connected_by", ""),
             "health": (a.get("health") or {}).get("state", "healthy"),
+            # The account's public face, read from the platform (see profile.py).
+            "display_name": a.get("display_name"),
+            "avatar_url": a.get("avatar_url"),
+            "followers": a.get("followers"),
+            "profile_checked_at": a.get("profile_checked_at"),
         }
         for a in accounts
     ]

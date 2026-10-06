@@ -57,6 +57,8 @@ os.environ["SENTRY_DSN"] = ""
 for _name in ("MISTRAL_API_KEY", "OPENROUTER_API_KEY", "NVIDIA_API_KEY", "HUGGINGFACE_API_TOKEN"):
     os.environ[_name] = ""
 os.environ["POLLINATIONS_ENABLED"] = "false"
+# Tests never read a connected account's profile from a platform.
+os.environ["PROFILE_REFRESH_ENABLED"] = "false"
 # The guest-comment check is off unless a test switches it on, so the real site key in .env never decides a test.
 os.environ["TURNSTILE_SECRET_KEY"] = ""
 # Tests never make a real picture either: no Cloudflare picture service, and the paid Gemini picture fallback is capped at none.
