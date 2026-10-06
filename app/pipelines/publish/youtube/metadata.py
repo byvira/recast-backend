@@ -52,6 +52,16 @@ class YouTubeMetadata(BaseModel):
     made_for_kids: bool = False
 
 
+def visibility_problem(privacy_status: str) -> Optional[str]:
+    """Why this visibility can't be used yet, or None. Until Google has passed the app's API audit it keeps every uploaded video
+    private whatever was asked, so asking for anything else would promise something that cannot happen."""
+    from app.core.config import settings
+
+    if privacy_status != "private" and not settings.YOUTUBE_API_AUDIT_PASSED:
+        return "Public and unlisted uploads open up after Google has reviewed Recast. Choose Private for now, then change it in YouTube."
+    return None
+
+
 def category_id_for_brand_type(brand_type: Optional[str]) -> str:
     return _CATEGORY_BY_BRAND_TYPE.get(brand_type or "", _DEFAULT_CATEGORY_ID)
 

@@ -18,6 +18,7 @@ from app.pipelines.publish.media_fit import jpeg_url
 from app.pipelines.publish.validators import validate_instagram
 from app.pipelines.publish.meta.oauth import (
     build_auth_url,
+    GRAPH_BASE,
     exchange_code,
     refresh_meta_token,
 )
@@ -25,7 +26,6 @@ from app.pipelines.publish.supervisor.classifier import classify_error
 
 logger = logging.getLogger(__name__)
 
-GRAPH_BASE = "https://graph.facebook.com/v19.0"
 
 
 _READY_POLLS = 24        # about two minutes in all

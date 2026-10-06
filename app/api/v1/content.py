@@ -516,11 +516,14 @@ async def schedule_piece(
         raise HTTPException(status_code=blocker[0], detail=blocker[1])
 
     if slug == "youtube" and body.youtube_metadata is not None:
-        from app.pipelines.publish.youtube.metadata import YouTubeMetadata
+        from app.pipelines.publish.youtube.metadata import YouTubeMetadata, visibility_problem
         try:
-            YouTubeMetadata(**body.youtube_metadata)
+            reviewed = YouTubeMetadata(**body.youtube_metadata)
         except Exception:
             raise HTTPException(status_code=422, detail="The YouTube details aren't valid. Check the title, tags and category.")
+        problem = visibility_problem(reviewed.privacy_status)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
 
     block = check_gate(piece, confirm_anyway=body.confirm_publish_anyway)
     if block:

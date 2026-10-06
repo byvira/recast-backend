@@ -217,6 +217,15 @@ class YouTubePublisher(PlatformPublisher):
                 request.content, doc or {}, media=fresh_media, social_links=links,
             )
 
+        from app.pipelines.publish.youtube.metadata import visibility_problem
+
+        problem = visibility_problem(metadata.privacy_status)
+        if problem:
+            return PublishResult(
+                success=False, platform="youtube", piece_id=request.piece_id,
+                error_type="FIXABLE", error_code=400, error_message=problem,
+            )
+
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 video_resp = await client.get(asset.url)

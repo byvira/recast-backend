@@ -16,7 +16,7 @@ from app.pipelines.publish.base import PublishRequest
 from app.pipelines.publish.registry import adapter_for, get_publisher
 from app.pipelines.publish.spine import check_gate, extra_media_note, iso_utc, media_for_publish, planned_media_note, platform_key
 from app.pipelines.publish.supervisor.alerts import alert_fatal
-from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
+from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType, failure_code
 from app.pipelines.publish.supervisor.retry import get_retry_delay, should_retry
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.health import mark_healthy
@@ -528,6 +528,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                         "publish_scheduled_at": datetime.now(timezone.utc) + timedelta(seconds=15),
                         "publish_content_override": fixed_text,
                         "last_error": result.error_message,
+                        "last_error_code": failure_code(error_type, result.error_code or 500, result.error_message or ""),
                         "updated_at": datetime.now(timezone.utc),
                     }, "$inc": {"publish_attempts": 1}},
                 )
@@ -543,6 +544,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                         "publish_status": "queued",
                         "publish_scheduled_at": next_at,
                         "last_error": result.error_message,
+                        "last_error_code": failure_code(error_type, result.error_code or 500, result.error_message or ""),
                         "updated_at": datetime.now(timezone.utc),
                     },
                     "$inc": {"publish_attempts": 1},
@@ -574,6 +576,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             {"$set": {
                 "publish_status": "failed",
                 "last_error":     result.error_message,
+                "last_error_code": failure_code(error_type, result.error_code or 500, result.error_message or ""),
                 "updated_at":     datetime.now(timezone.utc),
             }},
         )

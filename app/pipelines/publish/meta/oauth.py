@@ -269,6 +269,31 @@ async def exchange_code(code: str, platform: str) -> dict:
         return result
 
 
+THREADS_REFRESH_URL = "https://graph.threads.net/refresh_access_token"
+
+
+async def refresh_threads_token(access_token: str) -> dict:
+    """
+    Extend a Threads long-lived token for another 60 days. Threads tokens are renewed with Threads' own endpoint and the token
+    itself (no app secret); the Facebook exchange used for Facebook and Instagram does not accept them.
+    """
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            THREADS_REFRESH_URL,
+            params={"grant_type": "th_refresh_token", "access_token": access_token},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            raise ValueError(f"Token refresh failed: {data['error'].get('message', 'unknown error')}")
+        expires_in = data.get("expires_in", 5_184_000)
+        logger.info("Threads token refreshed — expires in %d days", expires_in // 86400)
+        return {
+            "access_token": data["access_token"],
+            "expires_at":   datetime.now(timezone.utc) + timedelta(seconds=expires_in),
+        }
+
+
 async def refresh_meta_token(access_token: str) -> dict:
     """
     Extend a long-lived token for another 60 days.

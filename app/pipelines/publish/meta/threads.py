@@ -17,7 +17,7 @@ from app.pipelines.publish.validators import validate_threads
 from app.pipelines.publish.meta.oauth import (
     build_auth_url,
     exchange_code,
-    refresh_meta_token,
+    refresh_threads_token,
 )
 from app.pipelines.publish.supervisor.classifier import classify_error
 
@@ -35,7 +35,7 @@ class ThreadsPublisher(PlatformPublisher):
         return await exchange_code(code, platform="threads")
 
     async def refresh_token(self, refresh_token: str) -> dict:
-        return await refresh_meta_token(refresh_token)
+        return await refresh_threads_token(refresh_token)
 
     def validate_content(self, content: str) -> tuple[bool, list[str]]:
         return validate_threads(content)

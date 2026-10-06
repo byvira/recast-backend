@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # gets used, not built yet (see the plan's video/audio pipeline note).
     ELEVEN_LABS: str = ""
 
+    # Set once Google has passed Recast's YouTube API compliance audit. Until then Google keeps every video uploaded through the API
+    # private, so Recast offers Private only (see youtube/metadata.visibility_problem).
+    YOUTUBE_API_AUDIT_PASSED: bool = False
+
     # LLM provider — "groq" | "gemini"
     LLM_PROVIDER: str = "groq"
     GROQ_API_KEY: str = ""

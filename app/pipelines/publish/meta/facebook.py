@@ -16,6 +16,7 @@ from app.pipelines.publish.base import (
 from app.pipelines.publish.validators import validate_facebook
 from app.pipelines.publish.meta.oauth import (
     build_auth_url,
+    GRAPH_BASE,
     exchange_code,
     refresh_meta_token,
 )
@@ -23,7 +24,6 @@ from app.pipelines.publish.supervisor.classifier import classify_error
 
 logger = logging.getLogger(__name__)
 
-GRAPH_BASE = "https://graph.facebook.com/v19.0"
 
 
 class FacebookPublisher(PlatformPublisher):

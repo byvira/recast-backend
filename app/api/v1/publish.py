@@ -31,7 +31,7 @@ from app.pipelines.publish.health import mark_healthy
 from app.workers.token_refresh import recover_connection
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.supervisor.alerts import alert_fatal, save_incident
-from app.pipelines.publish.supervisor.classifier import classify_error, ErrorType
+from app.pipelines.publish.supervisor.classifier import RETRYABLE_CODES, classify_error, ErrorType, failure_code
 from app.pipelines.publish.supervisor.retry import get_retry_delay
 from app.pipelines.publish.supervisor.fixer import fix_content
 
@@ -220,6 +220,12 @@ async def _record_publish_failure(ws: str, user_id: str, piece_id: str, platform
     )
 
 
+def _failure_fields(error_type: ErrorType, result) -> dict:
+    """What the screens need to offer the right action: the kind of failure and whether trying again can help."""
+    code = failure_code(error_type, result.error_code or 500, result.error_message or "")
+    return {"code": code, "retryable": code in RETRYABLE_CODES}
+
+
 @router.post("/now")
 @limiter.limit("10/minute")
 async def publish_now(
@@ -271,6 +277,14 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
     if unavailable:
         await _release_claim(body.piece_id, ws, previous_status)
         raise unavailable.http()
+
+    if platform == "youtube" and body.youtube_metadata:
+        from app.pipelines.publish.youtube.metadata import visibility_problem
+
+        problem = visibility_problem(str(body.youtube_metadata.get("privacy_status", "private")))
+        if problem:
+            await _release_claim(body.piece_id, ws, previous_status)
+            raise HTTPException(status_code=422, detail=problem)
 
     # Check platform token exists for this workspace
     token_data = await get_token(ws, platform)
@@ -470,6 +484,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
                     "platform": platform,
                     "status":   "failed",
                     "reason":   result.error_message,
+                    **_failure_fields(error_type, result),
                 }
 
         if error_type == ErrorType.FATAL:
@@ -494,6 +509,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
                 "platform": platform,
                 "status":   "failed",
                 "reason":   result.error_message,
+                **_failure_fields(error_type, result),
             }
 
         # QA-002: this used to sleep in-request (up to 10s, up to 3 attempts
@@ -557,6 +573,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
         "retry_at": retry_at.isoformat(),
         "reason":   result.error_message or "Platform temporarily unavailable",
         "attempts": attempt,
+        **_failure_fields(error_type, result),
     }
 
 
