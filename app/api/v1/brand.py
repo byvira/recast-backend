@@ -553,8 +553,8 @@ async def get_brand_counts(
 
     return {
         "posts": {"total": len(pieces), "by_stage": stages},
-        "images": await image_assets.count_documents({**scope, "brand_id": brand_id}),
-        "audio": await audio_assets.count_documents({**scope, "brand_id": brand_id}),
+        "images": await image_assets.count_documents({**scope, "brand_id": brand_id, "deleted": {"$ne": True}}),
+        "audio": await audio_assets.count_documents({**scope, "brand_id": brand_id, "deleted": {"$ne": True}}),
         "campaigns": await get_campaigns_collection().count_documents({**scope, "brand_id": brand_id}),
         "presets": await presets.count_documents({**scope, "voice_binding_id": brand_id}),
     }

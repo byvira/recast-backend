@@ -90,7 +90,7 @@ async def resolve_asset(
     if asset_type == "image":
         if not asset_id:
             raise AttachmentError(422, "Choose an image to attach.")
-        doc = await image_assets.find_one({"id": asset_id, "workspace_id": workspace_id})
+        doc = await image_assets.find_one({"id": asset_id, "workspace_id": workspace_id, "deleted": {"$ne": True}})
         if not doc:
             raise AttachmentError(404, "Image not found.")
         slides = doc.get("slides") or []

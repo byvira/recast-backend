@@ -1256,7 +1256,7 @@ async def list_image_assets(
 ) -> dict:
     """The workspace's images, newest first, each with its first slide as the
     preview, for the Library's Image tab. Read only."""
-    flt = {"workspace_id": ctx.workspace_id}
+    flt = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
     docs = await image_assets.find(flt, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
     total = await image_assets.count_documents(flt)
 
@@ -1299,10 +1299,90 @@ async def get_image_asset(
 ) -> ImageAsset:
     """One image project with everything the Image pipeline needs to open it again: prompt, avoid list, headline settings,
     every slide and its layers. Used by "Open in Image pipeline" and the History tab."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"_id": 0})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     return ImageAsset(**doc)
+
+
+class RenameRequest(BaseModel):
+    title: str
+
+
+@router.patch("/{image_asset_id}/rename")
+@limiter.limit("30/minute")
+async def rename_image_asset(
+    request: Request,
+    image_asset_id: str,
+    body: RenameRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    from app.shared.titles import clean_title
+
+    title = clean_title(body.title)
+    done = await image_assets.update_one(
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+        {"$set": {"title": title, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if done.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    return {"id": image_asset_id, "title": title}
+
+
+@router.delete("/{image_asset_id}")
+@limiter.limit("20/minute")
+async def remove_image_asset(
+    request: Request,
+    image_asset_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Remove a picture project from History and the Library. Posts that already use its pictures keep them."""
+    done = await image_assets.update_one(
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+        {"$set": {"deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}},
+    )
+    if done.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    return {"id": image_asset_id, "deleted": True}
+
+
+class ImageDraftRequest(BaseModel):
+    # A post platform name ("Instagram", "LinkedIn"...). Left empty, Instagram.
+    platform: Optional[str] = None
+    # The post text. Left empty, the project's name is used.
+    caption: Optional[str] = None
+    # Which slide to attach. Left empty, the first one with a picture.
+    slide_number: Optional[int] = None
+
+
+@router.post("/{image_asset_id}/send-to-draft")
+@limiter.limit("20/minute")
+async def send_image_to_draft(
+    request: Request,
+    image_asset_id: str,
+    body: ImageDraftRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """Make a draft post from this picture project, with the picture attached, in one step. Safe to repeat: the same project and platform
+    always give back the same draft."""
+    from app.models.text import Platform
+    from app.pipelines.publish.asset_drafts import draft_from_asset
+
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    try:
+        platform = Platform((body.platform or "").strip() or "Instagram").value
+    except ValueError:
+        raise HTTPException(status_code=400, detail="That platform isn't supported for posts.")
+    caption = (body.caption or "").strip() or (doc.get("title") or "").strip()
+    if not caption:
+        raise HTTPException(status_code=400, detail="Add some text for the post.")
+    return await draft_from_asset(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, brand_id=doc["brand_id"], platform=platform, caption=caption,
+        origin={"image_asset_id": image_asset_id, "platform": platform}, group_by=image_asset_id,
+        attach={"asset_type": "image", "asset_id": image_asset_id, "slide_number": body.slide_number},
+    )
 
 
 @router.get("/{image_asset_id}/versions")

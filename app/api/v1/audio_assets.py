@@ -257,6 +257,86 @@ async def fit_script(
     )
 
 
+class RenameRequest(BaseModel):
+    title: str
+
+
+@router.patch("/{audio_asset_id}/rename")
+@limiter.limit("30/minute")
+async def rename_audio_asset(
+    request: Request,
+    audio_asset_id: str,
+    body: RenameRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    from app.shared.titles import clean_title
+
+    title = clean_title(body.title)
+    done = await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+        {"$set": {"title": title, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if done.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    return {"id": audio_asset_id, "title": title}
+
+
+@router.delete("/{audio_asset_id}")
+@limiter.limit("20/minute")
+async def remove_audio_asset(
+    request: Request,
+    audio_asset_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Remove a recording (and the videos made from it) from History and the Library. Posts that already use its files keep them."""
+    done = await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+        {"$set": {"deleted": True, "deleted_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc)}},
+    )
+    if done.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    return {"id": audio_asset_id, "deleted": True}
+
+
+@router.patch("/{audio_asset_id}/video-clips/{clip_id}")
+@limiter.limit("30/minute")
+async def rename_video_clip(
+    request: Request,
+    audio_asset_id: str,
+    clip_id: str,
+    body: RenameRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    from app.shared.titles import clean_title
+
+    title = clean_title(body.title)
+    done = await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "video_clips.id": clip_id},
+        {"$set": {"video_clips.$.title": title, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if done.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Video not found.")
+    return {"audio_asset_id": audio_asset_id, "clip_id": clip_id, "title": title}
+
+
+@router.delete("/{audio_asset_id}/video-clips/{clip_id}")
+@limiter.limit("20/minute")
+async def remove_video_clip(
+    request: Request,
+    audio_asset_id: str,
+    clip_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Remove one video made from a recording. The recording stays. Posts that already use the video keep their copy."""
+    done = await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "video_clips.id": clip_id},
+        {"$pull": {"video_clips": {"id": clip_id}}, "$set": {"updated_at": datetime.now(timezone.utc)}},
+    )
+    if done.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Video not found.")
+    return {"audio_asset_id": audio_asset_id, "clip_id": clip_id, "deleted": True}
+
+
 @router.get("/video-clips")
 @limiter.limit("60/minute")
 async def list_video_clips(
@@ -268,7 +348,7 @@ async def list_video_clips(
     """Every video made from a recording in this workspace, newest first, each with its playable file and the recording
     it came from. This is the Video pipeline's history."""
     docs = await audio_assets.find(
-        {"workspace_id": ctx.workspace_id, "video_clips.0": {"$exists": True}},
+        {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "video_clips.0": {"$exists": True}},
         {"_id": 0, "id": 1, "title": 1, "brand_id": 1, "video_clips": 1},
     ).to_list(length=500)
     clips = [
@@ -1316,7 +1396,7 @@ async def list_audio_assets(
 ) -> dict:
     """The workspace's audio, newest first, each with its playable file, for
     the Library's Audio tab. Read only."""
-    flt = {"workspace_id": ctx.workspace_id}
+    flt = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
     docs = await audio_assets.find(flt, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
     total = await audio_assets.count_documents(flt)
 
@@ -1771,7 +1851,7 @@ async def get_podcast_feed_xml(request: Request, token: str) -> Response:
         raise HTTPException(status_code=404, detail="This feed doesn't exist or isn't enabled.")
 
     episodes = await audio_assets.find(
-        {"brand_id": settings_doc["brand_id"], "approval_status": AudioApprovalStatus.APPROVED.value},
+        {"brand_id": settings_doc["brand_id"], "approval_status": AudioApprovalStatus.APPROVED.value, "deleted": {"$ne": True}},
     ).sort("created_at", -1).limit(200).to_list(length=200)
 
     media_ids = [e.get("approved_master_media_id") or e.get("media_id") for e in episodes]
@@ -2644,16 +2724,10 @@ async def send_clip_to_draft(
 
     Safe to repeat: the same recording and video always give back the same draft, so a second click (or a retry
     after a dropped connection) never makes another one."""
-    from uuid import NAMESPACE_URL, uuid5
+    from app.models.text import Platform
+    from app.pipelines.publish.asset_drafts import draft_from_asset
 
-    from pymongo.errors import DuplicateKeyError
-
-    from app.db.mongo import content_pieces
-    from app.models.text import InputSourceType, Platform
-    from app.pipelines.publish import attachments as piece_attachments
-    from app.pipelines.text.storage import ensure_session_exists, get_piece, save_live_piece
-
-    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Audio asset not found.")
     clip = next((c for c in doc.get("video_clips") or [] if c.get("id") == body.clip_id), None)
@@ -2669,59 +2743,11 @@ async def send_clip_to_draft(
     caption = (body.caption or "").strip() or (clip.get("title") or "").strip() or doc.get("title", "")
     if not caption:
         raise HTTPException(status_code=400, detail="Add some text for the post.")
-
-    # The draft already made for this recording and video, if it still exists.
-    existing = await content_pieces.find_one({
-        "workspace_id": ctx.workspace_id, "deleted": {"$ne": True},
-        "send_origin.audio_asset_id": audio_asset_id, "send_origin.clip_id": body.clip_id,
-    })
-    created = False
-    if existing:
-        piece_id = existing["piece_id"]
-    else:
-        # First time: one repeatable id per (recording, video). The unique index on piece_id is what makes two
-        # clicks at the same moment land on the same draft instead of creating another. If an earlier draft with
-        # that id was deleted, this is a fresh send and gets a new id.
-        origin = f"send-to-draft:{ctx.workspace_id}:{audio_asset_id}:{body.clip_id}"
-        piece_id = str(uuid5(NAMESPACE_URL, origin))
-        repeatable = True
-        taken_by_deleted = await content_pieces.find_one({"piece_id": piece_id, "deleted": True}, {"_id": 1})
-        if taken_by_deleted:
-            piece_id, repeatable = str(uuid4()), False
-        session_id = str(uuid5(NAMESPACE_URL, origin + ":session")) if repeatable else str(uuid4())
-        try:
-            await ensure_session_exists(
-                session_id=session_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
-                brand_id=doc["brand_id"], source_type=InputSourceType.TEXT.value,
-            )
-        except DuplicateKeyError:
-            pass  # the same moment's other click made the session first
-        try:
-            await save_live_piece(
-                session_id=session_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
-                brand_id=doc["brand_id"], platform=platform, content=caption,
-                word_count=len(caption.split()), char_count=len(caption),
-                piece_id=piece_id,
-                extra_fields={"send_origin": {"audio_asset_id": audio_asset_id, "clip_id": body.clip_id}},
-            )
-            created = True
-        except DuplicateKeyError:
-            pass  # a click at the same moment made it first
-
-    piece = await get_piece(piece_id, ctx.workspace_id)
-    if not piece:
-        raise HTTPException(status_code=500, detail="Couldn't make the draft. Try again.")
-    try:
-        resolved = await piece_attachments.resolve_asset(
-            ctx.workspace_id, "video", asset_id=audio_asset_id, clip_id=body.clip_id,
-        )
-        attachment, _ = await piece_attachments.attach(piece, ctx.workspace_id, ctx.user_id, resolved)
-    except piece_attachments.AttachmentError as exc:
-        raise HTTPException(status_code=exc.status, detail=exc.message)
-    return {
-        "piece_id": piece_id, "platform": piece["platform"], "content": piece["content"],
-        "created": created, "attachment": attachment,
-    }
+    return await draft_from_asset(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, brand_id=doc["brand_id"], platform=platform, caption=caption,
+        origin={"audio_asset_id": audio_asset_id, "clip_id": body.clip_id},
+        attach={"asset_type": "video", "asset_id": audio_asset_id, "clip_id": body.clip_id},
+    )
 
 
 async def _generate_clip_suggestions(doc: dict, workspace_id: str, audio_asset_id: str) -> list[SuggestedClip]:

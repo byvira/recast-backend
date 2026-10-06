@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import audio_assets, brand_profiles, content_pieces, image_assets, media_assets, users
+from app.db.mongo import audio_assets, brand_profiles, content_pieces, content_sessions, image_assets, media_assets, users
 from app.models.media import MediaAsset
 from app.models.attachment import AttachRequest, RefreshAttachmentsRequest, ReorderAttachmentsRequest, UpdateAttachmentRequest
 from app.pipelines.export import library_archive
@@ -143,6 +143,86 @@ async def list_sessions(
         page=page,
         limit=limit,
     )
+
+
+class RenameRequest(BaseModel):
+    title: str
+
+
+@router.patch("/sessions/{session_id}")
+@limiter.limit("30/minute")
+async def rename_session(
+    request: Request,
+    session_id: str,
+    body: RenameRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Give a text run a name of the member's own. It then shows in History instead of the first words of the input."""
+    from app.shared.titles import clean_title
+
+    title = clean_title(body.title)
+    done = await content_sessions.update_one(
+        {"session_id": session_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+        {"$set": {"title": title, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if done.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"session_id": session_id, "title": title}
+
+
+@router.delete("/sessions/{session_id}")
+@limiter.limit("20/minute")
+async def remove_session(
+    request: Request,
+    session_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Remove a text run from History with the posts that were never published. A post that is already out stays in Review, so
+    its results are kept. A run with a post that is scheduled or going out is refused: cancel that first."""
+    session = await content_sessions.find_one({"session_id": session_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    pieces = await content_pieces.find(
+        {"session_id": session_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"piece_id": 1, "publish_status": 1},
+    ).to_list(length=500)
+    if any(p.get("publish_status") in ("queued", "publishing", "scheduled") for p in pieces):
+        raise HTTPException(status_code=409, detail="A post in this run is scheduled or going out. Cancel it first, then delete the run.")
+    removable = [p["piece_id"] for p in pieces if p.get("publish_status") != "published"]
+    now = datetime.now(timezone.utc)
+    if removable:
+        await content_pieces.update_many(
+            {"piece_id": {"$in": removable}, "workspace_id": ctx.workspace_id}, {"$set": {"deleted": True, "updated_at": now}},
+        )
+    await content_sessions.update_one(
+        {"session_id": session_id, "workspace_id": ctx.workspace_id}, {"$set": {"deleted": True, "updated_at": now}},
+    )
+    return {"session_id": session_id, "deleted": True, "posts_removed": len(removable), "posts_kept": len(pieces) - len(removable)}
+
+
+@router.get("/sessions/{session_id}/export")
+@limiter.limit("10/minute")
+async def export_session(
+    request: Request,
+    session_id: str,
+    format: str = Query(..., pattern="^(markdown|csv|zip)$"),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> Response:
+    """The posts of one text run as markdown, csv or a zip (with their media)."""
+    session = await get_session(session_id, ctx.workspace_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    pieces = session["pieces"]
+    if not pieces:
+        raise HTTPException(status_code=404, detail="This run has no posts to export.")
+    media_type, _ = _EXPORT_CONTENT_TYPES[format]
+    filename = f"recast-run-{session_id[:8]}.{ {'markdown': 'md', 'csv': 'csv', 'zip': 'zip'}[format] }"
+    if format == "markdown":
+        body: str | bytes = _pieces_to_markdown(pieces)
+    elif format == "csv":
+        body = _pieces_to_csv(pieces)
+    else:
+        body = await _build_library_zip(pieces, ctx.workspace_id, session.get("brand_id"))
+    return Response(content=body, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @router.get("/sessions/{session_id}")
@@ -910,6 +990,7 @@ async def _build_library_zip(pieces: list[dict], workspace_id: str, brand_id: Op
     query: dict = {"workspace_id": workspace_id}
     if brand_id:
         query["brand_id"] = brand_id
+    query = {**query, "deleted": {"$ne": True}}
     audio_docs = await audio_assets.find(query).sort("created_at", -1).to_list(length=500)
     image_docs = await image_assets.find(query).sort("created_at", -1).to_list(length=500)
 

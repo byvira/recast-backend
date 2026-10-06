@@ -425,7 +425,7 @@ async def get_session(session_id: str, workspace_id: str) -> Optional[dict]:
     Returns None if not found or outside the workspace.
     """
     session = await content_sessions.find_one({"session_id": session_id})
-    if not session or session.get("workspace_id") != workspace_id:
+    if not session or session.get("workspace_id") != workspace_id or session.get("deleted"):
         return None
 
     pieces = await content_pieces.find(
@@ -453,7 +453,7 @@ async def get_workspace_sessions(
     Optionally filter by brand_id and/or is_repurpose.
     Returns sessions without pieces — use get_session() for full detail.
     """
-    query: dict = {"workspace_id": workspace_id}
+    query: dict = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
     if brand_id:
         query["brand_id"] = brand_id
     if is_repurpose is not None:
