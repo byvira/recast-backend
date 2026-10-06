@@ -7,6 +7,8 @@ app.pipelines.platform_ops.availability). Nothing Ops-only is returned here; the
 /api/v1/ops/platforms.
 """
 
+from app.core.config import settings
+from app.pipelines.publish.spine import MULTI_PICTURE_LIMITS
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
@@ -54,6 +56,10 @@ def _serialize(p: PlatformDefinition) -> dict[str, Any]:
         "rate_limits": p.rate_limits,
         "max_chars": p.max_chars,
         "requires_media": p.requires_media,
+        # How many pictures one post can carry on platforms that take several, so screens do not keep their own copy of the number.
+        "max_images": MULTI_PICTURE_LIMITS.get(p.key),
+        # False for YouTube until Google has passed the app's API audit: videos are private until then. Null for every other platform.
+        "publish_unlocked": settings.YOUTUBE_API_AUDIT_PASSED if p.key == "youtube" else None,
         "policy_constraints": p.policy_constraints,
         "tone_profile": p.tone_profile,
         "access_notes": p.access_notes,

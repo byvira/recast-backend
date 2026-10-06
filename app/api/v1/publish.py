@@ -602,6 +602,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
 async def suggest_times(
     request: Request,
     piece_id: str,
+    tz: Optional[str] = None,
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """Up to three good times to publish this post, in the member's time zone. Uses this workspace's own results on the platform when
@@ -626,7 +627,11 @@ async def suggest_times(
             {"publish_scheduled_at": 1},
         ).to_list(length=500)
     ]
-    return rank_slots(platform=slug, label=piece["platform"], samples=samples, planned=planned, tz_name=ctx.user.get("timezone"))
+    # The zone the member's screen is in wins when it is sent (the stored one is "UTC" until the member sets it); unknown zones fall back.
+    from app.pipelines.publish.timing import get_zone
+
+    zone_name = tz if tz and get_zone(tz).key == tz else ctx.user.get("timezone")
+    return rank_slots(platform=slug, label=piece["platform"], samples=samples, planned=planned, tz_name=zone_name)
 
 
 @router.post("/youtube/prepare")

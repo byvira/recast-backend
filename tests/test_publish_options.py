@@ -25,8 +25,8 @@ def test_each_platform_accepts_only_its_own_settings():
         "reply_control": "followers_only", "topic_tag": "Engineering",
     }
     assert publish_options.clean_options("instagram", {"first_comment": "  #tips  ", "location_id": "12345"}) == {"first_comment": "#tips", "location_id": "12345"}
-    assert publish_options.clean_options("youtube", {"language": "en-US", "notify_subscribers": False, "thumbnail_media_id": "m1"}) == {
-        "language": "en-US", "notify_subscribers": False, "thumbnail_media_id": "m1",
+    assert publish_options.clean_options("youtube", {"language": "en-US", "notify_subscribers": False, "thumbnail_media_id": "m1", "captions": False}) == {
+        "language": "en-US", "notify_subscribers": False, "thumbnail_media_id": "m1", "captions": False,
     }
     assert publish_options.clean_options("bluesky", {"languages": ["en", "ta"]}) == {"languages": ["en", "ta"]}
 
@@ -347,3 +347,20 @@ async def test_a_youtube_upload_carries_language_and_notify_and_the_thumbnail_is
     thumbnail_call = next(c for c in _Recorder.calls if c[1] == youtube_module.YOUTUBE_THUMBNAIL_URL)
     assert thumbnail_call[2]["params"]["videoId"] == "vid-1"
     assert thumbnail_call[2]["headers"]["Content-Type"] == "image/jpeg"
+
+
+# ── The platform list tells screens what they need ────────────────────
+
+async def test_the_platform_list_carries_the_picture_limits_and_whether_youtube_is_unlocked(signup_user, monkeypatch):
+    from app.core.config import settings
+
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Platform List WS")
+    monkeypatch.setattr(settings, "YOUTUBE_API_AUDIT_PASSED", False)
+
+    platforms = {p["key"]: p for p in (await client.get("/api/v1/platforms", headers=H(ws_id))).json()["platforms"]}
+
+    assert platforms["instagram"]["max_images"] == 10 and platforms["bluesky"]["max_images"] == 4
+    assert platforms["linkedin"]["max_images"] is None
+    assert platforms["youtube"]["publish_unlocked"] is False
+    assert platforms["linkedin"]["publish_unlocked"] is None

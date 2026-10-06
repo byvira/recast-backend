@@ -93,6 +93,7 @@ ALLOWED: dict[str, dict[str, Callable[[Any], Any]]] = {
     "youtube": {
         "language": _language,
         "notify_subscribers": _flag("Notify subscribers"),
+        "captions": _flag("Captions"),
         "thumbnail_media_id": _text("The thumbnail", 80),
     },
     "instagram": {"first_comment": _text("The first comment", 2200), "location_id": _digits("The location")},

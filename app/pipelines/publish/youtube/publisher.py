@@ -272,7 +272,8 @@ class YouTubePublisher(PlatformPublisher):
 
                 # Subtitles and the thumbnail are bonuses on top of a video that's already up:
                 # a failure in either is reported, never allowed to fail the post.
-                caption_note = await self._upload_captions(client, access_token, video_id, fresh_media)
+                # Captions are added when the video has a transcript, unless the member turned them off.
+                caption_note = None if (request.options or {}).get("captions") is False else await self._upload_captions(client, access_token, video_id, fresh_media)
                 thumbnail_id = (request.options or {}).get("thumbnail_media_id")
                 if thumbnail_id:
                     thumbnail_note = await self._set_thumbnail(client, access_token, video_id, thumbnail_id, request.workspace_id)

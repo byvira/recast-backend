@@ -155,3 +155,15 @@ async def test_the_route_flags_a_clash_with_a_queued_post_on_the_same_platform(s
     slots = (await client.get("/api/v1/publish/suggest-times", params={"piece_id": piece_id}, headers=H(ws_id))).json()["slots"]
 
     assert any(s["clash"] and "already planned" in s["clash"] for s in slots)
+
+
+async def test_the_route_uses_the_zone_the_screen_sends_and_ignores_one_it_does_not_know(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Timing WS 4")
+    piece_id = await _piece(ws_id, profile["id"], platform="LinkedIn")
+
+    sent = (await client.get("/api/v1/publish/suggest-times", params={"piece_id": piece_id, "tz": "Asia/Kolkata"}, headers=H(ws_id))).json()
+    junk = (await client.get("/api/v1/publish/suggest-times", params={"piece_id": piece_id, "tz": "Not/AZone"}, headers=H(ws_id))).json()
+
+    assert sent["timezone"] == "Asia/Kolkata"
+    assert junk["timezone"] == "UTC"
