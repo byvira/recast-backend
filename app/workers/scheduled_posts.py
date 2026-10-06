@@ -12,6 +12,7 @@ from app.core.notifications import send_templated_email
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import content_pieces, users, workspaces
 from app.pipelines.publish import executor
+from app.pipelines.publish.destinations import service as destination_service
 from app.pipelines.publish.media_limits import media_problem
 from app.pipelines.publish.spine import check_gate, iso_utc, platform_key
 from app.pipelines.publish.supervisor.alerts import alert_fatal
@@ -299,6 +300,53 @@ async def _hold_for_manual_post(piece: dict, platform: str, workspace_id: str, r
         logger.error("manual-post activity row failed for %s: %s", piece["piece_id"], exc)
 
 
+MAX_DESTINATION_TRIES = 3
+DESTINATION_RETRY_SECONDS = 120
+
+
+async def _publish_to_destination(piece: dict, platform: str, user_id: str, workspace_id: str) -> None:
+    """Sends a scheduled Blog or Newsletter post to its destination. Only an answer of "slow down" is tried again, because every other
+    failure might already have made the post (or the campaign) at the destination and a second try would make another."""
+    from app.pipelines.publish.destinations.common import DestinationError
+
+    piece_id = piece["piece_id"]
+    destination = destination_service.destination_of(piece)
+    if not destination:
+        await _fail_before_publish(piece, platform, user_id, workspace_id, "No destination is chosen for this post, so it couldn't go out. Choose one and schedule it again.")
+        return
+    try:
+        result = await destination_service.send_piece(piece, workspace_id, may_send_to_audience=bool(piece.get("publish_send_confirmed")))
+    except DestinationError as exc:
+        await _fail_before_publish(piece, destination, user_id, workspace_id, str(exc))
+        return
+
+    if result.success:
+        await destination_service.record_success(piece, workspace_id, result, user_id=user_id, via="scheduled")
+        return
+
+    attempts = int(piece.get("publish_attempts") or 0)
+    if result.error_code == destination_service.SAFE_TO_RETRY_CODE and attempts + 1 < MAX_DESTINATION_TRIES:
+        await content_pieces.update_one(
+            {"piece_id": piece_id},
+            {"$set": {
+                "publish_status": "queued",
+                "publish_scheduled_at": datetime.now(timezone.utc) + timedelta(seconds=DESTINATION_RETRY_SECONDS),
+                "last_error": result.error_message,
+                "updated_at": datetime.now(timezone.utc),
+            }, "$inc": {"publish_attempts": 1}},
+        )
+        return
+
+    message = result.error_message or "The destination did not accept the post."
+    if result.error_type == "TRANSIENT":
+        message = f"{message} It may have reached {destination_service.LABELS[destination]} already, so check there before trying again."
+    await _fail_before_publish(piece, destination, user_id, workspace_id, message)
+    if result.error_type == "AUTH":
+        from app.pipelines.publish.health import record_failure
+
+        await record_failure(workspace_id, destination, reason="the destination refused the saved details", broken=True)
+
+
 async def _publish_scheduled_piece(piece: dict) -> None:
     """Publish one scheduled piece."""
     piece_id     = piece["piece_id"]
@@ -342,6 +390,11 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 "updated_at": datetime.now(timezone.utc),
             }},
         )
+        return
+
+    # A Blog or Newsletter post goes to its chosen destination (WordPress, Ghost, Mailchimp).
+    if destination_service.is_destination_kind(platform):
+        await _publish_to_destination(piece, platform, user_id, workspace_id)
         return
 
     # The publisher and sign-in, scoped to the piece's workspace (shared with Publish Now, see pipelines/publish/executor.py).

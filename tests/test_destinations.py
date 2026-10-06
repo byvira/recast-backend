@@ -5,10 +5,9 @@ import httpx
 import jwt
 import pytest
 
-from app.api.v1 import destinations as destinations_api
 from app.models.media import MediaAsset
 from app.pipelines.publish import options as publish_options
-from app.pipelines.publish.destinations import common, ghost, mailchimp, wordpress
+from app.pipelines.publish.destinations import common, ghost, mailchimp, service, wordpress
 
 GHOST_KEY = "64f1a2b3c4d5e6f708192a3b:" + "ab" * 32
 MAILCHIMP_KEY = "0123456789abcdef" * 2 + "-" + "us21"  # built in pieces so it is never mistaken for a real key
@@ -99,9 +98,9 @@ def test_destination_settings_are_checked():
 
 def test_the_title_and_body_are_taken_from_the_post():
     piece = {"seo": {"title": "My title"}, "content": "# My title\n\nBody text"}
-    assert destinations_api._title(piece) == "My title" and destinations_api._body(piece) == "Body text"
-    assert destinations_api._title({"seo": {}, "content": "\n## First line\nmore"}) == "First line"
-    assert destinations_api._body({"seo": {"title": "Other"}, "content": "# My title\n\nBody"}) == "# My title\n\nBody"
+    assert service.title_of(piece) == "My title" and service.body_of(piece) == "Body text"
+    assert service.title_of({"seo": {}, "content": "\n## First line\nmore"}) == "First line"
+    assert service.body_of({"seo": {"title": "Other"}, "content": "# My title\n\nBody"}) == "# My title\n\nBody"
 
 
 # ── WordPress ─────────────────────────────────────────────────────────
@@ -295,3 +294,92 @@ async def test_sending_needs_a_destination_a_connection_and_for_a_whole_audience
     assert unconnected.status_code == 400 and "not connected" in unconnected.json()["detail"]
     # Every refusal puts the post back, so it can be sent once the problem is fixed.
     assert (await content_pieces.find_one({"piece_id": piece_id})).get("publish_status") != "publishing"
+
+
+# ── Scheduling ────────────────────────────────────────────────────────
+
+async def _due_destination_piece(ws: str, user_id: str, *, platform="Blog", options=None, confirmed=False) -> str:
+    from datetime import timedelta
+
+    from app.db.mongo import content_pieces
+
+    piece_id = await _seed(ws, user_id, platform)
+    await content_pieces.update_one({"piece_id": piece_id}, {"$set": {
+        "publish_status": "publishing", "publish_target": platform.lower(), "publish_options": options or {"destination": "wordpress"},
+        "publish_send_confirmed": confirmed, "seo": {"title": "My title"},
+        "publish_scheduled_at": datetime.now(timezone.utc) - timedelta(minutes=1),
+    }})
+    return piece_id
+
+
+def _result(success, code=None, kind=None, message=None, piece_id="p"):
+    from app.pipelines.publish.base import PublishResult
+
+    return PublishResult(success=success, platform="wordpress", piece_id=piece_id, platform_post_id="9" if success else None,
+                         platform_post_url="https://blog.example.com/?p=9" if success else None, error_code=code, error_type=kind, error_message=message)
+
+
+async def test_a_scheduled_blog_post_goes_to_its_destination_and_is_marked(signup_user, monkeypatch):
+    from app.db.mongo import content_pieces
+    from app.workers.scheduled_posts import _publish_scheduled_piece
+    from tests.conftest import create_workspace
+
+    client, profile = await signup_user()
+    ws = await create_workspace(client, "Dest Sched 1")
+    piece_id = await _due_destination_piece(ws, profile["id"])
+    seen = {}
+
+    async def fake_send(piece, workspace_id, *, may_send_to_audience):
+        seen["audience"] = may_send_to_audience
+        return _result(True, piece_id=piece["piece_id"])
+
+    monkeypatch.setattr(service, "send_piece", fake_send)
+    await _publish_scheduled_piece(await content_pieces.find_one({"piece_id": piece_id}))
+
+    saved = await content_pieces.find_one({"piece_id": piece_id})
+    assert saved["publish_status"] == "published" and saved["platform_post_url"] == "https://blog.example.com/?p=9"
+    assert saved["publish_destination"] == "wordpress" and saved["publish_destination_state"] == "draft" and seen["audience"] is False
+
+
+async def test_only_a_slow_down_answer_is_tried_again_and_a_timeout_asks_the_member_to_check(signup_user, monkeypatch):
+    from app.db.mongo import content_pieces
+    from app.workers.scheduled_posts import _publish_scheduled_piece
+    from tests.conftest import create_workspace
+
+    client, profile = await signup_user()
+    ws = await create_workspace(client, "Dest Sched 2")
+    slow = await _due_destination_piece(ws, profile["id"])
+    timeout = await _due_destination_piece(ws, profile["id"])
+
+    async def fake_send(piece, workspace_id, *, may_send_to_audience):
+        if piece["piece_id"] == slow:
+            return _result(False, 429, "TRANSIENT", "Too many requests", piece["piece_id"])
+        return _result(False, 408, "TRANSIENT", "WordPress took too long to answer.", piece["piece_id"])
+
+    monkeypatch.setattr(service, "send_piece", fake_send)
+    await _publish_scheduled_piece(await content_pieces.find_one({"piece_id": slow}))
+    await _publish_scheduled_piece(await content_pieces.find_one({"piece_id": timeout}))
+
+    first, second = await content_pieces.find_one({"piece_id": slow}), await content_pieces.find_one({"piece_id": timeout})
+    assert first["publish_status"] == "queued" and first["publish_attempts"] == 1
+    assert second["publish_status"] == "failed" and "check there" in second["last_error"]
+
+
+async def test_a_scheduled_newsletter_is_never_sent_to_the_audience_without_the_saved_confirmation(signup_user, monkeypatch):
+    from app.db.mongo import content_pieces
+    from app.workers.scheduled_posts import _publish_scheduled_piece
+    from tests.conftest import create_workspace
+
+    client, profile = await signup_user()
+    ws = await create_workspace(client, "Dest Sched 3")
+    options = {"destination": "mailchimp", "audience_id": "a1", "send_mode": "send"}
+    piece_id = await _due_destination_piece(ws, profile["id"], platform="Newsletter", options=options, confirmed=False)
+
+    async def connected(workspace_id, key):
+        return {"access_token": MAILCHIMP_KEY, "platform_user_id": "us21", "username": "Brand"}
+
+    monkeypatch.setattr(service, "get_token", connected)
+    await _publish_scheduled_piece(await content_pieces.find_one({"piece_id": piece_id}))
+
+    saved = await content_pieces.find_one({"piece_id": piece_id})
+    assert saved["publish_status"] == "failed" and "Confirm" in saved["last_error"]

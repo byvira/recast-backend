@@ -306,6 +306,16 @@ async def schedule_blocker(piece: dict, workspace_id: str) -> Optional[tuple[int
     if unsafe:
         return 409, unsafe
 
+    # A Blog or Newsletter post goes to the destination chosen on it (WordPress, Ghost, Mailchimp), not to a platform of its own.
+    from app.pipelines.publish.destinations import service as destination_service
+
+    if destination_service.is_destination_kind(slug) and destination_service.destination_of(piece):
+        problem = await destination_service.blocker(piece, workspace_id)
+        if problem:
+            return problem
+        is_valid, issues = validate_for_platform(slug, piece["content"])
+        return None if is_valid else (400, f"Content validation failed: {'; '.join(issues)}")
+
     # A webhook or manual-handoff platform with saved settings has no sign in, so "connected" means its settings
     # are complete. Every real publisher is checked exactly as before.
     adapter = None

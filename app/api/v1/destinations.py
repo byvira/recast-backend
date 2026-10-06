@@ -13,18 +13,16 @@ from pydantic import BaseModel
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, require
-from app.pipelines.publish import executor
 from app.pipelines.publish.destinations import ghost, mailchimp, wordpress
+from app.pipelines.publish.destinations import service
 from app.pipelines.publish.destinations.common import DestinationError
+from app.pipelines.publish.destinations.service import DESTINATIONS, LABELS
 from app.pipelines.publish.spine import check_gate, platform_key, record_override
 from app.pipelines.publish.token_store import get_token, save_token
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-#: Which destinations each kind of post can go to.
-DESTINATIONS = {"blog": ("wordpress", "ghost"), "newsletter": ("mailchimp",)}
-LABELS = {"wordpress": "WordPress", "ghost": "Ghost", "mailchimp": "Mailchimp"}
 
 
 class WordPressConnect(BaseModel):
@@ -119,25 +117,6 @@ async def mailchimp_audiences(request: Request, ctx: WorkspaceContext = Depends(
     return {"audiences": await mailchimp.audiences(token["access_token"])}
 
 
-def _title(piece: dict) -> str:
-    seo = piece.get("seo") or {}
-    if (seo.get("title") or "").strip():
-        return seo["title"].strip()
-    for line in (piece.get("content") or "").splitlines():
-        text = line.strip().lstrip("#").strip()
-        if text:
-            return text[:200]
-    return ""
-
-
-def _body(piece: dict) -> str:
-    """The post without the heading line the editor copies in front of it, since the title is sent on its own."""
-    lines = (piece.get("content") or "").splitlines()
-    if lines and lines[0].startswith("# ") and lines[0][2:].strip() == (piece.get("seo") or {}).get("title", "").strip():
-        return "\n".join(lines[1:]).lstrip()
-    return piece.get("content") or ""
-
-
 @router.post("/send")
 @limiter.limit("10/minute")
 async def send_to_destination(request: Request, body: SendRequest, ctx: WorkspaceContext = Depends(require("publish_content"))) -> dict:
@@ -152,12 +131,10 @@ async def send_to_destination(request: Request, body: SendRequest, ctx: Workspac
         await _release_claim(body.piece_id, ws, previous)
         raise HTTPException(status_code=status, detail=detail)
 
-    kind = platform_key(piece["platform"])
-    options = piece.get("publish_options") or {}
-    destination = options.get("destination")
-    if kind not in DESTINATIONS:
+    if platform_key(piece["platform"]) not in DESTINATIONS:
         await refuse(400, "Only Blog and Newsletter posts can be sent to a destination.")
-    if destination not in DESTINATIONS[kind]:
+    destination = service.destination_of(piece)
+    if not destination:
         await refuse(400, "Choose where to publish this post first.")
 
     await check_piece_before_send(piece, ws)
@@ -168,59 +145,21 @@ async def send_to_destination(request: Request, body: SendRequest, ctx: Workspac
     if body.confirm_publish_anyway:
         await record_override(piece, ws, ctx.user_id)
 
-    token = await get_token(ws, destination)
-    if not token:
-        await refuse(400, f"{LABELS[destination]} is not connected. Connect it first.")
-
-    title = _title(piece)
-    if not title:
-        await refuse(422, "Add a title before publishing.")
-    seo = piece.get("seo") or {}
-    pictures = await executor.pictures_for(piece, ws)
-
-    if destination == "mailchimp":
-        audience = options.get("audience_id") or ""
-        if not audience:
-            await refuse(422, "Choose which Mailchimp audience this goes to.")
-        send = options.get("send_mode") == "send"
-        if send and not body.confirm_send:
-            await refuse(422, "Confirm that this should be sent to the whole audience now.")
-        result = await mailchimp.publish(
-            api_key=token["access_token"], piece_id=piece["piece_id"], audience_id=audience, subject=title,
-            preview=seo.get("meta_description") or "", content=piece.get("content") or "", send=send,
-        )
-    elif destination == "wordpress":
-        result = await wordpress.publish(
-            site=token["platform_user_id"], username=token["username"], password=token["access_token"], piece_id=piece["piece_id"],
-            title=title, content=_body(piece), excerpt=seo.get("meta_description") or "", slug=seo.get("slug") or "",
-            status=options.get("post_status") or "draft", category_id=options.get("category_id") or "", author_id=options.get("author_id") or "",
-            pictures=pictures,
-        )
-    else:
-        result = await ghost.publish(
-            site=token["platform_user_id"], admin_key=token["access_token"], piece_id=piece["piece_id"], title=title, content=_body(piece),
-            excerpt=seo.get("meta_description") or "", slug=seo.get("slug") or "", status=options.get("post_status") or "draft",
-            tags=seo.get("tags") or [], pictures=pictures,
-        )
+    try:
+        result = await service.send_piece(piece, ws, may_send_to_audience=body.confirm_send)
+    except DestinationError as exc:
+        await refuse(422 if "Confirm" in str(exc) or "Choose which" in str(exc) or "title" in str(exc) else 400, str(exc))
 
     if result.success:
-        await executor.mark_published(piece, ws, destination, result, piece.get("content") or "", increment_attempts=True)
-        await executor.after_published(piece, ws, destination, result, user_id=ctx.user_id, role=ctx.role)
-        live = (destination == "mailchimp" and options.get("send_mode") == "send") or options.get("post_status") == "publish"
-        from app.db.mongo import content_pieces as pieces
-
-        # A draft left in the destination is still "published" here, so what the member sees must say it is a draft.
-        await pieces.update_one(
-            {"piece_id": piece["piece_id"], "workspace_id": ws},
-            {"$set": {"publish_destination": destination, "publish_destination_state": "live" if live else "draft"}},
-        )
+        await service.record_success(piece, ws, result, user_id=ctx.user_id, role=ctx.role)
         return {
-            "success": True, "destination": destination, "platform_post_url": result.platform_post_url, "live": bool(live),
+            "success": True, "destination": destination, "platform_post_url": result.platform_post_url, "live": service.is_live(piece),
             "note": result.media_dropped_reason,
         }
 
-    from app.db.mongo import content_pieces
     from datetime import datetime, timezone
+
+    from app.db.mongo import content_pieces
 
     await content_pieces.update_one(
         {"piece_id": piece["piece_id"], "workspace_id": ws, "publish_status": "publishing"},

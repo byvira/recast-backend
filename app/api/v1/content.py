@@ -109,6 +109,8 @@ class SchedulePieceRequest(BaseModel):
     # A flagged or not-quality-passed post is refused unless the member
     # explicitly chooses to send it anyway. Who chose, and when, is kept.
     confirm_publish_anyway: bool = False
+    # A newsletter set to go to a whole audience is scheduled only when the member confirmed that.
+    confirm_send: bool = False
 
 
 class MarkPostedRequest(BaseModel):
@@ -605,6 +607,12 @@ async def schedule_piece(
     if body.confirm_publish_anyway:
         await record_override(piece, ctx.workspace_id, ctx.user_id)
 
+    from app.pipelines.publish.destinations import service as destination_service
+
+    audience_send = destination_service.sends_to_audience(piece)
+    if audience_send and not body.confirm_send:
+        raise HTTPException(status_code=422, detail="Confirm that this should be sent to the whole audience at that time.")
+
     updated = await update_piece_status(
         piece_id=piece_id,
         workspace_id=ctx.workspace_id,
@@ -616,6 +624,10 @@ async def schedule_piece(
         raise HTTPException(status_code=404, detail="Piece not found.")
     await content_pieces.update_one(
         {"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$unset": {"schedule_note": ""}},
+    )
+    # The confirmation to send to a whole audience is kept with the schedule, so the worker never sends without it.
+    await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$set": {"publish_send_confirmed": bool(audience_send)}},
     )
     if slug == "youtube" and body.youtube_metadata is not None:
         await content_pieces.update_one(
