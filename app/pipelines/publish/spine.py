@@ -203,7 +203,7 @@ def check_gate(
 
 # Platforms whose publisher posts several pictures at once, and how many it takes. Every other platform posts the first
 # attached picture only (their multi-picture posts work differently and are not built).
-MULTI_PICTURE_LIMITS = {"bluesky": 4, "instagram": 10}
+MULTI_PICTURE_LIMITS = {"bluesky": 4, "instagram": 10, "linkedin": 20, "threads": 20}
 
 
 async def media_for_publish(piece: dict, workspace_id: str, platform: str) -> list[dict]:

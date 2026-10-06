@@ -75,6 +75,25 @@ def _topic_tag(value: Any) -> str:
     return text
 
 
+_USERNAME = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+
+
+def _usernames(label: str, max_items: int) -> Callable[[Any], list[str]]:
+    def check(value: Any) -> list[str]:
+        if not isinstance(value, list) or len(value) > max_items:
+            raise ValueError(f"{label} can have up to {max_items} accounts.")
+        names: list[str] = []
+        for item in value:
+            name = item.strip().lstrip("@") if isinstance(item, str) else ""
+            if not _USERNAME.match(name):
+                raise ValueError(f"{label} must be Instagram usernames (letters, numbers, periods and underscores).")
+            if name.lower() not in [n.lower() for n in names]:
+                names.append(name)
+        return names
+
+    return check
+
+
 def _digits(label: str) -> Callable[[Any], str]:
     base = _text(label, 40)
 
@@ -94,13 +113,21 @@ ALLOWED: dict[str, dict[str, Callable[[Any], Any]]] = {
         "language": _language,
         "notify_subscribers": _flag("Notify subscribers"),
         "captions": _flag("Captions"),
+        "playlist_id": _text("The playlist", 64),
         "thumbnail_media_id": _text("The thumbnail", 80),
     },
-    "instagram": {"first_comment": _text("The first comment", 2200), "location_id": _digits("The location")},
+    "instagram": {
+        "first_comment": _text("The first comment", 2200),
+        "location_id": _digits("The location"),
+        # The place's name, kept only so the picker can show what was chosen. It is never sent to Instagram.
+        "location_name": _text("The place name", 120),
+        "user_tags": _usernames("People tagged", 20),
+        "collaborators": _usernames("Collaborators", 3),
+    },
     "facebook": {"link": _https("The link")},
-    "linkedin": {"visibility": _one_of("visibility", LINKEDIN_VISIBILITY)},
+    "linkedin": {"visibility": _one_of("visibility", LINKEDIN_VISIBILITY), "link_card_url": _https("The link card address")},
     "threads": {"reply_control": _one_of("reply control", THREADS_REPLY_CONTROLS), "topic_tag": _topic_tag},
-    "bluesky": {"languages": _languages},
+    "bluesky": {"languages": _languages, "link_card_url": _https("The link card address")},
 }
 
 

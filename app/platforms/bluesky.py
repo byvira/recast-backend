@@ -8,7 +8,7 @@ def _bluesky() -> PlatformDefinition:
         label="Bluesky",
         category="Social and feed networks",
         pipelines=frozenset({"text", "image", "audio"}),
-        native_formats={"text": "native", "image": "native"},
+        native_formats={"text": "native", "image": "native", "video": "native"},
         mode="code_driven",
         integration_pattern="api_publish",
         status="active",
@@ -21,6 +21,6 @@ def _bluesky() -> PlatformDefinition:
             "Open-protocol microblog, 300-character posts — no platform approval gate.",
         ],
         tone_profile="tech, creator-oriented",
-        access_notes="Connected; free API, no approval needed. Video support unverified — treat as image/text only for now.",
+        access_notes="Connected; free API, no approval needed. Video goes through Bluesky's video service (service auth, upload, then processing); built from its documented flow and not yet confirmed on a live account.",
         confidence="verified",
     )

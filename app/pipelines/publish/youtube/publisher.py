@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 YOUTUBE_UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_CAPTIONS_URL = "https://www.googleapis.com/upload/youtube/v3/captions"
 YOUTUBE_THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
+YOUTUBE_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 
 
 class YouTubePublisher(PlatformPublisher):
@@ -148,6 +149,23 @@ class YouTubePublisher(PlatformPublisher):
         if not resp.is_success:
             logger.warning("YouTube thumbnail upload returned %s for video %s", resp.status_code, video_id)
             return "Your video is up, but YouTube didn't accept the thumbnail. You can add one in YouTube Studio."
+        return None
+
+    async def _add_to_playlist(self, client: httpx.AsyncClient, access_token: str, video_id: str, playlist_id: str) -> Optional[str]:
+        """Put the uploaded video in the chosen playlist. The video is already up, so a problem is told to the member and never fails the post."""
+        try:
+            resp = await client.post(
+                YOUTUBE_PLAYLIST_ITEMS_URL,
+                params={"part": "snippet"},
+                headers={"Authorization": f"Bearer {access_token}"},
+                json={"snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("YouTube playlist add failed for video %s: %s", video_id, exc)
+            return "Your video is up, but it couldn't be added to the playlist. You can add it in YouTube Studio."
+        if not resp.is_success:
+            logger.warning("YouTube playlist add returned %s for video %s", resp.status_code, video_id)
+            return "Your video is up, but YouTube didn't add it to the playlist. You can add it in YouTube Studio."
         return None
 
     async def _upload_captions(
@@ -278,6 +296,10 @@ class YouTubePublisher(PlatformPublisher):
                 if thumbnail_id:
                     thumbnail_note = await self._set_thumbnail(client, access_token, video_id, thumbnail_id, request.workspace_id)
                     caption_note = " ".join(n for n in (caption_note, thumbnail_note) if n) or None
+                playlist_id = (request.options or {}).get("playlist_id")
+                if playlist_id:
+                    playlist_note = await self._add_to_playlist(client, access_token, video_id, playlist_id)
+                    caption_note = " ".join(n for n in (caption_note, playlist_note) if n) or None
 
                 post_url = f"https://youtube.com/watch?v={video_id}"
                 logger.info("YouTube video published: %s for piece %s", video_id, request.piece_id)

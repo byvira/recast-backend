@@ -117,6 +117,12 @@ class LinkedInPublisher(PlatformPublisher):
         # supported" decision here; the actual upload mechanics below are
         # LinkedIn-specific (register -> PUT -> reference), so this doesn't
         # use the base default's URL-reference return path directly.
+        # Several pictures, a description on a picture or a link card need LinkedIn's newer Posts API.
+        from app.pipelines.publish.linkedin.posts_api import needs_posts_api, publish_with_posts_api
+
+        if needs_posts_api(request):
+            return await publish_with_posts_api(request, access_token)
+
         media_result = self.attach_media(request)
         media_dropped_reason = media_result.dropped_reason
         share_content: dict = {

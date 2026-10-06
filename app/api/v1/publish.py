@@ -634,6 +634,72 @@ async def suggest_times(
     return rank_slots(platform=slug, label=piece["platform"], samples=samples, planned=planned, tz_name=zone_name)
 
 
+@router.get("/youtube/playlists")
+@limiter.limit("20/minute")
+async def youtube_playlists(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The connected channel's playlists, for the playlist choice on a YouTube post."""
+    import httpx
+
+    token = await get_token(ctx.workspace_id, "youtube")
+    if not token:
+        raise HTTPException(status_code=400, detail="YouTube is not connected. Connect it to choose a playlist.")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                "https://www.googleapis.com/youtube/v3/playlists",
+                params={"part": "snippet", "mine": "true", "maxResults": 50},
+                headers={"Authorization": f"Bearer {token['access_token']}"},
+            )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Couldn't reach YouTube. Try again.")
+    if response.status_code in (401, 403):
+        raise HTTPException(status_code=409, detail={"code": "platform_reconnect_required", "platform": "youtube", "message": "Reconnect YouTube to see your playlists."})
+    if not response.is_success:
+        raise HTTPException(status_code=502, detail="YouTube didn't answer. Try again.")
+    items = [{"id": i["id"], "title": (i.get("snippet") or {}).get("title", "")} for i in response.json().get("items", []) if i.get("id")]
+    return {"items": items}
+
+
+@router.get("/instagram/locations")
+@limiter.limit("30/minute")
+async def instagram_locations(
+    request: Request,
+    q: str,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Places matching a name, for the location of an Instagram post. A search Instagram cannot answer for this account gives an empty
+    list and a plain note, never an error that blocks publishing."""
+    import httpx
+
+    from app.pipelines.publish.meta.oauth import GRAPH_BASE
+
+    query = q.strip()
+    if len(query) < 2:
+        return {"items": [], "note": None}
+    token = await get_token(ctx.workspace_id, "instagram")
+    if not token:
+        raise HTTPException(status_code=400, detail="Instagram is not connected. Connect it to search for places.")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(
+                f"{GRAPH_BASE}/pages/search",
+                params={"q": query, "fields": "id,name,location{city,country}", "limit": 10, "access_token": token["access_token"]},
+            )
+    except httpx.HTTPError:
+        return {"items": [], "note": "Place search isn't reachable right now. You can type a place id instead."}
+    if not response.is_success:
+        return {"items": [], "note": "Place search isn't available for this account yet. You can type a place id instead."}
+    items = []
+    for row in response.json().get("data", []):
+        place = row.get("location") or {}
+        detail = ", ".join(x for x in (place.get("city"), place.get("country")) if x)
+        items.append({"id": row.get("id"), "name": row.get("name", ""), "detail": detail})
+    return {"items": [i for i in items if i["id"]], "note": None}
+
+
 @router.post("/youtube/prepare")
 @limiter.limit("20/minute")
 async def prepare_youtube_publish(

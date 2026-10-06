@@ -109,6 +109,29 @@ class BlueSkyPublisher(PlatformPublisher):
     def validate_content(self, content: str) -> tuple[bool, list[str]]:
         return validate_bluesky(content)
 
+    async def _link_card(self, url: str, access_token: str) -> dict:
+        """The external embed for a web address: title, description and, when the page has one, its picture as the thumbnail."""
+        from app.pipelines.publish.link_preview import fetch_preview
+
+        preview = await fetch_preview(url)
+        external: dict = {"uri": preview.url, "title": preview.title or preview.url, "description": preview.description}
+        if preview.image_url:
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    picture = await client.get(preview.image_url)
+                    picture.raise_for_status()
+                    image_bytes, image_mime = fit_image_for_bluesky(picture.content, picture.headers.get("content-type"))
+                    upload = await client.post(
+                        f"{ATP_BASE_URL}/com.atproto.repo.uploadBlob",
+                        content=image_bytes,
+                        headers={"Authorization": f"Bearer {access_token}", "Content-Type": image_mime},
+                    )
+                    upload.raise_for_status()
+                    external["thumb"] = upload.json()["blob"]
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Bluesky link card picture failed for %s: %s", url, exc)
+        return {"$type": "app.bsky.embed.external", "external": external}
+
     async def publish(
         self,
         request: PublishRequest,
@@ -141,7 +164,24 @@ class BlueSkyPublisher(PlatformPublisher):
         embed = None
         blob_dropped_reason = media_result.dropped_reason
 
-        if media_result.has_media:
+        if media_result.has_media and media_result.asset.kind.value == "video":
+            try:
+                from app.pipelines.publish.bluesky import video as bluesky_video
+
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    source = await client.get(media_result.asset.url)
+                    source.raise_for_status()
+                    blob = await bluesky_video.upload_video(
+                        client, pds_base=ATP_BASE_URL, access_token=access_token, did=request.platform_user_id, video=source.content,
+                        mime_type=media_result.asset.mime_type or "video/mp4", name=f"{request.piece_id}.mp4",
+                    )
+                embed = bluesky_video.video_embed(blob, getattr(media_result.asset, "alt_text", None))
+            except bluesky_video.VideoError as exc:
+                blob_dropped_reason = f"{exc} The post went out without the video."
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Bluesky video failed for piece %s: %s", request.piece_id, exc)
+                blob_dropped_reason = "Bluesky video upload failed, so the post went out as text only."
+        elif media_result.has_media:
             try:
                 # Up to four pictures go in one post (Bluesky's own limit for an image embed). With one picture attached this
                 # is exactly the single picture it always was.
@@ -167,6 +207,15 @@ class BlueSkyPublisher(PlatformPublisher):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Bluesky blob upload failed for piece %s: %s", request.piece_id, exc)
                 blob_dropped_reason = "Bluesky media upload failed — published as text only"
+
+        # A link card when no pictures are attached: the page's own title, description and picture, shown under the post.
+        card_url = (request.options or {}).get("link_card_url")
+        if embed is None and card_url:
+            try:
+                embed = await self._link_card(card_url, access_token)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Bluesky link card failed for piece %s: %s", request.piece_id, exc)
+                blob_dropped_reason = blob_dropped_reason or "The link card couldn't be built, so the post went out without it."
 
         record = {
             "$type":     "app.bsky.feed.post",

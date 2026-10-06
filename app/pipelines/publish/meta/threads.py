@@ -84,8 +84,29 @@ class ThreadsPublisher(PlatformPublisher):
         if media_result.has_media and getattr(media_result.asset, "alt_text", None):
             container_params["alt_text"] = media_result.asset.alt_text[:1000]
 
+        pictures = [m for m in request.media if m.kind.value == "image"][:20]
+        is_carousel = media_result.has_media and media_result.asset.kind.value == "image" and len(pictures) >= 2
+
         try:
             async with httpx.AsyncClient() as client:
+                if is_carousel:
+                    # Several pictures: one container for each, then a carousel container that names them.
+                    child_ids: list[str] = []
+                    for picture in pictures:
+                        child_params = {"media_type": "IMAGE", "image_url": picture.url, "is_carousel_item": "true", "access_token": access_token}
+                        if getattr(picture, "alt_text", None):
+                            child_params["alt_text"] = picture.alt_text[:1000]
+                        child = await client.post(f"{THREADS_BASE}/{threads_user_id}/threads", params=child_params)
+                        if child.status_code != 200:
+                            message = child.json().get("error", {}).get("message", child.text)
+                            return PublishResult(
+                                success=False, platform="threads", piece_id=request.piece_id,
+                                error_type=classify_error(child.status_code, message).value, error_code=child.status_code, error_message=message,
+                            )
+                        child_ids.append(child.json()["id"])
+                    container_params.pop("image_url", None)
+                    container_params.update({"media_type": "CAROUSEL", "children": ",".join(child_ids)})
+
                 # Step 1 — Create container
                 container_response = await client.post(
                     f"{THREADS_BASE}/{threads_user_id}/threads",

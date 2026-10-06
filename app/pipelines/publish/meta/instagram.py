@@ -6,6 +6,7 @@ Image is required for standard posts.
 Text-only posts use the reels or carousel workaround.
 """
 
+import json
 import logging
 import httpx
 
@@ -51,6 +52,12 @@ async def _wait_until_ready(client, container_id: str, access_token: str):
             return False, "Instagram could not process this video. Check its size and length, then try again."
         await asyncio.sleep(_READY_POLL_SECONDS)
     return False, None
+
+
+def _tag_positions(usernames: list[str]) -> list[dict]:
+    """People tagged in the first picture. Instagram wants a position for each; they are placed side by side across the middle."""
+    count = max(len(usernames), 1)
+    return [{"username": name, "x": round((index + 1) / (count + 1), 2), "y": 0.5} for index, name in enumerate(usernames)]
 
 
 class InstagramPublisher(PlatformPublisher):
@@ -113,6 +120,8 @@ class InstagramPublisher(PlatformPublisher):
         options = request.options or {}
         if options.get("location_id"):
             container_params["location_id"] = options["location_id"]
+        if options.get("collaborators"):
+            container_params["collaborators"] = json.dumps(options["collaborators"])
         if asset.kind.value == "video":
             container_params["video_url"] = asset.url
             container_params["media_type"] = "REELS"
@@ -121,6 +130,8 @@ class InstagramPublisher(PlatformPublisher):
             container_params["image_url"] = jpeg_url(asset.url)
             if getattr(asset, "alt_text", None):
                 container_params["alt_text"] = asset.alt_text[:1000]
+            if options.get("user_tags"):
+                container_params["user_tags"] = json.dumps(_tag_positions(options["user_tags"]))
 
         # Several pictures on one post go out as an Instagram carousel (2 to 10 pictures). Built from Meta's documented carousel
         # steps (a container per picture, then one carousel container naming them); not yet confirmed against a live account.
@@ -134,8 +145,10 @@ class InstagramPublisher(PlatformPublisher):
             async with httpx.AsyncClient(timeout=60.0) as client:
                 if is_carousel:
                     child_ids: list[str] = []
-                    for url, picture in zip(carousel_urls, carousel_pictures):
+                    for position, (url, picture) in enumerate(zip(carousel_urls, carousel_pictures)):
                         child_params = {"image_url": url, "is_carousel_item": "true", "access_token": access_token}
+                        if position == 0 and options.get("user_tags"):
+                            child_params["user_tags"] = json.dumps(_tag_positions(options["user_tags"]))
                         if getattr(picture, "alt_text", None):
                             child_params["alt_text"] = picture.alt_text[:1000]
                         child = await client.post(f"{GRAPH_BASE}/{ig_user_id}/media", params=child_params)
@@ -162,6 +175,8 @@ class InstagramPublisher(PlatformPublisher):
                     }
                     if options.get("location_id"):
                         container_params["location_id"] = options["location_id"]
+                    if options.get("collaborators"):
+                        container_params["collaborators"] = json.dumps(options["collaborators"])
 
                 # Step 1 — Create media container
                 container_response = await client.post(

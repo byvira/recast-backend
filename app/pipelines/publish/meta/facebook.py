@@ -81,6 +81,8 @@ class FacebookPublisher(PlatformPublisher):
             endpoint, params = f"{GRAPH_BASE}/{page_id}/photos", {
                 "url": media_result.asset.url, "caption": with_link, "access_token": access_token,
             }
+            if getattr(media_result.asset, "alt_text", None):
+                params["alt_text_custom"] = media_result.asset.alt_text[:1000]
         elif media_result.has_media and media_result.asset.kind.value == "video":
             endpoint, params = f"{GRAPH_BASE}/{page_id}/videos", {
                 "file_url": media_result.asset.url, "description": with_link, "access_token": access_token,
