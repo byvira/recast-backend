@@ -1,7 +1,9 @@
 """JWT utilities, token blacklisting, refresh token rotation, and auth dependency."""
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 import structlog
 from fastapi import Depends, HTTPException, Request, Response
@@ -23,7 +25,7 @@ security = HTTPBearer(auto_error=False)
 
 # ── Cookie configuration ──────────────────────────────────────────────────────
 
-ACCESS_TOKEN_MAX_AGE  = 60 * 60 * 24        # 24 hours in seconds
+# The access cookie lives as long as the access token does (JWT_EXPIRE_HOURS); the browser then refreshes it with the refresh cookie.
 REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30   # 30 days in seconds
 
 
@@ -64,7 +66,7 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         refresh_token: Signed JWT refresh token string.
     """
     attributes = _cookie_attributes()
-    response.set_cookie(key="access_token", value=access_token, max_age=ACCESS_TOKEN_MAX_AGE, httponly=True, **attributes)
+    response.set_cookie(key="access_token", value=access_token, max_age=settings.JWT_EXPIRE_HOURS * 3600, httponly=True, **attributes)
     response.set_cookie(key="refresh_token", value=refresh_token, max_age=REFRESH_TOKEN_MAX_AGE, httponly=True, **attributes)
 
 
@@ -131,6 +133,7 @@ def create_access_token(data: dict[str, Any]) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         **data,
+        "jti": uuid4().hex,
         "iss": settings.JWT_ISSUER,
         "aud": settings.JWT_AUDIENCE,
         "type": "access",
@@ -157,6 +160,7 @@ def create_refresh_token(data: dict[str, Any]) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         **data,
+        "jti": uuid4().hex,
         "iss": settings.JWT_ISSUER,
         "aud": settings.JWT_AUDIENCE,
         "type": "refresh",
@@ -208,6 +212,62 @@ def verify_token(token: str, expected_type: str = "access") -> dict[str, Any]:
 
 # ── Blacklist ─────────────────────────────────────────────────────────────────
 
+def _blacklist_key(token: str) -> str:
+    return f"blacklist:{hashlib.sha256(token.encode()).hexdigest()}"
+
+
+# ── Sessions ──────────────────────────────────────────────────────────────────
+# Every sign-in starts a session (`sid`). Its tokens all carry it, so the whole session can be ended at once: when a refresh token that
+# was already used is shown again (someone holds a copy), and when a person logs out.
+
+REUSE_GRACE_SECONDS = 10
+
+
+def issue_tokens(user_id: str, sid: str | None = None) -> tuple[str, str]:
+    """A new access and refresh token for a person, in a new session or in the session given."""
+    claims = {"sub": user_id, "sid": sid or uuid4().hex}
+    return create_access_token(claims), create_refresh_token(claims)
+
+
+async def revoke_session(sid: str | None) -> None:
+    """Ends a session: none of its tokens work again, wherever copies of them are."""
+    if not sid:
+        return
+    redis = await get_redis()
+    await redis.set(f"revoked_session:{sid}", "1", ex=settings.JWT_REFRESH_EXPIRE_DAYS * 86400)
+
+
+async def is_session_revoked(sid: str | None) -> bool:
+    if not sid:
+        return False
+    redis = await get_redis()
+    return bool(await redis.exists(f"revoked_session:{sid}"))
+
+
+def session_id_of(token: str | None) -> str | None:
+    """The session a token belongs to, read without insisting it has not expired (a logout still has to end an old session)."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM], audience=settings.JWT_AUDIENCE, issuer=settings.JWT_ISSUER,
+            options={"verify_exp": False},
+        )
+        return payload.get("sid")
+    except PyJWTError:
+        return None
+
+
+def _issued_before_cutoff(payload: dict[str, Any], user: dict | None) -> bool:
+    """True when the person asked to sign out everywhere after this token was issued."""
+    cutoff = (user or {}).get("tokens_valid_after")
+    if not cutoff:
+        return False
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    return float(payload.get("iat", 0)) < cutoff.timestamp()
+
+
 async def blacklist_token(token: str) -> None:
     """Add a token to the Redis blacklist using only its remaining TTL.
 
@@ -237,7 +297,8 @@ async def blacklist_token(token: str) -> None:
         remaining = int(exp - datetime.now(timezone.utc).timestamp())
         if remaining > 0:
             redis = await get_redis()
-            await redis.set(f"blacklist:{token}", "1", ex=remaining)
+            # The key is a hash of the token, so a copy of the Redis data is not a copy of live tokens. The value is when it was revoked.
+            await redis.set(_blacklist_key(token), str(datetime.now(timezone.utc).timestamp()), ex=remaining)
     except Exception:
         pass  # Token is already invalid — no blacklist entry needed
 
@@ -251,8 +312,20 @@ async def is_token_blacklisted(token: str) -> bool:
     Returns:
         True if the token has been blacklisted, False if it is still valid.
     """
+    return await _revoked_at(token) is not None
+
+
+async def _revoked_at(token: str) -> float | None:
+    """When a token was revoked (0.0 when that is not known), or None if it has not been. Entries made before keys were hashed are honoured
+    until they expire."""
     redis = await get_redis()
-    return bool(await redis.exists(f"blacklist:{token}"))
+    value = await redis.get(_blacklist_key(token))
+    if value is not None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0 if await redis.exists(f"blacklist:{token}") else None
 
 
 # ── Refresh token rotation ────────────────────────────────────────────────────
@@ -278,21 +351,28 @@ async def rotate_refresh_token(refresh_token: str) -> tuple[str, str]:
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid refresh token payload.")
 
-    # Reject a token already rotated away (or blacklisted at logout) —
-    # verify_token only checks the signature/claims, not revocation, so
-    # without this a replayed refresh token would still mint a fresh pair.
-    if await is_token_blacklisted(refresh_token):
-        raise HTTPException(
-            status_code=401,
-            detail="Refresh token has been revoked. Please log in again.",
-        )
+    sid = payload.get("sid")
+    revoked = HTTPException(status_code=401, detail="Refresh token has been revoked. Please log in again.")
+
+    if await is_session_revoked(sid):
+        raise revoked
+
+    # A token already used (or revoked at logout) is refused. When it is shown again well after it was used, someone holds a copy: the whole
+    # session ends, so neither the copy nor the tokens made from it keep working. Within a few seconds it is two requests that raced
+    # (two tabs), which is refused without ending anything.
+    used_at = await _revoked_at(refresh_token)
+    if used_at is not None:
+        if sid and used_at and (datetime.now(timezone.utc).timestamp() - used_at) > REUSE_GRACE_SECONDS:
+            await revoke_session(sid)
+        raise revoked
+
+    user = await users.find_one({"id": user_id}, {"tokens_valid_after": 1})
+    if not user or _issued_before_cutoff(payload, user):
+        raise revoked
 
     # Blacklist immediately before issuing replacement — prevents replay
     await blacklist_token(refresh_token)
-
-    new_access  = create_access_token({"sub": user_id})
-    new_refresh = create_refresh_token({"sub": user_id})
-    return new_access, new_refresh
+    return issue_tokens(user_id, sid)
 
 
 # ── Username helpers ──────────────────────────────────────────────────────────
@@ -397,12 +477,17 @@ async def get_current_user(request: Request) -> dict:
             detail="Invalid token payload — missing subject claim.",
         )
 
+    if await is_session_revoked(payload.get("sid")):
+        raise HTTPException(status_code=401, detail="Session has ended. Please log in again.")
+
     user = await users.find_one({"id": user_id})
     if not user:
         raise HTTPException(
             status_code=404,
             detail="User not found.",
         )
+    if _issued_before_cutoff(payload, user):
+        raise HTTPException(status_code=401, detail="You signed out everywhere. Please log in again.")
 
     structlog.contextvars.bind_contextvars(user_id=user_id)
     return user

@@ -53,7 +53,9 @@ class Settings(BaseSettings):
     # websites. COOKIE_DOMAIN is left empty so each cookie belongs to the API host alone.
     COOKIE_SAMESITE: str = "none"
     COOKIE_DOMAIN: str = ""
-    JWT_EXPIRE_HOURS: int = 24
+    # How long an access token lives. Short on purpose: the refresh token (rotated on every use) keeps a person signed in, so a copied
+    # access token stops working within the hour.
+    JWT_EXPIRE_HOURS: int = 1
     JWT_REFRESH_EXPIRE_DAYS: int = 30
     JWT_ISSUER: str = "saas-backend"
     JWT_AUDIENCE: str = "saas-api"

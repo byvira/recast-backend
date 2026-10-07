@@ -9,15 +9,14 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 # QA-001: migrated off python-jose (unmaintained, known CVEs) to PyJWT —
 # see app/core/auth.py's import comment for the full rationale.
-import jwt
-from jwt import PyJWTError
 from pymongo.errors import DuplicateKeyError
 
 from app.core.auth import (
     blacklist_token,
     clear_auth_cookies,
-    create_access_token,
-    create_refresh_token,
+    issue_tokens,
+    revoke_session,
+    session_id_of,
     generate_username,
     get_current_user,
     get_token_from_request,
@@ -335,8 +334,7 @@ async def signup(
             },
         )
 
-    access_token  = create_access_token({"sub": user_id})
-    refresh_token = create_refresh_token({"sub": user_id})
+    access_token, refresh_token = issue_tokens(user_id)
 
     # Write HttpOnly Secure cookies — browser clients never touch tokens directly
     set_auth_cookies(response, access_token, refresh_token)
@@ -410,8 +408,7 @@ async def login(
 
     await clear_otp_state(identifier)
 
-    access_token  = create_access_token({"sub": user["id"]})
-    refresh_token = create_refresh_token({"sub": user["id"]})
+    access_token, refresh_token = issue_tokens(user["id"])
 
     # Write HttpOnly Secure cookies — browser clients never touch tokens directly
     set_auth_cookies(response, access_token, refresh_token)
@@ -516,40 +513,31 @@ async def logout(
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
 
-    if token:
-        await blacklist_token(token)
-
-    # Also invalidate the refresh token to prevent token rotation post-logout
     refresh_token = request.cookies.get("refresh_token")
-    if refresh_token:
-        try:
-            # audience/issuer are validated the same way create_refresh_token
-            # signed them — every real token satisfies this, so this only
-            # rejects a forged/expired one, matching the historical fix's
-            # intent (this decode used to be silently skipped by a stricter
-            # library's claims check, making logout blacklisting a no-op for
-            # every request). PyJWT's decode() has no equivalent footgun —
-            # it simply ignores a claim it wasn't asked to validate — but
-            # audience/issuer stay explicit here to keep the check meaningful.
-            payload = jwt.decode(
-                refresh_token,
-                settings.SECRET_KEY,
-                algorithms=[settings.ALGORITHM],
-                audience=settings.JWT_AUDIENCE,
-                issuer=settings.JWT_ISSUER,
-            )
-            # Only blacklist if token has remaining validity
-            ttl = payload.get("exp", 0) - int(datetime.now(timezone.utc).timestamp())
-            if ttl > 0:
-                redis = await get_redis()
-                await redis.setex(f"blacklist:{refresh_token}", ttl, "1")
-        except PyJWTError:
-            pass  # Already expired — no blacklist entry needed
+    for each in (token, refresh_token):
+        if each:
+            await blacklist_token(each)
+
+    # Ending the session also stops any copy of its tokens, including ones made by earlier refreshes.
+    await revoke_session(session_id_of(token) or session_id_of(refresh_token))
 
     # Clear cookies from browser regardless of token validity
     clear_auth_cookies(response)
 
     return {"message": "Logged out successfully."}
+
+
+@router.post("/logout-all")
+@limiter.limit("5/minute")
+async def logout_all(
+    request: Request,
+    response: Response,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, str]:
+    """Sign the person out on every device: every token issued before now stops working."""
+    await users.update_one({"id": current_user["id"]}, {"$set": {"tokens_valid_after": datetime.now(timezone.utc)}})
+    clear_auth_cookies(response)
+    return {"message": "Signed out on all devices."}
 
 
 @router.get("/check-username/{username}")
