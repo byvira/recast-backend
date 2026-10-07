@@ -1,5 +1,6 @@
 """OTP generation, verification, and rate-limit enforcement using Redis."""
 
+import hmac
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -64,6 +65,8 @@ async def generate_otp(identifier: str) -> str:
         otp,
         ex=settings.OTP_EXPIRE_MINUTES * 60,
     )
+    # A fresh code starts with a fresh set of guesses.
+    await redis.delete(f"otp:{identifier}:attempts")
     return otp
 
 
@@ -104,7 +107,7 @@ async def verify_otp(identifier: str, otp: str) -> bool:
             detail="OTP expired or not found. Please request a new one.",
         )
 
-    if stored != otp:
+    if not hmac.compare_digest(str(stored), str(otp)):
         attempts = int(await redis.incr(f"otp:{identifier}:attempts"))
         await redis.expire(
             f"otp:{identifier}:attempts",
