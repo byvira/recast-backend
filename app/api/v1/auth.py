@@ -37,6 +37,7 @@ from app.core.otp import (
 )
 from app.core.workspace import create_personal_workspace
 from app.db.mongo import brand_profiles, users
+from app.shared import invites
 from app.db.redis import get_redis
 from app.models.user import (
     AuthResponse,
@@ -215,6 +216,21 @@ async def verify_otp_route(
     return VerifyOTPResponse(valid=True, is_new_user=existing is None)
 
 
+@router.get("/signup-mode")
+@limiter.limit("60/minute")
+async def get_signup_mode(request: Request) -> dict[str, str]:
+    """Whether an invite code is needed to create an account right now. The sign-up page uses it to show the invite field."""
+    return {"mode": await invites.signup_mode()}
+
+
+@router.post("/invite/check")
+@limiter.limit("20/minute")
+async def check_invite(request: Request, body: dict[str, str]) -> dict[str, object]:
+    """Is this invite code still good, and for which address? Lets the sign-up page prefill the email and say so early if it has run out."""
+    invite = await invites.find_open_invite(str(body.get("code", "")))
+    return {"valid": invite is not None, "email": invite["email"] if invite else None}
+
+
 @router.post("/signup", response_model=AuthResponse)
 @limiter.limit("10/minute")
 async def signup(
@@ -273,6 +289,9 @@ async def signup(
     if await is_username_taken(username):
         raise HTTPException(status_code=409, detail="Username is already taken.")
 
+    # While sign-up is by invite, a valid one-time code for this address is required.
+    invite = await invites.check_signup_allowed(identifier, body.channel == OTPChannel.EMAIL, body.invite_code)
+
     now = datetime.now(timezone.utc)
     user_id = str(uuid4())
 
@@ -308,6 +327,8 @@ async def signup(
             status_code=409,
             detail="Username or identifier already taken. Please choose another.",
         )
+    if invite:
+        await invites.use_invite(invite, user_id)
 
     # Every user gets a personal workspace — the default scope for all per-account
     # resources until they create or join another. Non-deletable, single seat.

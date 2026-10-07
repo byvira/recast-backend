@@ -35,6 +35,14 @@ onboarding_funnel_events: AsyncIOMotorCollection = get_client().get_default_data
 waitlist_leads: AsyncIOMotorCollection = get_client().get_default_database()["waitlist_leads"]
 # Messages from the public contact form.
 contact_messages: AsyncIOMotorCollection = get_client().get_default_database()["contact_messages"]
+# What staff did to a lead or a message: one row per action, never edited.
+lead_events: AsyncIOMotorCollection = get_client().get_default_database()["lead_events"]
+# Running numbers for the reference shown to people who write in (C-0001, C-0002, ...).
+lead_counters: AsyncIOMotorCollection = get_client().get_default_database()["lead_counters"]
+# One-time codes that let someone create an account while sign-up is invite only. Only a hash of the code is kept.
+signup_invites: AsyncIOMotorCollection = get_client().get_default_database()["signup_invites"]
+# Staff-editable settings for sign-up and the lead emails (one document).
+lead_settings: AsyncIOMotorCollection = get_client().get_default_database()["lead_settings"]
 # ── Workspace / tenancy collections ──────────────────────────────────────────
 workspaces: AsyncIOMotorCollection = get_client().get_default_database()["workspaces"]
 workspace_members: AsyncIOMotorCollection = get_client().get_default_database()["workspace_members"]
@@ -267,6 +275,12 @@ async def create_indexes() -> None:
     await waitlist_leads.create_index("referral_code", unique=True)
     await waitlist_leads.create_index([("created_at", -1)])
     await contact_messages.create_index([("created_at", -1)])
+    await contact_messages.create_index("reference", unique=True, sparse=True)
+    await contact_messages.create_index([("status", 1), ("created_at", -1)])
+    await waitlist_leads.create_index([("status", 1), ("created_at", -1)])
+    await lead_events.create_index([("target_id", 1), ("at", -1)])
+    await signup_invites.create_index("code_hash", unique=True)
+    await signup_invites.create_index([("email", 1), ("created_at", -1)])
 
     # ── Workspace / tenancy ──────────────────────────────────────────────
     # workspace_id is the primary scoping key across every collection below.

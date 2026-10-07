@@ -20,7 +20,7 @@ def _body(**over):
 async def test_a_message_is_stored(api_client):
     body = _body(topic="seats")
     res = await api_client.post("/api/v1/contact", json=body)
-    assert res.status_code == 200 and res.json() == {"ok": True}
+    assert res.status_code == 200 and res.json()["ok"] is True and res.json()["reference"].startswith("C-")
     saved = await contact_messages.find_one({"email": body["email"].lower()})
     assert saved["name"] == "Maya" and saved["topic"] == "seats"
 

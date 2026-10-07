@@ -28,6 +28,7 @@ from app.agents.feedback.trust import autonomy_trust_refresh
 from app.pipelines.analytics.checkpoints import capture_metric_checkpoints
 from app.pipelines.analytics.scheduler import refresh_analytics
 from app.workers.campaign_scheduler import run_due_campaign_batches
+from app.shared.invites import lead_digest, sweep_invites
 from app.workers.link_checks import check_old_post_links
 from app.workers.run_reminders import remind_about_paused_runs
 from app.workers.scheduled_posts import process_scheduled_posts
@@ -88,6 +89,10 @@ JOBS: list[Job] = [
         minute=frozenset({41}), hour=frozenset({2})),
     # Campaign cadence — stalled / behind checks, hourly at :37.
     Job("cadence_monitor", cadence_monitor, minute=frozenset({37})),
+    # Waitlist invites: expire old ones and send the one reminder, every hour at :22.
+    Job("invite_sweep", _no_ctx(sweep_invites), minute=frozenset({22})),
+    # A short daily note to the team about new leads and waiting messages, at 07:05 UTC.
+    Job("lead_digest", _no_ctx(lead_digest), minute=frozenset({5}), hour=frozenset({7})),
     # Support tickets — reminders, auto-resolve, auto-close, snooze wake-up, every 5 min.
     Job("support_lifecycle", _no_ctx(support_lifecycle_tick), minute=_every(5, offset=1)),
 ]

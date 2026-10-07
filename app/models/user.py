@@ -85,6 +85,8 @@ class SignupCompleteBody(BaseModel):
         max_length=30,
         pattern=r"^[a-zA-Z0-9_]+$",
     )
+    # The one-time code from an invite email. Needed while sign-up is by invite; ignored while it is open.
+    invite_code: str | None = Field(default=None, max_length=200)
 
 
 class UserUpdateBody(BaseModel):

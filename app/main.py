@@ -347,6 +347,10 @@ from app.api.v1 import waitlist as waitlist_router
 app.include_router(waitlist_router.router, prefix="/api/v1/waitlist", tags=["Waitlist"])
 from app.api.v1 import contact as contact_router
 app.include_router(contact_router.router, prefix="/api/v1/contact", tags=["Contact"])
+from app.api.v1 import ops_leads as ops_leads_router
+app.include_router(ops_leads_router.router, prefix="/api/v1/ops/leads", tags=["Ops Leads"])
+from app.api.v1 import ops_invites as ops_invites_router
+app.include_router(ops_invites_router.router, prefix="/api/v1/ops/leads", tags=["Ops Leads"])
 from app.api.v1 import jobs as jobs_router
 app.include_router(jobs_router.router, prefix="/api/v1/jobs", tags=["Jobs"])
 app.include_router(invites.router, prefix="/api/v1/invites", tags=["Invites"])

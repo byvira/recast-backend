@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     EMAIL_FROM: str = ""
     # Where messages from the public contact form are sent. Empty means they are only stored.
     CONTACT_INBOX_EMAIL: str = ""
+    # Who can create an account: `invite` needs a one-time invite code, `open` lets anyone, `auto` means invite in production and open elsewhere.
+    # Staff can change it from the Ops Leads settings; this is the value used until they do.
+    SIGNUP_MODE: str = "auto"
+    INVITE_EXPIRY_DAYS: int = 14
+    DAILY_INVITE_CAP: int = 25
 
     # SMS — Twilio
     TWILIO_ACCOUNT_SID: str = ""

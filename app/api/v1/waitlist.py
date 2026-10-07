@@ -5,7 +5,8 @@ import secrets
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from app.core.middleware import limiter
@@ -13,6 +14,8 @@ from app.core.notifications import send_templated_email
 from app.core.turnstile import verify_turnstile
 from app.db.mongo import waitlist_leads
 from app.models.waitlist import WaitlistJoinBody, WaitlistJoinResponse, WaitlistProfileBody
+from app.shared import invites
+from app.shared.leads import record_event
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -51,6 +54,8 @@ async def join_waitlist(request: Request, body: WaitlistJoinBody) -> WaitlistJoi
         "email": body.email,
         "referral_code": code,
         "referred_by": referrer["referral_code"] if referrer else None,
+        "status": "joined",
+        "notes": [],
         "referral_count": 0,
         "source": body.source,
         "utm": body.utm.model_dump(exclude_none=True) if body.utm else {},
@@ -69,7 +74,7 @@ async def join_waitlist(request: Request, body: WaitlistJoinBody) -> WaitlistJoi
         await waitlist_leads.update_one({"referral_code": referrer["referral_code"]}, {"$inc": {"referral_count": 1}})
 
     try:
-        await send_templated_email(WELCOME_TEMPLATE, body.email, {"REFERRAL_CODE": code})
+        await send_templated_email(WELCOME_TEMPLATE, body.email, {"REFERRAL_CODE": code, "UNSUBSCRIBE_URL": invites.unsubscribe_url(lead["id"])})
     except Exception:  # noqa: BLE001 - a failed welcome email must never lose the lead
         logger.warning("Waitlist welcome email could not be sent", exc_info=True)
 
@@ -86,4 +91,38 @@ async def save_waitlist_profile(request: Request, code: str, body: WaitlistProfi
     result = await waitlist_leads.update_one({"referral_code": code}, {"$set": changes})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="That link is not valid.")
+    # A team of six or more, or an agency, is worth knowing about straight away.
+    lead = await waitlist_leads.find_one({"referral_code": code}, {"_id": 0})
+    if lead:
+        await invites.alert_big_team(lead)
+    return {"ok": True}
+
+
+class UnsubscribeBody(BaseModel):
+    token: str = Field(..., max_length=200)
+
+
+@router.get("/unsubscribe")
+@limiter.limit("30/minute")
+async def unsubscribe_info(request: Request, t: str = Query("", max_length=200)) -> dict[str, str]:
+    """Who this unsubscribe link is for, with the address partly hidden. Opening the link changes nothing: only the button does."""
+    lead_id = invites.lead_id_from_token(t)
+    lead = await waitlist_leads.find_one({"id": lead_id}, {"email": 1, "status": 1}) if lead_id else None
+    if not lead:
+        raise HTTPException(status_code=404, detail="That link is not valid.")
+    name, _, domain = lead["email"].partition("@")
+    return {"email": f"{name[:2]}***@{domain}", "status": lead.get("status", "joined")}
+
+
+@router.post("/unsubscribe")
+@limiter.limit("10/minute")
+async def unsubscribe(request: Request, body: UnsubscribeBody) -> dict[str, bool]:
+    """Stop all emails to this person. It is a button on a page, not the link itself, so a mail scanner opening the link cannot do it."""
+    lead_id = invites.lead_id_from_token(body.token)
+    if not lead_id:
+        raise HTTPException(status_code=404, detail="That link is not valid.")
+    result = await waitlist_leads.update_one({"id": lead_id}, {"$set": {"status": "unsubscribed", "unsubscribed_at": datetime.now(timezone.utc)}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="That link is not valid.")
+    await record_event("waitlist", lead_id, "unsubscribed", {"id": "", "name": "The person"}, "Used the link in an email")
     return {"ok": True}
