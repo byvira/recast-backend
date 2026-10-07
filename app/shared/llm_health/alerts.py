@@ -85,6 +85,7 @@ def decide(
 
 async def _send_email(to: list[str], subject: str, body: str) -> bool:
     from app.core.config import settings
+    from app.core.notifications import OPS_FROM
 
     if not to or not settings.RESEND_API_KEY:
         return False
@@ -95,7 +96,7 @@ async def _send_email(to: list[str], subject: str, body: str) -> bool:
         html = "<p>" + body.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>") + "</p>"
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: resend.Emails.send({
-            "from": "Recast Ops <onboarding@resend.dev>", "to": to, "subject": f"[Recast] {subject}", "html": html,
+            "from": OPS_FROM, "to": to, "subject": f"[Recast] {subject}", "html": html,
         }))
         return True
     except Exception as exc:  # noqa: BLE001

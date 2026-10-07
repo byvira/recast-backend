@@ -55,7 +55,9 @@ class Settings(BaseSettings):
 
     # Email — Resend API
     RESEND_API_KEY: str = ""
-    EMAIL_FROM: str = "noreply@yourdomain.com"
+    # The address emails are sent from, on a domain verified in Resend (for example hello@mail.example.com, or `Name <hello@mail.example.com>`).
+    # Left empty, Resend's test sender is used, which only delivers to the Resend account's owner.
+    EMAIL_FROM: str = ""
 
     # SMS — Twilio
     TWILIO_ACCOUNT_SID: str = ""

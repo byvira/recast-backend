@@ -9,13 +9,40 @@ error (or simply carry on) rather than crashing.
 """
 
 import logging
+import re
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_FROM = "Recast <onboarding@resend.dev>"
-OPS_FROM = "Recast Ops <onboarding@resend.dev>"
+# Resend's own test sender. It only delivers to the Resend account's owner, so it is used only until a real sending address is set.
+TEST_SENDER = "onboarding@resend.dev"
+_PLACEHOLDER_DOMAIN = "yourdomain.com"
+
+
+def sender_address(configured: str | None) -> str:
+    """The bare sending address: EMAIL_FROM when it holds a real address (plain, or written as `Name <address>`), else the test sender.
+    An unset value, and the placeholder from the example settings file, both fall back to the test sender."""
+    raw = (configured or "").strip()
+    match = re.search(r"<([^<>\s]+@[^<>\s]+)>", raw)
+    address = (match.group(1) if match else raw).strip()
+    if "@" not in address or address.lower().endswith(f"@{_PLACEHOLDER_DOMAIN}"):
+        return TEST_SENDER
+    return address
+
+
+def sender_for(name: str, configured: str | None = None) -> str:
+    """`Name <address>` for the sending address in the settings."""
+    return f"{name} <{sender_address(settings.EMAIL_FROM if configured is None else configured)}>"
+
+
+_DEFAULT_FROM = sender_for("Recast")
+OPS_FROM = sender_for("Recast Ops")
+
+
+def _test_sender_version(sender: str) -> str:
+    """The same `Name <address>` with Resend's test sender as the address."""
+    return re.sub(r"<[^<>]*>", f"<{TEST_SENDER}>", sender)
 
 
 async def send_templated_email(
@@ -53,13 +80,18 @@ async def send_templated_email(
         import resend  # type: ignore[import-untyped]
 
         resend.api_key = settings.RESEND_API_KEY
-        resend.Emails.send(
-            {
-                "from": from_override or _DEFAULT_FROM,
-                "to": to,
-                "template": {"id": template_id, "variables": variables},
-            }
-        )
+        sender = from_override or _DEFAULT_FROM
+        payload = {"to": to, "template": {"id": template_id, "variables": variables}}
+        try:
+            resend.Emails.send({"from": sender, **payload})
+        except Exception as first:  # noqa: BLE001
+            # A sending address Resend does not accept yet (its domain is not verified) must not stop every email: try the test sender
+            # once. It only reaches the Resend account's owner, but that is better than nothing while the domain is being set up.
+            fallback = _test_sender_version(sender)
+            if fallback == sender:
+                raise
+            logger.warning("Email from %s was refused (%s); trying the test sender", sender, first)
+            resend.Emails.send({"from": fallback, **payload})
         return True
     except Exception as exc:
         logger.error("Failed to send templated email '%s' to %s: %s", template_id, to, exc)

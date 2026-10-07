@@ -25,6 +25,7 @@ from app.api.v1 import presets as presets_router
 from app.api.v1 import campaigns as campaigns_router
 from app.api.v1 import runs as runs_router
 from app.core.config import settings
+from app.core.origins import build_origins
 from app.api.v1 import workspace, invites
 from app.core.logger import logger, setup_logging
 from app.core.middleware import MaxBodySizeMiddleware, RequestLoggingMiddleware, limiter
@@ -305,16 +306,14 @@ app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
-if settings.ENVIRONMENT == "production":
-    # Falls back to FRONTEND_URL when PRODUCTION_DOMAIN isn't set — the two
-    # are otherwise easy to set independently and forget one, silently
-    # reopening a CORS gap in production (as happened here: FRONTEND_URL
-    # was correct but PRODUCTION_DOMAIN was never set on Render).
-    production_domain = settings.PRODUCTION_DOMAIN or settings.FRONTEND_URL
-    origins = [production_domain] if production_domain else []
-    origins += [o for o in settings.ALLOWED_ORIGINS if o not in origins]
-else:
-    origins = list(settings.ALLOWED_ORIGINS)
+# In production the primary domain falls back to FRONTEND_URL when PRODUCTION_DOMAIN isn't set (the two are easy to set independently and
+# forget one, which once silently reopened a CORS gap), and the app's own addresses are always allowed (see app/core/origins.py).
+origins = build_origins(
+    production=settings.ENVIRONMENT == "production",
+    production_domain=settings.PRODUCTION_DOMAIN,
+    frontend_url=settings.FRONTEND_URL,
+    allowed=settings.ALLOWED_ORIGINS,
+)
 
 app.add_middleware(
     CORSMiddleware,
