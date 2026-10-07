@@ -245,7 +245,7 @@ def _brand_tokens_from(brand: dict) -> BrandTokens:
     colors = visual_identity.get("colors") or {}
     fonts = visual_identity.get("fonts") or {}
     return BrandTokens(
-        primary_hex=colors.get("primary") or "#6366f1",
+        primary_hex=colors.get("primary") or "#e04a1f",
         secondary_hex=colors.get("secondary") or "#0f172a",
         accent_hex=colors.get("accent") or "#38bdf8",
         heading_font=fonts.get("heading") or None,
@@ -520,7 +520,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
     colors = visual_identity.get("colors") or {}
     fonts = visual_identity.get("fonts") or {}
     brand_tokens = BrandTokens(
-        primary_hex=colors.get("primary") or "#6366f1",
+        primary_hex=colors.get("primary") or "#e04a1f",
         secondary_hex=colors.get("secondary") or "#0f172a",
         accent_hex=colors.get("accent") or "#38bdf8",
         heading_font=fonts.get("heading") or None,

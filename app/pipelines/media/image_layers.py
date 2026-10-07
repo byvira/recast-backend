@@ -190,9 +190,9 @@ def render_layers(
             canvas = _fit_background(background_bytes, size).convert("RGBA")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Background could not be read, using the brand colour: %s", exc)
-            canvas = Image.new("RGBA", size, (*_color(brand.primary_hex, "#16161D"), 255))
+            canvas = Image.new("RGBA", size, (*_color(brand.primary_hex, "#1C1814"), 255))
     else:
-        canvas = Image.new("RGBA", size, (*_color(brand.primary_hex, "#16161D"), 255))
+        canvas = Image.new("RGBA", size, (*_color(brand.primary_hex, "#1C1814"), 255))
 
     for layer in layers[:MAX_LAYERS]:
         if layer.hidden:

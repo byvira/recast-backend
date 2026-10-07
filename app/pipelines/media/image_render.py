@@ -168,7 +168,7 @@ LAYOUT_DIMS: dict[LayoutPreset, tuple[int, int]] = {
 # render support for one slide at a time.
 SUPPORTED_LAYOUTS = frozenset(LayoutPreset)
 
-_DEFAULT_BG = "#16161D"
+_DEFAULT_BG = "#1C1814"
 _DEFAULT_FG = "#FFFFFF"
 _MARGIN_FRACTION = 0.11  # matches render_quote_card's 120/1080 margin ratio
 
@@ -178,7 +178,7 @@ class BrandTokens(BaseModel):
     field names intentionally match primaryHex/secondaryHex/accentHex/
     outerRadius/containerPadding exactly, not renamed."""
 
-    primary_hex: str = "#6366f1"
+    primary_hex: str = "#e04a1f"
     secondary_hex: str = "#0f172a"
     accent_hex: str = "#38bdf8"
     outer_radius: int = 16
