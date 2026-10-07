@@ -345,6 +345,8 @@ app.include_router(oauth.router,          prefix="/api/v1/oauth",      tags=["OA
 app.include_router(workspace.router, prefix="/api/v1/workspaces", tags=["Workspace"])
 from app.api.v1 import waitlist as waitlist_router
 app.include_router(waitlist_router.router, prefix="/api/v1/waitlist", tags=["Waitlist"])
+from app.api.v1 import contact as contact_router
+app.include_router(contact_router.router, prefix="/api/v1/contact", tags=["Contact"])
 from app.api.v1 import jobs as jobs_router
 app.include_router(jobs_router.router, prefix="/api/v1/jobs", tags=["Jobs"])
 app.include_router(invites.router, prefix="/api/v1/invites", tags=["Invites"])

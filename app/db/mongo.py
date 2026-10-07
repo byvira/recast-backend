@@ -33,6 +33,8 @@ onboarding_drafts: AsyncIOMotorCollection = get_client().get_default_database()[
 onboarding_funnel_events: AsyncIOMotorCollection = get_client().get_default_database()["onboarding_funnel_events"]
 # Public waitlist leads: one row per email, with the answers people add afterwards and who referred them.
 waitlist_leads: AsyncIOMotorCollection = get_client().get_default_database()["waitlist_leads"]
+# Messages from the public contact form.
+contact_messages: AsyncIOMotorCollection = get_client().get_default_database()["contact_messages"]
 # ── Workspace / tenancy collections ──────────────────────────────────────────
 workspaces: AsyncIOMotorCollection = get_client().get_default_database()["workspaces"]
 workspace_members: AsyncIOMotorCollection = get_client().get_default_database()["workspace_members"]
@@ -264,6 +266,7 @@ async def create_indexes() -> None:
     await waitlist_leads.create_index("email", unique=True)
     await waitlist_leads.create_index("referral_code", unique=True)
     await waitlist_leads.create_index([("created_at", -1)])
+    await contact_messages.create_index([("created_at", -1)])
 
     # ── Workspace / tenancy ──────────────────────────────────────────────
     # workspace_id is the primary scoping key across every collection below.
