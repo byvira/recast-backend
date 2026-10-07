@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # consulted when ENVIRONMENT != "production" (enforced in auth.py,
     # not here) — this setting alone does not grant access in production.
     DEV_OTP_TEST_IDENTIFIERS: str = "virastudio.hello@gmail.com"
+    # Sign-in cookies in production. "none" lets the site and the API sit on unrelated addresses (the older setup). When both are on the same
+    # registrable domain (recast.example.com and api.example.com) "lax" is safer, because the browser then never sends the cookie from other
+    # websites. COOKIE_DOMAIN is left empty so each cookie belongs to the API host alone.
+    COOKIE_SAMESITE: str = "none"
+    COOKIE_DOMAIN: str = ""
     JWT_EXPIRE_HOURS: int = 24
     JWT_REFRESH_EXPIRE_DAYS: int = 30
     JWT_ISSUER: str = "saas-backend"

@@ -27,6 +27,19 @@ ACCESS_TOKEN_MAX_AGE  = 60 * 60 * 24        # 24 hours in seconds
 REFRESH_TOKEN_MAX_AGE = 60 * 60 * 24 * 30   # 30 days in seconds
 
 
+def _cookie_attributes() -> dict:
+    """Where the sign-in cookies live and how they travel. Outside production: plain HTTP and Lax, so local work needs no certificate.
+    In production: Secure, and SameSite from COOKIE_SAMESITE ("none" unless set to "lax" or "strict"), on COOKIE_DOMAIN when one is set.
+    Setting and clearing must use the same attributes or the browser ignores the deletion."""
+    is_prod = settings.ENVIRONMENT == "production"
+    configured = (settings.COOKIE_SAMESITE or "none").strip().lower()
+    samesite = (configured if configured in ("none", "lax", "strict") else "none") if is_prod else "lax"
+    attributes: dict = {"secure": is_prod, "samesite": samesite}
+    if is_prod and settings.COOKIE_DOMAIN.strip():
+        attributes["domain"] = settings.COOKIE_DOMAIN.strip()
+    return attributes
+
+
 def set_auth_cookies(response: Response, access_token: str, refresh_token: str) -> None:
     """Write access and refresh tokens as HttpOnly Secure cookies on the response.
 
@@ -50,25 +63,9 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str) 
         access_token: Signed JWT access token string.
         refresh_token: Signed JWT refresh token string.
     """
-    is_prod = settings.ENVIRONMENT == "production"
-    samesite = "none" if is_prod else "lax"
-
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        max_age=ACCESS_TOKEN_MAX_AGE,
-        httponly=True,
-        secure=is_prod,
-        samesite=samesite,
-    )
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        max_age=REFRESH_TOKEN_MAX_AGE,
-        httponly=True,
-        secure=is_prod,
-        samesite=samesite,
-    )
+    attributes = _cookie_attributes()
+    response.set_cookie(key="access_token", value=access_token, max_age=ACCESS_TOKEN_MAX_AGE, httponly=True, **attributes)
+    response.set_cookie(key="refresh_token", value=refresh_token, max_age=REFRESH_TOKEN_MAX_AGE, httponly=True, **attributes)
 
 
 def clear_auth_cookies(response: Response) -> None:
@@ -82,10 +79,9 @@ def clear_auth_cookies(response: Response) -> None:
     Args:
         response: FastAPI Response instance to remove cookies from.
     """
-    is_prod = settings.ENVIRONMENT == "production"
-    samesite = "none" if is_prod else "lax"
-    response.delete_cookie("access_token", secure=is_prod, samesite=samesite)
-    response.delete_cookie("refresh_token", secure=is_prod, samesite=samesite)
+    attributes = _cookie_attributes()
+    response.delete_cookie("access_token", **attributes)
+    response.delete_cookie("refresh_token", **attributes)
 
 
 def get_token_from_request(request: Request) -> str | None:
