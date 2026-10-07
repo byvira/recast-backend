@@ -115,3 +115,58 @@ async def test_google_callback_denied_returns_closing_html(api_client):
     assert res.status_code == 400
     assert CLOSE_SCRIPT in res.text
     assert "Google OAuth denied" in res.text
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The pop-up reports back to the website that started the connection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_the_popup_reports_to_the_website_that_started_the_connection(monkeypatch):
+    from app.api.v1 import oauth
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://recastbyvira.vercel.app")
+    token = oauth._popup_origin.set("https://recast.byvirastudio.com")
+    try:
+        body = oauth._oauth_popup_response(True, "Connected").body.decode()
+    finally:
+        oauth._popup_origin.reset(token)
+    assert '"https://recast.byvirastudio.com"' in body and "recastbyvira.vercel.app" not in body
+
+
+def test_without_a_remembered_website_the_popup_uses_the_frontend_address(monkeypatch):
+    from app.api.v1 import oauth
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://recastbyvira.vercel.app/")
+    body = oauth._oauth_popup_response(False, "Nope").body.decode()
+    assert '"https://recastbyvira.vercel.app"' in body
+
+
+def test_only_allowed_websites_are_remembered(monkeypatch):
+    from app.api.v1 import oauth
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://recastbyvira.vercel.app")
+    monkeypatch.setattr(settings, "ALLOWED_ORIGINS", [])
+    assert oauth._known_origin("https://recast.byvirastudio.com") == "https://recast.byvirastudio.com"
+    assert oauth._known_origin("https://recast.byvirastudio.com/") == "https://recast.byvirastudio.com"
+    assert oauth._known_origin("https://evil.example.com") is None
+    assert oauth._known_origin("") is None and oauth._known_origin(None) is None
+
+
+async def test_the_website_survives_the_round_trip_through_the_saved_state(monkeypatch):
+    from app.api.v1 import oauth
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "FRONTEND_URL", "https://recastbyvira.vercel.app")
+    state = await oauth._create_state("u1", "meta", "w1", "https://recast.byvirastudio.com")
+    data = await oauth._consume_state(state)
+    assert data["origin"] == "https://recast.byvirastudio.com"
+    assert oauth._popup_origin.get() == "https://recast.byvirastudio.com"
+    # A connection started from an address that is not allowed is remembered as nothing.
+    state = await oauth._create_state("u1", "meta", "w1", "https://evil.example.com")
+    await oauth._consume_state(state)
+    assert oauth._popup_origin.get() is None

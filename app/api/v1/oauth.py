@@ -5,6 +5,7 @@ Handles all platform OAuth flows through one unified router.
 
 import json
 import logging
+from contextvars import ContextVar
 import re
 import secrets
 from typing import Any
@@ -45,7 +46,28 @@ class BlueskyConnectRequest(BaseModel):
     app_password: str
 
 
-async def _create_state(user_id: str, platform: str, workspace_id: str) -> str:
+# The website that started the connection, so the pop-up reports back to it (the app can be opened from more than one address).
+_popup_origin: ContextVar[str | None] = ContextVar("oauth_popup_origin", default=None)
+
+
+def _known_origin(origin: str | None) -> str | None:
+    """The origin when it is one of the addresses allowed to call the API, else None."""
+    from app.core.origins import build_origins, clean
+
+    value = clean(origin or "")
+    allowed = build_origins(
+        production=settings.ENVIRONMENT == "production", production_domain=settings.PRODUCTION_DOMAIN,
+        frontend_url=settings.FRONTEND_URL, allowed=settings.ALLOWED_ORIGINS,
+    )
+    return value if value and value in allowed else None
+
+
+def _opener_origin(request: Request) -> str | None:
+    """The website that is making this request (the one that will open the pop-up), when it is an allowed one."""
+    return _known_origin(request.headers.get("origin"))
+
+
+async def _create_state(user_id: str, platform: str, workspace_id: str, origin: str | None = None) -> str:
     state = secrets.token_urlsafe(32)
     client = await get_redis()
     await client.set(
@@ -54,6 +76,7 @@ async def _create_state(user_id: str, platform: str, workspace_id: str) -> str:
             "user_id": user_id,
             "platform": platform,
             "workspace_id": workspace_id,
+            "origin": origin,
         }),
         ex=_OAUTH_STATE_TTL_SECONDS,
     )
@@ -68,7 +91,10 @@ async def _consume_state(state: str) -> dict | None:
     if raw is None:
         logger.error("State NOT FOUND or already consumed/expired — state=%s", state[:20])
         return None
-    return json.loads(raw)
+    data = json.loads(raw)
+    # From here on this request's pop-up page reports back to the website that started the connection.
+    _popup_origin.set(_known_origin(data.get("origin")))
+    return data
 
 
 def _derive_profile_url(platform: str, username: str, platform_user_id: str = "") -> str | None:
@@ -158,7 +184,7 @@ def _oauth_popup_response(success: bool, message: str) -> HTMLResponse:
   </div>
   <script>
     try {{
-      if (window.opener) window.opener.postMessage({{ type: "recast_oauth", success: {json.dumps(success)}, message: {_js(message)} }}, {_js(settings.FRONTEND_URL.rstrip("/"))});
+      if (window.opener) window.opener.postMessage({{ type: "recast_oauth", success: {json.dumps(success)}, message: {_js(message)} }}, {_js(_popup_origin.get() or settings.FRONTEND_URL.rstrip("/"))});
     }} catch (e) {{}}
     setTimeout(function() {{ window.close(); }}, 1500);
   </script>
@@ -282,7 +308,7 @@ async def connect_meta(
     One connect flow, three platforms connected simultaneously.
     """
     from app.pipelines.publish.meta.oauth import build_auth_url
-    state    = await _create_state(ctx.user_id, "meta", ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, "meta", ctx.workspace_id, _opener_origin(request))
     auth_url = build_auth_url(state, platform="meta")
 
     return {
@@ -412,7 +438,7 @@ async def connect_threads(
     Start Threads OAuth flow — separate from Facebook Login.
     Threads uses threads.net/oauth/authorize not Facebook.
     """
-    state    = await _create_state(ctx.user_id, "threads", ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, "threads", ctx.workspace_id, _opener_origin(request))
     params   = {
         "client_id":     settings.THREADS_APP_ID,
         "redirect_uri":  settings.THREADS_REDIRECT_URI,
@@ -536,7 +562,7 @@ async def connect_google(
     Covers YouTube (and other Google products as scopes are added).
     """
     from app.pipelines.publish.google.oauth import build_auth_url
-    state    = await _create_state(ctx.user_id, "google", ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, "google", ctx.workspace_id, _opener_origin(request))
     auth_url = build_auth_url(state, platform="google")
 
     return {
@@ -649,7 +675,7 @@ async def connect_platform(
             detail=f"Platform '{platform}' not supported.",
         )
 
-    state    = await _create_state(ctx.user_id, platform, ctx.workspace_id)
+    state    = await _create_state(ctx.user_id, platform, ctx.workspace_id, _opener_origin(request))
     auth_url = publisher.build_auth_url(state)
 
     return {
