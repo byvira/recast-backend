@@ -20,7 +20,7 @@ async def test_request_otp_then_verify_succeeds(api_client):
         "/api/v1/auth/request-otp", json={"identifier": email, "channel": "email"}
     )
     assert res.status_code == 200
-    assert res.json()["cooldown_seconds"] == 60
+    assert res.json()["cooldown_seconds"] == 30
 
     otp = await read_otp_code(email)
     res = await api_client.post(
@@ -45,28 +45,35 @@ async def test_verify_otp_wrong_code_rejected(api_client):
     assert res.status_code == 401
 
 
-async def test_verify_otp_locks_after_max_attempts(api_client):
+async def test_verify_otp_cancels_the_code_after_max_attempts_without_locking_the_address(api_client):
     email = unique_email()
     await api_client.post(
         "/api/v1/auth/request-otp", json={"identifier": email, "channel": "email"}
     )
+    real = await read_otp_code(email)
+    wrong = "000000" if real != "000000" else "111111"
     # OTP_MAX_ATTEMPTS defaults to 5 — exhaust them with a wrong code.
-    last_status = None
+    last = None
     for _ in range(5):
-        res = await api_client.post(
+        last = await api_client.post(
             "/api/v1/auth/verify-otp",
-            json={"identifier": email, "otp": "000000", "channel": "email"},
+            json={"identifier": email, "otp": wrong, "channel": "email"},
         )
-        last_status = res.status_code
-    assert last_status == 423
+    assert last.status_code == 401
+    assert "request a new one" in last.json()["detail"].lower()
 
-    # Locked out even with the correct code now.
-    otp = await read_otp_code(email)
+    # That code is gone for good, even when it is now typed correctly...
     res = await api_client.post(
         "/api/v1/auth/verify-otp",
-        json={"identifier": email, "otp": otp, "channel": "email"},
+        json={"identifier": email, "otp": real, "channel": "email"},
     )
-    assert res.status_code == 423
+    assert res.status_code == 401
+
+    # ...but the address is not locked: asking again is only held back by the short cooldown, never by a lock (423).
+    res = await api_client.post(
+        "/api/v1/auth/request-otp", json={"identifier": email, "channel": "email"}
+    )
+    assert res.status_code in (200, 429)
 
 
 async def test_signup_requires_verified_otp(api_client):

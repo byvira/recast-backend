@@ -2,13 +2,11 @@
 
 import hmac
 import random
-from datetime import datetime, timedelta, timezone
 
 import phonenumbers
 from fastapi import HTTPException
 
 from app.core.config import settings
-from app.core.notifications import send_templated_email
 from app.db.redis import get_redis
 
 
@@ -74,11 +72,10 @@ async def verify_otp(identifier: str, otp: str) -> bool:
     """Verify an OTP code, deleting it and setting the verified flag atomically.
 
     Flow:
-    1. Check locked key → 423 if present.
-    2. Fetch stored OTP → 401 if expired/missing.
-    3. Compare codes → increment attempts counter on failure.
-    4. On max attempts → set lock key → 423.
-    5. On success → pipeline: delete code + attempts, set verified flag.
+    1. Fetch stored OTP → 401 if expired/missing.
+    2. Compare codes → count a failed attempt on a mismatch.
+    3. On max attempts → cancel that code (a new one must be requested).
+    4. On success → pipeline: delete code + attempts, set verified flag.
 
     Args:
         identifier: Raw identifier (normalized internally).
@@ -88,17 +85,10 @@ async def verify_otp(identifier: str, otp: str) -> bool:
         True on successful verification.
 
     Raises:
-        HTTPException 423: Account locked due to too many failures.
         HTTPException 401: OTP expired/missing or code mismatch.
     """
     identifier = normalize_identifier(identifier)
     redis = await get_redis()
-
-    if await redis.exists(f"otp:{identifier}:locked"):
-        raise HTTPException(
-            status_code=423,
-            detail="Account locked due to too many failed attempts. Try again in 15 minutes.",
-        )
 
     stored = await redis.get(f"otp:{identifier}:code")
     if not stored:
@@ -116,27 +106,12 @@ async def verify_otp(identifier: str, otp: str) -> bool:
         remaining = settings.OTP_MAX_ATTEMPTS - attempts
 
         if attempts >= settings.OTP_MAX_ATTEMPTS:
-            await redis.set(
-                f"otp:{identifier}:locked",
-                "1",
-                ex=settings.OTP_LOCK_MINUTES * 60,
-            )
-            if "@" in identifier:
-                unlock_at = (
-                    datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_LOCK_MINUTES)
-                ).isoformat()
-                await send_templated_email(
-                    "account-locked",
-                    identifier,
-                    {
-                        "MASKED_IDENTIFIER": _mask_email(identifier),
-                        "LOCK_MINUTES": settings.OTP_LOCK_MINUTES,
-                        "UNLOCK_AT": unlock_at,
-                    },
-                )
+            # Only this code is cancelled. The address itself is never locked, so a stranger typing wrong codes for someone else's email
+            # cannot stop that person signing in; they just ask for a new code.
+            await redis.delete(f"otp:{identifier}:code", f"otp:{identifier}:attempts")
             raise HTTPException(
-                status_code=423,
-                detail="Too many failed attempts. Account locked for 15 minutes.",
+                status_code=401,
+                detail="Too many wrong codes. Please request a new one.",
             )
 
         raise HTTPException(

@@ -31,7 +31,6 @@ from app.core.otp import (
     check_rate_limit,
     clear_otp_state,
     generate_otp,
-    is_locked,
     normalize_identifier,
     verify_otp,
 )
@@ -127,7 +126,7 @@ async def _build_profile_response(user: dict) -> UserProfileResponse:
 
 
 @router.post("/request-otp", response_model=OTPSentResponse)
-@limiter.limit("5/minute")
+@limiter.limit("10/minute;60/hour")
 async def request_otp(
     request: Request,
     body: OTPRequestBody,
@@ -155,24 +154,18 @@ async def request_otp(
     identifier = normalize_identifier(body.identifier)
     _validate_identifier_format(identifier, body.channel)
 
-    if await is_locked(identifier):
-        raise HTTPException(
-            status_code=423,
-            detail="Account locked due to too many failed attempts. Try again in 15 minutes.",
-        )
-
     await check_rate_limit(identifier)
     otp = await generate_otp(identifier)
     await send_otp(identifier, otp, body.channel.value)
 
     return OTPSentResponse(
         message=f"OTP sent via {body.channel.value}.",
-        cooldown_seconds=60,
+        cooldown_seconds=settings.OTP_COOLDOWN_SECONDS,
     )
 
 
 @router.post("/verify-otp", response_model=VerifyOTPResponse, summary="Verify OTP")
-@limiter.limit("20/minute")
+@limiter.limit("30/minute")
 async def verify_otp_route(
     request: Request,
     body: OTPVerifyBody,

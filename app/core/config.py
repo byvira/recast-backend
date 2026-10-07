@@ -37,9 +37,9 @@ class Settings(BaseSettings):
     # Auth — OTP rate limits and JWT configuration
     OTP_EXPIRE_MINUTES: int = 10
     OTP_MAX_ATTEMPTS: int = 5
-    OTP_MAX_SENDS_PER_HOUR: int = 5
-    OTP_MAX_SENDS_PER_DAY: int = 10
-    OTP_COOLDOWN_SECONDS: int = 60
+    OTP_MAX_SENDS_PER_HOUR: int = 10
+    OTP_MAX_SENDS_PER_DAY: int = 30
+    OTP_COOLDOWN_SECONDS: int = 30
     OTP_LOCK_MINUTES: int = 15
 
     # Dev/test-only OTP backdoor for automated (Playwright) testing — see
