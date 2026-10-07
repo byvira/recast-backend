@@ -55,6 +55,7 @@ class OTPRequestBody(BaseModel):
 
     identifier: str = Field(..., description="Email or E.164 phone number")
     channel: OTPChannel
+    turnstile_token: str = Field("", description="Result of the browser security check")
 
 
 class OTPVerifyBody(BaseModel):

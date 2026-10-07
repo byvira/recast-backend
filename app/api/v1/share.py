@@ -16,13 +16,13 @@ from datetime import date, datetime, timezone
 from typing import Literal, Optional
 from uuid import uuid4
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from pymongo.errors import DuplicateKeyError
 
 from app.shared.brand_name import brand_display_name
 from app.core.config import settings
+from app.core.turnstile import verify_turnstile
 from app.core.middleware import limiter
 from app.db.mongo import (
     audio_assets,
@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _NOT_AVAILABLE = "This link isn't available. It may have expired or been turned off."
-_TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 _EVENT_TYPES = {"view", "play", "25", "50", "75", "100"}
 
 
@@ -147,17 +146,7 @@ def _visitor_hash(request: Request) -> str:
 async def _verify_turnstile(token: str, request: Request) -> bool:
     """True when Turnstile isn't configured yet (nothing to check against)
     or the token really passed; False only on a real, confirmed failure."""
-    if not settings.TURNSTILE_SECRET_KEY:
-        return True
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            res = await client.post(_TURNSTILE_VERIFY_URL, data={
-                "secret": settings.TURNSTILE_SECRET_KEY, "response": token, "remoteip": _client_ip(request),
-            })
-            return bool(res.json().get("success"))
-    except httpx.HTTPError as exc:
-        logger.warning("Turnstile verify request failed, treating as unverified: %s", exc)
-        return False
+    return await verify_turnstile(token, _client_ip(request))
 
 
 @router.get("/{token}", response_model=SharedAssetResponse)

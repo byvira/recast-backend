@@ -25,6 +25,7 @@ from app.core.auth import (
     set_auth_cookies,
 )
 from app.core.config import settings
+from app.core.turnstile import verify_turnstile
 from app.core.middleware import limiter
 from app.core.notifications import send_otp, send_templated_email
 from app.core.otp import (
@@ -153,6 +154,10 @@ async def request_otp(
     """
     identifier = normalize_identifier(body.identifier)
     _validate_identifier_format(identifier, body.channel)
+
+    client_ip = request.client.host if request.client else ""
+    if not await verify_turnstile(body.turnstile_token, client_ip):
+        raise HTTPException(status_code=400, detail="Please complete the security check and try again.")
 
     await check_rate_limit(identifier)
     otp = await generate_otp(identifier)
