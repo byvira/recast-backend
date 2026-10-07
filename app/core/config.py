@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Google OAuth
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
-    GOOGLE_REDIRECT_URI: str = "https://recast-backend.onrender.com/api/v1/oauth/google/callback"
+    GOOGLE_REDIRECT_URI: str = "https://recast-api.byvirastudio.com/api/v1/oauth/google/callback"
 
     # Security
     SECRET_KEY: str
@@ -214,7 +214,7 @@ class Settings(BaseSettings):
     # accept, OAuth reconnect, dashboard). Deliberately separate from
     # PRODUCTION_DOMAIN, which feeds CORS and in this deployment points at
     # the backend's own Render URL, not the frontend.
-    FRONTEND_URL: str = "https://recastbyvira.vercel.app"
+    FRONTEND_URL: str = "https://recast.byvirastudio.com"
 
     # ── API docs gating ────────────────────────────────────────────────────
     # /docs, /redoc, /scalar and /openapi.json are open in development. In
@@ -244,14 +244,14 @@ class Settings(BaseSettings):
     # Production: replace with https://yourdomain.com/api/v1/oauth/meta/callback
     META_APP_ID: str = ""
     META_APP_SECRET: str = ""
-    META_REDIRECT_URI: str = "https://recast-backend.onrender.com/api/v1/oauth/meta/callback"
+    META_REDIRECT_URI: str = "https://recast-api.byvirastudio.com/api/v1/oauth/meta/callback"
 
     # ── LinkedIn ──────────────────────────────────────────────────────────
     # Register at: developer.linkedin.com/apps
     # Scopes needed: w_member_social, r_basicprofile
     LINKEDIN_CLIENT_ID: str = ""
     LINKEDIN_CLIENT_SECRET: str = ""
-    LINKEDIN_REDIRECT_URI: str = "https://recast-backend.onrender.com/api/v1/oauth/linkedin/callback"
+    LINKEDIN_REDIRECT_URI: str = "https://recast-api.byvirastudio.com/api/v1/oauth/linkedin/callback"
 
     # ── Twitter / X ───────────────────────────────────────────────────────
     # Register at: developer.twitter.com/portal
@@ -260,14 +260,14 @@ class Settings(BaseSettings):
     TWITTER_API_KEY: str = ""
     TWITTER_API_SECRET: str = ""
     TWITTER_BEARER_TOKEN: str = ""
-    TWITTER_REDIRECT_URI: str = "https://recast-backend.onrender.com/api/v1/oauth/twitter/callback"
+    TWITTER_REDIRECT_URI: str = "https://recast-api.byvirastudio.com/api/v1/oauth/twitter/callback"
 
     # ── Reddit ────────────────────────────────────────────────────────────
     # Register at: reddit.com/prefs/apps → create web app
     # Scopes needed: submit, identity, read
     REDDIT_CLIENT_ID: str = ""
     REDDIT_CLIENT_SECRET: str = ""
-    REDDIT_REDIRECT_URI: str = "https://recast-backend.onrender.com/api/v1/oauth/reddit/callback"
+    REDDIT_REDIRECT_URI: str = "https://recast-api.byvirastudio.com/api/v1/oauth/reddit/callback"
     # User-Agent format required by Reddit API — update version as needed
     REDDIT_USER_AGENT: str = "ViraStudio/1.0"
     BLUESKY_APP_NAME: str = "recast"
@@ -275,7 +275,7 @@ class Settings(BaseSettings):
 
     THREADS_APP_ID: str = ""
     THREADS_APP_SECRET: str = ""
-    THREADS_REDIRECT_URI: str = ""
+    THREADS_REDIRECT_URI: str = "https://recast-api.byvirastudio.com/api/v1/oauth/threads/callback"
 
     # ── Bluesky ───────────────────────────────────────────────────────────
     # No developer registration needed — uses AT Protocol auth.
