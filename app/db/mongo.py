@@ -31,6 +31,8 @@ onboarding_drafts: AsyncIOMotorCollection = get_client().get_default_database()[
 # at. Deliberately separate from the governance-events pipeline (workspace_events):
 # this is product analytics, not a rule-engine input.
 onboarding_funnel_events: AsyncIOMotorCollection = get_client().get_default_database()["onboarding_funnel_events"]
+# Public waitlist leads: one row per email, with the answers people add afterwards and who referred them.
+waitlist_leads: AsyncIOMotorCollection = get_client().get_default_database()["waitlist_leads"]
 # ── Workspace / tenancy collections ──────────────────────────────────────────
 workspaces: AsyncIOMotorCollection = get_client().get_default_database()["workspaces"]
 workspace_members: AsyncIOMotorCollection = get_client().get_default_database()["workspace_members"]
@@ -257,6 +259,11 @@ async def create_indexes() -> None:
     await users.create_index("username", unique=True)
     await users.create_index("auth_identifiers")
     await users.create_index([("id", 1), ("social_accounts.platform", 1)])
+
+    # ── Waitlist ───────────────────────────────────────────────────────────
+    await waitlist_leads.create_index("email", unique=True)
+    await waitlist_leads.create_index("referral_code", unique=True)
+    await waitlist_leads.create_index([("created_at", -1)])
 
     # ── Workspace / tenancy ──────────────────────────────────────────────
     # workspace_id is the primary scoping key across every collection below.
