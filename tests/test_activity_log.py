@@ -354,7 +354,7 @@ async def test_control_tower_completed_lists_successful_work_only(api_client):
     assert card["kind"] == "generated"
     assert card["title"] == "Hiring update"
     assert card["project"] == "LinkedIn, Instagram"
-    assert card["subtitle"] == "Generated 2 outputs"
+    assert card["subtitle"] == "2 posts made"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

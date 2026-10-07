@@ -217,7 +217,7 @@ async def upload_attachment(
     ):
         raise _too_many("You have uploaded a lot of files in the last hour. Please try again later.")
 
-    data = await file.read(rules.MAX_ATTACHMENT_BYTES + 1)
+    data = await file.read(max(rules.MAX_ATTACHMENT_BYTES, rules.MAX_VIDEO_BYTES) + 1)
     try:
         doc = await files_service.store(
             uploader_id=ctx.user_id,

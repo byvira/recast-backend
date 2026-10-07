@@ -13,3 +13,7 @@ connection_broken: "{platform} ({account}) stopped accepting Recast's access and
 platform_capability_drift: "{platforms} {verb} connected, but Recast no longer fully supports {pronoun} — publishing and analytics there may stop working. Review the connection in Settings."
 platform_delivery_failing: "Posts to {platform} failed {failures} times in the last {window_hours}h. Check the connection in Settings before more scheduled posts go out."
 __fallback__: "{flag_type_label}: {detail}"
+# Wording for a workspace of one or two people (chosen by the workspace's plan; see personas.py).
+brand_voice_instability_solo: "Your brand voice was edited {count} times in 24h. That much change makes everything you post sound different — settle the edits and lock it."
+brand_voice_instability_pair: "The brand voice was edited {count} times in 24h. Rapid changes make both of your outputs drift — agree the edits together and lock it."
+daily_publish_cap_solo: "You published {count} times in the last 24h against your {cap}/day limit. Space out what's scheduled, or move up a plan."

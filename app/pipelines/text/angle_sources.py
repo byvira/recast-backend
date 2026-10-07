@@ -32,13 +32,30 @@ def _audio_text(doc: dict) -> str:
     return script
 
 
+def _words_of(value: Any, depth: int = 0) -> str:
+    """The words in a value of any shape: text as it is, a list or object by the text inside it. Slide text has been stored
+    as text, as an object (headline, body) and as a list, so none of them may be assumed."""
+    if isinstance(value, str):
+        return value.strip()
+    if depth > 3:
+        return ""
+    if isinstance(value, dict):
+        ordered = [value[k] for k in ("headline", "title", "text", "body", "subtitle", "caption") if k in value]
+        return "\n".join(p for p in (_words_of(v, depth + 1) for v in ordered) if p)
+    if isinstance(value, (list, tuple)):
+        return "\n".join(p for p in (_words_of(v, depth + 1) for v in value) if p)
+    return ""
+
+
 def _image_text(doc: dict) -> str:
     parts: list[str] = []
-    for slide in doc.get("slides") or []:
-        text = (slide or {}).get("text_content") or {}
-        headline = _clean(text.get("headline"))
-        if headline and headline not in parts:
-            parts.append(headline)
+    slides = doc.get("slides")
+    for slide in slides if isinstance(slides, list) else []:
+        if not isinstance(slide, dict):
+            continue
+        text = _words_of(slide.get("text_content"))
+        if text and text not in parts:
+            parts.append(text)
     for key in ("og_description", "alt_text", "prompt"):
         value = _clean(doc.get(key))
         if value and value not in parts:

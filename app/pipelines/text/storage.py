@@ -28,6 +28,7 @@ from typing import Any, Optional
 from app.shared.brand_name import brand_display_name
 from app.agents.content_guard.agent import guard_piece_doc
 from app.db.mongo import content_sessions, content_pieces, content_piece_versions, users, brand_profiles
+from app.shared.tier_policy import default_approval
 from app.pipelines.publish.spine import normalize_piece_dates
 from app.models.text import (
     ContentSession,
@@ -60,6 +61,19 @@ logger = logging.getLogger(__name__)
 # card carried before this.
 
 MAX_INPUT_TEXT = 8000
+
+
+async def _promote_if_auto_approved(piece_doc: dict, workspace_id: str) -> None:
+    """A post generated with a planned time is only queued when it is approved. When the workspace has no review step it is
+    approved the moment it is made, so it is queued here, the same as if someone had approved it. Never allowed to fail the save."""
+    if piece_doc.get("approval_status") != "approved" or not piece_doc.get("intended_publish_at"):
+        return
+    try:
+        from app.pipelines.publish.spine import promote_approved_intent
+
+        await promote_approved_intent(piece_doc, workspace_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not queue the planned post %s after auto-approval: %s", piece_doc.get("piece_id"), exc)
 
 
 async def ensure_session_exists(
@@ -168,7 +182,7 @@ async def save_live_piece(
         "quality_issues": quality_issues or [],
         "flagged_for_review": flagged_for_review,
         "readability_score": readability_score,
-        "approval_status": ApprovalStatus.PENDING.value,
+        "approval_status": await default_approval(workspace_id),
         "repurposed": repurposed,
         "publish_status": publish_status or PublishStatus.PENDING.value,
         "publish_scheduled_at": publish_scheduled_at,
@@ -186,6 +200,7 @@ async def save_live_piece(
     piece_doc.update(extra_fields or {})
     await guard_piece_doc(piece_doc, where="generation")
     await content_pieces.insert_one(piece_doc)
+    await _promote_if_auto_approved(piece_doc, workspace_id)
     try:
         from app.pipelines.text.events import emit_live_piece_created
         emit_live_piece_created(piece_doc)
@@ -312,6 +327,7 @@ async def save_pipeline_result(
         "schedule_mode": result.schedule_mode or "now",
         "scheduled_at": str(result.scheduled_at) if result.scheduled_at else None,
         "pieces_count": len(result.pieces),
+        "campaign_id": campaign_id,
         "created_at": now,
         "updated_at": now,
     }
@@ -320,7 +336,11 @@ async def save_pipeline_result(
     # or leave a second session behind.
     await content_sessions.update_one(
         {"session_id": result.session_id},
-        {"$setOnInsert": {k: v for k, v in session_doc.items() if k != "updated_at"}, "$set": {"updated_at": now}},
+        {
+            "$setOnInsert": {k: v for k, v in session_doc.items() if k not in ("updated_at", "campaign_id")},
+            # Set every time, since the run's own graph may have created the session before the campaign was known.
+            "$set": {"updated_at": now, **({"campaign_id": campaign_id} if campaign_id else {})},
+        },
         upsert=True,
     )
     logger.info("Session saved: %s (%d pieces)", result.session_id, len(result.pieces))
@@ -360,7 +380,7 @@ async def save_pipeline_result(
             "quality_issues": piece.quality_issues,
             "flagged_for_review": piece.flagged_for_review,
             "readability_score": getattr(piece, "readability_score", None),
-            "approval_status": ApprovalStatus.PENDING.value,
+            "approval_status": await default_approval(workspace_id),
             "repurposed": piece.repurposed,
             "publish_status": PublishStatus.PENDING.value,
             "publish_scheduled_at": piece.publish_scheduled_at,
@@ -379,6 +399,7 @@ async def save_pipeline_result(
 
         await guard_piece_doc(piece_doc, where="generation")
         await content_pieces.insert_one(piece_doc)
+        await _promote_if_auto_approved(piece_doc, workspace_id)
 
         # Version 1 — original generated content
         version_doc = {
@@ -447,10 +468,12 @@ async def get_workspace_sessions(
     is_repurpose: Optional[bool] = None,
     page: int = 1,
     limit: int = 20,
+    standalone: bool = False,
 ) -> dict:
     """
     Paginated list of sessions for a workspace.
-    Optionally filter by brand_id and/or is_repurpose.
+    Optionally filter by brand_id and/or is_repurpose. ``standalone`` leaves out the sessions a campaign made (one per day),
+    so a campaign's posts are only ever listed under that campaign.
     Returns sessions without pieces — use get_session() for full detail.
     """
     query: dict = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
@@ -458,6 +481,13 @@ async def get_workspace_sessions(
         query["brand_id"] = brand_id
     if is_repurpose is not None:
         query["is_repurpose"] = is_repurpose
+    if standalone:
+        # Sessions made before they were tagged are found through their posts.
+        from_campaigns = await content_pieces.distinct(
+            "session_id", {"workspace_id": workspace_id, "campaign_id": {"$nin": [None, ""]}},
+        )
+        query["campaign_id"] = {"$in": [None, ""]}
+        query["session_id"] = {"$nin": from_campaigns}
 
     skip = (page - 1) * limit
     total = await content_sessions.count_documents(query)

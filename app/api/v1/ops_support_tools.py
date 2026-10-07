@@ -349,7 +349,7 @@ async def delete_message(
         await support_files.update_many({"id": {"$in": file_ids}}, {"$set": {"ticket_id": None, "deleted": True}})
         for d in docs:
             try:
-                await asyncio.to_thread(storage.delete_private_file, d["storage_key"])
+                await asyncio.to_thread(storage.delete_private_file, d["storage_key"], d.get("resource_type", "raw"))
             except Exception:
                 logger.warning("Couldn't delete private file %s from storage", d.get("id"), exc_info=True)
     await log_event(

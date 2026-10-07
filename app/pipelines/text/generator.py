@@ -277,6 +277,23 @@ def build_approved_vocabulary_instruction(approved_vocabulary: List[str]) -> str
     return load_prompt("text/generate/approved_vocabulary", approved_vocabulary=approved_vocabulary)
 
 
+def as_text(value) -> str:
+    """The model sometimes answers with the post as an object ({"text": ...}) or a list of parts instead of one string.
+    Turn any of those into the plain text, so the length counts and checks below never meet something they cannot read."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("text", "content", "post", "body", "caption"):
+            if isinstance(value.get(key), (str, dict, list)):
+                return as_text(value[key])
+        return "\n\n".join(part for part in (as_text(v) for v in value.values()) if part)
+    if isinstance(value, (list, tuple)):
+        return "\n\n".join(part for part in (as_text(v) for v in value) if part)
+    return str(value)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # POST-GENERATION VALIDATION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -627,7 +644,8 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         }
 
     # ── Recompute counts — never trust LLM's own count ───────────────────
-    content_str = result.get("content", "")
+    content_str = as_text(result.get("content"))
+    result["content"] = content_str
     result["word_count"] = len(content_str.split())
     result["char_count"] = len(content_str)
 

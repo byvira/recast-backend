@@ -17,6 +17,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -37,6 +38,7 @@ from app.db.mongo import (
 from app.pipelines.publish.spine import iso_utc, to_utc_datetime
 from app.shared.activity import live
 from app.shared.activity import inbox as inbox_mod
+from app.shared import pipeline_runs
 from app.shared.activity.runs import list_runs
 from app.shared.activity.store import (
     patch_entry,
@@ -49,6 +51,7 @@ from app.shared.activity.store import (
     is_unread,
     is_visible_to,
     list_entries,
+    hidden_flags_for,
     visibility_filter,
 )
 from app.db.mongo import activity_entries
@@ -140,9 +143,10 @@ async def list_activity(
     limit: int = Query(30, ge=1, le=100),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
+    hidden_flags = await hidden_flags_for(ctx.workspace_id)
     query = build_query(
         workspace_id=ctx.workspace_id, user_id=ctx.user_id, role=ctx.role,
-        lane=lane, category=category, actor_type=actor_type, status=status, q=q,
+        lane=lane, category=category, actor_type=actor_type, status=status, q=q, hidden_flags=hidden_flags,
     )
     try:
         page = await list_entries(query, cursor=cursor, limit=limit)
@@ -154,7 +158,7 @@ async def list_activity(
     if not cursor:
         active_total = (
             total if lane == LANE_ACTIVE else await count_entries(build_query(
-                workspace_id=ctx.workspace_id, user_id=ctx.user_id, role=ctx.role, lane=LANE_ACTIVE,
+                workspace_id=ctx.workspace_id, user_id=ctx.user_id, role=ctx.role, lane=LANE_ACTIVE, hidden_flags=hidden_flags,
             ))
         )
     cursor_read = await inbox_mod.read_before(ctx.workspace_id, ctx.user_id)
@@ -170,6 +174,19 @@ _COMPLETED_WINDOW = timedelta(hours=24)
 _COMPLETED_LIMIT = 5
 
 
+def _tidy_title(raw: str, limit: int = 80) -> str:
+    """A title short enough to read on a phone: a pasted link becomes its site and page, long text is cut at a word."""
+    text = " ".join((raw or "").split())
+    if text.lower().startswith(("http://", "https://")):
+        link, _, rest = text.partition(" ")
+        parsed = urlparse(link)
+        slug = (parsed.path.rstrip("/").rsplit("/", 1)[-1] or "").replace("-", " ").replace("_", " ").strip()
+        text = f"{parsed.netloc.removeprefix('www.')}" + (f": {slug}" if slug else "") + (f" {rest}" if rest else "")
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rsplit(" ", 1)[0].rstrip(" ,.:;-") + "…"
+
+
 def _completed_card(doc: dict) -> dict:
     """Row → the Control Tower's "Recently Completed" card."""
     metadata = doc.get("metadata") or {}
@@ -178,9 +195,10 @@ def _completed_card(doc: dict) -> dict:
         return {
             "id": doc["_id"],
             "kind": "generated",
-            "title": doc.get("subject") or doc.get("title", ""),
+            "title": _tidy_title(doc.get("subject") or doc.get("title", "")),
             "project": ", ".join(doc.get("platforms") or []),
-            "subtitle": f"Generated {pieces} {'output' if pieces == 1 else 'outputs'}",
+            # A finished background run does not count its posts here, so it says it finished rather than "0".
+            "subtitle": f"{pieces} {'post' if pieces == 1 else 'posts'} made" if pieces else "Finished",
             "occurredAt": _iso(doc.get("occurred_at")),
             "href": doc.get("href"),
         }
@@ -215,10 +233,97 @@ async def control_tower(
         [("occurred_at", -1), ("_id", -1)]
     ).limit(_COMPLETED_LIMIT).to_list(length=_COMPLETED_LIMIT)
     return {
-        "live": await list_runs(ctx.workspace_id),
+        "live": await _live_work(ctx.workspace_id),
+        "failed": await _recent_failures(ctx.workspace_id),
         "upcoming": await _upcoming(ctx.workspace_id),
         "completed": [_completed_card(d) for d in completed],
     }
+
+
+async def _recent_failures(workspace_id: str) -> list[dict]:
+    """Background work that failed in the last day, with the reason it gave, so a failure is never just a missing item.
+    A run the member cancelled is their choice, not a failure."""
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    from app.db.mongo import pipeline_runs as runs_collection
+
+    rows = await runs_collection.find(
+        {"workspace_id": workspace_id, "status": "failed", "finished_at": {"$gte": since}}, {"_id": 0},
+    ).sort("finished_at", -1).limit(5).to_list(length=5)
+    return [
+        {
+            "id": r["id"],
+            "kind": r["kind"],
+            "title": _tidy_title(r.get("title", "")),
+            "error": (r.get("error") or "It stopped without saying why. Try starting it again.")[:300],
+            "finishedAt": _iso(r.get("finished_at")),
+            "href": r.get("href") or _RUN_PAGES.get(r["kind"]),
+        }
+        for r in rows
+    ]
+
+
+_RUN_PAGES = {
+    "text": "/dashboard/pipelines/text",
+    "audio": "/dashboard/pipelines/audio",
+    "image": "/dashboard/pipelines/image",
+    "video": "/dashboard/pipelines/video",
+}
+_RUN_LABELS = {"campaign": "Campaign", "text": "Text", "audio": "Audio", "image": "Image", "video": "Video"}
+
+
+def _run_eta(run: dict) -> str:
+    if run["status"] == "paused":
+        return "Paused"
+    if run["status"] == "queued":
+        return "Waiting to start"
+    total, done = run.get("steps_total") or 0, run.get("steps_done") or 0
+    started = to_utc_datetime(run.get("started_at") or run.get("created_at"))
+    if not total or done <= 0 or done >= total or not started:
+        return ""
+    left = (datetime.now(timezone.utc) - started).total_seconds() / done * (total - done)
+    return "<1m" if left < 60 else f"{round(left / 60)}m"
+
+
+async def _live_work(workspace_id: str) -> list[dict]:
+    """Everything being made right now, from one place. Saved background runs are the source for anything that can be
+    paused or cancelled (the same record the progress screens read, so both show the same number). Work that only reports
+    live progress is added after them, unless a saved run already covers it."""
+    saved = [
+        r for r in await pipeline_runs.list_runs(workspace_id, include_finished_days=0)
+        if r["status"] in pipeline_runs.ACTIVE
+    ]
+    cards: list[dict] = []
+    covered: set[str] = set()
+    for run in saved:
+        campaign_id = (run.get("ref") or {}).get("campaign_id")
+        if campaign_id:
+            covered.add(f"campaign:{campaign_id}")
+        public = pipeline_runs.public(run) or {}
+        cards.append({
+            "id": run["id"],
+            "runId": run["id"],
+            "kind": run["kind"],
+            "title": run.get("title", ""),
+            "project": _RUN_LABELS.get(run["kind"], ""),
+            "stage": run.get("stage") or "",
+            "progress": public.get("progress") or 0,
+            "eta": _run_eta(run),
+            "startedAt": _iso(run.get("created_at")),
+            "status": run["status"],
+            "controllable": True,
+            "cancelRequested": bool(run.get("cancel_requested")),
+            "href": run.get("href") or _RUN_PAGES.get(run["kind"]),
+        })
+    for live_run in await list_runs(workspace_id):
+        if live_run["id"] in covered:
+            continue
+        kind = live_run.get("kind", "text")
+        href = _RUN_PAGES.get(kind)
+        if live_run["id"].startswith("campaign:"):
+            href = f"/dashboard/pipelines/new?campaignId={live_run['id'].split(':', 1)[1]}"
+        cards.append({**live_run, "runId": None, "status": "running", "controllable": False, "href": href})
+    cards.sort(key=lambda c: c.get("startedAt") or "")
+    return cards
 
 
 _UPCOMING_WINDOW = timedelta(hours=24)

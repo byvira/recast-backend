@@ -98,7 +98,12 @@ from app.pipelines.media.echo_reduction import BASIC_CLEANUP_NOTE, EchoReduction
 from app.pipelines.media.music_library import list_library_tracks
 from app.pipelines.media.soundbite_extraction import SoundbiteExtractionError, evaluate_quality, trim_span
 from app.agents.content_guard.media import assert_speech_ok, episode_is_safe, transcript_text
-from app.pipelines.media.tts_generation import is_language_supported, synthesize_speech, synthesize_speech_timed
+from app.pipelines.media.tts_generation import (
+    is_language_supported,
+    narration_blocker,
+    synthesize_speech,
+    synthesize_speech_timed,
+)
 from app.shared.localized_strings import clean_translation, looks_leaked
 from app.pipelines.media.video_render import TranscriptWordLike, VideoRenderError, render_video
 from app.pipelines.media import video_presets
@@ -861,6 +866,12 @@ async def localize_audio_asset(
         raise HTTPException(status_code=404, detail="Audio asset not found.")
     source = AudioAsset(**doc)
 
+    # Checked before the translation is paid for: a language no reachable voice can read, or a premium voice that is not set.
+    voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
+    blocker = narration_blocker(body.target_language, voice_settings)
+    if blocker:
+        raise HTTPException(status_code=400, detail=blocker)
+
     source_text = (source.script or "").strip()
     if not source_text and source.transcript:
         source_text = " ".join(w["word"] if isinstance(w, dict) else w.word for w in source.transcript)
@@ -885,7 +896,6 @@ async def localize_audio_asset(
             audio_asset_id, _TRANSLATION_MAX_ATTEMPTS, quality_score,
         )
 
-    voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
     speech = await synthesize_speech_timed(
         text=translated_text, voice_settings=voice_settings, lexicon=lexicon,
@@ -894,7 +904,10 @@ async def localize_audio_asset(
     if not speech:
         raise HTTPException(
             status_code=503,
-            detail="Translation succeeded but narration couldn't be synthesized right now.",
+            detail=(
+                narration_blocker(body.target_language, voice_settings)
+                or "The translation worked, but the voice service couldn't make the narration just now. Try again in a moment."
+            ),
         )
     audio_bytes = speech.audio
 
@@ -1420,6 +1433,7 @@ async def list_audio_assets(
             "approval_status": d.get("approval_status"),
             "language": d.get("language"),
             "brand_id": d.get("brand_id"),
+            "thumbnail_url": d.get("thumbnail_url"),
             "excerpt": " ".join(words).strip() or (d.get("script") or "")[:200],
             "media": media_by_id.get(media_id) if media_id else None,
         })

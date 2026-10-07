@@ -23,12 +23,14 @@ The sidebar count is the Inbox's unread count.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from app.db.mongo import activity_entries, inbox_state
 from app.shared.activity.store import (
     LANE_ACTIVE,
     LANE_PASSIVE,
+    exclude_plan_flags,
+    hidden_flags_for,
     is_unread,
     unread_filter,
     visibility_filter,
@@ -55,7 +57,7 @@ async def read_before(workspace_id: str, user_id: str) -> Optional[datetime]:
     return value
 
 
-def inbox_query(workspace_id: str, user_id: str, role: str) -> dict:
+def inbox_query(workspace_id: str, user_id: str, role: str, hidden_flags: Any = ()) -> dict:
     query = visibility_filter(workspace_id, user_id, role)
     query["occurred_at"] = {"$gte": _now() - WINDOW}
     query["$and"] = [
@@ -68,18 +70,18 @@ def inbox_query(workspace_id: str, user_id: str, role: str) -> dict:
         # Snoozed suggestions stay out until the snooze lapses.
         {"$or": [{"snoozed_until": None}, {"snoozed_until": {"$lte": _now()}}]},
     ]
-    return query
+    return exclude_plan_flags(query, hidden_flags)
 
 
 async def unread_count(workspace_id: str, user_id: str, role: str) -> int:
-    query = inbox_query(workspace_id, user_id, role)
+    query = inbox_query(workspace_id, user_id, role, await hidden_flags_for(workspace_id))
     cursor = await read_before(workspace_id, user_id)
     query["$and"] = list(query["$and"]) + unread_filter(user_id, cursor)["$and"]
     return await activity_entries.count_documents(query)
 
 
 async def list_inbox(workspace_id: str, user_id: str, role: str) -> dict:
-    docs = await activity_entries.find(inbox_query(workspace_id, user_id, role)).sort(
+    docs = await activity_entries.find(inbox_query(workspace_id, user_id, role, await hidden_flags_for(workspace_id))).sort(
         [("occurred_at", -1), ("_id", -1)]
     ).limit(LIMIT).to_list(length=LIMIT)
     cursor = await read_before(workspace_id, user_id)

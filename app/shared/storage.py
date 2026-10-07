@@ -180,7 +180,7 @@ async def delete_file_by_url(url: str) -> bool:
 PRIVATE_FOLDER = "recast/private/support"
 
 
-def upload_private_file(file: bytes, folder_id: str, public_id: str) -> str:
+def upload_private_file(file: bytes, folder_id: str, public_id: str, resource_type: str = "raw") -> str:
     """Upload bytes as a private (authenticated) raw file. Returns its
     Cloudinary public_id, the only thing to store: never a URL. Blocking call;
     run it in a thread from async code."""
@@ -188,7 +188,7 @@ def upload_private_file(file: bytes, folder_id: str, public_id: str) -> str:
     result = cloudinary.uploader.upload(
         file,
         folder=f"{PRIVATE_FOLDER}/{folder_id}",
-        resource_type="raw",
+        resource_type=resource_type,
         type="authenticated",
         public_id=public_id,
         unique_filename=True,
@@ -197,7 +197,7 @@ def upload_private_file(file: bytes, folder_id: str, public_id: str) -> str:
     return result["public_id"]
 
 
-def signed_private_url(public_id: str, expires_in_seconds: int = 300) -> str:
+def signed_private_url(public_id: str, expires_in_seconds: int = 300, resource_type: str = "raw", fmt: str = "") -> str:
     """A time-limited download link for a private raw file. Pure signing, no
     network call."""
     import time
@@ -205,16 +205,16 @@ def signed_private_url(public_id: str, expires_in_seconds: int = 300) -> str:
     _ensure_configured()
     return cloudinary.utils.private_download_url(
         public_id,
-        "",
-        resource_type="raw",
+        fmt if resource_type != "raw" else "",
+        resource_type=resource_type,
         type="authenticated",
         expires_at=int(time.time()) + expires_in_seconds,
     )
 
 
-def delete_private_file(public_id: str) -> bool:
+def delete_private_file(public_id: str, resource_type: str = "raw") -> bool:
     """Blocking; run it in a thread from async code."""
     _ensure_configured()
-    result = cloudinary.uploader.destroy(public_id, resource_type="raw", type="authenticated")
+    result = cloudinary.uploader.destroy(public_id, resource_type=resource_type, type="authenticated")
     return result.get("result") == "ok"
 

@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 KEY_PREFIX = "recast:runs:"
 KEY_TTL_SECONDS = 30 * 60
 STALE_AFTER_SECONDS = 2 * 60 * 60
+# A run that is really going reports a step or a stage now and then. One that has said nothing for this long has lost its
+# connection (a phone that dropped mid-request, for one) and is taken off the board instead of showing progress for ever.
+SILENT_AFTER_SECONDS = 15 * 60
 #: Never show a still-running job as done.
 MAX_RUNNING_PROGRESS = 95
 
@@ -70,6 +73,7 @@ async def start_run(
         "steps_done": 0,
         "steps_total": steps_total,
         "started_at": time.time(),
+        "touched_at": time.time(),
     })
 
 
@@ -90,6 +94,7 @@ async def update_run(
             run["stage"] = stage
         if steps_done is not None:
             run["steps_done"] = steps_done
+        run["touched_at"] = time.time()
         await _write(workspace_id, run_id, run)
     except Exception as exc:  # noqa: BLE001
         logger.warning("run registry update failed for %s: %s", run_id, exc)
@@ -200,7 +205,8 @@ async def list_runs(workspace_id: str) -> list[dict]:
             stale.append(run_id)
             continue
         elapsed = now - float(run.get("started_at") or now)
-        if elapsed > STALE_AFTER_SECONDS:
+        silent_for = now - float(run.get("touched_at") or run.get("started_at") or now)
+        if elapsed > STALE_AFTER_SECONDS or silent_for > SILENT_AFTER_SECONDS:
             stale.append(run_id)
             continue
 

@@ -46,7 +46,7 @@ async def _delete_stored_files(docs: list[dict]) -> int:
     removed = 0
     for d in docs:
         try:
-            await asyncio.to_thread(storage.delete_private_file, d["storage_key"])
+            await asyncio.to_thread(storage.delete_private_file, d["storage_key"], d.get("resource_type", "raw"))
             removed += 1
         except Exception:
             # The database record goes either way; a failed storage delete is logged so it can be retried by hand.

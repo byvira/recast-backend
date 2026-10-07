@@ -64,9 +64,17 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
     from app.shared.localized_strings import get_localized_string
 
     d = detail or {}
-    known = flag_type in _ODETTE_FLAG_ENGLISH_TEMPLATES
-    template = _ODETTE_FLAG_ENGLISH_TEMPLATES.get(flag_type, _ODETTE_FLAG_ENGLISH_TEMPLATES["__fallback__"])
-    key = f"odette.flag.{flag_type if known else '__fallback__'}"
+    # A workspace of one or two people is spoken to in its own terms ("you", "both of you"), not as a team.
+    tier = d.get("tier")
+    variant = ""
+    if flag_type == "brand_voice_instability" and tier in ("single", "duo"):
+        variant = "_solo" if tier == "single" else "_pair"
+    elif flag_type == "daily_publish_cap" and tier == "single":
+        variant = "_solo"
+    wording = flag_type + variant if (flag_type + variant) in _ODETTE_FLAG_ENGLISH_TEMPLATES else flag_type
+    known = wording in _ODETTE_FLAG_ENGLISH_TEMPLATES
+    template = _ODETTE_FLAG_ENGLISH_TEMPLATES.get(wording, _ODETTE_FLAG_ENGLISH_TEMPLATES["__fallback__"])
+    key = f"odette.flag.{wording if known else '__fallback__'}"
 
     if flag_type == "tier_seat_exceeded":
         format_ctx = {

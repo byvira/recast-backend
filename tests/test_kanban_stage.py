@@ -39,7 +39,7 @@ async def _seed_piece(workspace_id: str, user_id: str, brand_id: str, platform: 
 
 async def test_new_piece_stage_is_drafting(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Stage WS")
+    ws_id = await create_workspace(client, "Stage WS", tier="large")
     await _seed_piece(ws_id, profile["id"], str(uuid4()))
 
     res = await client.get("/api/v1/content/pieces", headers={"X-Workspace-Id": ws_id})
@@ -48,7 +48,7 @@ async def test_new_piece_stage_is_drafting(signup_user):
 
 async def test_approved_piece_stage_is_staging(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Stage WS")
+    ws_id = await create_workspace(client, "Stage WS", tier="large")
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
 
     res = await client.patch(f"/api/v1/content/pieces/{piece_id}/approve", headers={"X-Workspace-Id": ws_id})
@@ -58,7 +58,7 @@ async def test_approved_piece_stage_is_staging(signup_user):
 
 async def test_scheduled_piece_stage_is_scheduled(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Stage WS")
+    ws_id = await create_workspace(client, "Stage WS", tier="large")
     await _connect_linkedin(ws_id)
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
     await client.patch(f"/api/v1/content/pieces/{piece_id}/approve", headers={"X-Workspace-Id": ws_id})
@@ -74,7 +74,7 @@ async def test_scheduled_piece_stage_is_scheduled(signup_user):
 
 async def test_rejected_piece_falls_back_to_drafting(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Stage WS")
+    ws_id = await create_workspace(client, "Stage WS", tier="large")
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
 
     res = await client.patch(f"/api/v1/content/pieces/{piece_id}/reject", headers={"X-Workspace-Id": ws_id})
@@ -84,7 +84,7 @@ async def test_rejected_piece_falls_back_to_drafting(signup_user):
 
 async def test_archive_and_unarchive(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Archive WS")
+    ws_id = await create_workspace(client, "Archive WS", tier="large")
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
 
     res = await client.patch(
@@ -136,7 +136,7 @@ async def test_archive_requires_edit_content_permission(signup_user, make_client
 
 async def test_stage_filter_returns_only_matching_pieces(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Stage Filter WS")
+    ws_id = await create_workspace(client, "Stage Filter WS", tier="large")
     brand_id = str(uuid4())
 
     drafting_id = await _seed_piece(ws_id, profile["id"], brand_id, platform="LinkedIn")

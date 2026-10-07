@@ -22,7 +22,9 @@ from app.shared.support_rules import (
     ALLOWED_ATTACHMENT_TYPES,
     MAX_ATTACHMENT_BYTES,
     MAX_ATTACHMENTS_PER_MESSAGE,
+    MAX_VIDEO_BYTES,
     SIGNED_URL_SECONDS,
+    VIDEO_EXTENSIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,6 +53,10 @@ def _looks_like(ext: str, head: bytes, data: bytes) -> bool:
         return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
     if ext == "pdf":
         return head.startswith(b"%PDF-")
+    if ext in ("mp4", "mov"):
+        return head[4:8] == b"ftyp"
+    if ext == "webm":
+        return head.startswith(bytes([0x1A, 0x45, 0xDF, 0xA3]))
     if ext in ("txt", "log"):
         sample = data[:65536]
         if b"\x00" in sample:
@@ -72,11 +78,12 @@ def validate(filename: str, declared_mime: Optional[str], data: bytes) -> tuple[
     name = _clean_name(filename)
     ext = _extension(name)
     if ext not in ALLOWED_ATTACHMENT_TYPES:
-        raise AttachmentRejected("That file type isn't supported. You can attach images, PDFs and text files.")
+        raise AttachmentRejected("That file type isn't supported. You can attach images, videos, PDFs and text files.")
     if len(data) == 0:
         raise AttachmentRejected("That file is empty.")
-    if len(data) > MAX_ATTACHMENT_BYTES:
-        raise AttachmentRejected(f"That file is too large. The limit is {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB.")
+    limit = MAX_VIDEO_BYTES if ext in VIDEO_EXTENSIONS else MAX_ATTACHMENT_BYTES
+    if len(data) > limit:
+        raise AttachmentRejected(f"That file is too large. The limit is {limit // (1024 * 1024)} MB.")
     mime = (declared_mime or "").split(";")[0].strip().lower()
     allowed = ALLOWED_ATTACHMENT_TYPES[ext]
     if mime and mime not in allowed:
@@ -91,8 +98,10 @@ async def store(*, uploader_id: str, uploader_type: str, workspace_id: str, file
     """Validate and store one file privately. Raises AttachmentRejected."""
     name, mime = validate(filename, declared_mime, data)
     file_id = str(uuid4())
+    ext = _extension(name)
+    kind = "video" if ext in VIDEO_EXTENSIONS else "raw"
     try:
-        storage_key = await asyncio.to_thread(storage.upload_private_file, data, workspace_id or "staff", file_id)
+        storage_key = await asyncio.to_thread(storage.upload_private_file, data, workspace_id or "staff", file_id, kind)
     except Exception:
         logger.warning("Support attachment upload failed", exc_info=True)
         raise AttachmentRejected("We couldn't save that file right now. Try again in a moment.")
@@ -106,6 +115,8 @@ async def store(*, uploader_id: str, uploader_type: str, workspace_id: str, file
         "mime": mime,
         "size": len(data),
         "storage_key": storage_key,
+        "resource_type": kind,
+        "format": ext,
         "scan_status": "clean",
         "created_at": datetime.now(timezone.utc),
     }
@@ -138,5 +149,8 @@ async def claim(file_ids: list[str], *, uploader_id: str, ticket_id: str) -> lis
 
 
 async def signed_link(file_doc: dict) -> dict:
-    url = await asyncio.to_thread(storage.signed_private_url, file_doc["storage_key"], SIGNED_URL_SECONDS)
+    url = await asyncio.to_thread(
+        storage.signed_private_url, file_doc["storage_key"], SIGNED_URL_SECONDS,
+        file_doc.get("resource_type", "raw"), file_doc.get("format", ""),
+    )
     return {"url": url, "name": file_doc["name"], "mime": file_doc["mime"], "expires_in": SIGNED_URL_SECONDS}

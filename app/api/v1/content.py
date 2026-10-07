@@ -19,6 +19,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.middleware import limiter
+from app.shared.tier_policy import blocks_self_approval
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import audio_assets, brand_profiles, content_pieces, content_sessions, image_assets, media_assets, users
@@ -131,15 +132,17 @@ async def list_sessions(
     request: Request,
     brand_id: Optional[str] = Query(None),
     is_repurpose: Optional[bool] = Query(None),
+    standalone: bool = Query(False),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    """List all content sessions in the active workspace."""
+    """List all content sessions in the active workspace. ``standalone`` leaves out the ones a campaign made."""
     return await get_workspace_sessions(
         workspace_id=ctx.workspace_id,
         brand_id=brand_id,
         is_repurpose=is_repurpose,
+        standalone=standalone,
         page=page,
         limit=limit,
     )
@@ -596,6 +599,9 @@ async def approve_piece(
     ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> dict:
     """Mark a piece as approved."""
+    existing = await get_piece(piece_id, ctx.workspace_id)
+    if existing and await blocks_self_approval(ctx.workspace_id, ctx.user_id, existing.get("user_id")):
+        raise HTTPException(status_code=403, detail="Someone else needs to approve this one, since you wrote it.")
     updated = await update_piece_status(
         piece_id=piece_id,
         workspace_id=ctx.workspace_id,
@@ -834,6 +840,29 @@ async def archive_piece(
     return updated
 
 
+@router.post("/approve-waiting")
+@limiter.limit("5/minute")
+async def approve_waiting(
+    request: Request,
+    ctx: WorkspaceContext = Depends(require("approve_content")),
+) -> dict:
+    """Approve every post that is waiting for review in this workspace. Used when the review step is switched off and the member
+    chooses to let the waiting posts through too. Rejected posts are not touched. Posts with a planned time are queued, as
+    they are when approved one at a time."""
+    waiting = await content_pieces.find({
+        "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "archived": {"$ne": True}, "approval_status": "pending",
+    }).limit(500).to_list(length=500)
+    approved = queued = 0
+    for doc in waiting:
+        updated = await update_piece_status(piece_id=doc["piece_id"], workspace_id=ctx.workspace_id, approval_status="approved")
+        if not updated:
+            continue
+        approved += 1
+        if await promote_approved_intent(updated, ctx.workspace_id) == "queued":
+            queued += 1
+    return {"approved_count": approved, "queued_count": queued}
+
+
 @router.patch("/sessions/{session_id}/approve-all")
 @limiter.limit("20/minute")
 async def approve_all(
@@ -842,6 +871,9 @@ async def approve_all(
     ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> dict:
     """Approve all pieces in a session at once."""
+    session = await get_session(session_id, ctx.workspace_id)
+    if session and await blocks_self_approval(ctx.workspace_id, ctx.user_id, session.get("user_id")):
+        raise HTTPException(status_code=403, detail="Someone else needs to approve these, since you wrote them.")
     count = await approve_all_pieces(session_id, ctx.workspace_id)
     if count == 0:
         raise HTTPException(status_code=404, detail="Session not found or no pieces.")

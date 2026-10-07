@@ -108,6 +108,29 @@ def is_language_supported(language: str) -> tuple[bool, str]:
     return False, f"'{language}' isn't supported by any reachable provider right now — {'; '.join(reachable)}."
 
 
+def narration_blocker(language: str, voice_settings: MemberVoiceSettings) -> Optional[str]:
+    """Why narration in this language cannot be made right now, in plain words, or None when it can. The backup voice reads
+    only a few languages, so any other language needs the premium voice service AND a real premium voice picked. Said before
+    any translation is paid for, instead of as a vague failure afterwards."""
+    lang = (language or "").strip().lower()
+    if lang in DEEPGRAM_SUPPORTED_LANGUAGES and settings.DEEPGRAM_API_KEY:
+        return None
+    name = (language or "that language").strip().title()
+    backup = ", ".join(sorted(n.title() for n in DEEPGRAM_SUPPORTED_LANGUAGES))
+    if not (settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED):
+        return f"{name} narration needs the premium voice service, which isn't switched on. The standard voice reads {backup}."
+    if lang not in ELEVENLABS_SUPPORTED_LANGUAGES:
+        return f"No voice available here can read {name} yet. Try one of: {backup}."
+    if _resolve_elevenlabs_voice_id(voice_settings) is None:
+        return (
+            f"{name} narration needs a premium voice, and you're using the offline Founder Voice, which reads {backup} only. "
+            "Pick a premium voice in your voice settings, then try again."
+        )
+    if time.monotonic() < _elevenlabs_skip_until:
+        return f"The premium voice service refused the last request (usually a plan or key limit), so {name} narration is paused for a few minutes."
+    return None
+
+
 def _resolve_elevenlabs_voice_id(voice_settings: MemberVoiceSettings) -> Optional[str]:
     voice_id = (voice_settings.tts_voice or "").strip()
     if voice_id.lower() in _PLACEHOLDER_VOICE_IDS:

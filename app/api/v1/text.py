@@ -731,23 +731,37 @@ async def generate_angles(
         if not (body.asset_kind and body.asset_id):
             raise HTTPException(status_code=400, detail="Add some content to build angles from.")
         collection = audio_assets if body.asset_kind == "audio" else image_assets
-        doc = await collection.find_one({"id": body.asset_id, "workspace_id": ctx.workspace_id})
+        # Only the words are needed. A deck also carries its layers and picture data, which are large and never read here.
+        wanted = {"title": 1, "script": 1, "transcript": 1} if body.asset_kind == "audio" else {
+            "title": 1, "slides.text_content": 1, "og_description": 1, "alt_text": 1, "prompt": 1,
+        }
+        doc = await collection.find_one({"id": body.asset_id, "workspace_id": ctx.workspace_id}, wanted)
         if not doc:
             raise HTTPException(status_code=404, detail="That item wasn't found.")
-        source_text = text_for_angles(body.asset_kind, doc) or ""
+        try:
+            source_text = text_for_angles(body.asset_kind, doc) or ""
+        except Exception:  # noqa: BLE001 - an odd stored shape must never become a server error
+            logger.exception("Could not read the words of %s %s for angles", body.asset_kind, body.asset_id)
+            source_text = ""
         if not source_text:
             raise HTTPException(status_code=400, detail=NO_TEXT_MESSAGE[body.asset_kind])
 
-    result = await run_angles_agent(
-        AgentTask(
-            agent="angles",
-            platform=body.platform,
-            content=source_text,
-            brand_context=brand_context,
-            session_id=body.piece_id or "angles-preview",
-            metadata={"banned_words": enforcement.get("banned_words", [])},
+    try:
+        result = await run_angles_agent(
+            AgentTask(
+                agent="angles",
+                platform=body.platform,
+                content=source_text[:12000],
+                brand_context=brand_context,
+                session_id=body.piece_id or "angles-preview",
+                metadata={"banned_words": enforcement.get("banned_words", [])},
+            )
         )
-    )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("Angles failed for %s", body.piece_id or body.asset_id or "a pasted text")
+        raise HTTPException(status_code=502, detail="Couldn't generate angle variants. Please try again.")
 
     if not result.success:
         raise HTTPException(
@@ -949,10 +963,10 @@ async def regenerate_content(
             from app.pipelines.text.storage import get_piece, get_session
             piece_doc = await get_piece(body.piece_id, ctx.workspace_id)
             if piece_doc:
-                # Prefer the original raw_input stored on the session document.
+                # Prefer the original input stored on the session document.
                 session_doc = await get_session(piece_doc["session_id"], ctx.workspace_id)
                 source_content = (
-                    (session_doc or {}).get("raw_input")
+                    (session_doc or {}).get("input_text")
                     or piece_doc.get("content")
                     or ""
                 )

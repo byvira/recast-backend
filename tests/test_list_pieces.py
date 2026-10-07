@@ -78,7 +78,7 @@ async def test_list_pieces_filters_by_platform(signup_user):
 
 async def test_list_pieces_filters_by_approval_status(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Filter WS")
+    ws_id = await create_workspace(client, "Filter WS", tier="large")
     brand_id = str(uuid4())
     approved_piece = await _seed_piece(ws_id, profile["id"], brand_id)
     await _seed_piece(ws_id, profile["id"], brand_id)

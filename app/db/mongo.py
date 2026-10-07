@@ -61,6 +61,8 @@ content_safety: AsyncIOMotorCollection = get_client().get_default_database()["co
 safety_events: AsyncIOMotorCollection = get_client().get_default_database()["safety_events"]
 # One row for each long piece of work that runs in the background (a campaign batch, a recording, a set of pictures): its state, progress and outcome.
 pipeline_runs: AsyncIOMotorCollection = get_client().get_default_database()["pipeline_runs"]
+# What was made from what: one row per result made from a source recording, picture or post (the "Repurposed from this" list).
+repurposes: AsyncIOMotorCollection = get_client().get_default_database()["repurposes"]
 # Publish failure audit trail, written by app/pipelines/publish/supervisor/alerts.py
 # (previously only ever accessed there via db["publish_incidents"] ad hoc —
 # named here too so app/agents/supervisor/rules.py's platform_delivery_failing

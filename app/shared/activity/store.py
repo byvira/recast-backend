@@ -219,6 +219,22 @@ def _decode_cursor(cursor: str) -> tuple[datetime, str]:
     return parsed, entry_id
 
 
+def exclude_plan_flags(query: dict, hidden_flags: Any) -> dict:
+    """Leave out Odette alerts for rules this workspace's plan does not use (a seat-limit alert saved before the plan was set up
+    that way, for one). The rows stay in the audit trail; they are just not shown."""
+    if hidden_flags:
+        query.setdefault("$and", []).append(
+            {"$nor": [{"source.kind": "odette_flag", "source.type": {"$in": list(hidden_flags)}}]}
+        )
+    return query
+
+
+async def hidden_flags_for(workspace_id: str) -> list[str]:
+    from app.shared.tier_policy import workspace_policy
+
+    return list((await workspace_policy(workspace_id))["hidden_rules"])
+
+
 def build_query(
     *,
     workspace_id: str,
@@ -229,6 +245,7 @@ def build_query(
     actor_type: Optional[str] = None,
     status: Optional[str] = None,
     q: Optional[str] = None,
+    hidden_flags: Any = (),
 ) -> dict:
     query = visibility_filter(workspace_id, user_id, role)
     and_clauses: list[dict] = []
@@ -249,7 +266,7 @@ def build_query(
         query["search_text"] = {"$regex": re.escape(q.strip().lower())}
     if and_clauses:
         query["$and"] = and_clauses
-    return query
+    return exclude_plan_flags(query, hidden_flags)
 
 
 async def list_entries(query: dict, *, cursor: Optional[str], limit: int) -> dict:

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
+from app.shared.tier_policy import policy_for
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
@@ -29,6 +30,8 @@ class UpdateWorkspaceBody(BaseModel):
     # this instead of a hardcoded constant. Omit the field to leave the
     # current value (or the hardcoded default, if never set) untouched.
     media_upload_limits: Optional[MediaUploadLimits] = None
+    # Whether posts wait for approval. Omit to leave it; null puts it back to what the plan does by default.
+    require_review: Optional[bool] = None
 
 
 class SetRoleBody(BaseModel):
@@ -110,6 +113,7 @@ async def list_my_workspaces(
             "is_personal": w.get("is_personal", False),
             "role": m["role"],
             "is_default": w["id"] == default_id,
+            "policy": policy_for(w),
         })
     return {"items": items}
 
@@ -133,6 +137,7 @@ async def get_workspace(
         raise HTTPException(status_code=403, detail="Access denied.")
 
     doc.pop("_id", None)
+    doc["policy"] = policy_for(doc)
     return doc
 
 
@@ -188,7 +193,8 @@ async def update_workspace(
     updates["updated_at"] = datetime.now(timezone.utc)
     await workspaces.update_one({"id": workspace_id}, {"$set": updates})
     updates.pop("updated_at")
-    return {"workspace_id": workspace_id, **updates}
+    fresh = await workspaces.find_one({"id": workspace_id}, {"tier": 1, "require_review": 1})
+    return {"workspace_id": workspace_id, **updates, "policy": policy_for(fresh)}
 
 
 @router.delete("/{workspace_id}")

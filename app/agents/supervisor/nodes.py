@@ -22,6 +22,7 @@ from app.agents.supervisor.state import SupervisorState
 from app.agents.supervisor.tools import make_tools
 from app.db.mongo import agent_worker_state, workspace_flags, workspace_insights
 from app.prompts.registry import load_prompt
+from app.shared.tier_policy import mentions_team_topics, plan_note, workspace_policy
 from app.shared.llm import GroqModel, _record_usage, get_groq_client, usage_workspace
 from app.utils.jsonparser import parse_llm_json
 
@@ -56,8 +57,9 @@ async def reason_node(state: SupervisorState) -> dict:
 
     specs, dispatch = make_tools(state["workspace_id"])
     client = get_groq_client()
+    note = plan_note(await workspace_policy(state["workspace_id"]))
     messages: list[dict] = [
-        {"role": "system", "content": build_odette_system(state.get("language", "en"))},
+        {"role": "system", "content": build_odette_system(state.get("language", "en")) + (f"\n\n{note}" if note else "")},
         {"role": "user", "content": load_prompt(
             "supervisor/reason_kickoff",
             digest_json=json.dumps(digest, default=str, indent=2),
@@ -167,7 +169,8 @@ async def synthesize_node(state: SupervisorState) -> dict:
         {"role": "system", "content": build_odette_system(state.get("language", "en"))},
         {"role": "user", "content": "DIGEST:\n" + json.dumps(digest, default=str)},
     ]
-    messages.append({"role": "user", "content": _SYNTH_INSTRUCTIONS})
+    note = plan_note(await workspace_policy(state["workspace_id"]))
+    messages.append({"role": "user", "content": _SYNTH_INSTRUCTIONS + (f"\n\n{note}" if note else "")})
 
     findings = {"insights": [], "flags": [], "notify": False}
     try:
@@ -211,7 +214,13 @@ async def persist_node(state: SupervisorState) -> dict:
     run_id = f"supervisor:{ws}:{now.isoformat()}"
 
     insight_ids: list[str] = []
-    for ins in findings.get("insights", [])[:3]:
+    # A workspace of one is never shown a recommendation about a team it does not have, whatever the model wrote.
+    one_person = (await workspace_policy(ws))["team_rules"] is False
+    usable = [
+        ins for ins in findings.get("insights", [])
+        if not (one_person and mentions_team_topics(ins.get("title"), ins.get("body"), ins.get("rationale")))
+    ]
+    for ins in usable[:3]:
         iid = str(uuid4())
         await workspace_insights.insert_one({
             "_id": iid,

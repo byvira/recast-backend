@@ -23,6 +23,8 @@ from app.api.v1 import users as users_router
 from app.api.v1 import audio_assets, content, destinations, image_assets, media, oauth, publish
 from app.api.v1 import presets as presets_router
 from app.api.v1 import campaigns as campaigns_router
+from app.api.v1 import repurposes as repurposes_router
+from app.api.v1 import thumbnails as thumbnails_router
 from app.api.v1 import runs as runs_router
 from app.core.config import settings
 from app.core.origins import build_origins
@@ -364,6 +366,8 @@ app.include_router(media.router,          prefix="/api/v1/media",      tags=["Me
 app.include_router(presets_router.router, prefix="/api/v1/presets",    tags=["Presets"])
 app.include_router(campaigns_router.router, prefix="/api/v1/campaigns", tags=["Campaigns"])
 app.include_router(runs_router.router, prefix="/api/v1/runs", tags=["Runs"])
+app.include_router(repurposes_router.router, prefix="/api/v1/repurposes", tags=["Repurposes"])
+app.include_router(thumbnails_router.router, prefix="/api/v1/thumbnails", tags=["Thumbnails"])
 app.include_router(text.router,           prefix="/api/v1/text",       tags=["Text Pipeline"])
 app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Audio"])
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])

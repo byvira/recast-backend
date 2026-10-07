@@ -193,11 +193,32 @@ async def pipeline_summary(
                      last_created_at=iso_utc(row["last"]) if row.get("last") else None)
     out["video"] = video
 
+    # With no review step, nothing is waiting for review: the count would only confuse a person who has nobody to ask.
+    from app.shared.tier_policy import review_required
+
+    if not await review_required(ws):
+        for entry in out.values():
+            entry["pending_approval"] = 0
+
     # How the saved background runs of the last 30 days went, per kind: how long a finished one took and how many of the
     # finished ones worked. Cancelled runs are the member's choice, so they count in neither.
     stats = await _run_stats(ws, now - timedelta(days=30))
     for kind, entry in out.items():
         entry.update(stats.get(kind, {"runs_30d": 0, "avg_seconds": None, "success_rate": None}))
+    # What is being made right now, so a pipeline in use never reads as idle. A campaign writes posts, so its runs count
+    # under text; video renders are kept in their own record and count while they are still running.
+    for entry in out.values():
+        entry["in_progress"] = 0
+    async for row in db["pipeline_runs"].aggregate([
+        {"$match": {"workspace_id": ws, "status": {"$in": ["queued", "running", "paused"]}}},
+        {"$group": {"_id": "$kind", "n": {"$sum": 1}}},
+    ]):
+        kind = "text" if row["_id"] == "campaign" else row["_id"]
+        if kind in out:
+            out[kind]["in_progress"] += row["n"]
+    out["video"]["in_progress"] += await db["audio_render_jobs"].count_documents(
+        {"workspace_id": ws, "kind": "video", "status": "running", "started_at": {"$gte": now - timedelta(minutes=30)}},
+    )
     if out["text"]["avg_seconds"] is None:
         from app.shared.activity.runs import median_run_seconds
 

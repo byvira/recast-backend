@@ -310,7 +310,7 @@ async def test_an_attached_image_is_what_publish_now_sends(signup_user):
 
 async def test_send_to_draft_makes_the_post_and_attaches_the_video(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Send WS 1")
+    ws_id = await create_workspace(client, "Send WS 1", tier="large")
     audio = await _audio(ws_id, with_clip=True)
 
     res = await client.post(

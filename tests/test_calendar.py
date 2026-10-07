@@ -72,7 +72,7 @@ async def test_calendar_returns_real_kanban_stage(signup_user):
     instead of guessing. Approve moves approval_status to "approved",
     which compute_kanban_stage() reads as "staging"."""
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Calendar WS")
+    ws_id = await create_workspace(client, "Calendar WS", tier="large")
     piece_id = await _seed_piece(ws_id, profile["id"], str(uuid4()))
     now = datetime.now(timezone.utc)
 

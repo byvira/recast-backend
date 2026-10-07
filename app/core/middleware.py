@@ -59,6 +59,7 @@ _CAMPAIGN_THUMBNAIL_PATH_RE = re.compile(r"^/api/v1/campaigns/[^/]+/thumbnail$")
 _UPLOAD_PATHS = frozenset({
     "/api/v1/image-assets/upload",
     "/api/v1/audio-assets/upload",
+    "/api/v1/thumbnails/upload",
     "/api/v1/support/uploads",
     "/api/v1/ops/support/uploads",
 })

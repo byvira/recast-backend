@@ -3,6 +3,7 @@ from app.models.text import AgentTask, AgentResult, Platform
 from app.pipelines.text.brand_context import build_goal_context, build_tone_and_terms, build_tone_override, build_engagement_context
 from app.pipelines.text.generator import (
     PLATFORM_RULES,
+    as_text,
     build_approved_copy_instruction,
     build_approved_vocabulary_instruction,
     build_banned_words_instruction,
@@ -95,7 +96,8 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
             agent="repurpose", platform=task.platform, output={}, success=False
         )
 
-    content_str = result.get("content", "")
+    content_str = as_text(result.get("content"))
+    result["content"] = content_str
     result["word_count"] = len(content_str.split())
     result["char_count"] = len(content_str)
 

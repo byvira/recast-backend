@@ -69,6 +69,8 @@ class Workspace(BaseModel):
     # until an owner turns it back off — see app.agents.supervisor.service
     # .assert_generation_allowed, the single shared check all three call.
     generation_halted: bool = False
+    # Whether posts wait for approval. None means "what the plan does by default" (see app.shared.tier_policy).
+    require_review: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
 

@@ -17,13 +17,16 @@ MAX_MESSAGE_CHARS = 5000
 MAX_TICKETS_PER_MEMBER_PER_HOUR = 5
 MAX_MESSAGES_PER_MEMBER_PER_HOUR = 20
 MAX_TICKETS_PER_WORKSPACE_PER_DAY = 30
-MAX_UPLOADS_PER_MEMBER_PER_HOUR = 20
+MAX_UPLOADS_PER_MEMBER_PER_HOUR = 40
 DUPLICATE_TICKET_WINDOW = timedelta(minutes=10)
 MESSAGE_PAGE_SIZE = 50
 
 # ── Attachments ──────────────────────────────────────────────────────────────
-MAX_ATTACHMENTS_PER_MESSAGE = 5
+MAX_ATTACHMENTS_PER_MESSAGE = 10
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+# A screen recording is bigger than a screenshot, so videos get their own limit.
+MAX_VIDEO_BYTES = 50 * 1024 * 1024
+VIDEO_EXTENSIONS: frozenset[str] = frozenset({"mp4", "mov", "webm"})
 # extension -> mime types accepted for it
 ALLOWED_ATTACHMENT_TYPES: dict[str, frozenset[str]] = {
     "png": frozenset({"image/png"}),
@@ -33,6 +36,9 @@ ALLOWED_ATTACHMENT_TYPES: dict[str, frozenset[str]] = {
     "pdf": frozenset({"application/pdf"}),
     "txt": frozenset({"text/plain"}),
     "log": frozenset({"text/plain", "application/octet-stream"}),
+    "mp4": frozenset({"video/mp4"}),
+    "mov": frozenset({"video/quicktime"}),
+    "webm": frozenset({"video/webm"}),
 }
 SIGNED_URL_SECONDS = 300
 

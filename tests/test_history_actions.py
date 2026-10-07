@@ -98,7 +98,7 @@ async def test_a_picture_project_can_be_renamed_and_deleted_and_then_disappears_
 
 async def test_a_picture_project_is_saved_as_a_draft_once_per_platform(signup_user):
     client, _ = await signup_user()
-    ws = await create_workspace(client, "History Actions 6")
+    ws = await create_workspace(client, "History Actions 6", tier="large")
     image_id, media = await _image(ws)
 
     first = await client.post(f"/api/v1/image-assets/{image_id}/send-to-draft", json={}, headers=H(ws))

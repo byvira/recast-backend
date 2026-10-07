@@ -21,10 +21,10 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 def fake_storage(monkeypatch):
     """No real Cloudinary calls: uploads return a made-up key, links are fake."""
     monkeypatch.setattr(
-        storage, "upload_private_file", lambda data, folder, pid: f"recast/private/support/{folder}/{pid}"
+        storage, "upload_private_file", lambda data, folder, pid, kind="raw": f"recast/private/support/{folder}/{pid}"
     )
     monkeypatch.setattr(
-        storage, "signed_private_url", lambda key, secs=300: f"https://signed.example/{key}?exp={secs}"
+        storage, "signed_private_url", lambda key, secs=300, kind="raw", fmt="": f"https://signed.example/{key}?exp={secs}"
     )
 
 
@@ -109,11 +109,11 @@ async def test_cannot_attach_someone_elses_or_too_many_files(make_client, fake_s
     )
     assert stolen.status_code == 400
 
-    many = [(await _upload(b)).json()["file_id"] for _ in range(6)]
+    many = [(await _upload(b)).json()["file_id"] for _ in range(11)]
     too_many = await b.post(
         f"/api/v1/support/tickets/{tid}/messages", json={"text": "x", "attachment_ids": many}
     )
-    assert too_many.status_code == 422  # rejected by the request model (max 5)
+    assert too_many.status_code == 422  # rejected by the request model (max 10)
 
 
 def test_signed_link_is_real_signing_not_a_plain_url(monkeypatch):

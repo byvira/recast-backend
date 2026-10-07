@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from app.agents.supervisor import thresholds as T
 from app.agents.supervisor.personas import odette_flag_summary
 from app.core.rbac import ROLE_PERMISSIONS
+from app.shared.tier_policy import policy_for
 from app.db.mongo import (
     personal_signals,
     publish_incidents,
@@ -75,6 +76,7 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
 
     ws = await workspaces.find_one({"id": workspace_id}) or {}
     tier = ws.get("tier", "")
+    hidden_rules = set(policy_for(ws)["hidden_rules"])
     seats = int((ws.get("tier_config") or {}).get("seats", 0) or 0)
     active_members = await workspace_members.count_documents(
         {"workspace_id": workspace_id, "status": "active"}
@@ -127,7 +129,7 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
     if bv >= T.BRAND_VOICE_EDITS_24H:
         flags.append(await flag(
             "brand_voice_instability", "warning",
-            {"count": bv, "window_hours": T.RULE_LOOKBACK_HOURS},
+            {"count": bv, "window_hours": T.RULE_LOOKBACK_HOURS, "tier": tier},
             {"name": "brand_voice_edits_24h", "value": float(bv), "limit": float(T.BRAND_VOICE_EDITS_24H)},
         ))
 
@@ -200,7 +202,8 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
                 {"name": "publish_failures", "value": float(count), "limit": float(T.PLATFORM_DELIVERY_FAILURES)},
             ))
 
-    return flags
+    # Rules that cannot mean anything on this plan are left out (a workspace of one has no team to police).
+    return [f for f in flags if f["flag_type"] not in hidden_rules]
 
 
 async def _signal_storm(workspace_id: str, now: datetime, language: str = "en") -> dict | None:

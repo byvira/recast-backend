@@ -121,7 +121,7 @@ async def staff_add_message(
 async def staff_upload(
     request: Request, file: UploadFile = File(...), staff: dict = Depends(require_platform_staff)
 ) -> dict:
-    data = await file.read(rules.MAX_ATTACHMENT_BYTES + 1)
+    data = await file.read(max(rules.MAX_ATTACHMENT_BYTES, rules.MAX_VIDEO_BYTES) + 1)
     try:
         doc = await files_service.store(
             uploader_id=staff["id"], uploader_type="staff", workspace_id="staff",
