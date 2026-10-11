@@ -11,7 +11,7 @@ import io
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import NamedTuple, Optional
+from typing import Literal, NamedTuple, Optional
 from uuid import uuid4
 
 import httpx
@@ -1068,6 +1068,31 @@ async def reorder_slides(
 
     reordered = [by_number[n].model_copy(update={"slide_number": i + 1}) for i, n in enumerate(body.order)]
     updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, reordered, "slides_reordered", ctx.user_id)
+    return ImageAsset(**updated_doc)
+
+
+class SetSlideRoleRequest(BaseModel):
+    role: Optional[Literal["hook", "stat", "takeaway"]] = None
+
+
+@router.patch("/{image_asset_id}/slides/{slide_number}/role", response_model=ImageAsset)
+@limiter.limit("60/minute")
+async def set_slide_role(
+    request: Request,
+    image_asset_id: str,
+    slide_number: int,
+    body: SetSlideRoleRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> ImageAsset:
+    """Marks what a slide does in the set (hook, stat or takeaway), or clears it. Only a label; the picture is not redrawn."""
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    asset = ImageAsset(**doc)
+    if slide_number not in {s.slide_number for s in asset.slides}:
+        raise HTTPException(status_code=404, detail="Slide not found.")
+    updated = [s.model_copy(update={"role": body.role}) if s.slide_number == slide_number else s for s in asset.slides]
+    updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, "slide_role_set", ctx.user_id)
     return ImageAsset(**updated_doc)
 
 

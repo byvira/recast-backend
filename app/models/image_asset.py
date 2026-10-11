@@ -104,6 +104,8 @@ class Slide(BaseModel):
     # fabricated field, not a real one.
     layout: Optional[LayoutPreset] = None
     media_id: Optional[str] = None  # -> MediaAsset.id, the rendered PNG for this slide
+    # What this slide does in the set: the opening hook, a key number, or the closing takeaway. A label the member sets.
+    role: Optional[Literal["hook", "stat", "takeaway"]] = None
     text_content: dict = {}
     effects: dict = {}
     # The editable design: the clean picture (no words on it) plus the layers drawn over it. media_id above stays the
