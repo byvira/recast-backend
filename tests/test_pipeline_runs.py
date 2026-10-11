@@ -321,3 +321,27 @@ async def test_a_cancelled_run_is_written_to_the_activity_log_as_a_warning_not_a
     finally:
         activity.record_system = original
         await pipeline_runs.delete_many({"workspace_id": "w-act"})
+
+
+async def test_work_the_member_cancelled_is_closed_as_cancelled_and_never_started_again():
+    from datetime import datetime, timedelta, timezone
+
+    from app.shared import jobs
+
+    old = datetime.now(timezone.utc) - timedelta(minutes=10)
+    run = await runs.create_run(
+        workspace_id="w-nocycle", user_id="u", kind="audio", title="Cancelled, then the server died",
+        extra={"action": "audio.transcribe", "restartable": True, "restart_attempts": 0, "payload": {"audio_asset_id": "a1"}},
+    )
+    await pipeline_runs.update_one(
+        {"id": run["id"]}, {"$set": {"status": "running", "created_at": old, "heartbeat_at": old, "cancel_requested": True}},
+    )
+    try:
+        await jobs.resume_interrupted()  # other stale jobs in the database may be brought back; this one must not be
+        row = await pipeline_runs.find_one({"id": run["id"]})
+        assert row["status"] == "running" and row["restart_attempts"] == 0
+        await runs.fail_interrupted()
+        row = await pipeline_runs.find_one({"id": run["id"]})
+        assert row["status"] == "cancelled" and not row.get("error")
+    finally:
+        await pipeline_runs.delete_many({"workspace_id": "w-nocycle"})

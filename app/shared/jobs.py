@@ -246,6 +246,8 @@ async def resume_interrupted() -> int:
     started = 0
     async for stale in pipeline_runs.find({
         "status": {"$in": list(runs.ACTIVE)}, "restartable": True, "restart_attempts": {"$lt": MAX_RESTARTS},
+        # Work the member cancelled is never started again, even if its server died before it could stop.
+        "cancel_requested": {"$ne": True},
         "$and": [
             {"$or": [{"heartbeat_at": {"$lt": cutoff}}, {"heartbeat_at": {"$exists": False}}, {"heartbeat_at": None}]},
             {"created_at": {"$lt": cutoff}},

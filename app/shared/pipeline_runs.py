@@ -199,6 +199,14 @@ async def control(run_id: str, workspace_id: str, action: str) -> Optional[dict]
 
 async def _finish(doc: dict, status: str, *, result: Optional[dict] = None, error: Optional[str] = None) -> None:
     await _set(doc["id"], status=status, result=result, error=error, finished_at=_now(), pause_requested=False)
+    if status == "cancelled" and doc.get("kind") == "campaign" and (doc.get("ref") or {}).get("campaign_id"):
+        # A cancelled batch must not be started again by the next scheduler tick: the campaign waits for its next turn.
+        try:
+            from app.pipelines.campaigns.batch_runner import skip_to_next_cadence
+
+            await skip_to_next_cadence(doc["ref"]["campaign_id"])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not move campaign %s to its next turn after a cancel: %s", doc["ref"].get("campaign_id"), exc)
     try:
         from app.shared.activity import record_system
 
@@ -320,6 +328,18 @@ async def fail_interrupted() -> int:
     going on another server keeps beating, so it is left alone. Called on startup and every few minutes."""
     now = _now()
     cutoff = now - STALE_AFTER
+    # Runs the member cancelled whose server died before they stopped are closed as cancelled (not failed, and never restarted).
+    async for stale in pipeline_runs.find(
+        {
+            "status": {"$in": list(ACTIVE)}, "cancel_requested": True,
+            "$and": [
+                {"$or": [{"heartbeat_at": {"$lt": cutoff}}, {"heartbeat_at": {"$exists": False}}, {"heartbeat_at": None}]},
+                {"created_at": {"$lt": cutoff}},
+            ],
+        },
+        {"_id": 0},
+    ).limit(200):
+        await _finish(stale, "cancelled")
     res = await pipeline_runs.update_many(
         {
             "status": {"$in": list(ACTIVE)},

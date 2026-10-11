@@ -30,6 +30,16 @@ logger = logging.getLogger(__name__)
 _CADENCE_DELTA = {"daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
 
 
+async def skip_to_next_cadence(campaign_id: str) -> None:
+    """Moves an automatic campaign's next batch to its next turn (a day or a week from now). A manual campaign is left alone."""
+    campaign = await get_campaigns_collection().find_one({"id": campaign_id}, {"cadence": 1})
+    delta = _CADENCE_DELTA.get(((campaign or {}).get("cadence") or {}).get("frequency", "manual"))
+    if delta:
+        await get_campaigns_collection().update_one(
+            {"id": campaign_id}, {"$set": {"cadence.next_run_at": datetime.now(timezone.utc) + delta}},
+        )
+
+
 async def generate_campaign_batch(
     campaign: dict[str, Any], *, workspace_id: str, user_id: str, run_id: Optional[str] = None,
 ) -> dict[str, Any]:
