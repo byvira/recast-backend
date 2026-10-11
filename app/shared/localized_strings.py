@@ -221,6 +221,9 @@ async def get_localized_string(
     coll = db["localized_strings"]
 
     doc = await coll.find_one({"key": key, "language": language})
+    # A saved translation is only good for the English wording it was made from; reworded English is translated again.
+    if doc is not None and doc.get("source_template") != english_template:
+        doc = None
     if doc is not None:
         logger.info(
             "get_localized_string: CACHE HIT key=%s language=%s — using cached translation, no LLM call",

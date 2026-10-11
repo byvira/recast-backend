@@ -655,6 +655,54 @@ async def google_callback(
         "No platforms connected. YouTube: no channel found on this Google account — "
         "create one at youtube.com and reconnect.",
     )
+# Platforms that do not share a public profile address when an account connects. The member can add it once, and it is kept on the
+# connection so every screen that links to the account uses it. Only addresses on the platform's own site are accepted.
+_MANUAL_PROFILE_HOSTS: dict[str, tuple[str, ...]] = {
+    "linkedin": ("linkedin.com", "www.linkedin.com"),
+}
+
+
+_MANUAL_PROFILE_LABELS = {"linkedin": "LinkedIn"}
+
+
+class ProfileLinkRequest(BaseModel):
+    url: str
+
+
+def _clean_manual_profile_url(platform: str, url: str) -> str:
+    parts = urlsplit((url or "").strip())
+    host = parts.netloc.lower()
+    allowed = _MANUAL_PROFILE_HOSTS[platform]
+    if parts.scheme not in ("http", "https") or host not in allowed or len(parts.path.strip("/")) < 3:
+        raise HTTPException(status_code=400, detail=f"Enter the link to your {_MANUAL_PROFILE_LABELS[platform]} profile, for example https://www.linkedin.com/in/yourname.")
+    if re.search(r"\s", url.strip()):
+        raise HTTPException(status_code=400, detail="That link has spaces in it. Copy it again from your browser.")
+    return urlunsplit(("https", host, parts.path.rstrip("/"), "", ""))
+
+
+@router.put("/{platform}/profile-link")
+@limiter.limit("20/minute")
+async def set_profile_link(
+    request: Request,
+    platform: str,
+    body: ProfileLinkRequest,
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
+) -> dict:
+    """Save the public profile address of a connected account whose platform does not share one (LinkedIn)."""
+    if platform not in _MANUAL_PROFILE_HOSTS:
+        raise HTTPException(status_code=400, detail="This platform's link is added automatically when you connect.")
+    from app.db.mongo import workspace_connections
+
+    url = _clean_manual_profile_url(platform, body.url)
+    res = await workspace_connections.update_one(
+        {"workspace_id": ctx.workspace_id, "platform": platform, "is_active": True},
+        {"$set": {"profile_url": url}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail=f"Connect your {_MANUAL_PROFILE_LABELS[platform]} account first.")
+    return {"platform": platform, "profile_url": url}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # GENERIC ROUTES LAST — wildcard /{platform} catches everything else
 # ─────────────────────────────────────────────────────────────────────────────

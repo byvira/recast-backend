@@ -1796,7 +1796,7 @@ async def _feed_status_response(doc: dict) -> PodcastFeedStatusResponse:
         cover_url = cover["url"] if cover else None
     return PodcastFeedStatusResponse(
         is_enabled=doc["is_enabled"], token=doc["token"],
-        feed_url=f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/audio-assets/feed/{doc['token']}.xml" if doc["is_enabled"] else None,
+        feed_url=f"{settings.API_PUBLIC_URL.rstrip('/')}/api/v1/audio-assets/feed/{doc['token']}.xml" if doc["is_enabled"] else None,
         title=doc.get("title", ""), description=doc.get("description", ""), episode_count=episode_count,
         language=doc.get("language", "en"), category=doc.get("category", ""), explicit=doc.get("explicit", False),
         author_name=doc.get("author_name", ""), owner_email=doc.get("owner_email", ""), cover_url=cover_url,
@@ -1915,6 +1915,7 @@ async def get_podcast_feed_xml(request: Request, token: str) -> Response:
         size = await _media_size_bytes(media)
         items_xml.append(f"""    <item>
       <title>{_escape_xml(ep.get('title', 'Untitled episode'))}</title>
+      <description>{_escape_xml(ep.get('description') or ep.get('title', 'Untitled episode'))}</description>
       <guid isPermaLink="false">{ep['id']}</guid>
       <pubDate>{pub_date.strftime('%a, %d %b %Y %H:%M:%S GMT')}</pubDate>
       <enclosure url="{_escape_xml(media['url'])}" type="{_escape_xml(media.get('mime_type') or 'audio/mpeg')}" length="{size}" />
@@ -1953,17 +1954,19 @@ async def get_podcast_feed_xml(request: Request, token: str) -> Response:
     )
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd">
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
     <title>{title}</title>
-    <description>{description}</description>
+    <link>{_escape_xml(settings.FRONTEND_URL)}</link>
+    <atom:link href="{_escape_xml(settings.API_PUBLIC_URL.rstrip('/'))}/api/v1/audio-assets/feed/{_escape_xml(token)}.xml" rel="self" type="application/rss+xml" />
+    <description>{description or title}</description>
     <language>{language}</language>
     <itunes:explicit>{explicit}</itunes:explicit>
     <itunes:author>{author}</itunes:author>
 {owner_xml}{category_xml}{cover_xml}{chr(10).join(items_xml)}
   </channel>
 </rss>"""
-    return Response(content=xml, media_type="application/rss+xml")
+    return Response(content=xml, media_type="application/rss+xml; charset=utf-8")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

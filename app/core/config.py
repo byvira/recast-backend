@@ -230,6 +230,10 @@ class Settings(BaseSettings):
     # the backend's own Render URL, not the frontend.
     FRONTEND_URL: str = "https://recast.byvirastudio.com"
 
+    # This API's own public base URL. Links that outside services open directly (the podcast feed address given to Spotify and
+    # Apple) must point here, not at the frontend site, which does not serve /api.
+    API_PUBLIC_URL: str = "https://recast-api.byvirastudio.com"
+
     # ── API docs gating ────────────────────────────────────────────────────
     # /docs, /redoc, /scalar and /openapi.json are open in development. In
     # production they require HTTP Basic auth using these credentials — if

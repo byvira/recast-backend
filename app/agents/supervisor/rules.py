@@ -143,7 +143,7 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
     if removals >= T.MEMBER_REMOVALS_24H:
         flags.append(await flag(
             "member_churn", "warning",
-            {"summary": f"{removals} members removed in {T.RULE_LOOKBACK_HOURS}h", "removals": removals},
+            {"summary": f"{removals} members removed in {T.RULE_LOOKBACK_HOURS}h", "removals": removals, "window_hours": T.RULE_LOOKBACK_HOURS},
             {"name": "member_removals_24h", "value": float(removals), "limit": float(T.MEMBER_REMOVALS_24H)},
         ))
     elif elevations:
@@ -152,7 +152,8 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
             "member_churn", "warning",
             {"summary": f"{len(elevations)} role elevation(s) to owner/admin",
              "subject_user_id": (e0.get("payload") or {}).get("subject_user_id"),
-             "to_role": (e0.get("payload") or {}).get("to_role")},
+             "to_role": (e0.get("payload") or {}).get("to_role"),
+             "count": len(elevations), "window_hours": T.RULE_LOOKBACK_HOURS},
             {"name": "role_elevations_24h", "value": float(len(elevations)), "limit": 0.0},
         ))
 
@@ -221,7 +222,7 @@ async def _signal_storm(workspace_id: str, now: datetime, language: str = "en") 
         return await _flag(
             "assistant_signal_storm", "warning",
             {"summary": f"{worst_count} assistant signals from one member in 24h",
-             "member_user_id": worst_member, "count": worst_count},
+             "member_user_id": worst_member, "count": worst_count, "window_hours": 24},
             {"name": "signals_one_member_24h", "value": float(worst_count),
              "limit": float(T.SIGNAL_STORM_PER_MEMBER_24H)},
             language=language,
@@ -237,7 +238,8 @@ async def _signal_storm(workspace_id: str, now: datetime, language: str = "en") 
                 "assistant_signal_storm", "warning",
                 {"summary": f"'{stype}' signal from {len(members)} members in "
                             f"{T.SIGNAL_STORM_SHARED_TYPE_HOURS}h",
-                 "signal_type": stype, "member_count": len(members)},
+                 "signal_type": stype, "member_count": len(members),
+                 "window_hours": T.SIGNAL_STORM_SHARED_TYPE_HOURS},
                 {"name": "members_shared_signal", "value": float(len(members)),
                  "limit": float(T.SIGNAL_STORM_SHARED_TYPE_MEMBERS)},
                 language=language,

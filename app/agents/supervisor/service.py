@@ -83,9 +83,27 @@ async def list_flags(workspace_id: str, *, status: str | None = "open", limit: i
     if status:
         q["status"] = status
     rows = await workspace_flags.find(q).sort("created_at", -1).limit(min(limit, 200)).to_list(200)
+    language = await _flag_language(workspace_id)
     for r in rows:
         r["id"] = r.pop("_id")
+        # Said again in the workspace's current language and wording, so a flag raised earlier never keeps old or mixed-up text.
+        if r.get("detection") == "rule" and r.get("flag_type"):
+            try:
+                from app.agents.supervisor.personas import odette_flag_summary
+                r["summary_persona"] = await odette_flag_summary(r["flag_type"], r.get("detail") or {}, language=language)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("flag summary not refreshed flag=%s: %s", r.get("id"), exc)
     return {"items": rows, "total": len(rows)}
+
+
+async def _flag_language(workspace_id: str) -> str:
+    try:
+        from app.agents.supervisor.ticks import _resolve_workspace_language
+        ws = await workspaces.find_one({"id": workspace_id}) or {}
+        return await _resolve_workspace_language(ws)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("flag language not resolved ws=%s: %s", workspace_id, exc)
+        return "en"
 
 
 async def set_flag_status(workspace_id: str, flag_id: str, status: str) -> dict:

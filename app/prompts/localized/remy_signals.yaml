@@ -1,11 +1,11 @@
 # English source templates for Remy's personal-assistant signal messages.
 # Translated into a member's language on demand and cached via
 # app.shared.localized_strings.get_localized_string() — see signals.py::remy_message().
-voice_drift: "hey - this one reads a little off from how you usually sound{why_suffix}. want me to pull it back toward your normal voice, or is the shift on purpose here?"
-voice_drift_trend: "small heads-up: your last few pieces have been drifting away from your established voice bit by bit - nothing dramatic in any single one, but the trend's there. worth a look before it settles in."
-volume_spike: "you've published a lot more than usual today ({today} vs your ~{mean}/day average). all good if it's intentional - just flagging in case something's firing on repeat."
-volume_drop: "noticed you've gone quiet the last few days after a steady stretch. no pressure, just here when you want to pick it back up."
-platform_volume_drop: "quiet on {platform} for {zero_days} days now, even though you've kept posting elsewhere - after averaging about {baseline_per_day}/day there before. worth a post if it's still part of the plan, or just a deliberate pause?"
-topic_shift: "your recent pieces have moved onto pretty different topics than what you'd been covering. if you're deliberately pivoting, ignore this - otherwise you might be drifting off your usual lane."
-quality_regression: "a higher share of your recent drafts got flagged for review than normal. might be worth slowing down a touch on the next few."
-__fallback__: "flagging something worth a look on your recent content."
+voice_drift: "This post sounds a bit different from how you usually write{why_suffix}. Want me to bring it back closer to your normal voice, or is the change on purpose?"
+voice_drift_trend: "Your last few posts have slowly moved away from your usual voice. No single post is a problem, but the pattern is there. It's worth a look before it sticks."
+volume_spike: "You've posted a lot more than usual today: {today}, compared with about {mean} a day. That's fine if it's on purpose. If not, check that nothing is posting on repeat."
+volume_drop: "You haven't posted for the last few days after a steady run. No pressure. I'm here whenever you want to pick it back up."
+platform_volume_drop: "You haven't posted on {platform} for {zero_days} days, though you've kept posting elsewhere. It used to get about {baseline_per_day} a day. Post there again if it's still part of your plan, or ignore this if the pause is on purpose."
+topic_shift: "Your recent posts are about different topics than before. If you're changing direction on purpose, you can ignore this. If not, you may be drifting away from what your audience expects."
+quality_regression: "More of your recent drafts than usual were flagged for review. It may help to slow down a little on your next few posts."
+__fallback__: "Something in your recent content is worth a look."

@@ -71,6 +71,10 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
         variant = "_solo" if tier == "single" else "_pair"
     elif flag_type == "daily_publish_cap" and tier in ("single", "duo"):
         variant = "_solo" if tier == "single" else "_pair"
+    elif flag_type == "member_churn":
+        variant = "_removed" if d.get("removals") else "_elevated" if d.get("to_role") else ""
+    elif flag_type == "assistant_signal_storm":
+        variant = "_shared" if d.get("member_count") else "_member" if d.get("count") else ""
     wording = flag_type + variant if (flag_type + variant) in _ODETTE_FLAG_ENGLISH_TEMPLATES else flag_type
     known = wording in _ODETTE_FLAG_ENGLISH_TEMPLATES
     template = _ODETTE_FLAG_ENGLISH_TEMPLATES.get(wording, _ODETTE_FLAG_ENGLISH_TEMPLATES["__fallback__"])
@@ -88,9 +92,15 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
     elif flag_type == "brand_voice_instability":
         format_ctx = {"count": d.get("count")}
     elif flag_type == "member_churn":
-        format_ctx = {"summary": d.get("summary", _MEMBER_CHURN_DEFAULT)}
+        format_ctx = (
+            {"count": d.get("removals") or d.get("count") or 1, "window_hours": d.get("window_hours", 24)}
+            if variant else {"summary": d.get("summary", _MEMBER_CHURN_DEFAULT)}
+        )
     elif flag_type == "assistant_signal_storm":
-        format_ctx = {"summary": d.get("summary", _SIGNAL_STORM_DEFAULT)}
+        format_ctx = (
+            {"count": d.get("count"), "member_count": d.get("member_count"), "window_hours": d.get("window_hours", 24)}
+            if variant else {"summary": d.get("summary", _SIGNAL_STORM_DEFAULT)}
+        )
     elif flag_type == "platform_capability_drift":
         from app.shared.activity.projector import platform_name
         names = [platform_name(p.get("platform")) for p in (d.get("platforms") or []) if p.get("platform")]
