@@ -166,7 +166,7 @@ def within_limits(planned: list[PlannedFile]) -> tuple[list[PlannedFile], int]:
 
 def readme(included_text: int, included_media: int, failed: list[str], skipped_for_limit: int) -> str:
     lines = [
-        "Recast library export",
+        "Ekavo library export",
         "",
         f"text/   {included_text} post{'s' if included_text != 1 else ''} as .txt files",
         f"media/  {included_media} file{'s' if included_media != 1 else ''} in their original format",

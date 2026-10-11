@@ -35,9 +35,9 @@ def _no_background_work(monkeypatch):
 def fake_storage(monkeypatch):
     """No real Cloudinary: uploads return a key, deletes are recorded."""
     deleted: list[str] = []
-    monkeypatch.setattr(storage, "upload_private_file", lambda data, folder, pid: f"k/{folder}/{pid}")
-    monkeypatch.setattr(storage, "signed_private_url", lambda key, secs=300: f"https://signed.example/{key}")
-    monkeypatch.setattr(storage, "delete_private_file", lambda key: deleted.append(key) or True)
+    monkeypatch.setattr(storage, "upload_private_file", lambda data, folder, pid, kind="raw": f"k/{folder}/{pid}")
+    monkeypatch.setattr(storage, "signed_private_url", lambda key, secs=300, kind="raw", fmt="": f"https://signed.example/{key}")
+    monkeypatch.setattr(storage, "delete_private_file", lambda key, kind="raw": deleted.append(key) or True)
     return deleted
 
 

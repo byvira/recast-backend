@@ -178,7 +178,7 @@ CATEGORIES = {
     "self_harm": "Encouraging self harm",
     "profanity": "Strong language",
     "assistant_leak": "Text left over from the writing assistant",
-    "custom": "A term blocked by Recast staff",
+    "custom": "A term blocked by Ekavo staff",
 }
 
 # Explicit adult terms: blocked at every strictness.

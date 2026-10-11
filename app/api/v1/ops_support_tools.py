@@ -288,7 +288,7 @@ async def merge_ticket(
 
     moved = [dict(m) for m in source.get("messages", [])]
     marker = {
-        "sender": "system", "sender_name": "Recast", "is_internal": True, "created_at": now,
+        "sender": "system", "sender_name": "Ekavo", "is_internal": True, "created_at": now,
         "text": f"Merged from {label(source)} ({source.get('subject', '')}) by {staff.get('name', 'staff')}.",
         "attachments": [],
     }

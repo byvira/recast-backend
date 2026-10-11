@@ -132,7 +132,7 @@ async def availability_block(platform_text: str, workspace_id: str) -> Optional[
     definition = get_platform(slug)
     name = definition.label if definition else platform_text
     if result.value == "paused":
-        return GateBlock("PLATFORM_PAUSED", f"{name} is paused by Recast for now. Nothing was cancelled. Try again once it is back.")
+        return GateBlock("PLATFORM_PAUSED", f"{name} is paused by Ekavo for now. Nothing was cancelled. Try again once it is back.")
     if result.value == "retired":
         return GateBlock("PLATFORM_RETIRED", f"{name} is no longer available. You can still copy your post.")
     if result.value == "hidden" and result.reason not in ("no_code", "unknown_platform"):
@@ -327,7 +327,7 @@ async def schedule_blocker(piece: dict, workspace_id: str) -> Optional[tuple[int
         adapter = await adapter_for(slug, workspace_id)
     if adapter is not None:
         if not adapter.is_manual and not (adapter.config.get("secrets") or {}).get("webhook_url"):
-            return 400, f"{platform} has no webhook address set yet. Ask the person who runs Recast to finish setting it up."
+            return 400, f"{platform} has no webhook address set yet. Ask the person who runs Ekavo to finish setting it up."
     else:
         if not await get_token(workspace_id, slug):
             return 400, f"{platform} is not connected. Connect it in Settings before scheduling."

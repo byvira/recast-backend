@@ -37,7 +37,7 @@ def _belongs_to(definition: PlatformDefinition) -> dict:
 def default_pause_message(label: str, count: int) -> str:
     plural = "s are" if count != 1 else " is"
     return (
-        f"{label} is paused by Recast for now. Your {count} scheduled post{plural} on hold. "
+        f"{label} is paused by Ekavo for now. Your {count} scheduled post{plural} on hold. "
         "Nothing was cancelled. They will go out after it is back, once approved."
     )
 
@@ -52,7 +52,7 @@ async def _tell_workspaces(
             await record_system(
                 workspace_id=workspace_id,
                 key=f"platformhold:{definition.key}:{workspace_id}:{stamp}",
-                actor_name="Recast",
+                actor_name="Ekavo",
                 category="post_published",
                 title=title,
                 description=message_for(count),

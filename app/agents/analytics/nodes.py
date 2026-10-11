@@ -26,6 +26,7 @@ from app.prompts.registry import load_fixture, load_localized, load_prompt
 from app.shared.llm import call_llm, call_llm_structured, GroqModel
 from app.shared.localized_strings import get_localized_string
 from app.db.mongo import get_db
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,38 @@ async def analyze_node(state: AnalyticsAgentState) -> dict:
         }
 
 
+async def _plan_line(workspace_id: str | None) -> str:
+    """What the workspace's plan means for advice (a one-person workspace is not told to assign work to someone). Empty for a
+    team, or when the plan cannot be read."""
+    if not workspace_id:
+        return ""
+    try:
+        from app.shared.tier_policy import plan_note, workspace_policy
+
+        return plan_note(await workspace_policy(workspace_id))
+    except Exception:  # noqa: BLE001 - advice is still useful without the plan note
+        return ""
+
+
+_PERCENT = re.compile(r"\d+(?:\.\d+)?\s?%")
+
+
+def clean_recommendations(raw: object, analysis: str) -> list[str]:
+    """The model's recommendations as a short list of plain strings. Anything that is not text is dropped, the list is cut to five,
+    and a recommendation quoting a percentage that the analysis does not contain is dropped as invented."""
+    items = raw if isinstance(raw, list) else [raw] if isinstance(raw, str) else []
+    known = set(_PERCENT.findall(analysis or ""))
+    kept: list[str] = []
+    for item in items:
+        text = item.strip() if isinstance(item, str) else ""
+        if not text:
+            continue
+        if any(figure not in known for figure in _PERCENT.findall(text)):
+            continue
+        kept.append(text)
+    return kept[:5]
+
+
 async def recommend_node(state: AnalyticsAgentState) -> dict:
     """
     LLM generates specific, actionable recommendations based on the analysis.
@@ -247,6 +280,7 @@ async def recommend_node(state: AnalyticsAgentState) -> dict:
         analysis=state["analysis"],
         language_name=resolve_language_directive_name(language),
         example_line=load_fixture("analytics_recommend_example")["example_line"],
+        plan_line=await _plan_line(state.get("workspace_id")),
     )
 
     try:
@@ -271,7 +305,7 @@ async def recommend_node(state: AnalyticsAgentState) -> dict:
         else:
             recommendations = []
 
-        return {"recommendations": recommendations}
+        return {"recommendations": clean_recommendations(recommendations, state["analysis"])}
 
     except Exception as exc:
         logger.error("recommend_node failed: %s", exc)

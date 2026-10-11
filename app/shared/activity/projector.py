@@ -1,4 +1,4 @@
-"""Turn the things Recast already records into Activity Log rows.
+"""Turn the things Ekavo already records into Activity Log rows.
 
 Four sources, one row shape:
 

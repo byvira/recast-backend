@@ -10,6 +10,9 @@ SOURCE MATERIAL
 Topics: {{ topics }}
 Key quotes: {{ key_quotes | untrusted("key_quotes") }}
 Full transcript excerpt: {{ transcript_excerpt | untrusted("transcript_excerpt") }}
+{%- if chapters is defined and chapters %}
+Chapters (real times from the recording): {% for c in chapters %}{{ "%d:%02d"|format((c.start_s // 60)|int, (c.start_s % 60)|int) }} {{ c.title }}{% if not loop.last %}; {% endif %}{% endfor %}
+{%- endif %}
 
 LANGUAGE: Write the whole output in the language of the transcript unless the brand instructions name another language. Do not translate quotes; keep them in the language they were spoken in.
 
@@ -18,7 +21,7 @@ STRUCTURE
 1. A one-line episode headline that states the specific promise of the episode, not a generic label.
 2. A summary of 2 to 3 sentences: who this is for, the main question or tension, and what the listener walks away knowing.
 3. "In this episode": 4 to 6 bullet points. Each bullet names one concrete idea, decision or example from the transcript, in plain words.
-4. Chapter markers only if the transcript excerpt gives real timestamps; never invent a time.
+4. Chapter markers: use only the chapters listed above, with their times as given. If no chapters are listed, leave this part out; never invent a time.
 5. One or two standout quotes, copied exactly from the key quotes or transcript, each with a one-line note on why it matters.
 6. A closing takeaway: one specific thing the listener can do or think about after listening.
 {%- else %}

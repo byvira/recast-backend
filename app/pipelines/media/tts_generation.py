@@ -34,6 +34,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.models.audio_asset import TranscriptWord
 from app.models.lexicon import MemberLexicon
+from app.models.text import LANGUAGE_NAMES
 from app.models.voice_settings import MemberVoiceSettings
 
 logger = logging.getLogger(__name__)
@@ -113,9 +114,11 @@ def narration_blocker(language: str, voice_settings: MemberVoiceSettings) -> Opt
     only a few languages, so any other language needs the premium voice service AND a real premium voice picked. Said before
     any translation is paid for, instead of as a vague failure afterwards."""
     lang = (language or "").strip().lower()
+    # A language code ("fr") is read as its name ("french"), so a code and a name get the same answer.
+    lang = LANGUAGE_NAMES.get(lang.split("-")[0], lang).lower() if "+" not in lang else lang
     if lang in DEEPGRAM_SUPPORTED_LANGUAGES and settings.DEEPGRAM_API_KEY:
         return None
-    name = (language or "that language").strip().title()
+    name = lang.title() if language else "that language"
     backup = ", ".join(sorted(n.title() for n in DEEPGRAM_SUPPORTED_LANGUAGES))
     if not (settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED):
         return f"{name} narration needs the premium voice service, which isn't switched on. The standard voice reads {backup}."

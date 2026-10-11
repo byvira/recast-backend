@@ -5,7 +5,7 @@ end screens) is a deliberate later stage, not this build.
 
 YouTube doesn't fit the "text post + optional attached media" shape every
 other publisher uses — the video IS the post, not an attachment to one.
-Recast has no video generation (see docs/DEFERRED_AND_PARTIAL_SCOPE.md,
+Ekavo has no video generation (see docs/DEFERRED_AND_PARTIAL_SCOPE.md,
 DEF-001/002) — the video must be user-uploaded via the same
 POST /api/v1/media flow every other media attach already uses. No video
 attached is a real failure here, not a silent text-only fallback the way

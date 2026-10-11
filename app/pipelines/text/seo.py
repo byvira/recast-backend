@@ -28,6 +28,16 @@ def should_run_seo(platform: Platform, seo_meta: bool) -> bool:
     return seo_meta and platform in SEO_PLATFORMS
 
 
+def shorten_meta(meta: str, limit: int = 160) -> str:
+    """A meta description cut to fit the limit at a whole word, with an ellipsis, never in the middle of a word."""
+    if len(meta) <= limit:
+        return meta
+    room = limit - 3
+    cut = meta.rfind(" ", 0, room + 1)
+    head = meta[:cut] if cut > room // 2 else meta[:room]
+    return head.rstrip(" ,;:-") + "..."
+
+
 async def run_seo_agent(task: AgentTask, content: str) -> AgentResult:
     """
     Generate a full SEO package for long-form content.
@@ -48,7 +58,7 @@ async def run_seo_agent(task: AgentTask, content: str) -> AgentResult:
 
     meta = result.get("meta_description", "")
     if len(meta) > 160:
-        result["meta_description"] = meta[:157] + "..."
+        result["meta_description"] = shorten_meta(meta)
 
     slug = result.get("slug", "")
     if not slug or not re.match(r"^[a-z0-9-]+$", slug):

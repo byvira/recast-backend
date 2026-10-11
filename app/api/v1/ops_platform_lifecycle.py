@@ -1,7 +1,7 @@
 """Ops Dashboard: the platform catalog, one platform's detail, and the controls on it (stage, rollout, live test,
 registry facts, test send).
 
-Everything here is for Recast staff. Reading needs platform staff (or a master admin). Changing a stage, widening or
+Everything here is for Ekavo staff. Reading needs platform staff (or a master admin). Changing a stage, widening or
 narrowing the rollout and the other owner actions need a master admin; recording a live test and verifying the
 registry facts are open to staff. Writes carry the `version` of the record they were based on and answer 409 when it
 has moved, so two people cannot overwrite each other.
@@ -363,7 +363,7 @@ async def test_send(request: Request, key: str, body: TestSend, user: dict = Dep
         raise HTTPException(status_code=400, detail={"code": "no_settings", "message": "Save and switch on the settings first."})
 
     adapter = ConfigPublisherAdapter(definition, config)
-    text = (body.text or "This is a test message from Recast. You can ignore it.").strip()
+    text = (body.text or "This is a test message from Ekavo. You can ignore it.").strip()
     request_obj = PublishRequest(
         piece_id="ops-test", user_id=user["id"], brand_id="", platform=definition.key, content=text,
         workspace_id=_workspace_of(user),

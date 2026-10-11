@@ -36,8 +36,8 @@ def sender_for(name: str, configured: str | None = None) -> str:
     return f"{name} <{sender_address(settings.EMAIL_FROM if configured is None else configured)}>"
 
 
-_DEFAULT_FROM = sender_for("Recast")
-OPS_FROM = sender_for("Recast Ops")
+_DEFAULT_FROM = sender_for("Ekavo")
+OPS_FROM = sender_for("Ekavo Ops")
 
 
 def _test_sender_version(sender: str) -> str:
@@ -62,8 +62,8 @@ async def send_templated_email(
         template_id: Alias of the published Resend template to use.
         to: Recipient email address.
         variables: Template variables, keyed exactly as defined on Resend.
-        from_override: Overrides the default "Recast <...>" sender — used
-            by the ops-facing templates ("Recast Ops <...>").
+        from_override: Overrides the default "Ekavo <...>" sender — used
+            by the ops-facing templates ("Ekavo Ops <...>").
 
     Returns:
         True on success (or logged in dev), False if skipped or delivery failed.

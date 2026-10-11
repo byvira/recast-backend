@@ -26,7 +26,7 @@ from pymongo.errors import DuplicateKeyError
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM = {"actor_type": "system", "actor_id": None, "actor_name": "Recast"}
+_SYSTEM = {"actor_type": "system", "actor_id": None, "actor_name": "Ekavo"}
 
 
 def _as_utc(value) -> Optional[datetime]:

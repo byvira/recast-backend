@@ -79,11 +79,11 @@ def test_evaluate_quality_flags_near_silence():
 async def _asset_with_transcript_and_media(client, ws_id, brand_id, monkeypatch):
     asset = (await _generate(client, ws_id, brand_id)).json()
     words = [{"word": w, "start_s": i * 1.0, "end_s": i * 1.0 + 0.6, "speaker": None}
-              for i, w in enumerate(["This", "is", "a", "real", "quote", "worth", "sharing."])]
+              for i, w in enumerate(["This", "is", "a", "real", "quote", "worth", "sharing."] + ["and"] * 33)]
     from app.db.mongo import audio_assets as audio_assets_col
     await audio_assets_col.update_one({"id": asset["id"]}, {"$set": {"transcript": words}})
 
-    master = _tone(8.0)
+    master = _tone(40.0)
     monkeypatch.setattr(audio_module, "_download_media_bytes", lambda url: _async_return(master))
     return asset
 
@@ -94,7 +94,7 @@ async def _async_return(value):
 
 def _fake_structured_one_suggestion():
     async def _fake(prompt, **kwargs):
-        return {"suggestions": [{"start_s": 0.0, "end_s": 4.0, "quote": "This is a real quote", "reason": "A complete thought."}]}
+        return {"suggestions": [{"start_s": 0.0, "end_s": 20.6, "quote": "This is a real quote", "reason": "A complete thought."}]}
     return _fake
 
 
@@ -107,7 +107,7 @@ async def test_extract_soundbites_creates_real_persisted_clips(signup_user, stub
     assert res.status_code == 201, res.text
     created = res.json()
     assert len(created) == 1
-    assert created[0]["quote"] == "This is a real quote"
+    assert created[0]["quote"].startswith("This is a real quote"), "the quote is the words actually spoken"
     assert created[0]["approval_status"] == "pending"
     assert created[0]["url"]
 
@@ -229,10 +229,10 @@ async def test_refine_removes_real_filler_words_using_the_parent_transcript_slic
         {"word": "and", "start_s": 2.0, "end_s": 2.5, "speaker": None},
         {"word": "worth", "start_s": 2.5, "end_s": 3.0, "speaker": None},
         {"word": "sharing", "start_s": 3.0, "end_s": 3.5, "speaker": None},
-    ]
+    ] + [{"word": "and", "start_s": 3.5 + i * 0.5, "end_s": 4.0 + i * 0.5, "speaker": None} for i in range(40)]
     from app.db.mongo import audio_assets as audio_assets_col
     await audio_assets_col.update_one({"id": asset["id"]}, {"$set": {"transcript": words}})
-    master = _tone(8.0)
+    master = _tone(30.0)
     monkeypatch.setattr(audio_module, "_download_media_bytes", lambda url: _async_return(master))
 
     monkeypatch.setattr(audio_module, "call_llm_structured", _fake_structured_one_suggestion())

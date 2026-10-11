@@ -232,7 +232,7 @@ async def test_video_is_refused_over_the_workspaces_size_limit(signup_user, stub
 async def _asset_with_real_transcript(client, ws_id, brand_id):
     asset = (await _generate(client, ws_id, brand_id)).json()
     words = [{"word": w, "start_s": i * 1.0, "end_s": i * 1.0 + 0.6, "speaker": None}
-              for i, w in enumerate(["This", "is", "a", "real", "quote", "worth", "sharing."])]
+              for i, w in enumerate(["This", "is", "a", "real", "quote", "worth", "sharing."] + ["and"] * 33)]
     await audio_assets.update_one({"id": asset["id"]}, {"$set": {"transcript": words}})
     return asset
 
@@ -243,7 +243,7 @@ async def test_suggest_clips_returns_real_grounded_suggestions(signup_user, stub
 
     async def _fake_structured(prompt, **kwargs):
         return {"suggestions": [
-            {"start_s": 0.0, "end_s": 4.0, "quote": "This is a real quote", "reason": "A complete thought."},
+            {"start_s": 0.0, "end_s": 20.6, "quote": "This is a real quote", "reason": "A complete thought."},
             {"start_s": 100.0, "end_s": 200.0, "quote": "out of range", "reason": "should be dropped"},
             {"start_s": "bad", "end_s": 2, "quote": "malformed", "reason": "should be dropped"},
         ]}
@@ -253,7 +253,8 @@ async def test_suggest_clips_returns_real_grounded_suggestions(signup_user, stub
     assert res.status_code == 200, res.text
     suggestions = res.json()["suggestions"]
     assert len(suggestions) == 1  # the out-of-range and malformed ones were filtered out
-    assert suggestions[0]["start_s"] == 0.0 and suggestions[0]["end_s"] == 4.0
+    assert suggestions[0]["start_s"] == 0.0 and suggestions[0]["end_s"] == 20.6
+    assert suggestions[0]["quote"].startswith("This is a real quote worth sharing."), "the quote is the words actually spoken"
 
 
 async def test_suggest_clips_needs_a_transcript(signup_user, stubs):
@@ -273,3 +274,51 @@ async def test_suggest_clips_surfaces_a_provider_failure_honestly(signup_user, s
     monkeypatch.setattr(audio_module, "call_llm_structured", _boom)
     res = await client.post(f"/api/v1/audio-assets/{asset['id']}/suggest-clips", headers=_h(ws_id))
     assert res.status_code == 502
+
+
+def test_clip_suggestions_are_snapped_to_real_words_and_held_to_the_length_rule():
+    from app.api.v1.audio_assets import validate_clip_suggestions
+
+    words = [{"word": f"w{i}", "start_s": i * 1.0, "end_s": i * 1.0 + 0.6, "speaker": None} for i in range(200)]
+    result = {"suggestions": [
+        {"start_s": 10.2, "end_s": 40.5, "quote": "invented words", "reason": "ok"},   # kept, snapped, real quote
+        {"start_s": 50.0, "end_s": 55.0, "quote": "too short", "reason": "5 seconds"},  # under 15 seconds
+        {"start_s": 60.0, "end_s": 200.0, "quote": "too long", "reason": "140 seconds"},  # over 60 seconds
+        {"start_s": 20.0, "end_s": 50.0, "quote": "overlaps", "reason": "overlaps the first"},  # overlaps a kept clip
+    ]}
+    kept = validate_clip_suggestions(result, words)
+    assert len(kept) == 1
+    assert kept[0].start_s == 10.0 and kept[0].end_s == 40.6
+    assert kept[0].quote.startswith("w10 w11") and "invented" not in kept[0].quote
+
+
+# ── written versions (show notes, captions, summary) ─────────────────────────
+
+async def test_a_recording_can_be_turned_into_show_notes_and_the_latest_is_saved(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _asset_with_real_transcript(client, ws_id, brand_id)
+    seen = {}
+
+    async def _fake_agent(**kwargs):
+        seen.update(kwargs["raw_input"])
+        return {"content": "A headline \u2014 with a dash.\n\nIn this episode: the real points.", "quality_scores": {"completeness": 0.8, "accuracy": 0.9}}
+
+    import app.pipelines.audio.orchestrator as orchestrator
+
+    monkeypatch.setattr(orchestrator, "run_audio_analysis", _fake_agent)
+    res = await client.post(f"/api/v1/audio-assets/{asset['id']}/derivatives", json={"output_type": "show_notes"}, headers=_h(ws_id))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["output_type"] == "show_notes" and "\u2014" not in body["content"] and body["quality"] == 0.85
+    assert seen["output_type"] == "show_notes" and "real quote" in seen["transcript"]
+    saved = await audio_assets.find_one({"id": asset["id"]})
+    assert saved["derivatives"]["show_notes"]["content"] == body["content"]
+
+
+async def test_written_versions_refuse_an_unknown_kind_and_a_recording_without_a_transcript(signup_user, stubs):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()  # no transcript
+    bad = await client.post(f"/api/v1/audio-assets/{asset['id']}/derivatives", json={"output_type": "poem"}, headers=_h(ws_id))
+    assert bad.status_code == 400
+    empty = await client.post(f"/api/v1/audio-assets/{asset['id']}/derivatives", json={"output_type": "captions"}, headers=_h(ws_id))
+    assert empty.status_code == 400

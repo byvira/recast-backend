@@ -1,6 +1,6 @@
 from app.platforms.base import PlatformDefinition, register_platform
 
-# The upgrade path beyond serving Recast's own RSS feed — hosts give users
+# The upgrade path beyond serving Ekavo's own RSS feed — hosts give users
 # their own analytics and one-click distribution.
 CATEGORY = "Audio hosts and direct upload"
 
@@ -38,7 +38,7 @@ ROWS = [
         native_formats={"audio": "native", "video": "native"},
         mode="code_driven", integration_pattern="api_publish",
         rate_limits="Paid plans; API available (verify).",
-        policy_constraints=["One account hosts unlimited shows — multi-show workspaces map naturally to Recast workspaces."],
+        policy_constraints=["One account hosts unlimited shows — multi-show workspaces map naturally to Ekavo workspaces."],
         confidence="third_party",
     ),
     dict(

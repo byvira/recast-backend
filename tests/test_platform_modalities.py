@@ -17,14 +17,15 @@ def test_each_platform_says_how_it_takes_each_kind():
 def test_a_platform_that_cannot_carry_a_kind_says_none():
     assert PLATFORM_REGISTRY["blog"].modality("image") == "none"
     assert PLATFORM_REGISTRY["blog"].modality("audio") == "none"
-    assert PLATFORM_REGISTRY["bluesky"].modality("audio") == "none"
+    # A platform that takes video natively takes audio only as a video made from it.
+    assert PLATFORM_REGISTRY["bluesky"].modality("audio") == "via_video"
     assert PLATFORM_REGISTRY["vimeo"].modality("text") == "none"
 
 
 def test_listing_by_modality_keeps_only_platforms_that_can_take_it():
     audio = {p.key for p in list_platforms(modality="audio")}
     assert {"soundcloud", "linkedin", "youtube"} <= audio
-    assert "blog" not in audio and "bluesky" not in audio and "vimeo" not in audio
+    assert "blog" not in audio and "newsletter" not in audio  # neither takes audio, not even as a video
     video = {p.key for p in list_platforms(modality="video")}
     assert {"youtube", "vimeo", "tiktok"} <= video and "newsletter" not in video
 

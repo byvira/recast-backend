@@ -508,7 +508,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                     actor_name="Publishing scheduler",
                     category="post_published",
                     title=f"Renewed {platform_name(platform)} access — retrying scheduled post",
-                    description="The platform rejected the old access token; Recast renewed it "
+                    description="The platform rejected the old access token; Ekavo renewed it "
                                 "automatically and queued the post again.",
                     status="warning",
                     channel=platform,

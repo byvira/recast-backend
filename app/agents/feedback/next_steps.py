@@ -85,8 +85,8 @@ async def suggest_after_run(event: dict) -> None:
             "title": f"Repurpose this for {_join(missing)} too?",
             "description": (
                 f"Your run on \"{p.get('title') or 'your latest topic'}\" covered {covered_label}. "
-                f"{_join(missing)} {'is' if len(missing) == 1 else 'are'} connected as well — "
-                f"a version for {'it' if len(missing) == 1 else 'them'} is one Quick Recast away."
+                f"{_join(missing)} {'is' if len(missing) == 1 else 'are'} connected as well, and "
+                f"a version for {'it' if len(missing) == 1 else 'them'} is one Quick Repurpose away."
             ),
             "target_id": p["session_id"],
             "target_type": "Pipeline Execution",

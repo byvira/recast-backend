@@ -59,7 +59,7 @@ def generate_pieces_pdf(pieces: list[GeneratedPiece], brand_name: str = "") -> b
     pdf = _new_pdf()
 
     pdf.set_font("Poppins", "B", 16)
-    title = f"{brand_name} - Recast Export" if brand_name else "Recast Export"
+    title = f"{brand_name} - Ekavo Export" if brand_name else "Ekavo Export"
     _line(pdf, 10, title)
     pdf.set_font("Poppins", "", 10)
     pdf.set_text_color(120, 120, 120)

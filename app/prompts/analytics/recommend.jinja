@@ -3,7 +3,7 @@ The user asked:
 
 Based on this analytics analysis:
 
-{{ analysis }}
+{{ analysis | untrusted("analysis") }}
 
 Generate 3-5 specific, actionable recommendations that follow from the
 analysis above and actually help answer what the user asked, not a
@@ -22,7 +22,8 @@ HOW TO BUILD THEM
 - Avoid vague advice such as "post more", "be consistent" or "engage with your audience" unless it is made concrete (what to post, where, in what form).
 - Do not use em dashes.
 
-Write each recommendation string in {{ language_name }}.
+{% if plan_line %}{{ plan_line }}
+{% endif %}Write each recommendation string in {{ language_name }}.
 Respond ONLY as a JSON array of strings.
 Example: {{ example_line }}
 No explanation, no markdown, just the JSON array.

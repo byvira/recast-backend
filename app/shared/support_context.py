@@ -4,7 +4,7 @@ Built in the background right after a ticket is filed, so a person picking it
 up already knows the workspace's plan, which accounts are connected and
 healthy, what failed recently, and what the member was looking at.
 
-Only facts Recast already holds, and only the safe ones: no tokens, no OAuth
+Only facts Ekavo already holds, and only the safe ones: no tokens, no OAuth
 data, no full post text, nothing about other members. A ticket works fine if
 this fails; staff get a "try again" button instead.
 """

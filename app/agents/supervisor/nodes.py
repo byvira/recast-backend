@@ -22,7 +22,7 @@ from app.agents.supervisor.state import SupervisorState
 from app.agents.supervisor.tools import make_tools
 from app.db.mongo import agent_worker_state, workspace_flags, workspace_insights
 from app.prompts.registry import load_prompt
-from app.shared.tier_policy import mentions_team_topics, plan_note, workspace_policy
+from app.shared.tier_policy import mentions_cohort_topics, mentions_team_topics, plan_note, workspace_policy
 from app.shared.llm import GroqModel, _record_usage, get_groq_client, usage_workspace
 from app.utils.jsonparser import parse_llm_json
 
@@ -159,6 +159,29 @@ def _flatten_scratchpad_for_synthesis(scratchpad: list[dict]) -> list[dict]:
     return flattened
 
 
+async def _synth_reply(client, messages: list[dict], workspace_id: str) -> str:
+    """The briefing text from the main model, or from the backup models when it is down, so one provider outage does not mean
+    no briefing."""
+    try:
+        with usage_workspace(workspace_id):
+            resp = await _groq_chat(client, messages, max_tokens=T.SYNTH_MAX_TOKENS, temperature=0.4)
+        return resp.choices[0].message.content or ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("supervisor synthesis: main model failed (%s), trying the backup models", exc)
+        from app.shared.llm import _flatten_chat, call_llm_fallback
+
+        return await call_llm_fallback(prompt=_flatten_chat(messages))
+
+
+async def _recent_insight_titles(workspace_id: str, limit: int = 8) -> list[str]:
+    """Titles of the last few insights sent to this workspace, so the next briefing does not say the same thing again."""
+    try:
+        rows = await workspace_insights.find({"workspace_id": workspace_id}, {"title": 1}).sort("created_at", -1).to_list(limit)
+    except Exception:  # noqa: BLE001 - a missing history only means the repeat note is left out
+        return []
+    return [str(r.get("title") or "")[:90] for r in rows if r.get("title")]
+
+
 async def synthesize_node(state: SupervisorState) -> dict:
     digest = state["digest"]
     if digest_is_quiet(digest):
@@ -170,13 +193,29 @@ async def synthesize_node(state: SupervisorState) -> dict:
         {"role": "user", "content": "DIGEST:\n" + json.dumps(digest, default=str)},
     ]
     note = plan_note(await workspace_policy(state["workspace_id"]))
-    messages.append({"role": "user", "content": _SYNTH_INSTRUCTIONS + (f"\n\n{note}" if note else "")})
+    recent = await _recent_insight_titles(state["workspace_id"])
+    repeat_note = (
+        "Recent briefings already sent (do not repeat the same advice unless something has clearly changed): "
+        + "; ".join(recent)
+        if recent
+        else ""
+    )
+    extra = "\n\n".join(part for part in (note, repeat_note) if part)
+    messages.append({"role": "user", "content": _SYNTH_INSTRUCTIONS + (f"\n\n{extra}" if extra else "")})
 
     findings = {"insights": [], "flags": [], "notify": False}
     try:
-        with usage_workspace(state["workspace_id"]):
-            resp = await _groq_chat(client, messages, max_tokens=T.SYNTH_MAX_TOKENS, temperature=0.4)
-        parsed = parse_llm_json(resp.choices[0].message.content or "")
+        parsed = None
+        for attempt in range(2):
+            reply = await _synth_reply(client, messages, state["workspace_id"])
+            parsed = parse_llm_json(reply)
+            if isinstance(parsed, dict) and parsed:
+                break
+            # One more try, showing the model what it sent so it can return the JSON that was asked for.
+            messages = messages + [
+                {"role": "assistant", "content": reply[:2000]},
+                {"role": "user", "content": "That was not valid JSON in the shape asked for. Return only the JSON object."},
+            ]
         if isinstance(parsed, dict):
             findings["insights"] = parsed.get("insights") or []
             findings["flags"] = parsed.get("flags") or []
@@ -206,6 +245,10 @@ async def _project_flag(flag_id: str) -> None:
         await project_odette_flag(doc)
 
 
+_INSIGHT_KINDS = ("recommendation", "observation")
+_INSIGHT_PRIORITIES = ("low", "medium", "high")
+
+
 async def persist_node(state: SupervisorState) -> dict:
     ws = state["workspace_id"]
     now = datetime.now(timezone.utc)
@@ -215,17 +258,31 @@ async def persist_node(state: SupervisorState) -> dict:
 
     insight_ids: list[str] = []
     # A workspace of one is never shown a recommendation about a team it does not have, whatever the model wrote.
-    one_person = (await workspace_policy(ws))["team_rules"] is False
+    policy = await workspace_policy(ws)
+    one_person = policy["team_rules"] is False
+    no_cohorts = policy.get("cohorts") is False
+
+    def _off_plan(*texts) -> bool:
+        return (one_person and mentions_team_topics(*texts)) or (no_cohorts and mentions_cohort_topics(*texts))
+
+    # The same rule covers insights and flags, whatever the model wrote.
     usable = [
         ins for ins in findings.get("insights", [])
-        if not (one_person and mentions_team_topics(ins.get("title"), ins.get("body"), ins.get("rationale")))
+        if isinstance(ins, dict) and not _off_plan(ins.get("title"), ins.get("body"), ins.get("rationale"))
     ]
+    findings = {
+        **findings,
+        "flags": [
+            fl for fl in findings.get("flags", [])
+            if isinstance(fl, dict) and not _off_plan(fl.get("summary"), str(fl.get("detail") or ""))
+        ],
+    }
     for ins in usable[:3]:
         iid = str(uuid4())
         await workspace_insights.insert_one({
             "_id": iid,
             "workspace_id": ws,
-            "kind": ins.get("kind", "recommendation"),
+            "kind": ins.get("kind") if ins.get("kind") in _INSIGHT_KINDS else "recommendation",
             "title": (ins.get("title") or "Workspace note")[:200],
             "body_persona": ins.get("body", ""),
             "rationale": ins.get("rationale", ""),
@@ -234,7 +291,7 @@ async def persist_node(state: SupervisorState) -> dict:
                 "signal_ids": [s.get("_id") for s in state["signals"][:50] if s.get("_id")],
                 "metrics": {"window_events": state["digest"].get("window_events", 0)},
             },
-            "priority": ins.get("priority", "medium"),
+            "priority": ins.get("priority") if ins.get("priority") in _INSIGHT_PRIORITIES else "medium",
             "pipeline_scope": ins.get("pipeline_scope", "all"),
             "langsmith_run_url": run_url,
             "status": "new",
@@ -285,8 +342,9 @@ async def persist_node(state: SupervisorState) -> dict:
 
     # notify on high-priority insights when the model asked for it
     if findings.get("notify"):
-        for iid, ins in zip(insight_ids, findings.get("insights", [])):
-            if ins.get("priority") == "high":
+        # paired with the insights that were actually saved, so a filtered one never lends its title or priority to another
+        for iid, ins in zip(insight_ids, usable[:3]):
+            if ins.get("priority") == "high" and ins.get("priority") in _INSIGHT_PRIORITIES:
                 nid = await notify_mod.deliver(
                     ws, kind="insight", source_id=iid,
                     title=(ins.get("title") or "Workspace recommendation")[:120],

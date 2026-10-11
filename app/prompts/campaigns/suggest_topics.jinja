@@ -9,9 +9,7 @@ TOPIC CLUSTER:
 
 {% if existing_topics %}
 They've already listed these specific angles/topics to cover:
-{% for t in existing_topics %}
-- {{ t }}
-{% endfor %}
+{{ existing_topics | join(", ") | untrusted("existing_topics") }}
 Suggest angles that are genuinely different from these. Don't repeat them, and don't rephrase them.
 Before suggesting, notice what the existing list does not cover (for example the audience stage, the format, or the objection it ignores) and fill that gap.
 {% endif %}

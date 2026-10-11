@@ -17,7 +17,7 @@ from app.prompts.registry import load_prompt
 from app.prompts.safe import contains_banned, guard_output
 from app.pipelines.text.brand_context import build_tone_override
 from app.pipelines.text.claims import unsupported_claims
-from app.pipelines.text.generator import build_language_instruction
+from app.pipelines.text.generator import build_language_instruction, limit_warnings
 from app.shared.llm import call_llm, GroqModel
 
 logger = logging.getLogger(__name__)
@@ -219,4 +219,5 @@ async def apply_chip(
         "char_count": len(refined),
         "changed": refined != content,
         "claim_warnings": claim_warnings,
+        "limit_warnings": limit_warnings(platform, refined),
     }

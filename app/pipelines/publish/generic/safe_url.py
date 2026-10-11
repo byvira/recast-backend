@@ -1,4 +1,4 @@
-"""URL checks for anything Recast sends to an address someone typed in (webhooks, compose links).
+"""URL checks for anything Ekavo sends to an address someone typed in (webhooks, compose links).
 
 A webhook URL is entered by a person, so it must never be able to reach inside our own network: only
 https, no embedded passwords, and the host must resolve to public internet addresses only (no loopback,

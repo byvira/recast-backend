@@ -510,7 +510,7 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
         title=f"{platform_name(platform)} is busy — retrying in the background",
         description=(
             f"{result.error_message or 'The platform is temporarily unavailable.'} "
-            f"Recast will keep retrying automatically, starting "
+            f"Ekavo will keep retrying automatically, starting "
             f"{retry_at.strftime('%H:%M')} UTC."
         ),
         status="warning",

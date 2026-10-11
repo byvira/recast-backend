@@ -33,7 +33,7 @@ Files, one per source-directory section:
     email.py                5 — resend, mailchimp, kit, beehiiv, buttondown
     podcasts.py             9 — audio directories reached via one shared RSS feed
     audio_hosts.py           6 — direct-upload audio hosts (the upgrade path
-                                beyond serving Recast's own RSS feed)
+                                beyond serving Ekavo's own RSS feed)
     business_other.py       6 — google business profile, flickr, imgur,
                                 hacker news, patreon, github
 """

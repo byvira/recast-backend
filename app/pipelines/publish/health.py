@@ -143,7 +143,7 @@ async def record_failure(
                 f"Automatic recovery failed {failures} times in a row. Reconnect it in Settings "
                 f"— scheduled posts to {_label(platform)} will fail until then."
                 if escalate else
-                "Recast will try again automatically in about an hour. Nothing to do yet."
+                "Ekavo will try again automatically in about an hour. Nothing to do yet."
             ),
             status="failed" if escalate else "warning",
             channel=platform,

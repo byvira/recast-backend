@@ -12,16 +12,16 @@ from app.pipelines.media.image_generation import (
     stamp_logo,
 )
 
-PROFILE = {"identity": {"name": "Recast", "bio": "Turns one idea into posts"}, "visual_identity": {}}
+PROFILE = {"identity": {"name": "Ekavo", "bio": "Turns one idea into posts"}, "visual_identity": {}}
 
 
 def test_brand_name_is_not_in_the_picture_prompt():
-    assert "Recast" not in _build_raw_prompt("consistent voice", PROFILE)
-    assert "Recast" not in _build_mascot_raw_prompt(PROFILE)
+    assert "Ekavo" not in _build_raw_prompt("consistent voice", PROFILE)
+    assert "Ekavo" not in _build_mascot_raw_prompt(PROFILE)
 
 
 def test_enforce_no_text_strips_writing_words_and_adds_the_rule():
-    out = enforce_no_text("Two phones, one with the Recast logo and a caption on a poster, soft light")
+    out = enforce_no_text("Two phones, one with the Ekavo logo and a caption on a poster, soft light")
     low = out.lower()
     assert "logo" not in low.replace("no logos", "")
     assert "caption" not in low

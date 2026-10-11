@@ -245,7 +245,7 @@ async def email_lead(request: Request, lead_id: str, body: StaffEmail, user: dic
         raise HTTPException(status_code=409, detail="This person unsubscribed, so they cannot be emailed.")
     sent = False
     try:
-        sent = await send_templated_email(STAFF_TEMPLATE, doc["email"], {"SUBJECT": body.subject, "MESSAGE": body.message, "SENDER": user.get("name") or "The Recast team"})
+        sent = await send_templated_email(STAFF_TEMPLATE, doc["email"], {"SUBJECT": body.subject, "MESSAGE": body.message, "SENDER": user.get("name") or "The Ekavo team"})
     except Exception:  # noqa: BLE001
         logger.warning("Staff email could not be sent", exc_info=True)
     if not sent:

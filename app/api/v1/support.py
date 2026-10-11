@@ -236,7 +236,7 @@ async def upload_attachment(
                 now = datetime.now(timezone.utc)
                 note = {
                     "sender": "system",
-                    "sender_name": "Recast",
+                    "sender_name": "Ekavo",
                     "is_internal": True,
                     "created_at": now,
                     "text": f"The member tried to attach a file ({(file.filename or 'file')[:80]}) and it was blocked: {exc}",
@@ -247,7 +247,7 @@ async def upload_attachment(
                     {"$push": {"messages": note}, "$set": {"updated_at": now, "unread_for_ops": True}},
                 )
                 await log_event(
-                    ticket_id, actor_type="system", actor_id=None, actor_name="Recast",
+                    ticket_id, actor_type="system", actor_id=None, actor_name="Ekavo",
                     type="attachment_blocked", data={"reason": str(exc)},
                 )
         raise HTTPException(status_code=422, detail=str(exc))

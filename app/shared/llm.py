@@ -188,6 +188,32 @@ class usage_workspace:
         self.__exit__(*exc_info)
 
 
+# Text a member wrote to support is private: it is answered by the main provider only, never passed on to the backup chain
+# (free plans of other providers may keep and learn from what they are sent). A call made inside `private_content()` that the main
+# provider cannot answer fails with a clear error and the caller shows its own "try again" message.
+_private_content: contextvars.ContextVar[bool] = contextvars.ContextVar("_private_content", default=False)
+
+
+class private_content:
+    """Context manager: every LLM call inside the block stays with the main provider and is never sent to a backup provider."""
+
+    def __init__(self) -> None:
+        self._token: contextvars.Token | None = None
+
+    def __enter__(self) -> None:
+        self._token = _private_content.set(True)
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._token is not None:
+            _private_content.reset(self._token)
+
+    async def __aenter__(self) -> None:
+        self.__enter__()
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self.__exit__(*exc_info)
+
+
 def set_usage_workspace(workspace_id: str | None) -> None:
     """Fire-and-forget alternative to usage_workspace() for a large
     function where wrapping the whole body in a `with` block would mean
@@ -406,10 +432,17 @@ _CHARS_PER_TOKEN = 3.0
 #      60s window, so a second request can eat into the budget between when
 #      we estimate and when Groq actually receives ours.
 _TPM_SAFETY_MARGIN = 500
+_NON_LATIN_TOKENS_PER_CHAR = 0.9
 
 
 def _estimate_tokens(text: str) -> int:
-    return max(1, int(len(text) / _CHARS_PER_TOKEN))
+    """A rough token count. Latin text is about one token per three characters; scripts such as Tamil, Hindi or Japanese take
+    close to one token per character, so counting them at the Latin rate would let a large prompt through that then fails."""
+    if not text:
+        return 1
+    non_latin = sum(1 for ch in text if ord(ch) > 0x2FF)
+    latin = len(text) - non_latin
+    return max(1, int(latin / _CHARS_PER_TOKEN + non_latin * _NON_LATIN_TOKENS_PER_CHAR))
 
 
 def _safe_max_tokens(prompt: str, system: str, ceiling: int) -> int:
@@ -539,29 +572,48 @@ def _note_retry_success(label: str) -> None:
         pass
 
 
+# One call, with every retry and wait included, may take this long before the next provider is tried.
+LLM_CALL_DEADLINE_S = 60.0
+
+
 async def _backoff_retry(
     coro_factory,
     *,
     attempts: int = 3,
     base_delay: float = 2.0,
     label: str = "llm",
+    deadline_s: float = LLM_CALL_DEADLINE_S,
 ) -> Any:
     """
     Retry coro_factory() up to `attempts` times on RateLimitError,
     using exponential back-off: 2s, 4s, 8s, ...
 
-    Raises the last RateLimitError if all attempts are exhausted.
+    Raises the last RateLimitError if all attempts are exhausted. The whole effort (every attempt and every wait) shares one
+    deadline: when it runs out the call is treated like a lost connection, so the caller moves on to the next provider
+    instead of leaving the member waiting through every retry layer in turn.
     """
+    started = time.monotonic()
     for attempt in range(1, attempts + 1):
+        remaining = deadline_s - (time.monotonic() - started)
         try:
-            result = await coro_factory()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            result = await asyncio.wait_for(coro_factory(), timeout=remaining)
             if attempt > 1:
                 _note_retry_success(label)
             return result
+        except asyncio.TimeoutError as exc:
+            import httpx
+
+            raise APIConnectionError(request=httpx.Request("POST", "https://api.groq.com")) from exc
         except RateLimitError as exc:
             if attempt == attempts:
                 raise
             delay = base_delay ** attempt
+            if delay >= deadline_s - (time.monotonic() - started):
+                import httpx
+
+                raise APIConnectionError(request=httpx.Request("POST", "https://api.groq.com")) from exc
             logger.warning(
                 "%s rate limit (attempt %d/%d) — retrying in %.0f s",
                 label, attempt, attempts, delay,
@@ -635,6 +687,8 @@ async def call_llm(
     except RateLimitError:
         logger.warning("Groq rate limit persists — falling back to FAST model")
         try:
+            if model is GroqModel.FAST:
+                raise RuntimeError("already the FAST model, nothing different to try")
             result = await _complete(GroqModel.FAST)
             _groq_breaker.record_success()
             return result
@@ -920,6 +974,8 @@ async def call_llm_chat(
     except RateLimitError:
         logger.warning("Groq rate limit on chat — falling back to FAST model")
         try:
+            if model is GroqModel.FAST:
+                raise RuntimeError("already the FAST model, nothing different to try")
             return await _chat_complete(client, GroqModel.FAST, full_messages, capped)
         except Exception:
             logger.warning("Groq FAST fallback also failed on chat — falling back to Gemini")
@@ -1224,6 +1280,9 @@ async def call_llm_fallback(
     Emergency plain-text generation via Gemini.
     Not used in normal flow — only when Groq is fully unavailable.
     """
+    if _private_content.get():
+        logger.warning("Backup providers are not used for private content; the call fails instead.")
+        raise HTTPException(status_code=503, detail="LLM service unavailable.")
     add_run_metadata(gemini_model=model.value)
 
     # 1. Gemini, unless it was just refused outright (key, access or model problem): then it is skipped for a while

@@ -6,11 +6,11 @@ rhythm, everything — without changing its actual meaning or claims.
 
 {% endif -%}
 BRAND TYPE: {{ brand_type }}
-{% if identity_line %}ABOUT THEM: {{ identity_line }}
+{% if identity_line %}ABOUT THEM: {{ identity_line | untrusted("identity") }}
 {% endif -%}
-{% if audience_line %}AUDIENCE: {{ audience_line }}
+{% if audience_line %}AUDIENCE: {{ audience_line | untrusted("audience") }}
 {% endif -%}
-{% if tone_line %}VOICE: {{ tone_line }}
+{% if tone_line %}VOICE: {{ tone_line | untrusted("tone") }}
 {% endif -%}
 {% if style %}STYLE NOTES: {{ style | untrusted("style_notes") }}
 {% endif %}

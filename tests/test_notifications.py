@@ -72,7 +72,7 @@ async def test_production_mode_sends_template_payload(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["to"] == "member@example.com"
     assert calls[0]["template"] == {"id": "role-changed", "variables": variables}
-    assert calls[0]["from"] == "Recast <onboarding@resend.dev>"
+    assert calls[0]["from"] == "Ekavo <onboarding@resend.dev>"
 
 
 async def test_from_override_is_used_for_ops_templates(monkeypatch):

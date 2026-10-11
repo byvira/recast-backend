@@ -92,7 +92,7 @@ async def save_settings(request: Request, body: SettingsBody, user: dict = Depen
             await record_system(
                 workspace_id=workspace_id,
                 key=f"contentsafety:{uuid4()}",
-                actor_name="Recast staff",
+                actor_name="Ekavo staff",
                 actor_user_id=str(user["id"]),
                 category="platform_ops",
                 title="Content safety settings saved",

@@ -5,7 +5,7 @@ Only runs when hookVariations is True.
 """
 
 import logging
-from app.prompts.safe import hook_fits
+from app.prompts.safe import contains_banned, hook_fits
 from app.models.text import AgentTask, AgentResult
 from app.pipelines.text.generator import GENERIC_OPENINGS, build_language_instruction
 from app.prompts.registry import load_prompt
@@ -28,7 +28,7 @@ async def run_hook_agent(task: AgentTask) -> AgentResult:
         platform_label=platform_label,
         banned_openings=task.metadata.get("banned_openings", []),
         banned_words=task.metadata.get("banned_words", []),
-        content=task.content[:600],
+        content=task.content[:1500],
         language_line=build_language_instruction(task.metadata.get("language", "en")),
     )
 
@@ -59,7 +59,39 @@ def _starts_with_generic_opening(text: str) -> bool:
     return any(lowered.startswith(g) for g in GENERIC_OPENINGS)
 
 
-def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: int, language: str | None = None) -> str:
+def _first_line(content: str) -> str:
+    for line in (content or "").strip().split("\n"):
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def opening_is_protected(content: str, approved_openers: list[str] | None = None) -> bool:
+    """A title line ("# Heading") or an opener the brand approved is never swapped for a generated hook."""
+    first = _first_line(content)
+    if first.startswith("#"):
+        return True
+    low = first.casefold()
+    return any(str(o).strip() and low.startswith(str(o).strip().casefold()) for o in (approved_openers or []))
+
+
+def clamp_index(value: object, size: int) -> int:
+    """The model's recommended hook number as a usable position: a number or text that holds one, else 0."""
+    try:
+        index = int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return 0
+    return index if 0 <= index < size else 0
+
+
+def apply_recommended_hook(
+    content: str,
+    hooks: list[dict],
+    recommended_index: int,
+    language: str | None = None,
+    banned_words: list[str] | None = None,
+    approved_openers: list[str] | None = None,
+) -> str:
     """
     Replace the opening line of generated content with the best hook that
     ISN'T a banned generic opener — not blindly whichever the model scored
@@ -71,8 +103,9 @@ def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: i
     content had already avoided them. Falls back to the original content if
     every candidate hook is generic, rather than forcing a bad swap.
     """
-    if not hooks:
+    if not hooks or opening_is_protected(content, approved_openers):
         return content
+    recommended_index = clamp_index(recommended_index, len(hooks))
 
     ranked = sorted(
         range(len(hooks)),
@@ -88,7 +121,12 @@ def apply_recommended_hook(content: str, hooks: list[dict], recommended_index: i
         if i < 0 or i >= len(hooks):
             continue
         text = hooks[i].get("text", "") if isinstance(hooks[i], dict) else ""
-        if text and hook_fits(content, text, language=language) and not _starts_with_generic_opening(text):
+        if (
+            text
+            and hook_fits(content, text, language=language)
+            and not _starts_with_generic_opening(text)
+            and not contains_banned(text, banned_words or [])
+        ):
             recommended = text
             break
 

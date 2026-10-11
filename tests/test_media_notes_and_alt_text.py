@@ -28,8 +28,9 @@ def test_no_note_when_the_picture_was_made_or_attached_or_never_planned():
 
 def test_extra_attached_pictures_are_counted_in_the_note():
     two = {"attachments": [{"media_id": "a"}, {"media_id": "b"}]}
-    assert "Only the first of 2 attached pictures was posted" in extra_media_note(two, "LinkedIn")
-    assert extra_media_note({"attachments": [{"media_id": "a"}]}, "LinkedIn") is None
+    assert "Only the first of 2 attached pictures was posted" in extra_media_note(two, "Blog")  # posts one picture at a time
+    assert extra_media_note({"attachments": [{"media_id": "a"}]}, "Blog") is None
+    assert extra_media_note(two, "LinkedIn") is None  # LinkedIn posts several at once
     five = {"attachments": [{"media_id": str(i)} for i in range(5)]}
     assert "Only the first 4 of 5" in extra_media_note(five, "Bluesky")
     assert extra_media_note({"attachments": [{"media_id": "a"}, {"media_id": "b"}]}, "Bluesky") is None

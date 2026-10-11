@@ -33,7 +33,7 @@ from app.shared.support import log_event
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM = {"actor_type": "system", "actor_id": None, "actor_name": "Recast"}
+_SYSTEM = {"actor_type": "system", "actor_id": None, "actor_name": "Ekavo"}
 _LEVELS = ["P3", "P2", "P1"]  # lowest to highest
 _OPEN = ["open", "investigating", "waiting_on_member", "waiting_on_engineering"]
 
@@ -116,7 +116,7 @@ async def _cluster(ticket: dict, now: datetime) -> Optional[dict]:
         "ticket_ids": [t["id"] for t in similar],
         "eng_issue_url": None,
         "created_by": "system",
-        "created_by_name": "Recast",
+        "created_by_name": "Ekavo",
         "created_at": now,
         "updated_at": now,
         "resolved_at": None,

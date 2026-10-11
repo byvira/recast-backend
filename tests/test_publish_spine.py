@@ -207,7 +207,7 @@ def test_gate_messages_are_plain_english():
 
 async def test_publish_now_needs_an_approved_piece(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Gate WS 1")
+    ws_id = await create_workspace(client, "Gate WS 1", tier="large")
     await _connect(ws_id)
     piece_id = await _seed(ws_id, profile["id"])
     fake = _ok_publisher(piece_id)
@@ -350,7 +350,7 @@ async def test_collect_output_records_intent_and_does_not_queue():
 
 async def test_an_approved_piece_with_a_planned_time_is_queued(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Intent WS 1")
+    ws_id = await create_workspace(client, "Intent WS 1", tier="large")
     await _connect(ws_id)
     when = _later(5).replace(microsecond=0)
     piece_id = await _seed(ws_id, profile["id"], intended_publish_at=when, publish_target="linkedin")
@@ -398,7 +398,7 @@ async def test_a_flagged_piece_with_a_planned_time_is_not_queued_by_approval(sig
 
 async def test_approve_all_queues_planned_pieces_too(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Intent WS 5")
+    ws_id = await create_workspace(client, "Intent WS 5", tier="large")
     await _connect(ws_id)
     session_id = str(uuid4())
     ids = [

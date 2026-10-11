@@ -64,3 +64,12 @@ def test_the_prompt_carries_the_request_and_no_leak_bait(monkeypatch):
     ))
     assert len(out) == 2
     assert "Contrast framework" in seen["prompt"] and "Mine" in seen["prompt"] and "x" in seen["prompt"]
+
+
+def test_a_section_for_x_is_never_longer_than_a_post_on_x():
+    from app.pipelines.presets_suggest import channel_char_cap, clean_sections
+
+    assert channel_char_cap(["LinkedIn", "Twitter/X"]) == 280
+    assert channel_char_cap(["LinkedIn"]) == 3000
+    raw = [{"section_name": "Hook", "char_limit": 900, "guidelines": "one line"}, {"section_name": "Close", "char_limit": 100, "guidelines": "one line"}]
+    assert [s["char_limit"] for s in clean_sections(raw, channel_char_cap(["Twitter/X"]))] == [280, 100]

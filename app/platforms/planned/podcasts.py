@@ -1,6 +1,6 @@
 from app.platforms.base import PlatformDefinition, register_platform
 
-# One shared RSS feed covers all nine — Recast publishes each episode once and
+# One shared RSS feed covers all nine — Ekavo publishes each episode once and
 # these directories pick it up. Submit the feed to each directory once; after
 # approval, new episodes appear automatically.
 CATEGORY = "Audio directories via RSS"

@@ -16,7 +16,10 @@
 REWRITE FEEDBACK — fix every issue listed below. Do not repeat these mistakes.
 
 {{ issue_lines | join("\n") }}
-
+{% if previous_draft is defined and previous_draft %}
+THE DRAFT THAT FAILED (edit this one: keep what already works, change only what the issues above point at):
+{{ previous_draft | untrusted("previous_draft") }}
+{% endif %}
 ENFORCEMENT CONTEXT FOR THIS RETRY:
   Banned words (never use any of these): {{ banned_words | join(", ") if banned_words else "none" }}
   Required phrases (every one must appear): {{ required_texts | join(", ") if required_texts else "none" }}

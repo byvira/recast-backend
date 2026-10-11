@@ -157,3 +157,24 @@ async def test_another_workspaces_recording_is_not_found(signup_user, llm):
     res = await client.post("/api/v1/audio-assets/aud-other/chapters", headers={"X-Workspace-Id": ws_id})
     assert res.status_code == 404
     assert llm["calls"] == 0
+
+
+def test_a_chapter_time_the_recording_never_had_is_snapped_or_dropped():
+    from app.pipelines.media.chapters import normalize_chapters
+
+    starts = [0.0, 30.0, 61.5, 120.0, 180.0]
+    items = [
+        {"title": "Intro", "start_s": 0},
+        {"title": "Snapped", "start_s": 62.0},      # 0.5 s from a real moment: moved onto it
+        {"title": "Invented", "start_s": 97.0},     # more than 5 s from any real moment: dropped
+        {"title": "Later", "start_s": 119.0},
+    ]
+    kept = normalize_chapters(items, 200.0, starts=starts)
+    assert [c["start_s"] for c in kept] == [0.0, 61.5, 120.0]
+    assert all(c["title"] != "Invented" for c in kept)
+
+
+def test_cleanup_never_cuts_the_word_like():
+    from app.pipelines.media.audio_cleanup import _FILLERS
+
+    assert "like" not in _FILLERS

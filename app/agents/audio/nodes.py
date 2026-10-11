@@ -68,7 +68,7 @@ async def analyse_node(state: BaseAgentState) -> dict:
     raw = state["raw_input"]
     output_type = raw.get("output_type", "show_notes") if isinstance(raw, dict) else "show_notes"
 
-    prompt = load_prompt("media/shared/analyse", domain="audio", output_type=output_type, text=text[:3000])
+    prompt = load_prompt("media/shared/analyse", domain="audio", output_type=output_type, text=text[:6000])
     analysis = await call_llm_structured(prompt=prompt, system=brand_ctx)
 
     return {
@@ -92,7 +92,7 @@ async def generate_node(state: BaseAgentState) -> dict:
     prompt = load_prompt(
         "media/shared/generate", domain="audio", output_type=output_type,
         topics=analysis.get("topics", []), key_quotes=analysis.get("key_quotes", []),
-        transcript_excerpt=transcript.get("text", "")[:2000], retry=retry, retry_focus=state["intermediate_outputs"].get("retry_focus", ""),
+        transcript_excerpt=transcript.get("text", "")[:4000], chapters=raw.get("chapters", []) if isinstance(raw, dict) else [], retry=retry, retry_focus=state["intermediate_outputs"].get("retry_focus", ""),
     )
     content = await call_llm(prompt=prompt, system=brand_ctx, model=GroqModel.BALANCED)
 

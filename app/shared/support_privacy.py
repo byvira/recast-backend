@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 REMOVED_TEXT = "This message was removed."
 DELETED_USER = "Deleted user"
-_SYSTEM = {"actor_type": "system", "actor_id": None, "actor_name": "Recast"}
+_SYSTEM = {"actor_type": "system", "actor_id": None, "actor_name": "Ekavo"}
 
 
 async def _delete_stored_files(docs: list[dict]) -> int:

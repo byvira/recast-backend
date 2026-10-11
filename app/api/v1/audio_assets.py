@@ -111,6 +111,7 @@ from app.pipelines.media.transform import build_export_url
 from app.prompts.registry import load_prompt
 from app.shared.activity.runs import end_run, get_run, start_run, update_run
 from app.shared.events import emit_event_background
+from app.prompts.safe import guard_output
 from app.shared.llm import call_llm, call_llm_structured, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
 from app.shared.storage import ContentType as UploadContentType, delete_file_by_url, upload_file
@@ -787,6 +788,20 @@ def _parse_translation_score(raw: str) -> tuple[float, str]:
         return 0.0, "Couldn't parse the QA gate's score — treated as failing."
 
 
+# A translation shorter or longer than this share of the source is taken as cut short or padded, not as a real translation.
+_TRANSLATION_MIN_RATIO = 0.4
+_TRANSLATION_MAX_RATIO = 3.0
+
+
+def translation_looks_complete(source_text: str, translated: str) -> bool:
+    """Whether a translation is about as long as its source. A model that hits its output limit stops mid-script, and a short
+    result would otherwise be narrated as if it were the whole thing."""
+    source_len, translated_len = len(source_text.strip()), len(translated.strip())
+    if source_len == 0:
+        return translated_len > 0
+    return _TRANSLATION_MIN_RATIO <= translated_len / source_len <= _TRANSLATION_MAX_RATIO
+
+
 async def _translate_with_quality_gate(source_text: str, target_language: str, brand_context: str = "") -> tuple[str, float]:
     """Real 3x QA gate, same shape as app.agents.base.should_retry /
     app/agents/*/graph.py's evaluate->retry loop (avg_quality < 0.75,
@@ -799,8 +814,15 @@ async def _translate_with_quality_gate(source_text: str, target_language: str, b
         translate_prompt = load_prompt(
             "audio/localize/translate_script", target_language=target_language, script=source_text, brand_context=brand_context,
         )
-        candidate = clean_translation(await call_llm(translate_prompt))
+        # Room for a long script: about one token for every two characters of the source, within what the provider allows.
+        candidate = clean_translation(await call_llm(translate_prompt, max_tokens=max(2500, min(len(source_text) // 2, 6000))))
         if not candidate:
+            continue
+        if not translation_looks_complete(source_text, candidate):
+            logger.warning(
+                "Translation attempt %d/%d for target_language=%s looks cut short (%d vs %d characters) - discarded",
+                attempt, _TRANSLATION_MAX_ATTEMPTS, target_language, len(candidate), len(source_text),
+            )
             continue
         if looks_leaked(candidate, source_text):
             logger.warning(
@@ -889,6 +911,9 @@ async def localize_audio_asset(
     translated_text, quality_score = await _translate_with_quality_gate(source_text, body.target_language, brand_context)
     if not translated_text:
         raise HTTPException(status_code=502, detail="Translation failed. Try again.")
+    review_note = None
+    if quality_score < _TRANSLATION_QUALITY_THRESHOLD:
+        review_note = "This translation could not be checked as natural and accurate. Listen to it before you use it."
     if quality_score < _TRANSLATION_QUALITY_THRESHOLD:
         logger.warning(
             "Translation for audio_asset %s never reached the quality threshold after %d attempts "
@@ -943,6 +968,7 @@ async def localize_audio_asset(
         approval_status=AudioApprovalStatus.PENDING,
         language=body.target_language,
         source_audio_asset_id=audio_asset_id,
+        translation_review=review_note,
     )
     await audio_assets.insert_one(localized.model_dump())
     await _record_initial_version(localized)
@@ -2766,6 +2792,41 @@ async def send_clip_to_draft(
     )
 
 
+CLIP_SEARCH_WORDS = 6000
+CLIP_MIN_SECONDS = 15.0
+CLIP_MAX_SECONDS = 60.0
+
+
+def validate_clip_suggestions(result: dict, words: list[dict]) -> list[SuggestedClip]:
+    """The model's suggested moments, checked against the real transcript. Each span is moved onto real word boundaries, must be
+    15 to 60 seconds, and must not overlap one already kept; the quote is the words actually spoken in the span, never the
+    model's wording, so nothing made up reaches the member."""
+    spoken = [w for w in words if isinstance(w, dict) and "start_s" in w and "end_s" in w]
+    if not spoken:
+        return []
+    kept: list[SuggestedClip] = []
+    for item in ((result or {}).get("suggestions") or [])[:5]:
+        try:
+            start_s, end_s = float(item["start_s"]), float(item["end_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        first = min(range(len(spoken)), key=lambda i: abs(float(spoken[i]["start_s"]) - start_s))
+        last = min(range(len(spoken)), key=lambda i: abs(float(spoken[i]["end_s"]) - end_s))
+        if last <= first:
+            continue
+        start_s, end_s = float(spoken[first]["start_s"]), float(spoken[last]["end_s"])
+        if not (CLIP_MIN_SECONDS <= end_s - start_s <= CLIP_MAX_SECONDS):
+            continue
+        if any(start_s < c.end_s and end_s > c.start_s for c in kept):
+            continue
+        kept.append(SuggestedClip(
+            start_s=start_s, end_s=end_s,
+            quote=" ".join(str(w["word"]) for w in spoken[first:last + 1])[:400],
+            reason=str(item.get("reason", ""))[:200],
+        ))
+    return kept
+
+
 async def _generate_clip_suggestions(doc: dict, workspace_id: str, audio_asset_id: str) -> list[SuggestedClip]:
     """One real, gated LLM call over the real transcript, proposing a few
     quotable spans. Shared by /suggest-clips (review-only) and /soundbites
@@ -2777,27 +2838,18 @@ async def _generate_clip_suggestions(doc: dict, workspace_id: str, audio_asset_i
     await assert_ai_budget_available(workspace_id)
     set_usage_workspace(workspace_id)
 
-    prompt = load_prompt("audio/suggest_clips", words=[{"word": w["word"], "start_s": w["start_s"]} for w in words])
+    # A very long recording is read from its start only, so the request stays a size the model accepts.
+    prompt = load_prompt(
+        "audio/suggest_clips",
+        words=[{"word": w["word"], "start_s": w["start_s"], "end_s": w["end_s"]} for w in words[:CLIP_SEARCH_WORDS]],
+    )
     try:
         result = await call_llm_structured(prompt)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Clip suggestion failed for %s: %s", audio_asset_id, exc)
         raise HTTPException(status_code=502, detail="Couldn't come up with suggestions right now. Try again.")
 
-    duration = max((w["end_s"] for w in words), default=0.0)
-    suggestions = []
-    for item in (result.get("suggestions") or [])[:5]:
-        try:
-            start_s, end_s = float(item["start_s"]), float(item["end_s"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not (0 <= start_s < end_s <= duration + 1):
-            continue  # a made-up or out-of-range span never reaches the member
-        suggestions.append(SuggestedClip(
-            start_s=start_s, end_s=end_s,
-            quote=str(item.get("quote", ""))[:400], reason=str(item.get("reason", ""))[:200],
-        ))
-    return suggestions
+    return validate_clip_suggestions(result, words)
 
 
 class ChaptersResponse(BaseModel):
@@ -2844,7 +2896,9 @@ async def generate_chapters(
         logger.warning("Chapter generation failed for %s: %s", audio_asset_id, exc)
         raise HTTPException(status_code=502, detail="Couldn't find chapters right now. Try again.")
 
-    chapters = chapter_rules.normalize_chapters((result or {}).get("chapters"), duration)
+    chapters = chapter_rules.normalize_chapters(
+        (result or {}).get("chapters"), duration, starts=[float(w.get("start_s") or 0) for w in words],
+    )
     if len(chapters) < 2:
         return ChaptersResponse(chapters=[], reason="Couldn't find clear chapters in this recording.")
 
@@ -2853,6 +2907,78 @@ async def generate_chapters(
         {"$set": {"chapters": chapters, "updated_at": datetime.now(timezone.utc)}},
     )
     return ChaptersResponse(chapters=chapters)
+
+
+# The written versions a recording can be turned into. The value is how the writing step is told what to make.
+DERIVATIVE_TYPES = {
+    "show_notes": "show_notes",
+    "captions": "social media captions",
+    "summary": "a short summary post",
+}
+
+
+class DerivativeRequest(BaseModel):
+    output_type: str = "show_notes"
+
+
+class DerivativeResponse(BaseModel):
+    output_type: str
+    content: str
+    quality: Optional[float] = None
+
+
+@router.post("/{audio_asset_id}/derivatives", response_model=DerivativeResponse)
+@limiter.limit("6/minute")
+async def generate_derivative(
+    request: Request,
+    audio_asset_id: str,
+    body: DerivativeRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> DerivativeResponse:
+    """Show notes, captions or a short summary written from the recording's real transcript and chapters, in the brand's voice.
+    One checked writing run; the latest of each kind is saved on the recording so it is there next time."""
+    if body.output_type not in DERIVATIVE_TYPES:
+        raise HTTPException(status_code=400, detail="Choose show notes, captions or a summary.")
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Audio asset not found.")
+    transcript = " ".join(str(w.get("word", "")) for w in (doc.get("transcript") or [])).strip()
+    if len(transcript) < 40:
+        raise HTTPException(status_code=400, detail="This recording has no transcript to write from yet. Transcribe it first.")
+    brand = await brand_profiles.find_one({"id": doc["brand_id"], "workspace_id": ctx.workspace_id})
+    if not brand:
+        raise HTTPException(status_code=404, detail="The brand for this recording was not found.")
+
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+    from app.pipelines.audio.orchestrator import run_audio_analysis
+
+    try:
+        outputs = await run_audio_analysis(
+            user_id=ctx.user_id, workspace_id=ctx.workspace_id, brand=brand, max_retries=1,
+            raw_input={
+                "title": doc.get("title", ""), "transcript": transcript, "language": doc.get("language", "en"),
+                "output_type": DERIVATIVE_TYPES[body.output_type], "chapters": doc.get("chapters") or [],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Written version failed for %s: %s", audio_asset_id, exc)
+        raise HTTPException(status_code=502, detail="Couldn't write this right now. Try again.")
+
+    content = guard_output(outputs.get("content"), source=transcript)
+    if not content:
+        raise HTTPException(status_code=502, detail="The writing came back unusable. Try again.")
+    content = content.replace("\u2014", ", ").replace("\u2013", "-")
+    scores = [v for v in (outputs.get("quality_scores") or {}).values() if isinstance(v, (int, float))]
+    quality = round(sum(scores) / len(scores), 2) if scores else None
+    await audio_assets.update_one(
+        {"id": audio_asset_id, "workspace_id": ctx.workspace_id},
+        {"$set": {
+            f"derivatives.{body.output_type}": {"content": content, "quality": quality, "generated_at": datetime.now(timezone.utc)},
+            "updated_at": datetime.now(timezone.utc),
+        }},
+    )
+    return DerivativeResponse(output_type=body.output_type, content=content, quality=quality)
 
 
 @router.post("/{audio_asset_id}/suggest-clips", response_model=SuggestClipsResponse)

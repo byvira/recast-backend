@@ -64,7 +64,7 @@ def _overdue_filter(now: datetime) -> dict:
 
 
 def _actor(staff: dict) -> dict:
-    return {"actor_type": "staff", "actor_id": staff["id"], "actor_name": staff.get("name", "Recast Support")}
+    return {"actor_type": "staff", "actor_id": staff["id"], "actor_name": staff.get("name", "Ekavo Support")}
 
 
 def _summary(row: dict) -> dict:
@@ -496,7 +496,7 @@ async def _post_staff_message(ticket_id: str, body: SupportStaffMessageCreate, s
         raise HTTPException(status_code=400, detail=str(exc))
     message = SupportMessage(
         sender="staff",
-        sender_name=staff.get("name", "Recast Support"),
+        sender_name=staff.get("name", "Ekavo Support"),
         text=body.text,
         created_at=now,
         is_internal=body.is_internal,
@@ -539,6 +539,6 @@ async def _post_staff_message(ticket_id: str, body: SupportStaffMessageCreate, s
             await notify_member(ticket, "ticket_resolved", "Your ticket is resolved", body.text)
         else:
             await notify_member(
-                ticket, "staff_reply", f"{staff.get('name') or 'Recast Support'} replied", body.text
+                ticket, "staff_reply", f"{staff.get('name') or 'Ekavo Support'} replied", body.text
             )
     return {"ticket": SupportTicket(**await _get_ticket(ticket_id)).model_dump(mode="json")}

@@ -733,10 +733,10 @@ async def mark_piece_posted(
     ctx: WorkspaceContext = Depends(require("publish_content")),
 ) -> dict:
     """
-    Record that the member posted this themselves, for a platform Recast has no
+    Record that the member posted this themselves, for a platform Ekavo has no
     publisher for (Twitter/X, Blog, Newsletter). Without this those posts could
     never reach Published, so they sat in Review forever and never showed up in
-    the calendar or history. A platform Recast can post to is refused, so this
+    the calendar or history. A platform Ekavo can post to is refused, so this
     can't be used to skip a real publish.
     """
     piece = await get_piece(piece_id, ctx.workspace_id)
@@ -751,7 +751,7 @@ async def mark_piece_posted(
     else:
         raise HTTPException(
             status_code=400,
-            detail=f"Recast can post to {platform} for you. Use Publish Now instead.",
+            detail=f"Ekavo can post to {platform} for you. Use Publish Now instead.",
         )
 
     if piece.get("publish_status") == "published":
@@ -968,8 +968,8 @@ def _piece_header(p: dict) -> str:
 
 def _pieces_to_markdown(pieces: list[dict]) -> str:
     if not pieces:
-        return "# Recast Library Export\n\nNo pieces to export.\n"
-    parts = [f"# Recast Library Export ({len(pieces)} pieces)\n"]
+        return "# Ekavo Library Export\n\nNo pieces to export.\n"
+    parts = [f"# Ekavo Library Export ({len(pieces)} pieces)\n"]
     for p in pieces:
         parts.append(f"## {_piece_header(p)}\n")
         parts.append(p.get("content", "") + "\n")

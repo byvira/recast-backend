@@ -13,7 +13,7 @@ def _days_ago(n: float) -> datetime:
 
 async def test_each_pipeline_reports_real_counts_and_ignores_deleted_archived_and_other_workspaces(api_client):
     await signup_new_user(api_client)
-    ws = await create_workspace(api_client, "Summary WS")
+    ws = await create_workspace(api_client, "Summary WS", tier="large")
     other = "someone-elses-workspace"
     headers = {"X-Workspace-Id": ws}
 

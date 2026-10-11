@@ -28,7 +28,7 @@ from app.models.text import AgentTask, GeneratedPiece, Platform
 from app.pipelines.text.brand_context import build_goal_context, build_tone_and_terms, build_tone_override, build_engagement_context
 from app.pipelines.text.generator import GENERIC_OPENINGS, generate_for_platform
 from app.pipelines.publish.spine import to_utc_datetime
-from app.pipelines.text.hook_agent import apply_recommended_hook, run_hook_agent
+from app.pipelines.text.hook_agent import apply_recommended_hook, clamp_index, run_hook_agent
 from app.pipelines.text.normalizer import clean_raw_content, extract_content_brief
 from app.pipelines.text.quality import run_quality_gate
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
@@ -324,7 +324,12 @@ async def generate_node(state: TextAgentState) -> dict:
     brand_rule_prefixes = ("Generic opening", "Generic closing", "Required brand phrase")
     generation_issues = [i for i in (result.output.get("quality_issues") or []) if i.startswith(brand_rule_prefixes)]
 
-    return {"generated_content": content, "generation_issues": generation_issues}
+    # The two phrases asked for here are remembered, so a retry asks for these same two and not the whole list.
+    return {
+        "generated_content": content,
+        "generation_issues": generation_issues,
+        "extras": {**state["extras"], "selected_phrases": selected_phrases},
+    }
 
 
 async def hooks_node(state: TextAgentState) -> dict:
@@ -383,7 +388,7 @@ async def hooks_node(state: TextAgentState) -> dict:
         }
 
     hooks = hook_result.output.get("hooks", [])
-    recommended_index = hook_result.output.get("recommended", 0)
+    recommended_index = clamp_index(hook_result.output.get("recommended", 0), len(hooks))
 
     if emitter:
         # Score each hook variant in the log
@@ -394,6 +399,8 @@ async def hooks_node(state: TextAgentState) -> dict:
 
     content_with_hook = apply_recommended_hook(
         state["generated_content"], hooks, recommended_index, language=state["language"],
+        banned_words=state["extras"].get("banned_words", []),
+        approved_openers=state["extras"].get("approved_openers", []),
     )
 
     return {
@@ -588,7 +595,7 @@ async def rewrite_node(state: TextAgentState) -> dict:
 
     # ── Build enforcement context for retry ───────────────────────────────
     banned_words = state["extras"].get("banned_words", [])
-    required_phrases = state["extras"].get("required_phrases", [])
+    required_phrases = state["extras"].get("selected_phrases", state["extras"].get("required_phrases", []))
     approved_openers = state["extras"].get("approved_openers", [])
     approved_closers = state["extras"].get("approved_closers", [])
 
@@ -605,12 +612,14 @@ async def rewrite_node(state: TextAgentState) -> dict:
         required_phrases=required_phrases,
         approved_openers=approved_openers,
         approved_closers=approved_closers,
+        previous_draft=state.get("generated_content", ""),
     )
 
     updated_extras = {**state["extras"], "retry_feedback": retry_feedback}
 
     task_metadata = {
         **updated_extras,
+        "required_phrases": required_phrases,
         "tone_override_text": state["tone_override_text"],
         "goal_context": state["goal_context"],
         "content_brief": state["content_brief"],

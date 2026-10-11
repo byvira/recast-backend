@@ -33,6 +33,25 @@ _env = Environment(
 _env.filters["untrusted"] = _fence
 
 
+def template_version(name: str) -> str:
+    """A version label for a prompt that changes whenever its text changes: the name and a short fingerprint of the file. Logs
+    that carry it show exactly which wording produced a result, with nothing to remember to bump."""
+    import hashlib
+
+    path = _PROMPTS_DIR / f"{name}.jinja"
+    try:
+        return f"{name}@{hashlib.sha1(path.read_bytes()).hexdigest()[:8]}"
+    except OSError:
+        return f"{name}@unknown"
+
+
+def text_version(name: str, text: str) -> str:
+    """The same kind of label for a prompt written inside code."""
+    import hashlib
+
+    return f"{name}@{hashlib.sha1(text.encode('utf-8')).hexdigest()[:8]}"
+
+
 def load_prompt(name: str, /, **variables) -> str:
     """Render the template at app/prompts/{name}.jinja with *variables*.
 

@@ -10,8 +10,8 @@ from app.shared.brand_name import brand_display_name
     ("Personal Brand", {"name": "Asha Writes"}, "Asha Writes"),
     ("Business", {"company_name": "Harbor and Pine"}, "Harbor and Pine"),
     ("Business", {"companyName": "Harbor and Pine"}, "Harbor and Pine"),
-    ("Product", {"product_name": "Recast", "category": "SaaS"}, "Recast"),
-    ("Product", {"productName": "Recast"}, "Recast"),
+    ("Product", {"product_name": "Ekavo", "category": "SaaS"}, "Ekavo"),
+    ("Product", {"productName": "Ekavo"}, "Ekavo"),
     ("Shop", {"name": "Corner Books"}, "Corner Books"),
     ("Entertainment", {"name": "Night Shift"}, "Night Shift"),
     ("Entertainment", {"title": "Night Shift"}, "Night Shift"),
@@ -28,7 +28,7 @@ def test_the_types_own_key_wins_over_a_stray_one():
 
 
 def test_a_name_is_found_even_when_the_type_is_missing_or_unknown():
-    assert brand_display_name({"identity": {"product_name": "Recast"}}) == "Recast"
+    assert brand_display_name({"identity": {"product_name": "Ekavo"}}) == "Ekavo"
     assert brand_display_name({"brand_type": "Something new", "identity": {"company_name": "Acme"}}) == "Acme"
     assert brand_display_name({"name": "Top level name"}) == "Top level name"
 
@@ -45,7 +45,7 @@ def test_the_name_is_trimmed():
 
 
 def test_the_activity_label_uses_the_same_rule():
-    assert brand_label({"brand_type": "Product", "identity": {"product_name": "Recast"}}) == "Recast"
+    assert brand_label({"brand_type": "Product", "identity": {"product_name": "Ekavo"}}) == "Ekavo"
     assert brand_label(None) == ""
 
 
@@ -57,7 +57,7 @@ async def test_the_drafts_list_shows_the_real_brand_name_for_every_type_and_unti
 
     ws_id = f"ws-{uuid4()}"
     made = {}
-    for brand_type, identity in (("Product", {"product_name": "Recast"}), ("Business", {"company_name": "Harbor and Pine"}),
+    for brand_type, identity in (("Product", {"product_name": "Ekavo"}), ("Business", {"company_name": "Harbor and Pine"}),
                                  ("Person", {"name": "Asha"}), ("Shop", {"name": "Corner Books"}), ("Product", {})):
         brand_id = f"b-{uuid4()}"
         await brand_profiles.insert_one({"id": brand_id, "workspace_id": ws_id, "brand_type": brand_type, "identity": identity})
@@ -66,4 +66,4 @@ async def test_the_drafts_list_shows_the_real_brand_name_for_every_type_and_unti
 
     await _attach_display_names(pieces)
 
-    assert [p["brand_name"] for p in pieces] == ["Recast", "Harbor and Pine", "Asha", "Corner Books", "Untitled Brand"]
+    assert [p["brand_name"] for p in pieces] == ["Ekavo", "Harbor and Pine", "Asha", "Corner Books", "Untitled Brand"]

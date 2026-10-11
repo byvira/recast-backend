@@ -13,6 +13,7 @@ MAX_CHAPTERS = 12
 MIN_GAP_SECONDS = 15.0     # chapters closer together than this are merged into one
 MIN_AUDIO_SECONDS = 60.0   # shorter recordings are not split into chapters
 MAX_TITLE_CHARS = 80
+SNAP_TOLERANCE_SECONDS = 5.0  # a proposed time this far from any real moment is dropped
 
 _LEAK_MARKERS = ("return only", "no explanation", "start_s", "{\"chapters\"")
 
@@ -34,6 +35,8 @@ def normalize_chapters(
     *,
     max_chapters: int = MAX_CHAPTERS,
     min_gap: float = MIN_GAP_SECONDS,
+    starts: Sequence[float] | None = None,
+    snap_tolerance: float = SNAP_TOLERANCE_SECONDS,
 ) -> list[dict]:
     """Keep only believable chapters: {title, start_s}, sorted, the first at 0.
 
@@ -56,6 +59,12 @@ def normalize_chapters(
         title = clean_title(item.get("title"))
         if not title or start != start or start < 0 or start >= duration_s:
             continue
+        if starts:
+            # A time the recording never has is moved onto the nearest real moment, or dropped when none is close.
+            nearest = min(starts, key=lambda s: abs(float(s) - start))
+            if abs(float(nearest) - start) > snap_tolerance:
+                continue
+            start = float(nearest)
         parsed.append((start, title))
 
     parsed.sort(key=lambda p: p[0])

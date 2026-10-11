@@ -2,7 +2,7 @@
 
 One source of truth: the Support page reads these from ``GET /support/guides``
 and AI drafts search them, so what members read and what staff drafts quote
-can never disagree. Every statement here describes something Recast does
+can never disagree. Every statement here describes something Ekavo does
 today. Where a feature is not built yet the guide says so plainly. Wording
 follows the product copy rules: plain language, no em dashes, no jargon.
 """
@@ -30,9 +30,9 @@ def _g(id: str, topic: str, title: str, summary: str, body: str, keywords: str =
 
 GUIDES: list[dict] = [
     # ── Getting started ──────────────────────────────────────────────────────
-    _g("what-recast-does", "getting-started", "What Recast does",
+    _g("what-recast-does", "getting-started", "What Ekavo does",
        "Describe an idea once and get posts ready for each platform, in your own voice.",
-       "You give Recast an idea, a link or some raw text. It writes a post for each platform you choose, using your brand voice, and puts every piece in a review queue. Nothing is published until someone on your team approves it.",
+       "You give Ekavo an idea, a link or some raw text. It writes a post for each platform you choose, using your brand voice, and puts every piece in a review queue. Nothing is published until someone on your team approves it.",
        "overview intro how it works"),
     _g("first-post", "getting-started", "Your first post from start to finish",
        "Set up your voice, write a post, approve it and publish.",
@@ -44,7 +44,7 @@ GUIDES: list[dict] = [
        "menu navigation pages home review library calendar"),
     _g("approval-first", "getting-started", "Nothing publishes until you approve it",
        "Every new piece waits for approval before it can be scheduled or published.",
-       "Recast never posts on its own without approval. New pieces land as waiting for approval. Someone with permission to approve opens the piece in Review and approves it. Only then can it be scheduled or published.",
+       "Ekavo never posts on its own without approval. New pieces land as waiting for approval. Someone with permission to approve opens the piece in Review and approves it. Only then can it be scheduled or published.",
        "approve approval review permission pending"),
 
     # ── Brand voice ──────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ GUIDES: list[dict] = [
     # ── Writing posts ────────────────────────────────────────────────────────
     _g("repurpose", "writing", "Turning one idea into posts for several platforms",
        "Write once and adapt it for each platform's style and limits.",
-       "Choose several platforms when you create a post, or repurpose a piece you already have. Recast adapts the wording to each platform and applies your voice again, so a LinkedIn post and a short post for another platform each read naturally.",
+       "Choose several platforms when you create a post, or repurpose a piece you already have. Ekavo adapts the wording to each platform and applies your voice again, so a LinkedIn post and a short post for another platform each read naturally.",
        "repurpose adapt platforms multiple"),
     _g("refine-chips", "writing", "Improving a post with one click",
        "Use the quick actions to make a post punchier, shorter or add a call to action.",
@@ -80,7 +80,7 @@ GUIDES: list[dict] = [
        "refine edit chips punchier shorten version"),
     _g("angles", "writing", "Trying different angles",
        "See three genuinely different ways to say the same thing.",
-       "Ask for angles and Recast writes three different approaches to the same idea, not just tone changes. Pick the one you like and keep editing from there.",
+       "Ask for angles and Ekavo writes three different approaches to the same idea, not just tone changes. Pick the one you like and keep editing from there.",
        "angles variants rewrite ideas"),
     _g("hook-score", "writing", "Scoring your opening line",
        "Get a score for a hook and three alternatives.",
@@ -92,21 +92,21 @@ GUIDES: list[dict] = [
        "flagged quality check banned length review"),
     _g("presets", "writing", "Using presets",
        "Save a way of writing and reuse it.",
-       "Presets store a structure or style you use often. Pick one when you create a post and Recast follows it.",
+       "Presets store a structure or style you use often. Pick one when you create a post and Ekavo follows it.",
        "preset template structure reuse"),
 
     # ── Audio and images ─────────────────────────────────────────────────────
     _g("script-to-audio", "audio-image", "Turning a script into audio",
        "Write a script and have it read aloud in a voice you choose.",
-       "In the Audio page, write or paste a script and choose a voice. Recast creates the recording, which then waits for approval like any other piece. You can also make a conversation with more than one voice.",
+       "In the Audio page, write or paste a script and choose a voice. Ekavo creates the recording, which then waits for approval like any other piece. You can also make a conversation with more than one voice.",
        "audio script narration voice dialogue speech"),
     _g("upload-recording", "audio-image", "Uploading or recording your own audio",
        "Upload a file or record with your microphone, then get a transcript and a cleaner sound.",
-       "Upload a recording or record in the browser. Recast writes out what was said and can reduce background noise and even out the volume. You can play it back and read the transcript in the same place.",
+       "Upload a recording or record in the browser. Ekavo writes out what was said and can reduce background noise and even out the volume. You can play it back and read the transcript in the same place.",
        "upload record microphone transcript cleanup noise"),
     _g("translate-audio", "audio-image", "Translating audio into another language",
        "Create a version in another language from a script or transcript.",
-       "Choose a language and Recast translates the text, checks the translation, and creates a new recording in the voice you use. Not every language is available for every voice. If one is not, you are told why before anything is created.",
+       "Choose a language and Ekavo translates the text, checks the translation, and creates a new recording in the voice you use. Not every language is available for every voice. If one is not, you are told why before anything is created.",
        "localize translate language tamil audio"),
     _g("share-link", "audio-image", "Sharing audio or images with a link",
        "Send someone a link to a piece without giving them access to your workspace.",
@@ -120,15 +120,15 @@ GUIDES: list[dict] = [
     # ── Campaigns ────────────────────────────────────────────────────────────
     _g("what-is-campaign", "campaigns", "What a campaign is",
        "A topic, the platforms you want, and how often to post.",
-       "A campaign turns one topic into a run of posts over several days. Recast plans a different angle for each day, writes the posts in your voice, and puts them in Review. You approve them and they publish on schedule.",
+       "A campaign turns one topic into a run of posts over several days. Ekavo plans a different angle for each day, writes the posts in your voice, and puts them in Review. You approve them and they publish on schedule.",
        "campaign cadence schedule days topic"),
     _g("setup-campaign", "campaigns", "Setting up a campaign",
        "Choose a topic, platforms, how often, and an optional thumbnail.",
-       "Start a campaign from Home. The platform list starts from the accounts you have connected, and you can select or deselect any of them. Recast can suggest more topic ideas. Each campaign has its own settings page.",
+       "Start a campaign from Home. The platform list starts from the accounts you have connected, and you can select or deselect any of them. Ekavo can suggest more topic ideas. Each campaign has its own settings page.",
        "create campaign wizard platforms thumbnail suggestions"),
     _g("campaign-behind", "campaigns", "Why a campaign is behind or slowed down",
-       "Recast slows down a campaign that keeps failing and tells you.",
-       "If a campaign keeps failing, Recast waits longer between tries instead of retrying every minute, and records it in the Activity Log. A workspace owner can also pause new generation for everyone, which pauses campaign writing too.",
+       "Ekavo slows down a campaign that keeps failing and tells you.",
+       "If a campaign keeps failing, Ekavo waits longer between tries instead of retrying every minute, and records it in the Activity Log. A workspace owner can also pause new generation for everyone, which pauses campaign writing too.",
        "campaign stalled behind paused failing backoff"),
     _g("calendar-campaign", "campaigns", "Seeing one campaign on the calendar",
        "Click a campaign badge to show only its posts.",
@@ -138,7 +138,7 @@ GUIDES: list[dict] = [
     # ── Publishing ───────────────────────────────────────────────────────────
     _g("publish-now-or-later", "publishing", "Publishing now or scheduling for later",
        "Approved posts can go out right away or at a time you choose.",
-       "Once a post is approved you can publish it now or pick a date and time. If a platform has a short problem, Recast tries again by itself for a while before it marks the post as failed.",
+       "Once a post is approved you can publish it now or pick a date and time. If a platform has a short problem, Ekavo tries again by itself for a while before it marks the post as failed.",
        "publish schedule retry now later time"),
     _g("post-failed", "publishing", "My post says publishing or failed",
        "What to check when a post does not go out.",
@@ -154,7 +154,7 @@ GUIDES: list[dict] = [
        "platforms supported linkedin facebook instagram threads bluesky youtube"),
     _g("youtube-publish", "publishing", "Publishing a video to YouTube",
        "Review the title, tags and chapters before it goes out.",
-       "Attach a video to a piece and Recast reads it to suggest a title, tags and chapters based on what is really said. You can edit all of it before you publish. Captions need you to reconnect YouTube once so the extra permission can be added.",
+       "Attach a video to a piece and Ekavo reads it to suggest a title, tags and chapters based on what is really said. You can edit all of it before you publish. Captions need you to reconnect YouTube once so the extra permission can be added.",
        "youtube video chapters captions title tags"),
 
     # ── Connected accounts ───────────────────────────────────────────────────
@@ -164,11 +164,11 @@ GUIDES: list[dict] = [
        "connect account settings connections sign in permission"),
     _g("reconnect-account", "accounts", "When an account needs reconnecting",
        "Access can expire or be removed, and reconnecting takes a minute.",
-       "Recast renews access automatically before it expires. If a renewal keeps failing, or you removed access on the platform, the account shows as needing to be reconnected. Reconnect it from Settings and posting carries on.",
+       "Ekavo renews access automatically before it expires. If a renewal keeps failing, or you removed access on the platform, the account shows as needing to be reconnected. Reconnect it from Settings and posting carries on.",
        "reconnect expired token disconnected renew"),
     _g("linkedin-followers", "accounts", "Why my LinkedIn follower count shows 0",
        "LinkedIn does not share follower counts for personal accounts.",
-       "LinkedIn's own rules for personal accounts do not include follower counts, so Recast cannot show them. Posting and your profile details still work normally.",
+       "LinkedIn's own rules for personal accounts do not include follower counts, so Ekavo cannot show them. Posting and your profile details still work normally.",
        "linkedin followers count zero"),
     _g("threads-insights", "accounts", "Threads insights say I need to reconnect",
        "One extra permission was added, so reconnect once.",
@@ -220,7 +220,7 @@ GUIDES: list[dict] = [
        "billing plan payment subscription price seats"),
     _g("video-status", "help", "Video",
        "Video creation is not ready yet.",
-       "Recast cannot create videos yet. It can read a video you upload, write out what is said, and prepare a title, tags, chapters and captions for YouTube.",
+       "Ekavo cannot create videos yet. It can read a video you upload, write out what is said, and prepare a title, tags, chapters and captions for YouTube.",
        "video pipeline create render"),
 ]
 

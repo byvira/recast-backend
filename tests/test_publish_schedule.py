@@ -433,7 +433,7 @@ async def test_mark_posted_is_refused_for_a_platform_recast_can_publish_to(signu
 
 async def test_mark_posted_needs_the_post_to_be_in_review_and_a_real_link(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Manual Rules WS")
+    ws_id = await create_workspace(client, "Manual Rules WS", tier="large")
     draft = await _seed_piece(ws_id, profile["id"], str(uuid4()), platform="Blog")
 
     not_approved = await client.post(

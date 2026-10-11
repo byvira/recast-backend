@@ -1,6 +1,6 @@
 """
 Platform registry — single source of truth for "what is a platform" across
-Recast, replacing the four independent, drifting sources audited in
+Ekavo, replacing the four independent, drifting sources audited in
 docs/PLATFORM_REGISTRY_PLAN.md Stage 0 (the text Platform enum, the publish
 registry, the validators dict, the analytics fetchers dict).
 

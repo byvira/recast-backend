@@ -18,7 +18,15 @@ MIN_CHARS = 20
 MAX_CHARS = 3000
 
 
-def clean_sections(raw: Any) -> list[dict]:
+TWITTER_CHARS = 280
+
+
+def channel_char_cap(channels: list[str]) -> int:
+    """The longest a section may be for the channels chosen: 280 when X is one of them, otherwise the general maximum."""
+    return TWITTER_CHARS if any(str(c).lower().startswith("twitter") for c in channels or []) else MAX_CHARS
+
+
+def clean_sections(raw: Any, max_chars: int = MAX_CHARS) -> list[dict]:
     """Keep only well-formed sections, in order: a real name, a limit clamped to a sensible range,
     a one-line instruction. Repeated names are dropped. Returns [] when fewer than MIN_STEPS survive
     (one section is not a structure)."""
@@ -38,7 +46,7 @@ def clean_sections(raw: Any) -> list[dict]:
         except (TypeError, ValueError):
             limit = 280
         seen.add(name.lower())
-        out.append({"section_name": name, "char_limit": max(MIN_CHARS, min(MAX_CHARS, limit)), "guidelines": guide})
+        out.append({"section_name": name, "char_limit": max(MIN_CHARS, min(max_chars, limit)), "guidelines": guide})
         if len(out) == MAX_STEPS:
             break
     return out if len(out) >= MIN_STEPS else []
@@ -56,7 +64,7 @@ async def suggest_structure(
         existing_steps=existing_steps[:8],
     )
     result = await call_llm_structured(prompt, max_tokens=900)
-    sections = clean_sections((result or {}).get("sections"))
+    sections = clean_sections((result or {}).get("sections"), channel_char_cap(channels))
     if not sections:
         logger.warning("Template structure suggestion returned nothing usable")
     return sections

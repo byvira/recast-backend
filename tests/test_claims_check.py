@@ -1,15 +1,15 @@
 from app.pipelines.text.claims import unsupported_claims
 
-SOURCE = "Recast costs Rs 4,999 a month. It writes in 30 languages. I managed content for 11 brands at once."
+SOURCE = "Ekavo costs Rs 4,999 a month. It writes in 30 languages. I managed content for 11 brands at once."
 
 
 def test_numbers_that_are_in_the_source_pass():
-    text = "Recast is Rs 4,999 a month, covers 30 languages, and I handled 11 brands."
+    text = "Ekavo is Rs 4,999 a month, covers 30 languages, and I handled 11 brands."
     assert unsupported_claims(text, [SOURCE]) == []
 
 
 def test_invented_figures_prices_scores_and_events_are_listed():
-    text = ("Last Thursday I ran a side-by-side test. Recast scored 96% on keywords, 8.6 on readability, "
+    text = ("Last Thursday I ran a side-by-side test. Ekavo scored 96% on keywords, 8.6 on readability, "
             "and the freelancer billed $22 for 12 minutes. A client told me it was 3x faster.")
     out = unsupported_claims(text, [SOURCE])
     joined = " ".join(out)

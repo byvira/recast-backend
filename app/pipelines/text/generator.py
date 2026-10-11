@@ -301,6 +301,55 @@ def as_text(value) -> str:
 _PLACEHOLDER_RE = re.compile(r"\[[A-Z][A-Za-z0-9 _/'-]{1,40}\]|\{\{[^}]{1,40}\}\}|(?i:lorem ipsum)|\bXXX+\b")
 
 
+# What each platform's prompt asks for, so the checks and the prompts say the same thing. Over these limits is advisory (it is
+# shown, and does not force a rewrite), because a slightly long post is better than a retry that loses what was good.
+PLATFORM_LIMITS: Dict[Platform, Dict[str, int]] = {
+    Platform.LINKEDIN: {"max_words": 300, "max_hashtags": 3},
+    Platform.FACEBOOK: {"max_words": 300, "max_hashtags": 0},
+    Platform.INSTAGRAM: {"max_words": 180, "max_hashtags": 10},
+    Platform.NEWSLETTER: {"max_words": 500, "max_hashtags": 0},
+}
+
+
+def limit_warnings(platform: object, content: str) -> list[str]:
+    """Plain-words notes when a text is over what its platform takes (length, hashtags, the Twitter character limit). Used after
+    a quick edit, where the text is kept as the member's own but they should know before it goes out."""
+    value = getattr(platform, "value", platform)
+    try:
+        target = Platform(value)
+    except ValueError:
+        return []
+    notes: list[str] = []
+    if target == Platform.TWITTER and len(content) > 280:
+        notes.append(f"This is {len(content)} characters and a post on X holds 280.")
+    limits = PLATFORM_LIMITS.get(target)
+    if limits:
+        words = len(content.split())
+        if words > limits["max_words"]:
+            notes.append(f"This is {words} words; {target.value} posts usually stay under {limits['max_words']}.")
+        tags = len(re.findall(r"(?<!w)#w+", content))
+        if tags > limits["max_hashtags"]:
+            notes.append(f"This has {tags} hashtags; {target.value} usually takes at most {limits['max_hashtags']}.")
+    return notes
+
+
+def _phrase_present(phrase: str, content: str) -> bool:
+    """Whether a required phrase is in the content. The wording may differ a little (case, punctuation, a word added or
+    changed), because the prompt asks for the meaning in the writer's own words: the phrase counts as present when it appears
+    as written or when at least four in five of its words do."""
+    def words(text: str) -> list[str]:
+        return re.findall(r"[^\W_]+", text.casefold())
+
+    wanted = words(phrase)
+    if not wanted:
+        return True
+    have = set(words(content))
+    if " ".join(wanted) in " ".join(words(content)):
+        return True
+    significant = [w for w in wanted if len(w) > 2] or wanted
+    return sum(1 for w in significant if w in have) / len(significant) >= 0.8
+
+
 def validate_content(
     content: str,
     platform: Platform,
@@ -408,7 +457,7 @@ def validate_content(
             found_weasels.append(weasel)
     if found_weasels:
         hard_issues.append(
-            f"Weasel words found — replace with specific details: {', '.join(found_weasels)}"
+            f"Weasel words found — use the real detail from the source if it has one, otherwise say it plainly without the vague word (never invent a number): {', '.join(found_weasels)}"
         )
 
     # ── Hard gate 7 — required phrases present ────────────────────────────
@@ -416,8 +465,17 @@ def validate_content(
     # so the exact-text check only applies to English output.
     for phrase_obj in (required_phrases if english else []):
         phrase = (phrase_obj.get("text") or "").strip()
-        if phrase and phrase.lower() not in content_lower:
+        if phrase and not _phrase_present(phrase, content):
             hard_issues.append(f"Required brand phrase missing: '{phrase}'")
+
+    # ── Advisory — length and hashtag count the platform's prompt asks for ──
+    limits = PLATFORM_LIMITS.get(platform)
+    if limits:
+        if word_count > limits["max_words"]:
+            advisory_issues.append(f"Advisory: Longer than the usual {limits['max_words']} words for {platform.value}: {word_count} words.")
+        hashtags = len(re.findall(r"(?<!\w)#\w+", content))
+        if hashtags > limits["max_hashtags"]:
+            advisory_issues.append(f"Advisory: {hashtags} hashtags, {platform.value} usually takes at most {limits['max_hashtags']}.")
 
     # ── Advisory — approved opener used ───────────────────────────────────
     if approved_openers:

@@ -97,7 +97,7 @@ async def _back_off(campaign: dict, error: str) -> None:
         actor_name="Campaign scheduler",
         category="content_generated",
         title=f"Campaign \"{campaign.get('name') or 'Untitled'}\" couldn't generate",
-        description=f"{error} Recast will try again in {hours} hour{'s' if hours != 1 else ''}.",
+        description=f"{error} Ekavo will try again in {hours} hour{'s' if hours != 1 else ''}.",
         status="failed",
         target_id=campaign["id"],
         target_type="Campaign",

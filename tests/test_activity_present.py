@@ -18,7 +18,7 @@ def test_metadata_keeps_text_and_numbers_and_drops_empty_or_nested_values():
 def test_a_row_with_empty_metadata_values_presents_with_clean_metadata():
     row = present({
         "_id": "system:platformops:1", "occurred_at": datetime.now(timezone.utc), "lane": "passive",
-        "actor": {"name": "Recast", "type": "system_cron"}, "category": "platform_ops", "title": "YouTube: reconnect email sent",
+        "actor": {"name": "Ekavo", "type": "system_cron"}, "category": "platform_ops", "title": "YouTube: reconnect email sent",
         "description": "Sent.", "metadata": {"event": "connection.reconnect_requested", "before": None, "after": None, "reason": ""},
     })
     assert row["metadata"] == {"event": "connection.reconnect_requested", "reason": ""}

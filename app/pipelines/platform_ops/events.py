@@ -63,7 +63,7 @@ async def record_platform_event(
         await record_system(
             workspace_id=workspace_id,
             key=f"platformops:{uuid4()}",
-            actor_name="Recast staff",
+            actor_name="Ekavo staff",
             actor_user_id=actor_user_id,
             category=CATEGORY,
             title=TITLES.get(event, "{label}: " + event).format(label=definition.label),

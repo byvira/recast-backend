@@ -134,8 +134,8 @@ async def test_bulk_canned_reply_reaches_each_member(make_client):
 
 # ── Merge ────────────────────────────────────────────────────────────────────
 async def test_merge_moves_messages_and_files_and_tells_the_member(make_client, monkeypatch):
-    monkeypatch.setattr(storage, "upload_private_file", lambda data, folder, pid: f"k/{folder}/{pid}")
-    monkeypatch.setattr(storage, "signed_private_url", lambda key, secs=300: f"https://signed.example/{key}")
+    monkeypatch.setattr(storage, "upload_private_file", lambda data, folder, pid, kind="raw": f"k/{folder}/{pid}")
+    monkeypatch.setattr(storage, "signed_private_url", lambda key, secs=300, kind="raw", fmt="": f"https://signed.example/{key}")
     member, _ = await _member(make_client)
     lead, _ = await _staff(make_client, "lead")
     agent, _ = await _staff(make_client, "agent")

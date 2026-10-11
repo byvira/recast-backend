@@ -38,7 +38,7 @@ from app.shared.storage import ContentType as UploadContentType, upload_file
 logger = logging.getLogger(__name__)
 
 CARD_SIZE = (1080, 1080)
-# Recast's own dark theme — used when a brand hasn't set visual_identity
+# Ekavo's own dark theme — used when a brand hasn't set visual_identity
 # colors yet, so the fallback still looks intentional, not blank/broken.
 _DEFAULT_BG = "#1C1814"
 _DEFAULT_FG = "#FFFFFF"

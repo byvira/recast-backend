@@ -489,15 +489,15 @@ async def test_translation_gate_retries_and_keeps_the_best_attempt(monkeypatch):
 
 async def test_translation_gate_gives_up_after_three_attempts_keeping_the_highest(monkeypatch):
     replies = [
-        "a", "SCORE: 0.2 REASON: bad", "b", "SCORE: 0.6 REASON: meh", "c", "SCORE: 0.4 REASON: worse",
+        "texte a ici", "SCORE: 0.2 REASON: bad", "texte b ici", "SCORE: 0.6 REASON: meh", "texte c ici", "SCORE: 0.4 REASON: worse",
     ]
 
     async def _fake_llm(*args, **kwargs):
         return replies.pop(0)
 
     monkeypatch.setattr(audio_module, "call_llm", _fake_llm)
-    text, score = await audio_module._translate_with_quality_gate("source", "French")
-    assert (text, score) == ("b", 0.6)  # best of three, not the last
+    text, score = await audio_module._translate_with_quality_gate("source text here", "French")
+    assert (text, score) == ("texte b ici", 0.6)  # best of three, not the last
 
 
 def test_a_malformed_score_counts_as_failing_instead_of_raising():

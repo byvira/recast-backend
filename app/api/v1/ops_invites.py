@@ -1,4 +1,4 @@
-"""Staff: invite people to Recast, see and manage the invites, and change the sign-up settings.
+"""Staff: invite people to Ekavo, see and manage the invites, and change the sign-up settings.
 
 Invites are one-time codes sent by email. A batch stops at the daily cap so a mistake cannot use up the email quota. Everything here
 writes to the lead audit trail.

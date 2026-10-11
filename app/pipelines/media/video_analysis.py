@@ -30,6 +30,7 @@ from app.models.media import (
     MediaTranscriptWord,
 )
 from app.pipelines.audio.transcriber import transcribe_audio_detailed
+from app.pipelines.text.generator import resolve_language_directive_name
 from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_structured
 
@@ -212,17 +213,26 @@ async def generate_chapters(
 
     lines: list[str] = []
     used = 0
+    covered_until = 0.0
     for seg in segments:
         line = f"[{format_timestamp(seg.start_s)}] {seg.text}"
         if used + len(line) > MAX_LLM_TRANSCRIPT_CHARS:
             break
         lines.append(line)
         used += len(line) + 1
+        covered_until = seg.end_s
+    # A long video is read from its start only; the model is told so, so it does not treat the front as the whole video.
+    coverage_note = (
+        f"The transcript below covers only the first {format_timestamp(covered_until)} of the video. Name chapters only for that part."
+        if covered_until and covered_until < total - 1
+        else ""
+    )
 
     prompt = load_prompt(
         "media/video/chapters",
         duration_label=format_timestamp(total),
-        language=language or "the spoken language",
+        language=resolve_language_directive_name(language) if language else "the spoken language",
+        coverage_note=coverage_note,
         min_chapters=MIN_CHAPTERS,
         max_chapters=min(MAX_CHAPTERS, max(MIN_CHAPTERS, int(total // 60) + MIN_CHAPTERS)),
         transcript_lines="\n".join(lines),

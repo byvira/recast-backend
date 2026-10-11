@@ -73,11 +73,13 @@ async def test_turning_review_off_can_let_the_waiting_posts_through(api_client):
     waiting = [await _post(ws, owner["id"]) for _ in range(3)]
     from app.pipelines.text.storage import get_piece
 
-    assert all((await get_piece(p, ws))["approval_status"] == "pending" for p in waiting)
+    for p in waiting:
+        assert (await get_piece(p, ws))["approval_status"] == "pending"
     done = await api_client.post("/api/v1/content/approve-waiting", headers=headers)
     assert done.status_code == 200, done.text
     assert done.json()["approved_count"] == 3
-    assert all((await get_piece(p, ws))["approval_status"] == "approved" for p in waiting)
+    for p in waiting:
+        assert (await get_piece(p, ws))["approval_status"] == "approved"
     assert (await api_client.post("/api/v1/content/approve-waiting", headers=headers)).json()["approved_count"] == 0
 
 
@@ -100,3 +102,15 @@ async def test_old_alerts_for_rules_a_plan_does_not_use_are_not_shown(api_client
     for ws, expected in ((solo, 0), (team, 1)):
         listed = (await api_client.get("/api/v1/activity", params={"lane": "passive"}, headers={"X-Workspace-Id": ws})).json()
         assert len(listed["items"]) == expected, (ws, listed["items"])
+
+
+async def test_waiting_count_is_zero_when_there_is_no_review_step(api_client):
+    owner = await signup_new_user(api_client)
+    solo = await create_workspace(api_client, "Solo count", tier="single")
+    team = await create_workspace(api_client, "Team count", tier="large")
+    await _post(solo, owner["id"])
+    await _post(team, owner["id"])
+    solo_count = (await api_client.get("/api/v1/analytics/pipeline-summary", headers={"X-Workspace-Id": solo})).json()
+    team_count = (await api_client.get("/api/v1/analytics/pipeline-summary", headers={"X-Workspace-Id": team})).json()
+    assert solo_count["text"]["pending_approval"] == 0
+    assert team_count["text"]["pending_approval"] == 1

@@ -61,7 +61,7 @@ async def test_repurpose_returns_real_piece_ids(signup_user, mock_llm):
 
 async def test_repurposed_piece_is_real_and_fetchable(signup_user, mock_llm):
     client, _ = await signup_user()
-    ws_id = await create_workspace(client, "Repurpose WS")
+    ws_id = await create_workspace(client, "Repurpose WS", tier="large")
     brand_id = await _create_brand(client, ws_id)
 
     mock_llm.set_structured({"content": "Adapted for Instagram."})

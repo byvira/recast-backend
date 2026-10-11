@@ -38,6 +38,7 @@ def _verdict(result: dict) -> Optional[list[str]]:
         except (KeyError, TypeError, ValueError):
             return None
     weak = min(values) <= 2 or sum(values) / len(values) < _PASS_AVERAGE
+    logger.info("Draft review: scores=%s average=%.2f revise=%s", values, sum(values) / len(values), weak)
     fixes = [str(f).strip() for f in (result.get("fixes") or []) if str(f).strip()][:3]
     if not weak or not fixes:
         return None

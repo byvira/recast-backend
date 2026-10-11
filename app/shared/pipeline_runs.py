@@ -182,7 +182,7 @@ async def _finish(doc: dict, status: str, *, result: Optional[dict] = None, erro
 
         wording = {"done": "finished", "failed": "failed", "cancelled": "was cancelled"}
         await record_system(
-            workspace_id=doc["workspace_id"], key=f"run:{doc['id']}", actor_name="Recast",
+            workspace_id=doc["workspace_id"], key=f"run:{doc['id']}", actor_name="Ekavo",
             actor_user_id=doc.get("created_by"), category="content_generated",
             title=f"{doc['title']} {wording[status]}",
             description=error or ("Your work is ready to review." if status == "done" else "Nothing more was made."),

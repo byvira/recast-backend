@@ -51,7 +51,7 @@ async def remind_about_paused_runs() -> int:
         number = int(run.get("reminders_sent") or 0) + 1
         try:
             await record_system(
-                workspace_id=run["workspace_id"], key=f"run-reminder:{run['id']}:{number}", actor_name="Recast",
+                workspace_id=run["workspace_id"], key=f"run-reminder:{run['id']}:{number}", actor_name="Ekavo",
                 actor_user_id=run.get("created_by"), category="content_generated",
                 title=f"{run['title']} is still paused",
                 description="You paused this a while ago. Open it to resume or cancel it.",

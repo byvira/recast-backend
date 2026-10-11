@@ -132,6 +132,10 @@ async def normalise_input(
     )
 
 
+_CLEAN_LIMIT = 6000
+_CLEAN_MIN = 3000
+
+
 async def clean_raw_content(content: str) -> str:
     """
     Light cleanup pass on any normalised input before it reaches agents.
@@ -152,15 +156,21 @@ async def clean_raw_content(content: str) -> str:
     if not content or len(content.strip()) < 50:
         return content
 
-    prompt = load_prompt("text/normalize/clean_raw_content", content=content[:6000])
+    # Only the first part is cleaned (it is what fits the model's reply); the rest is kept as written, so a long source
+    # is never cut down to its first pages.
+    cut = content.rfind("\n", _CLEAN_MIN, _CLEAN_LIMIT) if len(content) > _CLEAN_LIMIT else len(content)
+    if cut < 0:
+        cut = _CLEAN_LIMIT
+    head, tail = content[:cut], content[cut:]
+    prompt = load_prompt("text/normalize/clean_raw_content", content=head)
     try:
         result = await call_llm_structured(prompt,model=GroqModel.FAST)
         if result and result.get("cleaned"):
             cleaned = result["cleaned"].strip()
             # Sanity check — cleaned content should not be drastically shorter
             # If LLM over-stripped, return original
-            if len(cleaned) > len(content) * 0.4:
-                return cleaned
+            if len(cleaned) > len(head) * 0.4:
+                return cleaned + tail
             logger.warning(
                 "clean_raw_content: cleaned output too short (%d vs %d) — returning original",
                 len(cleaned), len(content),

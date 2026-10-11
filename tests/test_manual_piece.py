@@ -23,7 +23,7 @@ async def _create_brand(client, ws_id: str) -> str:
 
 async def test_manual_piece_is_saved_exactly_as_given(signup_user):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Manual Piece WS")
+    ws_id = await create_workspace(client, "Manual Piece WS", tier="large")
     brand_id = await _create_brand(client, ws_id)
 
     res = await client.post(

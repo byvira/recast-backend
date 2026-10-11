@@ -2,7 +2,8 @@ You are naming the chapters of a video from its REAL transcript. Every line belo
 
 Video length: {{ duration_label }}
 Transcript language: {{ language }}
-
+{% if coverage_note %}{{ coverage_note }}
+{% endif %}
 Rules:
 - Pick {{ min_chapters }} to {{ max_chapters }} chapters, each starting where the topic genuinely changes.
 - "start" MUST be copied exactly from one of the [m:ss] markers below. Never invent, round, or estimate a time.

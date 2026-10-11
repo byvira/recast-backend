@@ -51,8 +51,8 @@ def test_identity_summary_business_falls_back_to_camelcase():
 
 
 def test_identity_summary_product_reads_normalised_product_name():
-    line = _identity_summary("Product", {"product_name": "Recast", "description": "Repurposing engine"})
-    assert "Recast" in line
+    line = _identity_summary("Product", {"product_name": "Ekavo", "description": "Repurposing engine"})
+    assert "Ekavo" in line
     assert "Repurposing engine" in line
 
 

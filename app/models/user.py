@@ -130,7 +130,7 @@ class UserProfile(BaseModel):
     social_accounts: list[SocialAccount] = []
     brand_profiles: list[str] = []
     default_workspace_id: Optional[str] = None   # active workspace when X-Workspace-Id header absent
-    # Recast staff, not a workspace role — gates cross-tenant data (the Ops
+    # Ekavo staff, not a workspace role — gates cross-tenant data (the Ops
     # LLM Health page's aggregate usage/latency/errors spanning every
     # workspace) that a workspace owner must never see just by owning a
     # workspace. See app.core.auth.require_platform_staff. No bootstrap UI

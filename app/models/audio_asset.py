@@ -118,6 +118,12 @@ class AudioAsset(BaseModel):
     # this asset was produced by /localize from another one.
     language: str = "en"
     source_audio_asset_id: Optional[str] = None
+    # Set on a translated narration whose translation could not be fully trusted (a low quality score, or it looks cut short),
+    # in plain words, so the member listens before using it. Empty when the translation was good.
+    translation_review: Optional[str] = None
+    # Written versions made from this recording's transcript (show notes, captions, a short summary), the latest of each kind:
+    # {"show_notes": {"content": "...", "generated_at": datetime, "quality": 0.82}}.
+    derivatives: dict[str, dict] = Field(default_factory=dict)
     # Real Governance & Multi-Tier Review Matrix — the UI already named
     # these 4 roles with nothing behind the checkboxes; each entry is one
     # real member's real signoff, not a locally-toggled checkbox.

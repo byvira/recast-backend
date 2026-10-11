@@ -58,7 +58,7 @@ def visibility_problem(privacy_status: str) -> Optional[str]:
     from app.core.config import settings
 
     if privacy_status != "private" and not settings.YOUTUBE_API_AUDIT_PASSED:
-        return "Public and unlisted uploads open up after Google has reviewed Recast. Choose Private for now, then change it in YouTube."
+        return "Public and unlisted uploads open up after Google has reviewed Ekavo. Choose Private for now, then change it in YouTube."
     return None
 
 

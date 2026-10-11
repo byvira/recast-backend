@@ -128,7 +128,7 @@ async def test_draft_is_text_only_grounded_and_redacted(make_client, fake_draft)
     res = await staff.post(f"{OPS}/tickets/{tid}/ai-draft")
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["draft"].startswith("Hi Member") and body["prompt_version"] == "support/draft_reply@1"
+    assert body["draft"].startswith("Hi Member") and body["prompt_version"].startswith("support/draft_reply@")
     assert any(g["id"] == "linkedin-followers" for g in body["guides"])
 
     prompt = fake_draft["prompts"][0]
@@ -361,3 +361,16 @@ async def test_health_alerts_fire_once_a_day_and_email_failures_are_counted(make
     assert any(a["key"] == "email_failures" for a in m["alerts"])
     await support_email_log.delete_many({})
     await support_settings.delete_many({"_id": {"$regex": "^alert:"}})
+
+
+def test_earlier_chat_turns_are_masked_before_they_reach_the_model():
+    from app.api.v1.support_assistant import model_messages
+
+    history = [
+        {"role": "user", "text": "My email is jane.doe@example.com and my key is zq81xk93mdhf72nbv04plwtr56hd83kd92mv"},
+        {"role": "assistant", "text": "Thanks, I can help."},
+    ]
+    sent = model_messages(history, "It still fails")
+    joined = " ".join(m["content"] for m in sent)
+    assert "jane.doe@example.com" not in joined and "zq81xk93mdhf72nbv04plwtr56hd83kd92mv" not in joined
+    assert sent[-1] == {"role": "user", "content": "It still fails"}

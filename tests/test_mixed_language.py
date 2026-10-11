@@ -79,3 +79,13 @@ def test_english_is_unaffected():
 def test_single_language_tone_override_code_switching_still_fires():
     out = build_tone_override("casual", "ta")
     assert "Natural code-switching is expected" in out
+
+
+def test_malayalam_telugu_and_kannada_mixes_are_judged_too():
+    from app.pipelines.text.language_check import language_problem
+
+    english = "This week we are planning the launch of the new scheduler and we will share the full plan with every member of the team soon."
+    for code in ("ml+en", "te+en", "kn+en"):
+        assert language_problem(english, code), f"a pure English post must fail {code}"
+    ml_mix = "Ee week njan new scheduler launch cheyyam, athu valare nalla aanu, ningal ellam ariyam oru plan ente team ellavarkkum venam."
+    assert language_problem(ml_mix, "ml+en") is None

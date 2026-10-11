@@ -1,4 +1,4 @@
-"""Results typed in by hand for posts Recast cannot read results from are saved, labelled self-reported, and counted in the totals."""
+"""Results typed in by hand for posts Ekavo cannot read results from are saved, labelled self-reported, and counted in the totals."""
 from datetime import datetime, timezone
 from uuid import uuid4
 

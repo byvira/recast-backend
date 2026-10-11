@@ -1,4 +1,4 @@
-"""Support tickets — a workspace member files one, Recast staff resolve it
+"""Support tickets — a workspace member files one, Ekavo staff resolve it
 from the Ops Dashboard. Real persistence and a real staff-facing queue,
 replacing the frontend's earlier local-only, lost-on-refresh mock.
 

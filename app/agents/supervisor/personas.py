@@ -69,8 +69,8 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
     variant = ""
     if flag_type == "brand_voice_instability" and tier in ("single", "duo"):
         variant = "_solo" if tier == "single" else "_pair"
-    elif flag_type == "daily_publish_cap" and tier == "single":
-        variant = "_solo"
+    elif flag_type == "daily_publish_cap" and tier in ("single", "duo"):
+        variant = "_solo" if tier == "single" else "_pair"
     wording = flag_type + variant if (flag_type + variant) in _ODETTE_FLAG_ENGLISH_TEMPLATES else flag_type
     known = wording in _ODETTE_FLAG_ENGLISH_TEMPLATES
     template = _ODETTE_FLAG_ENGLISH_TEMPLATES.get(wording, _ODETTE_FLAG_ENGLISH_TEMPLATES["__fallback__"])
@@ -104,6 +104,8 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
     elif flag_type == "connection_broken":
         format_ctx = {"platform": d.get("platform"), "account": d.get("account"), "failures": d.get("failures")}
     else:
-        format_ctx = {"flag_type_label": flag_type.replace("_", " "), "detail": str(d)}
+        # A flag type with no wording yet: said in plain words from its simple values, never as a raw data structure.
+        facts = "; ".join(f"{k.replace('_', ' ')} {v}" for k, v in d.items() if isinstance(v, (str, int, float)) and not isinstance(v, bool))
+        format_ctx = {"flag_type_label": flag_type.replace("_", " ").capitalize(), "detail": facts[:200] or "needs a look"}
 
     return await get_localized_string(key, language, template, format_ctx)

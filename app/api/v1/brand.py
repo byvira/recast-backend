@@ -688,7 +688,7 @@ async def suggest_voice_patterns(
     if not doc.get("identity"):
         raise HTTPException(
             status_code=400,
-            detail="Add a few identity details first — the more Recast knows, the better these suggestions will be.",
+            detail="Add a few identity details first — the more Ekavo knows, the better these suggestions will be.",
         )
 
     suggestions = await generate_voice_pattern_suggestions(doc)

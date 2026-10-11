@@ -28,10 +28,10 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.db.mongo import support_ai_usage
-from app.prompts.registry import load_prompt
+from app.prompts.registry import load_prompt, template_version
 from app.shared.localized_strings import looks_leaked
 from app.shared import support_guides
-from app.shared.llm import GroqModel, call_llm, usage_workspace
+from app.shared.llm import GroqModel, call_llm, private_content, usage_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,9 @@ logger = logging.getLogger(__name__)
 USAGE_BUCKET = "support-platform"
 
 DRAFT_PROMPT = "support/draft_reply"
-DRAFT_PROMPT_VERSION = "support/draft_reply@1"
+DRAFT_PROMPT_VERSION = template_version(DRAFT_PROMPT)
 CATEGORY_PROMPT = "support/category"
-CATEGORY_PROMPT_VERSION = "support/category@1"
+CATEGORY_PROMPT_VERSION = template_version(CATEGORY_PROMPT)
 
 MAX_OUTPUT_TOKENS_DRAFT = 500
 MAX_OUTPUT_TOKENS_CATEGORY = 20
@@ -76,12 +76,20 @@ def redact(text: str) -> str:
 # ── Limits and logging ───────────────────────────────────────────────────────
 async def _enforce_caps(staff_id: Optional[str]) -> None:
     now = datetime.now(timezone.utc)
-    if await support_ai_usage.count_documents({"created_at": {"$gte": now - timedelta(days=1)}}) >= CALLS_PER_DAY:
+    # Only staff drafting counts toward the staff limit; the members' own assistant is logged beside it but not counted here.
+    if await support_ai_usage.count_documents(
+        {"created_at": {"$gte": now - timedelta(days=1)}, "kind": {"$ne": "assistant"}}
+    ) >= CALLS_PER_DAY:
         raise HTTPException(status_code=429, detail="The daily limit for AI help has been reached. Try again tomorrow, or write the reply by hand.")
     if staff_id and await support_ai_usage.count_documents(
         {"staff_id": staff_id, "created_at": {"$gte": now - timedelta(hours=1)}}
     ) >= CALLS_PER_STAFF_PER_HOUR:
         raise HTTPException(status_code=429, detail="You have asked for a lot of drafts this hour. Please wait a little.")
+
+
+async def log_assistant_call(prompt_version: str, model: str, ok: bool, chars_in: int, chars_out: int) -> None:
+    """One row for a member's assistant answer, so it shows which prompt version and model produced it."""
+    await _log("assistant", "", None, prompt_version, model, ok, chars_in, chars_out)
 
 
 async def _log(kind: str, ticket_id: str, staff_id: Optional[str], prompt_version: str, model: str, ok: bool,
@@ -107,9 +115,16 @@ _HEALTH_TEXT = {
 
 
 _HOLD_TEXT = {
-    "platform_paused": "on hold because Recast has paused that platform",
+    "platform_paused": "on hold because Ekavo has paused that platform",
     "platform_retired": "on hold because that platform was retired",
 }
+
+
+def _quoted(value: object, limit: int = 120) -> str:
+    """Text a member wrote (a campaign name, a failure reason) made safe to place among the facts: masked, one short line, no
+    angle brackets, in quotes. It reads as a name or a reason, never as something the assistant should act on."""
+    one_line = " ".join(redact(str(value or "")).split()).replace("<", "").replace(">", "")
+    return '"' + one_line[:limit] + '"'
 
 
 async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
@@ -131,7 +146,7 @@ async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
             asked = " (the one the member reported)" if named and str(p.get("platform")) == named else ""
             findings.append({"level": level, "text": f"The {label} connection {text}{asked}."})
     if named and not any(str(p.get("platform")) == named for p in platforms):
-        findings.append({"level": "problem", "text": f"The member reported {named}, but no {named} account is connected."})
+        findings.append({"level": "problem", "text": f"The member reported {_quoted(named, 40)}, but no {_quoted(named, 40)} account is connected."})
     if not platforms and ticket.get("category") in ("Publishing", "Connecting accounts"):
         findings.append({"level": "problem", "text": "No accounts are connected to this workspace."})
 
@@ -157,15 +172,15 @@ async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
         why = _HOLD_TEXT.get(reason, "held back")
         findings.append({"level": "note", "text": f"{count} post{'s are' if count != 1 else ' is'} {why}."})
     for failed in (schedule.get("recent_failed") or [])[:3]:
-        label = str(failed.get("platform") or "A")
+        label = _quoted(failed.get("platform") or "A", 30).strip('"')
         reason = failed.get("error") or "no reason was recorded"
-        findings.append({"level": "problem", "text": f"A {label} post failed in the last 7 days: {reason}"})
+        findings.append({"level": "problem", "text": f"A {label} post failed in the last 7 days: {_quoted(reason, 200)}"})
     for campaign in snapshot.get("campaigns") or []:
         if campaign.get("status") == "paused":
             named_campaign = source.get("type") == "campaign" and source.get("id") == campaign.get("id")
             asked = " (the one the member reported)" if named_campaign else ""
             findings.append({"level": "note" if not named_campaign else "problem", "text": (
-                f"The campaign \"{campaign.get('name') or 'Untitled'}\" is paused{asked}. A paused campaign makes and schedules "
+                f"The campaign {_quoted(campaign.get('name') or 'Untitled', 80)} is paused{asked}. A paused campaign makes and schedules "
                 "nothing until someone resumes it.")})
 
     errors = snapshot.get("errors") or []
@@ -173,7 +188,7 @@ async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
         latest = errors[0].get("title") or "a failure"
         findings.append(
             {"level": "problem" if len(errors) >= 3 else "note",
-             "text": f"{len(errors)} thing{'s' if len(errors) != 1 else ''} failed in the last 24 hours. The latest: {latest}."}
+             "text": f"{len(errors)} thing{'s' if len(errors) != 1 else ''} failed in the last 24 hours. The latest: {_quoted(latest, 120)}."}
         )
     if not findings:
         findings.append({"level": "note", "text": "Nothing obvious stands out in the workspace's connections, limits or recent activity."})
@@ -198,13 +213,17 @@ def _clean_output(text: str) -> str:
     text = re.sub(r"^```[a-z]*\n?|```$", "", text).strip()
     text = _URL.sub("", text)
     text = _DASHES.sub(", ", text)
-    return text[:3000].strip()
+    if len(text) <= 3000:
+        return text.strip()
+    # Cut at the end of the last whole sentence that fits, so a long draft never stops mid-sentence.
+    cut = max(text.rfind(mark, 0, 3000) for mark in (". ", "! ", "? ", ".\n", "!\n", "?\n"))
+    return (text[: cut + 1] if cut > 1500 else text[:3000]).strip()
 
 
 def _thread_for_prompt(ticket: dict) -> list[dict]:
     rows: list[dict] = []
     for m in [m for m in ticket.get("messages", []) if not m.get("is_internal") and not m.get("is_deleted")][-MAX_THREAD_MESSAGES:]:
-        who = "Recast" if m.get("sender") == "staff" else "Member"
+        who = "Ekavo" if m.get("sender") == "staff" else "Member"
         rows.append({"who": who, "text": _safe(m.get("text", ""))[:MAX_MESSAGE_CHARS]})
     return rows
 
@@ -226,10 +245,10 @@ async def draft_reply(ticket: dict, snapshot: Optional[dict], staff_id: str) -> 
         thread=thread,
         findings=[f["text"] for f in findings],
         guides=[{"title": g["title"], "body": g["body"]} for g in guides],
-        is_follow_up=any(m["who"] == "Recast" for m in thread),
+        is_follow_up=any(m["who"] == "Ekavo" for m in thread),
     )
     try:
-        async with usage_workspace(USAGE_BUCKET):
+        async with usage_workspace(USAGE_BUCKET), private_content():
             raw = await call_llm(
                 prompt, model=GroqModel.FAST, temperature=0.3, max_tokens=MAX_OUTPUT_TOKENS_DRAFT
             )
@@ -270,7 +289,7 @@ async def ai_category(ticket: dict) -> Optional[str]:
             subject=_safe(ticket.get("subject", "")),
             body=_safe(first_text)[:MAX_MESSAGE_CHARS],
         )
-        async with usage_workspace(USAGE_BUCKET):
+        async with usage_workspace(USAGE_BUCKET), private_content():
             raw = await call_llm(prompt, model=GroqModel.FAST, temperature=0, max_tokens=MAX_OUTPUT_TOKENS_CATEGORY)
         answer = (raw or "").strip().strip(".").strip()
         # Only ever accept an exact area from the list; anything else is ignored.

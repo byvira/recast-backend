@@ -494,7 +494,7 @@ async def get_current_user(request: Request) -> dict:
 
 
 async def require_platform_staff(user: dict = Depends(get_current_user)) -> dict:
-    """FastAPI dependency: the authenticated user must be Recast staff.
+    """FastAPI dependency: the authenticated user must be Ekavo staff.
 
     Distinct from app.core.workspace.require(permission), which gates on a
     *workspace* role (owner/admin of the one workspace in the request
@@ -502,7 +502,7 @@ async def require_platform_staff(user: dict = Depends(get_current_user)) -> dict
     cross-tenant data (e.g. the Ops LLM Health page's aggregate Groq/Gemini
     usage, latency and error messages spanning every workspace on this
     server, not just the caller's own). A paying customer who owns a
-    workspace is not Recast staff, and must never reach those routes just
+    workspace is not Ekavo staff, and must never reach those routes just
     by being a workspace owner.
 
     is_master_admin also passes (a strictly broader grant — full Ops

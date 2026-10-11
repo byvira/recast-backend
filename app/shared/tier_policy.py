@@ -95,6 +95,14 @@ _TEAM_WORDS = re.compile(
 )
 
 
+_COHORT_WORDS = re.compile(r"\b(cohorts?|review chains?|multi-?step review|groups? of creators)\b", re.IGNORECASE)
+
+
+def mentions_cohort_topics(*texts: Optional[str]) -> bool:
+    """True when any text talks about cohorts or formal review chains, which a pair does not need."""
+    return any(bool(t) and _COHORT_WORDS.search(t) for t in texts)
+
+
 def mentions_team_topics(*texts: Optional[str]) -> bool:
     """True when any text talks about team matters (seats, roles, members, approvals...)."""
     return any(bool(t) and _TEAM_WORDS.search(t) for t in texts)

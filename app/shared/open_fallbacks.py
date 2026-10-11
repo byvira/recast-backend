@@ -52,6 +52,22 @@ def text_providers() -> list[TextProvider]:
 _JSON_MODE = {"mistral", "nvidia"}
 
 
+def _count_usage(payload: dict, prompt: str, system: str, text: str) -> None:
+    """Adds the call to the workspace's daily AI usage, like a call answered by the main provider. When the provider reports no
+    token count it is estimated from the text length, so a day answered by a fallback is not counted as free."""
+    from app.shared.llm import _record_workspace_usage
+
+    used = (payload.get("usage") or {}).get("total_tokens")
+    if not isinstance(used, int) or used <= 0:
+        used = estimate_tokens(prompt, system, text)
+    _record_workspace_usage(used)
+
+
+def estimate_tokens(*parts: str) -> int:
+    """A rough token count: about one token for every three characters."""
+    return max(1, sum(len(part or "") for part in parts) // 3)
+
+
 async def _chat(p: TextProvider, prompt: str, system: str, json_mode: bool = False) -> str:
     messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
     body: dict = {"model": p.model, "messages": messages, "temperature": 0.7}
@@ -61,9 +77,11 @@ async def _chat(p: TextProvider, prompt: str, system: str, json_mode: bool = Fal
         async with httpx.AsyncClient(timeout=TEXT_TIMEOUT_S) as client:
             r = await client.post(p.url, headers={"Authorization": f"Bearer {p.key}"}, json=body)
             r.raise_for_status()
-            text = ((r.json().get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            payload = r.json()
+            text = ((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         if not text.strip():
             raise RuntimeError("The provider returned an empty answer.")
+        _count_usage(payload, prompt, system, text)
         return text
 
 

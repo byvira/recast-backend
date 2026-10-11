@@ -53,7 +53,7 @@ def test_a_headline_is_never_cut_inside_a_word():
 def test_make_headline_uses_the_model_line_when_usable_and_falls_back_otherwise(monkeypatch):
     import app.shared.llm as llm
 
-    post = "Manual tone tweaks cost hours every week. Recast keeps your voice steady across languages."
+    post = "Manual tone tweaks cost hours every week. Ekavo keeps your voice steady across languages."
 
     async def good(*a, **k):
         return "Tone tweaks cost hours"
@@ -142,10 +142,10 @@ def test_quick_edits_report_new_unbacked_claims(monkeypatch):
     from app.pipelines.text import chips
 
     async def fake_llm(prompt, **k):
-        return "Recast saves 12 minutes per post and scored 96% on keyword compliance."
+        return "Ekavo saves 12 minutes per post and scored 96% on keyword compliance."
 
     monkeypatch.setattr(chips, "call_llm", fake_llm)
-    out = asyncio.run(chips.apply_chip(content="Recast saves time on every post.", chip_name="add_numbers", platform="LinkedIn", brand_context="Recast: brand voice tool."))
+    out = asyncio.run(chips.apply_chip(content="Ekavo saves time on every post.", chip_name="add_numbers", platform="LinkedIn", brand_context="Ekavo: brand voice tool."))
     assert out["changed"] and any("96%" in w for w in out["claim_warnings"]) and any("12 minutes" in w for w in out["claim_warnings"])
 
 
@@ -153,9 +153,9 @@ def test_a_longer_script_that_adds_a_number_is_flagged(monkeypatch):
     from app.pipelines.media import fit_script
 
     async def llm(prompt):
-        return "Recast keeps your tone steady. Teams save 40 hours a month. " * 6
+        return "Ekavo keeps your tone steady. Teams save 40 hours a month. " * 6
 
-    original = "Recast keeps your tone steady across languages for every team."
+    original = "Ekavo keeps your tone steady across languages for every team."
     out = asyncio.run(fit_script.fit_script(original, 90, 150.0, "English", llm))
     if out["status"] == "fitted":
         assert any("40 hours" in w for w in out.get("claim_warnings", []))
@@ -179,7 +179,7 @@ def test_nothing_prints_a_placeholder_on_a_picture_and_a_brandless_card_still_re
     # no headline: a plain brand colour card, no band or words (every pixel in the bottom half matches the top)
     assert out.getpixel((300, out.height - 100)) == out.getpixel((300, 100))
     assert len(render_quote_card("", {})) > 1000 and len(render_quote_card("Plain words on a card", {"colors": {"primary": "#222222", "accent": "#262626"}})) > 1000
-    assert "Recast" not in Path(__file__).resolve().parents[1].joinpath("app/pipelines/media/image_render.py").read_text(encoding="utf-8").split("def render_slide")[1]
+    assert "Ekavo" not in Path(__file__).resolve().parents[1].joinpath("app/pipelines/media/image_render.py").read_text(encoding="utf-8").split("def render_slide")[1]
 
 
 def test_the_campaign_plan_keeps_the_picture_options_and_defaults_to_brand_assets_on():
@@ -202,7 +202,7 @@ def test_nothing_prints_a_placeholder_on_a_picture_and_a_brandless_card_still_re
     assert len(render_quote_card("", {})) > 1000
     assert len(render_quote_card("Plain words on a card", {"colors": {"primary": "#222222", "accent": "#262626"}})) > 1000
     source = (Path(__file__).resolve().parents[1] / "app/pipelines/media/image_render.py").read_text(encoding="utf-8")
-    assert '"Recast"' not in source.split("def render_slide")[1]
+    assert '"Ekavo"' not in source.split("def render_slide")[1]
 
 
 def test_a_screen_that_should_show_a_dashboard_is_made_soft_so_no_fake_interface_text_is_drawn():

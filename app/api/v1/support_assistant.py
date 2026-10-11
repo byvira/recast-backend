@@ -20,8 +20,9 @@ from app.core.workspace import WorkspaceContext, get_current_workspace
 from app.db.mongo import get_client, support_chats, support_incidents, workspace_connections
 from app.shared import support_guides
 from app.shared.support_log import support_request_log
-from app.shared.llm import GroqModel, call_llm_chat, get_circuit_breaker_status, set_usage_workspace
-from app.shared.support_ai import diagnose, redact
+from app.shared.llm import GroqModel, call_llm_chat, get_circuit_breaker_status, private_content, usage_workspace
+from app.prompts.registry import text_version
+from app.shared.support_ai import USAGE_BUCKET, diagnose, log_assistant_call, redact
 from app.shared.support_context import build_snapshot
 
 router = APIRouter(dependencies=[Depends(support_request_log)])
@@ -32,8 +33,8 @@ MAX_MESSAGES_PER_CHAT = 60
 HISTORY_TURNS = 10  # messages sent back to the model on each turn
 
 _SYSTEM = (
-    "You are the Recast support assistant. Recast is a content workspace: a member describes an idea "
-    "once and Recast turns it into platform-ready posts in that workspace's own brand voice, across "
+    "You are the Ekavo support assistant. Ekavo is a content workspace: a member describes an idea "
+    "once and Ekavo turns it into platform-ready posts in that workspace's own brand voice, across "
     "text, audio and image work, with review before anything publishes.\n\n"
     "How to answer:\n"
     "- Use only the facts about this workspace and the guides below, plus the conversation. If the answer "
@@ -123,6 +124,14 @@ async def _workspace_facts(ctx: WorkspaceContext) -> list[str]:
         return []
 
 
+def model_messages(history: list[dict], message: str) -> list[dict]:
+    """What the model is sent: every earlier turn and the new message, all with personal details masked. The chat is stored as
+    typed; only what leaves for the model is masked, so an email or key typed in turn one is not repeated to it on turn two."""
+    turns = [{"role": m["role"], "content": redact(str(m.get("text") or ""))} for m in history]
+    turns.append({"role": "user", "content": redact(message)})
+    return turns
+
+
 @router.post("/assist")
 @limiter.limit("15/minute")
 async def assist(
@@ -144,18 +153,23 @@ async def assist(
         + "\n\nGuides that may help:\n"
         + ("\n\n".join(f"{g['title']}\n{g['body']}" for g in guides) if guides else "None matched.")
     )
-    messages = [{"role": m["role"], "content": m["text"]} for m in history]
-    messages.append({"role": "user", "content": redact(body.message)})
+    messages = model_messages(history, body.message)
 
-    set_usage_workspace(ctx.workspace_id)
+    # Support help is paid for by the platform, never by the member's own AI budget (a member who has run out of AI budget is
+    # exactly who needs it), and what they write stays with the main provider.
     try:
-        reply = await call_llm_chat(messages=messages, system=system, model=GroqModel.FAST, max_tokens=500)
+        async with usage_workspace(USAGE_BUCKET), private_content():
+            reply = await call_llm_chat(messages=messages, system=system, model=GroqModel.FAST, max_tokens=500)
     except Exception:
         logger.warning("Support assistant call failed for workspace %s", ctx.workspace_id, exc_info=True)
         raise HTTPException(
             status_code=503, detail="Couldn't reach the assistant right now. Try again, or file a ticket below."
         )
     reply = (reply or "").strip()
+    await log_assistant_call(
+        text_version("support/assistant", _SYSTEM), GroqModel.FAST.value, bool(reply),
+        sum(len(m["content"]) for m in messages) + len(system), len(reply),
+    )
     if not reply:
         raise HTTPException(status_code=502, detail="The assistant came back empty. Try again, or file a ticket below.")
 
@@ -201,7 +215,7 @@ async def live_status(request: Request, ctx: WorkspaceContext = Depends(get_curr
     """What is working right now, from real checks. No uptime percentage is
     shown because none is measured."""
     components: list[dict] = [
-        {"id": "app", "label": "Recast", "state": "ok", "detail": "You are connected."},
+        {"id": "app", "label": "Ekavo", "state": "ok", "detail": "You are connected."},
     ]
 
     try:
@@ -220,7 +234,7 @@ async def live_status(request: Request, ctx: WorkspaceContext = Depends(get_curr
         }
     )
 
-    # The member's own connected accounts, from what Recast stores about them.
+    # The member's own connected accounts, from what Ekavo stores about them.
     accounts: list[dict] = []
     notes: list[str] = []
     try:

@@ -96,7 +96,7 @@ async def _send_email(to: list[str], subject: str, body: str) -> bool:
         html = "<p>" + body.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>") + "</p>"
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: resend.Emails.send({
-            "from": OPS_FROM, "to": to, "subject": f"[Recast] {subject}", "html": html,
+            "from": OPS_FROM, "to": to, "subject": f"[Ekavo] {subject}", "html": html,
         }))
         return True
     except Exception as exc:  # noqa: BLE001

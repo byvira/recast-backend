@@ -51,6 +51,22 @@ _ROMANISED_WORDS: dict[str, frozenset[str]] = {
     ),
 }
 
+_ROMANISED_WORDS["ml"] = frozenset(
+    "alla ille illa aanu aayirunnu und undu ente ninte nammal ningal njan nee avan aval athu ithu enthu enthanu engane evide "
+    "avide ippol appol pakshe athe sheriyanu valare nalla onnum ellam oru cheyyam cheyyuka venam venda kittum kittiyilla "
+    "ariyam ariyilla parayam paranju pokam vannu poyi cheythu cheyyanam kazhiyum kazhiyilla adhikam kurachu pinne ennal "
+    "athinu ithinu avarude ente".split()
+)
+_ROMANISED_WORDS["te"] = frozenset(
+    "ledu ledhu undi unnayi unnaru ante kani mari meeru memu manam nenu nuvvu adi idi enti ela ekkada appudu ippudu chala "
+    "baga manchi cheyyandi cheyyali kavali vachindi vellali cheppandi telusu telidu avunu kadu inka kuda anni oka "
+    "meeku naaku maaku vaallu vallu ikkada akkada endhuku ela".split()
+)
+_ROMANISED_WORDS["kn"] = frozenset(
+    "illa ide ithu idu adu yenu enu hege elli yavaga eega tumba chennagi olleya maadi maadabeku beku bekagilla gottu gottilla "
+    "heli hogi banni nanu neevu naavu nimma namma alla haudu aadre mattu innu yaake ellaru ondu".split()
+)
+
 # Fewer than this share of words (and fewer than the minimum count) means the text is not in the mix that was asked for.
 _MIN_SHARE = 0.04
 _MIN_HITS = 2

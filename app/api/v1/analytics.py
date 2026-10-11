@@ -291,7 +291,7 @@ _COUNT_FIELDS = ("likes", "comments", "shares", "reposts", "saves", "clicks", "i
 
 
 class SelfReportedMetrics(BaseModel):
-    """Numbers a member read off the platform themselves, for places Recast cannot read results from."""
+    """Numbers a member read off the platform themselves, for places Ekavo cannot read results from."""
 
     views: int = Field(0, ge=0, le=1_000_000_000)
     clicks: int = Field(0, ge=0, le=1_000_000_000)
@@ -309,7 +309,7 @@ async def save_self_reported_metrics(
     ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> dict:
     """Saves results typed in by hand for a published post (X, a blog, a newsletter, anywhere with no connected results). They are
-    marked self-reported so nobody mistakes them for numbers Recast read, and they replace the previous typed-in figures."""
+    marked self-reported so nobody mistakes them for numbers Ekavo read, and they replace the previous typed-in figures."""
     from app.db.mongo import content_pieces
 
     piece = await content_pieces.find_one(

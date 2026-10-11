@@ -291,8 +291,10 @@ async def _run_gates(raw_prompt: str, brand_profile: dict, avoid: Optional[str] 
     Returns None (never raises) if every attempt fails."""
     safe_prompt: Optional[str] = None
     verdict = "unsafe"
+    # What the last attempt got wrong, told to the next one, so a second try is a correction and not just another draw.
+    feedback = ""
     for attempt in range(_MAX_POLISH_ATTEMPTS):
-        polished = await _polish_prompt(raw_prompt + _avoid_clause(avoid))
+        polished = await _polish_prompt(raw_prompt + _avoid_clause(avoid) + feedback)
         verdict = await _safety_verdict(polished)
         if verdict != "safe":
             logger.warning("Image prompt failed safety gate (%s), attempt %d", verdict, attempt + 1)
@@ -300,9 +302,11 @@ async def _run_gates(raw_prompt: str, brand_profile: dict, avoid: Optional[str] 
         safe_prompt = polished
         if not _anti_generic_gate(polished):
             logger.info("Image prompt failed anti-generic gate, attempt %d", attempt + 1)
+            feedback = " The last attempt was too generic. Make the scene specific and distinctive."
             continue
         if not await _brand_fit_gate(polished, brand_profile):
             logger.info("Image prompt failed brand-fit gate, attempt %d", attempt + 1)
+            feedback = " The last attempt did not match the brand's visual style. Follow the brand style more closely."
             continue
         return enforce_no_text(polished)
 
