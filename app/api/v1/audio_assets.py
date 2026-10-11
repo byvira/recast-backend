@@ -14,12 +14,12 @@ import logging
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 import httpx
 import soundfile as sf
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
@@ -92,6 +92,7 @@ from app.pipelines.media.audio_enhance import concatenate_turns, enhance_audio, 
 from app.pipelines.media import chapters as chapter_rules
 from app.pipelines.text.generator import resolve_language_directive_name
 from app.shared.language import workspace_language
+from app.pipelines.media import narration_delivery
 from app.pipelines.media import duration as spoken_length
 from app.pipelines.media import fit_script as script_fitting
 from app.pipelines.media.echo_reduction import BASIC_CLEANUP_NOTE, EchoReductionError, basic_cleanup, reduce_echo
@@ -227,6 +228,9 @@ class GenerateAudioAssetRequest(BaseModel):
     words_per_minute: Optional[int] = Field(None, ge=spoken_length.MIN_WORDS_PER_MINUTE, le=spoken_length.MAX_WORDS_PER_MINUTE)
     # What language the script is in, for example "ta+en". Left out, the source post's language is used.
     language: Optional[str] = Field(None, max_length=16)
+    # How it is delivered (tone, pauses, energy) and how it is finished. Left out: the member's own voice settings, no extra mastering.
+    delivery_style: Optional[Literal["founder", "casual", "keynote"]] = None
+    mastering: Optional[Literal["studio", "broadcast"]] = None
 
 
 class LengthPreviewRequest(BaseModel):
@@ -501,6 +505,8 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
         voice_settings = voice_settings.model_copy(update={
             "speech_speed": round(min(1.5, max(0.8, body.words_per_minute / spoken_length.DEFAULT_WORDS_PER_MINUTE)), 2)
         })
+    if body.delivery_style:
+        voice_settings = voice_settings.model_copy(update=narration_delivery.settings_for(body.delivery_style))
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
     language = (body.language or (piece.get("language") if body.source_piece_id else None) or "").strip() or None
     speech = await synthesize_speech_timed(
@@ -521,6 +527,12 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
             ),
         )
     audio_bytes = speech.audio
+    audio_mime = "audio/mpeg"
+    if body.mastering:
+        # Finished with the chosen mastering. If the file cannot be processed, the plain narration is kept.
+        mastered = await narration_delivery.master(audio_bytes, body.mastering)
+        if mastered:
+            audio_bytes, audio_mime = mastered, "audio/wav"
 
     await run.step("Saving the audio")
     url = await upload_file(audio_bytes, UploadContentType.AUDIO, ctx.user_id)
@@ -530,7 +542,7 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
         workspace_id=ctx.workspace_id,
         kind=MediaKind.AUDIO,
         url=url,
-        mime_type="audio/mpeg",
+        mime_type=audio_mime,
         source=MediaSource.SYNTHESIZED,
         created_by=ctx.user_id,
         created_at=now,
@@ -1117,7 +1129,7 @@ async def _ingest_audio(
 
     if run:
         await run.step("Transcribing what was said")
-    transcript = await transcribe_audio_bytes(contents, filename=filename)
+    transcript = await transcribe_audio_bytes(contents, filename=filename, punctuate=True)
     try:
         await assert_speech_ok(transcript_text(transcript), noun="recording", workspace_id=ctx.workspace_id, where="upload")
     except Exception:
@@ -2135,11 +2147,20 @@ async def _download_media_bytes(url: str) -> bytes:
         raise HTTPException(status_code=502, detail="Couldn't load this recording. Try again.")
 
 
+class TranscribeRequest(BaseModel):
+    """The language to listen for. Left out, it is detected from the recording."""
+
+    language: Optional[str] = Field(None, max_length=16)
+    # Write the capital letters and marks (commas, full stops, question marks) into the transcript. Off: bare words.
+    punctuate: bool = True
+
+
 @router.post("/{audio_asset_id}/transcribe", response_model=AudioAsset)
 @limiter.limit("6/minute")
 async def transcribe_audio_asset(
     request: Request,
     audio_asset_id: str,
+    body: TranscribeRequest = Body(default_factory=TranscribeRequest),
     ctx: WorkspaceContext = Depends(require("edit_content")),
     run: AudioRun = Depends(audio_run("Transcribing audio", 2)),
 ) -> AudioAsset:
@@ -2163,7 +2184,9 @@ async def transcribe_audio_asset(
     await run.step("Loading the recording")
     audio_bytes = await _download_media_bytes(media["url"])
     await run.step("Transcribing what was said")
-    transcript = await transcribe_audio_bytes(audio_bytes, filename=f"{audio_asset_id}.mp3")
+    # "es-ES" is asked for as "es", the form the speech service takes.
+    hint = (body.language or "").strip().split("-")[0].lower() or None
+    transcript = await transcribe_audio_bytes(audio_bytes, filename=f"{audio_asset_id}.mp3", language=hint, punctuate=body.punctuate)
     if not transcript:
         raise HTTPException(
             status_code=503,

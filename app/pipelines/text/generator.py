@@ -632,6 +632,13 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         else ""
     )
 
+    # ── Carousel format ───────────────────────────────────────────────────
+    format_instruction = (
+        load_prompt("text/generate/carousel_format")
+        if task.metadata.get("carousel_format") and task.platform in (Platform.LINKEDIN, Platform.INSTAGRAM, Platform.FACEBOOK)
+        else ""
+    )
+
     # ── Retry block ───────────────────────────────────────────────────────
     retry_block = ""
     if retry_feedback and retry_count > 0:
@@ -654,6 +661,7 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         platform_rules=platform_rules,
         hashtag_instruction=hashtag_instruction,
         cta_instruction=cta_instruction,
+        format_instruction=format_instruction,
         banned_instruction=banned_instruction,
         approved_vocabulary_instruction=approved_vocabulary_instruction,
         content=task.content,

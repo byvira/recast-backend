@@ -63,7 +63,7 @@ async def test_upload_and_cleanup_report_their_own_steps(signup_user, stubs, mon
     upload_run = "run-" + uuid4().hex
     seen: dict = {}
 
-    async def _transcribe_that_looks_around(data, *, filename):
+    async def _transcribe_that_looks_around(data, *, filename, **_options):
         seen["upload"] = (await client.get(f"/api/v1/audio-assets/runs/{upload_run}", headers=_h(ws_id))).json()
         return []
 

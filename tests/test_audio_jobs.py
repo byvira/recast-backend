@@ -34,14 +34,14 @@ async def test_transcribe_in_the_background_ends_with_the_assets_words(signup_us
     client, _, ws_id, brand_id = await _setup(signup_user)
     audio = _wav(0.5)
 
-    async def _nothing(data, *, filename):
+    async def _nothing(data, *, filename, **_options):
         return []
 
     monkeypatch.setattr(audio_module, "transcribe_audio_bytes", _nothing)
     asset = (await _upload(client, ws_id, brand_id, audio)).json()
     assert asset["transcript"] == []
 
-    async def _words(data, *, filename):
+    async def _words(data, *, filename, **_options):
         return [TranscriptWord(word="hello", start_s=0.0, end_s=0.3)]
 
     async def _download(url):

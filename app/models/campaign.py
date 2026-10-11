@@ -77,6 +77,10 @@ class CampaignAudioOptions(BaseModel):
 
     max_seconds: Optional[int] = Field(None, ge=15, le=600)
     words_per_minute: Optional[int] = Field(None, ge=100, le=200)
+    # How the narration is delivered (tone, pauses and energy), and how it is finished. Left out: the member's own voice
+    # settings and no extra mastering.
+    delivery_style: Optional[Literal["founder", "casual", "keynote"]] = None
+    mastering: Optional[Literal["studio", "broadcast"]] = None
 
 
 class CampaignImageOptions(BaseModel):
@@ -89,6 +93,8 @@ class CampaignImageOptions(BaseModel):
     logo: bool = True
     # The brand's mascot in a corner of every picture (off unless asked; only does anything when the brand has one).
     mascot: bool = False
+    # The look of every picture: one of the image pipeline's visual profiles. Left out: the standard look.
+    visual_profile: Optional[str] = None
 
     @model_validator(mode="after")
     def _known_layout(self) -> "CampaignImageOptions":
@@ -96,6 +102,10 @@ class CampaignImageOptions(BaseModel):
 
         if self.layout not in {l.value for l in LayoutPreset}:
             raise ValueError(f"Unknown image size: {self.layout}")
+        from app.pipelines.media.visual_profiles import VISUAL_PROFILES
+
+        if self.visual_profile is not None and self.visual_profile not in VISUAL_PROFILES:
+            raise ValueError(f"Unknown visual profile: {self.visual_profile}")
         return self
 
 
@@ -104,6 +114,7 @@ class CampaignVideoOptions(BaseModel):
 
     duration_seconds: int = Field(30, ge=5, le=180)
     aspect: str = "9:16"
+    caption_style: Optional[Literal["word_highlight", "karaoke_glow", "lower_third"]] = None
 
     @model_validator(mode="after")
     def _known_aspect(self) -> "CampaignVideoOptions":
@@ -141,6 +152,17 @@ class CampaignMediaPlan(BaseModel):
         return self
 
 
+class CampaignTextOptions(BaseModel):
+    """How the text of every post is written. The defaults are what a campaign did before these were choices."""
+
+    tone: Literal["brand", "formal", "casual", "punchy", "storytelling", "professional", "direct", "witty", "empathetic"] = "brand"
+    hook_variations: bool = True
+    hook_count: int = Field(3, ge=1, le=5)
+    hashtags: bool = True
+    carousel_format: bool = False
+    enforce_char_limits: bool = True
+
+
 class Campaign(BaseModel):
     """A content campaign grouping multiple generation runs under one
     tracked entity, with real aggregate progress across its pieces."""
@@ -163,6 +185,7 @@ class Campaign(BaseModel):
     platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
     media_plan: CampaignMediaPlan = Field(default_factory=CampaignMediaPlan)
+    text_options: CampaignTextOptions = Field(default_factory=CampaignTextOptions)
     # The language every post of this campaign is written in, for example "ta+en". None means follow the workspace.
     language: Optional[str] = None
     status: CampaignStatus = CampaignStatus.DRAFT
@@ -193,6 +216,7 @@ class CreateCampaignRequest(BaseModel):
     platforms_by_day: Optional[list[list[str]]] = None
     cadence: CampaignCadence = Field(default_factory=CampaignCadence)
     media_plan: CampaignMediaPlan = Field(default_factory=CampaignMediaPlan)
+    text_options: CampaignTextOptions = Field(default_factory=CampaignTextOptions)
     language: Optional[str] = Field(default=None, max_length=16)
 
 
@@ -204,4 +228,5 @@ class UpdateCampaignRequest(BaseModel):
     status: Optional[CampaignStatus] = None
     cadence: Optional[CampaignCadence] = None
     media_plan: Optional[CampaignMediaPlan] = None
+    text_options: Optional[CampaignTextOptions] = None
     language: Optional[str] = Field(default=None, max_length=16)

@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 from app.db.mongo import brand_profiles, get_campaigns_collection
 from app.models.campaign import CampaignStatus
-from app.models.text import ExtrasConfig, Platform, TextPipelineResult
+from app.models.text import ExtrasConfig, Platform, TextPipelineResult, ToneOverride
 from app.pipelines.text.orchestrator import run_batch_pipeline
 from app.pipelines.text.events import emit_run_completed
 from app.shared.activity.runs import brand_label, run_label, tracked_run, update_run
@@ -63,6 +63,17 @@ async def generate_campaign_batch(
         )
     except ValueError as e:
         raise ValueError(f"Invalid platform on campaign: {e}")
+
+    # How the text is written: the campaign's own choices (a campaign made before these existed uses the old defaults).
+    text_options = campaign.get("text_options") or {}
+    tone_value = str(text_options.get("tone") or "brand")
+    extras = ExtrasConfig(
+        hook_variations=bool(text_options.get("hook_variations", True)),
+        hook_count=int(text_options.get("hook_count") or 3),
+        hashtags=bool(text_options.get("hashtags", True)),
+        carousel_format=bool(text_options.get("carousel_format", False)),
+        enforce_char_limits=bool(text_options.get("enforce_char_limits", True)),
+    )
 
     new_piece_ids: list[str] = []
     cancelled = False
@@ -126,9 +137,10 @@ async def generate_campaign_batch(
                 brand_id=campaign["brand_id"],
                 workspace_id=workspace_id,
                 user_id=user_id,
-                extras=ExtrasConfig(),
+                extras=extras,
                 days=days,
                 language=language,
+                tone=ToneOverride(tone_value),
                 on_day_complete=persist_day,
                 before_day=(lambda _i: pipeline_runs.checkpoint(run_id)) if run_id else None,
             )

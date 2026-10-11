@@ -8,6 +8,7 @@ conventions.
 
 import asyncio
 import io
+import re
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,7 @@ from app.models.image_asset import (
 )
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.models.workspace import WorkspaceRole
+from app.pipelines.media.export_options import enlarge, is_default_export, mime_for, render_export
 from app.pipelines.media.contrast_check import ContrastResult, check_slide_contrast
 from app.pipelines.media.image_generation import _build_raw_prompt, generate_image_from_prompt, last_failure_reason
 from app.pipelines.media.image_render import (
@@ -181,10 +183,10 @@ async def _fetch_layer_assets(layers: list[Layer], brand: dict, workspace_id: st
 
 async def _draw_and_store(
     *, size: tuple[int, int], background_bytes: Optional[bytes], layers: list[Layer], brand: dict, brand_tokens: BrandTokens,
-    workspace_id: str, user_id: str,
+    workspace_id: str, user_id: str, effects: Optional[dict] = None,
 ) -> MediaAsset:
     assets = await _fetch_layer_assets(layers, brand, workspace_id)
-    png = await asyncio.to_thread(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets)
+    png = await asyncio.to_thread(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets, effects=effects)
     note = _fallback_note(background_bytes)
     # Tamil and Hindi need a text-shaping engine to draw every combination correctly. If this server does not have one, say so on
     # the picture instead of letting a wrongly ordered letter go unnoticed.
@@ -215,6 +217,7 @@ async def _render_and_upload_slide(
     text_content: SlideTextContent,
     show_logo: bool,
     show_mascot: bool = False,
+    effects: Optional[dict] = None,
 ) -> _Rendered:
     """Shared generate and draw core for `/generate`, the rest of a pack and `add_slide`. The AI picture is kept clean
     (nothing drawn on it) and the headline, band, logo and so on become editable layers over it; the finished picture is
@@ -223,6 +226,16 @@ async def _render_and_upload_slide(
     background_bytes = await generate_image_from_prompt(
         prompt=prompt, workspace_id=workspace_id, user_id=user_id, target_size=size, brand_profile=brand, avoid=avoid,
     )
+    if background_bytes and (effects or {}).get("remove_background"):
+        from app.pipelines.media import background_removal
+
+        cutout = await asyncio.to_thread(background_removal.cut_out, background_bytes)
+        if not cutout:
+            raise HTTPException(
+                status_code=503,
+                detail="Removing the background isn't available right now. Switch it off to make the picture, or try again in a moment.",
+            )
+        background_bytes = background_removal.on_colour(cutout, brand_tokens.primary_hex)
     visual_identity = brand.get("visual_identity") or {}
     background_media_id: Optional[str] = None
     if background_bytes:
@@ -234,9 +247,10 @@ async def _render_and_upload_slide(
         accent_keyword=text_content.accent_keyword, author=text_content.author,
         has_logo=bool(show_logo and visual_identity.get("logo_url")), has_mascot=bool(show_mascot and visual_identity.get("mascot_url")),
         icon_name=text_content.icon_name, illustration_accent=text_content.illustration_accent,
+        type_ratio=text_content.type_ratio, inner_radius=text_content.inner_radius,
     )
     media = await _draw_and_store(size=size, background_bytes=background_bytes, layers=layers, brand=brand, brand_tokens=brand_tokens,
-                                  workspace_id=workspace_id, user_id=user_id)
+                                  workspace_id=workspace_id, user_id=user_id, effects=effects)
     return _Rendered(media, background_media_id, layers)
 
 
@@ -337,6 +351,18 @@ def _piece_topic(piece: dict) -> str:
     return " ".join(lines)[:600]
 
 
+class SlideEffectsRequest(BaseModel):
+    """Looks drawn on the picture itself. All off unless chosen."""
+
+    glow: bool = False
+    dual_tone: bool = False
+    grid: bool = False
+    # Take the background out of the AI picture, so the subject stands on the brand colour.
+    remove_background: bool = False
+    # Rounds the corners of the picture itself, as a fraction of its shorter side (0 is square).
+    corner_radius: float = Field(0.0, ge=0.0, le=0.25)
+
+
 class GenerateImageAssetRequest(BaseModel):
     """Field names match the existing Image pipeline UI's own state
     verbatim (page.tsx) — prompt/negativePrompt/seed/visualProfile/
@@ -367,6 +393,10 @@ class GenerateImageAssetRequest(BaseModel):
     icon_name: Optional[str] = None
     # A large, faint icon behind the text (the chosen icon, or a default one).
     illustration_accent: bool = False
+    effects: SlideEffectsRequest = SlideEffectsRequest()
+    # The type scale the headline is sized on (1.333 is the standard) and how round the logo and mascot corners are.
+    type_ratio: float = Field(1.333, ge=1.1, le=1.7)
+    inner_radius: float = Field(0.0, ge=0.0, le=0.5)
     source_piece_id: Optional[str] = None
     # How many images to make in one run (1 to 10). Each is a real generation and uses provider
     # quota. The first uses the prompt as written; the rest are varied takes on it, added as
@@ -528,14 +558,20 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
     )
 
     use_logo = body.show_logo if body.show_logo is not None else bool(body.source_piece_id)
+    # The chosen look is added to what the image model is told, so it changes the picture itself.
+    from app.pipelines.media.visual_profiles import style_line
+
+    look = style_line(body.visual_profile)
+    # Only what the image model is told carries the look; the prompt saved on the picture stays the member's own words.
+    render_prompt = f"{prompt.rstrip()} {look}" if look and look not in prompt else prompt
     rendered = await _render_and_upload_slide(
-        prompt=prompt, avoid=body.negative_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id, layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
+        prompt=render_prompt, avoid=body.negative_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id, layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
         text_content=SlideTextContent(
             headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
             icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
-            show_logo=use_logo, show_mascot=body.show_mascot,
+            show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
         ),
-        show_logo=use_logo, show_mascot=body.show_mascot,
+        show_logo=use_logo, show_mascot=body.show_mascot, effects=body.effects.model_dump(),
     )
     media = rendered.media
     now = datetime.now(timezone.utc)
@@ -564,10 +600,11 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 media_id=media.id,
                 background_media_id=rendered.background_media_id,
                 layers=rendered.layers,
+                effects=body.effects.model_dump(),
                 text_content=SlideTextContent(
                     headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
             icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
-            show_logo=use_logo, show_mascot=body.show_mascot,
+            show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
                 ).model_dump(),
             )
         ],
@@ -587,7 +624,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
     # The rest of a pack: one more real image each, in order. If one fails (quota, provider) the
     # run stops and the set keeps what was made, so the member gets "3 of 4" and not nothing.
     if body.count > 1:
-        extra_prompts = image_pack.pack_prompts(prompt, body.count)[1:]
+        extra_prompts = [f"{p.rstrip()} {look}" if look and look not in p else p for p in image_pack.pack_prompts(prompt, body.count)[1:]]
         made = list(asset.slides)
         for position, extra_prompt in enumerate(extra_prompts, start=2):
             try:
@@ -597,9 +634,9 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                     text_content=SlideTextContent(
                         headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
                         icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
-            show_logo=use_logo, show_mascot=body.show_mascot,
+            show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
                     ),
-                    show_logo=use_logo,
+                    show_logo=use_logo, effects=body.effects.model_dump(),
                 )
             except Exception as exc:  # noqa: BLE001 - keep what was made
                 logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
@@ -607,10 +644,11 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
             made.append(Slide(
                 slide_number=position, title=f"{body.title} ({position})", slide_type=body.active_layout.value,
                 layout=body.active_layout, media_id=extra.media.id, background_media_id=extra.background_media_id, layers=extra.layers,
+                effects=body.effects.model_dump(),
                 text_content=SlideTextContent(
                     headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
                     icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
-            show_logo=use_logo, show_mascot=body.show_mascot,
+            show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
                 ).model_dump(),
             ))
         if len(made) > len(asset.slides):
@@ -757,6 +795,10 @@ async def upload_image_asset(
 
 class ExportImageAssetRequest(BaseModel):
     export_format: str = "png"  # "png" | "webp" | "pdf" | "zip"
+    # How much larger the picture is made, the resolution it is tagged with, and whether the file is squeezed small.
+    upscale: Literal[1, 2, 4] = 1
+    dpi: Literal[72, 150, 300] = 300
+    optimize: bool = True
 
 
 async def _download_slide_bytes(url: str) -> bytes:
@@ -798,10 +840,13 @@ async def export_image_asset(
             raise HTTPException(status_code=502, detail="Couldn't fetch one of this asset's slides. Try again.") from exc
 
         if body.export_format == "pdf":
-            bundle = generate_carousel_pdf(slide_bytes)
+            bundle = generate_carousel_pdf([enlarge(data, body.upscale) for data in slide_bytes])
             mime_type = "application/pdf"
         else:
-            zip_entries = [(f"slide_{i + 1}.png", data) for i, data in enumerate(slide_bytes)]
+            zip_entries = [
+                (f"slide_{i + 1}.png", render_export(data, export_format="png", upscale=body.upscale, dpi=body.dpi, optimize=body.optimize))
+                for i, data in enumerate(slide_bytes)
+            ]
             bundle = build_slides_zip(zip_entries)
             mime_type = "application/zip"
 
@@ -820,6 +865,30 @@ async def export_image_asset(
     if not source_doc:
         raise HTTPException(status_code=404, detail="The rendered slide's file is missing.")
     source = MediaAsset(**source_doc)
+
+    if body.export_format not in ("png", "webp", "jpg", "jpeg"):
+        raise HTTPException(status_code=400, detail="That format isn't available for a single picture.")
+
+    if not is_default_export(body.upscale, body.dpi, body.optimize):
+        # A chosen size, resolution or file-size setting: the picture is made here and saved as its own file.
+        try:
+            source_bytes = await _download_slide_bytes(source.url)
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail="Couldn't fetch this picture. Try again.") from exc
+        try:
+            data = render_export(source_bytes, export_format=body.export_format, upscale=body.upscale, dpi=body.dpi, optimize=body.optimize)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        custom_url = await upload_file(data, UploadContentType.EXPORT, ctx.user_id)
+        with Image.open(io.BytesIO(data)) as made:
+            made_size = made.size
+        export_asset = MediaAsset(
+            id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.IMAGE, url=custom_url,
+            mime_type=mime_for(body.export_format), width=made_size[0], height=made_size[1], size_bytes=len(data),
+            source=MediaSource.EDITED, created_by=ctx.user_id, created_at=datetime.now(timezone.utc),
+        )
+        await media_assets.insert_one(export_asset.model_dump())
+        return export_asset
 
     try:
         new_url = build_export_url(source.url, export_format=body.export_format)
@@ -905,6 +974,7 @@ async def add_slide(
         headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
             icon_name=body.icon_name, illustration_accent=body.illustration_accent,
             show_logo=use_logo_here, show_mascot=first_tc.get("show_mascot"),
+            type_ratio=first_tc.get("type_ratio"), inner_radius=first_tc.get("inner_radius"),
     )
     rendered = await _render_and_upload_slide(
         prompt=prompt,
@@ -916,6 +986,7 @@ async def add_slide(
         text_content=text_content,
         show_logo=use_logo_here,
         show_mascot=bool(first_tc.get("show_mascot")),
+        effects=(asset.slides[0].effects if asset.slides else None),
     )
 
     next_number = max((s.slide_number for s in asset.slides), default=0) + 1
@@ -927,6 +998,7 @@ async def add_slide(
         media_id=rendered.media.id,
         background_media_id=rendered.background_media_id,
         layers=rendered.layers,
+        effects=(asset.slides[0].effects if asset.slides else {}),
         text_content=text_content.model_dump(),
     )
     updated_doc = await _bump_version(
@@ -961,7 +1033,7 @@ async def _redraw_slide(asset: ImageAsset, slide: Slide, layers: list[Layer], br
     background = await _media_bytes(slide.background_media_id or slide.media_id, ctx.workspace_id)
     brand_tokens = _brand_tokens_from(brand)
     media = await _draw_and_store(size=size, background_bytes=background, layers=layers, brand=brand, brand_tokens=brand_tokens,
-                                  workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+                                  workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=slide.effects)
     updated = [
         sl.model_copy(update={"media_id": media.id, "layers": layers}) if sl.slide_number == slide.slide_number else sl
         for sl in asset.slides
@@ -1069,6 +1141,44 @@ async def reorder_slides(
     reordered = [by_number[n].model_copy(update={"slide_number": i + 1}) for i, n in enumerate(body.order)]
     updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, reordered, "slides_reordered", ctx.user_id)
     return ImageAsset(**updated_doc)
+
+
+class SetImageDetailsRequest(BaseModel):
+    """The words that go with a picture when it is shared or posted. A field left out is not changed; an empty one clears it."""
+
+    og_title: Optional[str] = Field(None, max_length=120)
+    og_description: Optional[str] = Field(None, max_length=300)
+    alt_text: Optional[str] = Field(None, max_length=500)
+    file_naming_template: Optional[str] = Field(None, max_length=80)
+
+    @field_validator("og_title", "og_description", "alt_text", "file_naming_template")
+    @classmethod
+    def _tidy(cls, value):
+        return " ".join(value.split()) if isinstance(value, str) else value
+
+
+@router.patch("/{image_asset_id}/details", response_model=ImageAsset)
+@limiter.limit("60/minute")
+async def set_image_details(
+    request: Request,
+    image_asset_id: str,
+    body: SetImageDetailsRequest,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> ImageAsset:
+    """Saves the link preview title and description, the description for screen readers and the file name. These are used when
+    the picture is shared, attached to a post or downloaded."""
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=400, detail="Nothing to save.")
+    if "file_naming_template" in changes and changes["file_naming_template"]:
+        changes["file_naming_template"] = re.sub(r"[^A-Za-z0-9._ -]", "", changes["file_naming_template"]).strip().replace(" ", "_")[:80]
+    changes = {k: (v or None) for k, v in changes.items()}
+    changes["updated_at"] = datetime.now(timezone.utc)
+    res = await image_assets.update_one({"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"$set": changes})
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    return ImageAsset(**doc)
 
 
 class SetSlideRoleRequest(BaseModel):

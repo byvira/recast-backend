@@ -117,6 +117,24 @@ async def _campaign_progress_bulk(
     return progress
 
 
+@router.post("/source-file")
+@limiter.limit("20/minute")
+async def read_source_file_route(
+    request: Request,
+    file: UploadFile = File(...),
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """Reads a dropped document (text, Markdown, Word, PDF) and returns its text for the campaign brief. Nothing is saved."""
+    from app.pipelines.campaigns.source_files import MAX_BYTES, read_source_file
+    from app.pipelines.campaigns.sources import SourceError
+
+    data = await file.read(MAX_BYTES + 1)
+    try:
+        return await asyncio.to_thread(read_source_file, file.filename or "", data)
+    except SourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.post("/", response_model=Campaign, status_code=201)
 @limiter.limit("20/minute")
 async def create_campaign(
@@ -182,6 +200,7 @@ async def create_campaign(
         "platforms_by_day": body.platforms_by_day,
         "cadence": cadence,
         "media_plan": body.media_plan.model_dump(),
+        "text_options": body.text_options.model_dump(),
         "language": (body.language or "").strip() or None,
         "status": CampaignStatus.DRAFT.value,
         "piece_ids": [],
@@ -261,6 +280,9 @@ async def update_campaign(
 
     if "language" in payload:
         update["language"] = (payload["language"] or "").strip() or None
+
+    if payload.get("text_options") is not None:
+        update["text_options"] = payload["text_options"]
 
     if payload.get("media_plan") is not None:
         update["media_plan"] = payload["media_plan"]

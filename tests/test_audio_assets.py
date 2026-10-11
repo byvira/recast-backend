@@ -69,7 +69,7 @@ def stubs(monkeypatch):
         record["uploads"].append(data)
         return _CLOUDINARY_URL.format(name=uuid4().hex)
 
-    async def _fake_transcribe(data, *, filename):
+    async def _fake_transcribe(data, *, filename, **_options):
         return [TranscriptWord(word="hello", start_s=0.0, end_s=0.3),
                 TranscriptWord(word="world", start_s=0.3, end_s=0.6)]
 
@@ -741,7 +741,7 @@ async def test_a_refused_recording_does_not_leave_its_file_in_storage(signup_use
     client, _, ws_id, brand_id = await _setup(signup_user)
     removed: list[str] = []
 
-    async def _unsafe_words(data, *, filename):
+    async def _unsafe_words(data, *, filename, **_options):
         return [TranscriptWord(word="buy", start_s=0.0, end_s=0.2), TranscriptWord(word="porn", start_s=0.2, end_s=0.5)]
 
     async def _record_removal(url):
@@ -774,7 +774,7 @@ async def test_a_failed_transcription_is_recorded_on_the_upload_and_cleared_by_t
     client, _, ws_id, brand_id = await _setup(signup_user)
     audio = _wav(0.5)
 
-    async def _nothing(data, *, filename):
+    async def _nothing(data, *, filename, **_options):
         return []
 
     monkeypatch.setattr(audio_module, "transcribe_audio_bytes", _nothing)
@@ -784,7 +784,7 @@ async def test_a_failed_transcription_is_recorded_on_the_upload_and_cleared_by_t
     assert asset["transcript"] == []
     assert "No transcript could be made" in asset["transcript_note"]
 
-    async def _words(data, *, filename):
+    async def _words(data, *, filename, **_options):
         return [TranscriptWord(word="hello", start_s=0.0, end_s=0.3)]
 
     async def _download(url):

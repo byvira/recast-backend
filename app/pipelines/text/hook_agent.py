@@ -26,6 +26,7 @@ async def run_hook_agent(task: AgentTask) -> AgentResult:
         "text/hooks/generate",
         brand_context=task.brand_context,
         platform_label=platform_label,
+        hook_count=max(1, min(5, int(task.metadata.get("hook_count") or 3))),
         banned_openings=task.metadata.get("banned_openings", []),
         banned_words=task.metadata.get("banned_words", []),
         content=task.content[:1500],

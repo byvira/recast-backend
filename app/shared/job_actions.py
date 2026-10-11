@@ -155,7 +155,9 @@ def _register_audio() -> None:
     from app.pipelines.media.audio_assemble import AssemblePlan
     from app.pipelines.media.audio_cleanup import CleanupSettings
 
-    _audio_action("audio.transcribe", handler_name="transcribe_audio_asset", settings_model=None, with_asset=True,
+    from app.api.v1.audio_assets import TranscribeRequest
+
+    _audio_action("audio.transcribe", handler_name="transcribe_audio_asset", settings_model=TranscribeRequest, with_asset=True,
                   title=lambda p: "Transcribe recording", steps_total=2, restartable=True, retries=1,
                   description="Write out what was said (safe to start again after a restart).")
     _audio_action("audio.cleanup", handler_name="cleanup_audio_asset", settings_model=CleanupSettings, with_asset=True,

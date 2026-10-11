@@ -216,11 +216,21 @@ class SlideTextContent(BaseModel):
     show_text: bool = True
 
 
-def _fit_headline(draw, headline: str, font_name: Optional[str], max_width: int, target_size: tuple[int, int]):
+#: Steps up the type scale from body size to headline size. With the usual perfect-fourth ratio (1.333) this gives the same
+#: headline size as before, so existing pictures do not change.
+HEADLINE_STEPS = 2.4
+DEFAULT_TYPE_RATIO = 1.333
+
+
+def _fit_headline(draw, headline: str, font_name: Optional[str], max_width: int, target_size: tuple[int, int], type_ratio: Optional[float] = None):
     """The biggest size at which the headline fits in at most 3 lines and about a quarter of the picture, shrinking before
     it ever cuts anything. If it still does not fit at the smallest size, whole words are dropped from the end and an
     ellipsis is added, so a word is never cut in half. Returns (font, lines, font_size)."""
-    biggest = max(28, target_size[0] // 24)
+    if type_ratio and abs(type_ratio - DEFAULT_TYPE_RATIO) > 0.001:
+        # headline = body size (about width / 48) stepped up the chosen type scale
+        biggest = max(28, int((target_size[0] // 48) * type_ratio ** HEADLINE_STEPS))
+    else:
+        biggest = max(28, target_size[0] // 24)
     smallest = max(20, target_size[0] // 40)
     max_block = int(target_size[1] * 0.26)
     size = biggest

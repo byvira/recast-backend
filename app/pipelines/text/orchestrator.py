@@ -933,6 +933,7 @@ async def run_batch_pipeline(
     platforms_by_day: Optional[list[list[Platform]]] = None,
     on_day_complete: Optional[Callable[[int, TextPipelineResult], Awaitable[None]]] = None,
     before_day: Optional[Callable[[int], Awaitable[None]]] = None,
+    tone=None,
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
@@ -1021,6 +1022,7 @@ async def run_batch_pipeline(
             is_repurpose=is_repurpose,
             source_platform=source_platform,
             language=language,
+            tone=tone,
             emitter=emitter,
             session_id=str(uuid4()),
             emit_completion=False,

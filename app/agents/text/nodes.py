@@ -485,6 +485,7 @@ async def quality_check_node(state: TextAgentState) -> dict:
         avoid_blacklist=state["extras"].get("avoid_blacklist", True),
         grammar_check=state["extras"].get("grammar_check", False),
         language=state["language"],
+        enforce_limits=state["extras"].get("enforce_char_limits", True),
     )
 
     # The platform's own hard limits (the same rules the schedule and publish steps enforce), so a piece that cannot be posted
@@ -501,8 +502,12 @@ async def quality_check_node(state: TextAgentState) -> dict:
             limit_issues = []
         new_limit_issues = [i for i in limit_issues if i not in quality.issues]
         if new_limit_issues:
-            quality.issues = [*quality.issues, *new_limit_issues]
-            quality.passed = False
+            if state["extras"].get("enforce_char_limits", True):
+                quality.issues = [*quality.issues, *new_limit_issues]
+                quality.passed = False
+            else:
+                # Limits are switched off for this run: the post is only flagged, never sent back to be shortened.
+                quality.issues = [*quality.issues, *(f"Advisory: {i}" for i in new_limit_issues)]
 
     # Figures, prices and "last Thursday" stories that nothing supplied backs up. Advisory only: it never blocks or
     # rewrites, it asks the member to confirm before publishing. Compared against what the model was given.

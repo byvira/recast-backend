@@ -85,6 +85,7 @@ async def _image_request(campaign: dict[str, Any], piece: dict):
         title=title, brand_id=campaign["brand_id"], headline=headline, show_text=show_text,
         show_logo=image_plan.get("logo", True), show_mascot=bool(image_plan.get("mascot", False)),
         source_piece_id=piece["piece_id"], count=min(count, 5), active_layout=layout,
+        visual_profile=image_plan.get("visual_profile") or "midnight_swiss",
     )
 
 
@@ -144,6 +145,7 @@ async def _make_for_piece(
                     GenerateAudioAssetRequest(
                         title=title, brand_id=campaign["brand_id"], source_piece_id=piece["piece_id"],
                         script=script, words_per_minute=wpm, language=piece.get("language"),
+                        delivery_style=audio_opts.get("delivery_style"), mastering=audio_opts.get("mastering"),
                     ),
                     ctx,
                     _NoRun(),

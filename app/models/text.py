@@ -154,6 +154,12 @@ class ExtrasConfig(BaseModel):
     plagiarism_check: bool = False
     avoid_blacklist: bool = True
     pdf_export: bool = False
+    # How many opening hooks are written for each post (when hook_variations is on).
+    hook_count: int = Field(3, ge=1, le=5)
+    # Write LinkedIn, Instagram and Facebook posts one slide at a time ("Slide 1: ...").
+    carousel_format: bool = False
+    # Send a post back to be shortened when it is over its network's character limit. Off: it is only flagged.
+    enforce_char_limits: bool = True
 
 
 class GenerateTextRequest(BaseModel):

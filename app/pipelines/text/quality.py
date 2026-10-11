@@ -198,6 +198,7 @@ async def run_quality_gate(
     avoid_blacklist: bool = True,
     grammar_check: bool = False,
     language: str = "en",
+    enforce_limits: bool = True,
 ) -> QualityResult:
     """
     Run all quality checks. Returns QualityResult.
@@ -213,7 +214,10 @@ async def run_quality_gate(
             hard_issues.append(f"Banned words found: {', '.join(found)}")
 
     twitter_issues = check_twitter_limits(content, platform)
-    hard_issues.extend(twitter_issues)
+    if enforce_limits:
+        hard_issues.extend(twitter_issues)
+    else:
+        advisory_issues.extend(f"Advisory: {i}" for i in twitter_issues)
 
     language_issue = language_problem(content, language)
     if language_issue:

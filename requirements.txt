@@ -152,3 +152,6 @@ mistune>=3.0
 
 # Counting what a person sees as one character (Bluesky's limit)
 regex>=2024.0.0
+rembg>=2.0.60         # Remove Background on pictures (small free local model, fetched on first use)
+onnxruntime>=1.18     # runs that model on the server CPU
+pypdf>=4.0           # reads PDF files dropped in as a campaign source

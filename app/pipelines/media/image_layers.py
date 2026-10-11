@@ -157,13 +157,28 @@ def _icon_tile(layer: Layer, canvas_w: int, canvas_h: int) -> Optional[Image.Ima
     return tile
 
 
+def _round_corners(tile: Image.Image, radius_fraction: float) -> Image.Image:
+    """`tile` with its corners rounded; the radius is a fraction of its shorter side."""
+    from PIL import ImageChops
+
+    radius = int(min(tile.size) * min(0.5, radius_fraction))
+    if radius <= 0:
+        return tile
+    mask = Image.new("L", tile.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (tile.width - 1, tile.height - 1)], radius=radius, fill=255)
+    out = tile.convert("RGBA")
+    out.putalpha(ImageChops.multiply(out.getchannel("A"), mask))
+    return out
+
+
 def _tile_for(layer: Layer, canvas_w: int, canvas_h: int, brand: BrandTokens, assets: dict[str, bytes]) -> Optional[Image.Image]:
     if layer.type == "text":
         return _text_tile(layer, canvas_w, brand) if layer.text.strip() else None
     if layer.type == "shape":
         return _shape_tile(layer, canvas_w, canvas_h)
     if layer.type in ("image", "logo", "mascot"):
-        return _image_tile(layer, canvas_w, canvas_h, assets.get(layer.id))
+        tile = _image_tile(layer, canvas_w, canvas_h, assets.get(layer.id))
+        return _round_corners(tile, layer.radius) if tile is not None and layer.radius > 0 else tile
     if layer.type == "icon":
         return _icon_tile(layer, canvas_w, canvas_h)
     return None
@@ -179,6 +194,7 @@ def render_layers(
     layers: list[Layer],
     brand: BrandTokens,
     assets: Optional[dict[str, bytes]] = None,
+    effects: Optional[dict] = None,
 ) -> bytes:
     """The finished PNG. `assets` maps a layer id to the bytes of its picture (logo, mascot or uploaded image); a layer
     whose picture is missing is skipped, never drawn as a placeholder."""
@@ -193,6 +209,11 @@ def render_layers(
             canvas = Image.new("RGBA", size, (*_color(brand.primary_hex, "#1C1814"), 255))
     else:
         canvas = Image.new("RGBA", size, (*_color(brand.primary_hex, "#1C1814"), 255))
+
+    # Looks the member switched on (glow, two-tone wash, dotted grid) go under every layer.
+    from app.pipelines.media.image_effects import apply_effects
+
+    canvas = apply_effects(canvas, primary_hex=brand.primary_hex, accent_hex=brand.accent_hex, effects=effects)
 
     for layer in layers[:MAX_LAYERS]:
         if layer.hidden:
@@ -210,7 +231,12 @@ def render_layers(
         _paste_clipped(canvas, tile, int(round(cx - tile.width / 2)), int(round(cy - tile.height / 2)))
 
     out = io.BytesIO()
-    canvas.convert("RGB").save(out, format="PNG")
+    corner = float((effects or {}).get("corner_radius") or 0.0)
+    if corner > 0:
+        # The picture's own corners are rounded, so it is saved with transparent corners.
+        _round_corners(canvas, min(0.25, corner)).save(out, format="PNG")
+    else:
+        canvas.convert("RGB").save(out, format="PNG")
     return out.getvalue()
 
 
@@ -243,6 +269,8 @@ def default_layers(
     has_mascot: bool = False,
     icon_name: Optional[str] = None,
     illustration_accent: bool = False,
+    type_ratio: Optional[float] = None,
+    inner_radius: Optional[float] = None,
 ) -> list[Layer]:
     """The design a new picture starts with, bottom layer first: an optional large faint icon, a soft brand band, an accent
     bar, the headline, a small icon, the author line, the logo and the mascot. Sized with the same fitting rules the old
@@ -260,7 +288,7 @@ def default_layers(
     headline = (headline or "").strip()
     if show_text and headline:
         probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        font, lines, size_px = _fit_headline(probe, headline, brand.heading_font, int(width * (1 - 2 * margin)), size)
+        font, lines, size_px = _fit_headline(probe, headline, brand.heading_font, int(width * (1 - 2 * margin)), size, type_ratio)
         line_h = int(size_px * 1.3)
         block_h = len(lines) * line_h
         icon = icon_name if is_known_icon(icon_name) else None
@@ -287,10 +315,12 @@ def default_layers(
                             size=max(16, width // 48) / width, font=brand.body_font, bold=False, color="#FFFFFF", shadow=True))
     if has_logo:
         edge = 0.08 * min(size)
-        layers.append(Layer(id=_new_id(), type="logo", name="Logo", x=margin, y=margin, w=edge / width, h=edge / height, fit="contain"))
+        layers.append(Layer(id=_new_id(), type="logo", name="Logo", x=margin, y=margin, w=edge / width, h=edge / height, fit="contain",
+                            radius=min(0.5, max(0.0, inner_radius or 0.0))))
     if has_mascot:
         edge = 0.2 * min(size)
-        layers.append(Layer(id=_new_id(), type="mascot", name="Mascot", x=1 - margin / 2 - edge / width, y=margin / 2, w=edge / width, h=edge / height, fit="contain"))
+        layers.append(Layer(id=_new_id(), type="mascot", name="Mascot", x=1 - margin / 2 - edge / width, y=margin / 2, w=edge / width, h=edge / height, fit="contain",
+                            radius=min(0.5, max(0.0, inner_radius or 0.0))))
     return layers
 
 
