@@ -8,10 +8,10 @@ campaign's failure never blocks the rest.
 
 A campaign is due when it opted into automation (cadence.frequency is not
 "manual") and its cadence.next_run_at has arrived, and it isn't paused or
-completed. generate_campaign_batch() (shared with the manual
-generate-next-batch route) advances next_run_at itself after a successful
-run, so this job never needs to track "what did I already do" state of
-its own.
+completed. Each due campaign is started as a saved background run (the same
+as a manual one) and the tick returns at once; generate_campaign_batch()
+advances next_run_at itself after a successful run, and an active run for the
+campaign stops it being started twice.
 """
 
 import logging
@@ -59,20 +59,49 @@ async def run_due_campaign_batches() -> None:
             )
             continue
 
+        # A scheduled batch is a saved run like a manual one: it shows in Control Tower, can be paused or cancelled, ends with a note
+        # in Activity, and while it is going the campaign is not started a second time (it stays "due" until the batch finishes).
         try:
-            await generate_campaign_batch(
-                campaign,
-                workspace_id=campaign["workspace_id"],
-                # No "current user" in a cron job — attribute the run to
-                # whoever created the campaign.
-                user_id=campaign["created_by"],
+            await _start_batch_run(campaign)
+        except HTTPException as e:
+            # The workspace already has its limit of jobs going: try again on a later tick, without counting it as a failure.
+            logger.info("Scheduled campaign %s waits: %s", campaign.get("id"), e.detail)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Scheduled batch could not start for campaign %s: %s", campaign.get("id"), e)
+            await _back_off(campaign, str(e))
+
+
+async def _start_batch_run(campaign: dict) -> None:
+    from app.shared import pipeline_runs
+
+    workspace_id = campaign["workspace_id"]
+    if await pipeline_runs.active_run_for(workspace_id, "campaign", {"campaign_id": campaign["id"]}):
+        return  # its last batch is still going
+    await pipeline_runs.assert_capacity(workspace_id)
+    days = (campaign.get("cadence") or {}).get("days_per_batch", 7)
+    doc = await pipeline_runs.create_run(
+        workspace_id=workspace_id, user_id=campaign["created_by"], kind="campaign",
+        title=f"Campaign \"{campaign.get('name') or 'Untitled'}\"", ref={"campaign_id": campaign["id"]},
+        steps_total=days, href=f"/dashboard/pipelines/new?campaignId={campaign['id']}",
+    )
+
+    async def work(run: dict) -> dict:
+        try:
+            # No "current user" in a cron job: the run is attributed to whoever created the campaign.
+            result = await generate_campaign_batch(
+                campaign, workspace_id=workspace_id, user_id=campaign["created_by"], run_id=run["id"],
             )
-        except Exception as e:
-            # A deliberate rejection (e.g. the AI budget's 403) carries a
-            # readable detail; str() of an HTTPException is "403: ...".
+        except pipeline_runs.RunCancelled:
+            raise
+        except Exception as e:  # noqa: BLE001
+            # A deliberate rejection (e.g. the AI budget's 403) carries a readable detail; str() of an HTTPException is "403: ...".
             reason = e.detail if isinstance(e, HTTPException) else str(e)
             logger.error("Scheduled batch failed for campaign %s: %s", campaign.get("id"), reason)
             await _back_off(campaign, str(reason))
+            raise
+        return {"new_piece_count": len(result["new_piece_ids"])}
+
+    pipeline_runs.start(doc, work)
 
 
 #: A failed run used to leave next_run_at in the past, so this job re-ran the

@@ -5,6 +5,9 @@ survives the member leaving the page, can be paused, resumed or cancelled, and e
 
 States: queued, running, paused, done, failed, cancelled. The work itself runs as an asyncio task in this process. It calls
 `checkpoint()` between units of work (for a campaign, between days); that is where a pause waits and a cancel stops it.
+Work that is one long call (a picture, a narration, a recording) has no unit to wait for, so it is started with
+`interrupt_on_cancel=True`: a cancel then stops the task itself within a couple of seconds, closing the calls it had open.
+A cancel for a run that no server is working on any more (it died with a restart) closes it at once.
 A restart ends any run that was still going, because its task died with the process: `fail_interrupted()` marks those as
 failed on startup so nothing looks busy forever.
 """
@@ -156,6 +159,20 @@ async def checkpoint(run_id: str) -> None:
         return
 
 
+#: A run with no worker here and no sign of life for this long has no server working on it any more.
+ORPHAN_AFTER = timedelta(seconds=75)
+
+
+def _has_no_live_worker(doc: dict) -> bool:
+    """True when this server is not running the run and nobody else has been beating for it lately."""
+    if doc["id"] in _tasks:
+        return False
+    beat = doc.get("heartbeat_at") or doc.get("created_at")
+    if isinstance(beat, datetime) and beat.tzinfo is None:
+        beat = beat.replace(tzinfo=timezone.utc)
+    return not isinstance(beat, datetime) or _now() - beat > ORPHAN_AFTER
+
+
 async def control(run_id: str, workspace_id: str, action: str) -> Optional[dict]:
     """pause, resume or cancel. Returns the row, or None when there is no such run. A finished run is returned unchanged."""
     doc = await get_run(run_id, workspace_id)
@@ -163,6 +180,11 @@ async def control(run_id: str, workspace_id: str, action: str) -> Optional[dict]
         return None
     if doc["status"] in FINISHED:
         return doc
+    if action == "cancel" and _has_no_live_worker(doc):
+        # Its server died with it (a restart, a redeploy): there is nothing left to stop, so it is closed now and does not sit
+        # on "Cancelling" until a later sweep.
+        await _finish({**doc, "id": run_id}, "cancelled")
+        return await get_run(run_id, workspace_id)
     if action == "pause":
         await _set(run_id, pause_requested=True)
     elif action == "resume":
@@ -186,7 +208,7 @@ async def _finish(doc: dict, status: str, *, result: Optional[dict] = None, erro
             actor_user_id=doc.get("created_by"), category="content_generated",
             title=f"{doc['title']} {wording[status]}",
             description=error or ("Your work is ready to review." if status == "done" else "Nothing more was made."),
-            status="success" if status == "done" else "failed",
+            status={"done": "success", "cancelled": "warning"}.get(status, "failed"),
             target_id=doc["id"], target_type="Run", href=doc.get("href"),
         )
     except Exception as exc:  # noqa: BLE001
@@ -212,8 +234,41 @@ def _plain(exc: Exception) -> str:
     return str(detail or exc)[:300] or "The work could not be finished."
 
 
-def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]]) -> None:
-    """Run `work(doc)` in the background and record how it ends. `work` returns an optional result dict."""
+async def _watch_cancel(run_id: str, task: "asyncio.Future", flag: list, max_seconds: Optional[float] = None) -> None:
+    """Stops `task` as soon as the member cancels the run, instead of waiting for it to reach a checkpoint. A run that goes on
+    past `max_seconds` (a provider that never answers) is stopped too, so it cannot sit on "running" for ever."""
+    began = asyncio.get_event_loop().time()
+    while not task.done():
+        await asyncio.sleep(POLL_SECONDS)
+        if max_seconds and asyncio.get_event_loop().time() - began > max_seconds and not task.done():
+            flag.append("timeout")
+            task.cancel()
+            return
+        try:
+            doc = await pipeline_runs.find_one({"id": run_id}, {"cancel_requested": 1})
+        except Exception as exc:  # noqa: BLE001 - one missed look is fine, the next one comes in a moment
+            logger.warning("Could not look for a cancel on run %s: %s", run_id, exc)
+            continue
+        if doc and doc.get("cancel_requested") and not task.done():
+            flag.append("cancel")
+            task.cancel()
+            return
+
+
+class RunTimedOut(Exception):
+    """Raised inside `start` when an interruptible run went on longer than its limit."""
+
+
+#: How long a run that is one long call may take before it is stopped as failed.
+MAX_SECONDS_BY_KIND = {"image": 15 * 60, "audio": 40 * 60, "campaign": 15 * 60}
+
+
+def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]], *, interrupt_on_cancel: bool = False) -> None:
+    """Run `work(doc)` in the background and record how it ends. `work` returns an optional result dict.
+
+    With `interrupt_on_cancel` a cancel stops the work itself (the calls it has open are closed); without it the work stops at
+    its next checkpoint. Use it for one long call that has nothing to wait at, and leave it off for work that must finish its
+    current unit (a campaign day) so what it already made stays whole."""
 
     async def beat() -> None:
         while True:
@@ -222,20 +277,39 @@ def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]]) -> None:
 
     async def runner() -> None:
         heartbeat = asyncio.create_task(beat())
+        watcher = None
         try:
             await _set(doc["id"], status="running", started_at=_now(), heartbeat_at=_now())
-            result = await work(doc)
+            if interrupt_on_cancel:
+                work_task = asyncio.ensure_future(work(doc))
+                cancelled_by_member: list = []
+                watcher = asyncio.create_task(_watch_cancel(doc["id"], work_task, cancelled_by_member, MAX_SECONDS_BY_KIND.get(doc.get("kind", ""))))
+                try:
+                    result = await work_task
+                except asyncio.CancelledError:
+                    if cancelled_by_member == ["cancel"]:
+                        raise RunCancelled()
+                    if cancelled_by_member == ["timeout"]:
+                        raise RunTimedOut()
+                    raise
+            else:
+                result = await work(doc)
             if result and result.get("href"):
                 doc["href"] = result["href"]
                 await _set(doc["id"], href=doc["href"])
             await _finish(doc, "done", result=result)
         except RunCancelled:
             await _finish(doc, "cancelled")
+        except RunTimedOut:
+            minutes = int(MAX_SECONDS_BY_KIND.get(doc.get("kind", ""), 0) // 60) or 15
+            await _finish(doc, "failed", error=f"This took longer than {minutes} minutes, so it was stopped. Try again.")
         except Exception as exc:  # noqa: BLE001
             logger.error("Run %s (%s) failed: %s", doc["id"], doc["kind"], exc, exc_info=True)
             await _finish(doc, "failed", error=_plain(exc))
         finally:
             heartbeat.cancel()
+            if watcher is not None:
+                watcher.cancel()
             _tasks.pop(doc["id"], None)
 
     _tasks[doc["id"]] = asyncio.create_task(runner())

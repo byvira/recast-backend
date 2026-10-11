@@ -449,7 +449,7 @@ async def generate_audio_asset_in_background(
         asset = await create_audio_from_script(body, ctx, pipeline_runs.StepReporter(run["id"]))
         return {"asset_id": asset.id, "href": f"/dashboard/pipelines/audio?asset={asset.id}"}
 
-    pipeline_runs.start(doc, work)
+    pipeline_runs.start(doc, work, interrupt_on_cancel=True)
     return pipeline_runs.public(doc)
 
 
@@ -1050,7 +1050,7 @@ async def upload_audio_in_background(
             "href": f"/dashboard/pipelines/audio?asset={asset.id}",
         }
 
-    pipeline_runs.start(doc, work)
+    pipeline_runs.start(doc, work, interrupt_on_cancel=True)
     return pipeline_runs.public(doc)
 
 

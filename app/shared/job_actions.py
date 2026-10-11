@@ -263,12 +263,12 @@ def register_all() -> None:
     from app.shared.activity.runs import run_label
 
     register(JobAction(
-        name="content.bulk_delete", permission="edit_content", payload_model=PieceIds, run=_bulk_delete, kind="text",
+        name="content.bulk_delete", cancel_counts_at_end=False, permission="edit_content", payload_model=PieceIds, run=_bulk_delete, kind="text",
         title=lambda p: f"Delete {len(p.piece_ids)} posts", steps=lambda p: len(set(p.piece_ids)), href="/dashboard/library",
         restartable=True, description="Delete many posts (they can be restored by support).",
     ))
     register(JobAction(
-        name="content.bulk_archive", permission="edit_content", payload_model=PieceIdsArchive, run=_bulk_archive, kind="text",
+        name="content.bulk_archive", cancel_counts_at_end=False, permission="edit_content", payload_model=PieceIdsArchive, run=_bulk_archive, kind="text",
         title=lambda p: f"{'Archive' if p.archived else 'Restore'} {len(p.piece_ids)} posts", steps=lambda p: len(set(p.piece_ids)),
         href="/dashboard/library", restartable=True, description="Archive or restore many posts.",
     ))
@@ -287,12 +287,12 @@ def register_all() -> None:
     _campaign_action("campaign.regenerate_media", CampaignPieceRef, "regenerate_post_image", lambda p: "Campaign: new picture", 1,
                      "Make one post's picture again.")
     register(JobAction(
-        name="publish.now", permission="publish_content", payload_model=PublishPostPayload, run=_publish_post, kind="text",
+        name="publish.now", cancel_counts_at_end=False, permission="publish_content", payload_model=PublishPostPayload, run=_publish_post, kind="text",
         title=lambda p: "Publish a post", steps=lambda p: 1, href="/dashboard/drafts", restartable=False, retries=0,
         description="Publish one post now. Never started again after a restart, so a post is never sent twice.",
     ))
     register(JobAction(
-        name="publish.batch", permission="publish_content", payload_model=PublishBatchPayload, run=_publish_batch, kind="text",
+        name="publish.batch", cancel_counts_at_end=False, permission="publish_content", payload_model=PublishBatchPayload, run=_publish_batch, kind="text",
         title=lambda p: f"Publish {len(set(p.piece_ids))} posts", steps=lambda p: len(set(p.piece_ids)), href="/dashboard/drafts",
         restartable=False, retries=0,
         description="Publish several posts one after another. Each post reports its own result; one failing never stops the others.",

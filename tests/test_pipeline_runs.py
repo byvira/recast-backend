@@ -205,3 +205,119 @@ async def test_a_workspace_cannot_have_more_than_three_jobs_going(api_client, mo
         assert res.status_code == 429 and "already running" in res.json()["detail"]
     finally:
         await pipeline_runs.delete_many({"workspace_id": ws_id})
+
+
+# ── cancel reaches work that is one long call, and a dead run is closed at once ──
+
+async def _until(run_id, wanted, seconds=15):
+    for _ in range(int(seconds / 0.2)):
+        row = await pipeline_runs.find_one({"id": run_id})
+        if row and row["status"] in wanted:
+            return row
+        await asyncio.sleep(0.2)
+    raise AssertionError(f"run never reached {wanted}: {row}")
+
+
+async def test_cancel_stops_one_long_call_instead_of_waiting_for_it_to_finish():
+    run = await runs.create_run(workspace_id="w-interrupt", user_id="u", kind="image", title="A long picture")
+    started, stopped = asyncio.Event(), []
+
+    async def long_call(doc):
+        started.set()
+        try:
+            await asyncio.sleep(120)  # a provider call that would take minutes
+        except asyncio.CancelledError:
+            stopped.append(True)  # the open call was closed, not left running
+            raise
+        return {"done": True}
+
+    try:
+        runs.start(run, long_call, interrupt_on_cancel=True)
+        await asyncio.wait_for(started.wait(), 10)
+        await runs.control(run["id"], "w-interrupt", "cancel")
+        row = await _until(run["id"], ("cancelled", "done", "failed"))
+        assert row["status"] == "cancelled" and row["finished_at"]
+        assert stopped == [True]
+        for _ in range(50):  # the task removes itself a moment after the row is saved
+            if run["id"] not in runs._tasks:
+                break
+            await asyncio.sleep(0.1)
+        assert run["id"] not in runs._tasks
+    finally:
+        await pipeline_runs.delete_many({"workspace_id": "w-interrupt"})
+
+
+async def test_without_the_flag_a_cancel_still_waits_for_the_next_checkpoint():
+    run = await runs.create_run(workspace_id="w-checkpoint", user_id="u", kind="campaign", title="Days")
+    first_day_done, release = asyncio.Event(), asyncio.Event()
+
+    async def two_days(doc):
+        await runs.checkpoint(doc["id"])
+        first_day_done.set()
+        await release.wait()  # the day in progress is allowed to finish
+        await runs.checkpoint(doc["id"])  # the cancel lands here
+        return {"unreachable": True}
+
+    try:
+        runs.start(run, two_days)
+        await asyncio.wait_for(first_day_done.wait(), 10)
+        await runs.control(run["id"], "w-checkpoint", "cancel")
+        await asyncio.sleep(2)
+        assert (await pipeline_runs.find_one({"id": run["id"]}))["status"] == "running"  # not cut off mid-day
+        release.set()
+        assert (await _until(run["id"], ("cancelled", "done", "failed")))["status"] == "cancelled"
+    finally:
+        release.set()
+        await pipeline_runs.delete_many({"workspace_id": "w-checkpoint"})
+
+
+async def test_a_cancel_for_a_run_no_server_is_working_on_closes_it_at_once():
+    from datetime import datetime, timedelta, timezone
+
+    old = datetime.now(timezone.utc) - timedelta(minutes=10)
+    dead = await runs.create_run(workspace_id="w-orphan", user_id="u", kind="image", title="Died with the server")
+    await pipeline_runs.update_one({"id": dead["id"]}, {"$set": {"status": "running", "created_at": old, "heartbeat_at": old}})
+    live = await runs.create_run(workspace_id="w-orphan", user_id="u", kind="image", title="Another server's, still beating")
+    await pipeline_runs.update_one({"id": live["id"]}, {"$set": {"status": "running", "heartbeat_at": datetime.now(timezone.utc)}})
+    try:
+        closed = await runs.control(dead["id"], "w-orphan", "cancel")
+        assert closed["status"] == "cancelled" and closed["finished_at"]
+        waiting = await runs.control(live["id"], "w-orphan", "cancel")
+        assert waiting["status"] == "running" and waiting["cancel_requested"] is True  # its own server will stop it
+    finally:
+        await pipeline_runs.delete_many({"workspace_id": "w-orphan"})
+
+
+async def test_a_long_call_that_never_answers_is_stopped_and_reported_as_failed(monkeypatch):
+    monkeypatch.setitem(runs.MAX_SECONDS_BY_KIND, "image", 2)
+    run = await runs.create_run(workspace_id="w-timeout", user_id="u", kind="image", title="A provider that hangs")
+
+    async def hangs(doc):
+        await asyncio.sleep(120)
+
+    try:
+        runs.start(run, hangs, interrupt_on_cancel=True)
+        row = await _until(run["id"], ("failed", "done", "cancelled"), seconds=20)
+        assert row["status"] == "failed" and "longer than" in row["error"]
+    finally:
+        await pipeline_runs.delete_many({"workspace_id": "w-timeout"})
+
+
+async def test_a_cancelled_run_is_written_to_the_activity_log_as_a_warning_not_a_failure():
+    from app.db.mongo import workspace_events  # noqa: F401  (the log is read through the activity collection below)
+    from app.shared import activity
+
+    seen = {}
+
+    async def fake_record_system(**kw):
+        seen.update(kw)
+
+    original = activity.record_system
+    activity.record_system = fake_record_system
+    try:
+        run = await runs.create_run(workspace_id="w-act", user_id="u", kind="image", title="Picture")
+        await runs._finish(run, "cancelled")
+        assert seen["status"] == "warning" and "cancelled" in seen["title"]
+    finally:
+        activity.record_system = original
+        await pipeline_runs.delete_many({"workspace_id": "w-act"})

@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 MAX_RESULT_BYTES = 400_000
 RETRY_WAITS = (2.0, 6.0, 15.0)
 MAX_RESTARTS = 2
+#: Jobs of these kinds are one long call (a recording, a picture), so a cancel stops them at once instead of at a checkpoint.
+INTERRUPTIBLE_KINDS = ('audio', 'image')
+#: Campaign media jobs make one picture or narration at a time, so they stop at once too.
+INTERRUPTIBLE_ACTIONS = ('campaign.retry_media', 'campaign.regenerate_media')
+
+
+def _interrupts(action: 'JobAction') -> bool:
+    return action.kind in INTERRUPTIBLE_KINDS or action.name in INTERRUPTIBLE_ACTIONS
 _TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 
 
@@ -62,6 +70,9 @@ class JobAction:
     shape: Optional[Callable[[Any], Any]] = None
     #: Where the finished work can be opened, worked out from what it returned.
     result_href: Optional[Callable[[Any], Optional[str]]] = None
+    #: A cancel that arrives during the last step still turns the run into "cancelled". Off for work that has already had its effect
+    #: when it returns (a post that went out, posts that were deleted), which must be reported as done and not as cancelled.
+    cancel_counts_at_end: bool = True
     extra: dict = field(default_factory=dict)
 
 
@@ -181,8 +192,9 @@ def _worker(action: JobAction, payload: Any):
                 await runs.set_stage(doc["id"], f"Trying again (attempt {attempt + 1})", attempts=attempt + 1)
                 await asyncio.sleep(wait)
                 await runs.checkpoint(doc["id"])
-        # A cancel that came in during the last step still counts.
-        await runs.checkpoint(doc["id"])
+        # A cancel that came in during the last step still counts, unless the work has already had its effect.
+        if action.cancel_counts_at_end:
+            await runs.checkpoint(doc["id"])
         out = make_result(action.shape(value) if action.shape else value)
         href = action.result_href(value) if action.result_href else None
         if href:
@@ -221,7 +233,7 @@ async def submit(
         extra={"action": action_name, "idem_key": key, "restartable": action.restartable, "restart_attempts": 0,
                **({"payload": parsed.model_dump(mode="json")} if action.restartable else {})},
     )
-    runs.start(doc, _worker(action, parsed))
+    runs.start(doc, _worker(action, parsed), interrupt_on_cancel=_interrupts(action))
     return runs.public(doc), False
 
 
@@ -255,6 +267,6 @@ async def resume_interrupted() -> int:
             payload = action.payload_model.model_validate(claimed["payload"])
         except ValidationError:
             continue
-        runs.start(claimed, _worker(action, payload))
+        runs.start(claimed, _worker(action, payload), interrupt_on_cancel=_interrupts(action))
         started += 1
     return started

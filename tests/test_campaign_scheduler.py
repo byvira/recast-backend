@@ -15,9 +15,21 @@ Runs with the LLM mocked — never a real Groq call.
 
 from datetime import datetime, timedelta, timezone
 
-from app.db.mongo import content_pieces, get_campaigns_collection
+import asyncio
+
+from app.db.mongo import content_pieces, get_campaigns_collection, pipeline_runs
+from app.shared import pipeline_runs as runs
 from app.workers.campaign_scheduler import run_due_campaign_batches
 from tests.conftest import signup_new_user
+
+
+async def _batches_finished(seconds: int = 90) -> None:
+    """A tick starts each due campaign as a background run and returns at once: wait for those runs to end."""
+    for _ in range(int(seconds / 0.25)):
+        if not runs._tasks:
+            return
+        await asyncio.sleep(0.25)
+    raise AssertionError("the scheduled batches never finished")
 
 
 async def _create_brand(client) -> str:
@@ -53,6 +65,7 @@ async def test_run_due_campaign_batches_generates_for_due_campaign(api_client, m
     mock_llm.set_plain("Real generated content.")
 
     await run_due_campaign_batches()
+    await _batches_finished()
 
     tagged = await content_pieces.count_documents({"campaign_id": campaign_id})
     assert tagged > 0
@@ -131,8 +144,25 @@ async def test_run_due_campaign_batches_continues_after_one_campaign_fails(api_c
     mock_llm.set_plain("Real generated content.")
 
     await run_due_campaign_batches()
+    await _batches_finished()
 
     good_tagged = await content_pieces.count_documents({"campaign_id": good_campaign_id})
     bad_tagged = await content_pieces.count_documents({"campaign_id": bad_campaign_id})
     assert good_tagged > 0
     assert bad_tagged == 0
+
+
+async def test_a_scheduled_batch_is_a_saved_run_and_a_campaign_with_one_going_is_not_started_again(api_client, mock_llm):
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    campaign_id = await _create_campaign(api_client, brand_id)
+    mock_llm.set_structured({"angles": ["Only angle"]})
+    mock_llm.set_plain("Real generated content.")
+
+    await run_due_campaign_batches()
+    await run_due_campaign_batches()  # the next minute's tick, while the first batch may still be going
+    await _batches_finished()
+
+    made = [r async for r in pipeline_runs.find({"kind": "campaign", "ref.campaign_id": campaign_id})]
+    assert len(made) == 1 and made[0]["status"] == "done" and made[0]["title"].startswith("Campaign")
+    assert await content_pieces.count_documents({"campaign_id": campaign_id}) == 1  # one batch, one day, not two

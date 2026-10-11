@@ -186,6 +186,18 @@ async def _draw_and_store(
     workspace_id: str, user_id: str, effects: Optional[dict] = None,
 ) -> MediaAsset:
     assets = await _fetch_layer_assets(layers, brand, workspace_id)
+    if background_bytes and (effects or {}).get("remove_background"):
+        # The subject stands on the brand colour. The stored picture is never changed, so switching this off again brings the
+        # original background back.
+        from app.pipelines.media import background_removal
+
+        cutout = await asyncio.to_thread(background_removal.cut_out, background_bytes)
+        if not cutout:
+            raise HTTPException(
+                status_code=503,
+                detail="Removing the background isn't available right now. Switch it off to make the picture, or try again in a moment.",
+            )
+        background_bytes = background_removal.on_colour(cutout, brand_tokens.primary_hex)
     png = await asyncio.to_thread(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets, effects=effects)
     note = _fallback_note(background_bytes)
     # Tamil and Hindi need a text-shaping engine to draw every combination correctly. If this server does not have one, say so on
@@ -226,16 +238,6 @@ async def _render_and_upload_slide(
     background_bytes = await generate_image_from_prompt(
         prompt=prompt, workspace_id=workspace_id, user_id=user_id, target_size=size, brand_profile=brand, avoid=avoid,
     )
-    if background_bytes and (effects or {}).get("remove_background"):
-        from app.pipelines.media import background_removal
-
-        cutout = await asyncio.to_thread(background_removal.cut_out, background_bytes)
-        if not cutout:
-            raise HTTPException(
-                status_code=503,
-                detail="Removing the background isn't available right now. Switch it off to make the picture, or try again in a moment.",
-            )
-        background_bytes = background_removal.on_colour(cutout, brand_tokens.primary_hex)
     visual_identity = brand.get("visual_identity") or {}
     background_media_id: Optional[str] = None
     if background_bytes:
@@ -505,7 +507,7 @@ async def generate_image_asset_in_background(
         asset = await create_image_asset(body, ctx)
         return {"asset_id": asset.id, "href": f"/dashboard/pipelines/image?asset={asset.id}"}
 
-    pipeline_runs.start(doc, work)
+    pipeline_runs.start(doc, work, interrupt_on_cancel=True)
     return pipeline_runs.public(doc)
 
 
@@ -1179,6 +1181,55 @@ async def set_image_details(
         raise HTTPException(status_code=404, detail="Image asset not found.")
     doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
     return ImageAsset(**doc)
+
+
+class ApplyLooksRequest(BaseModel):
+    effects: SlideEffectsRequest
+
+
+@router.post("/{image_asset_id}/slides/{slide_number}/looks", response_model=ImageAsset)
+@limiter.limit("20/minute")
+async def apply_looks(
+    request: Request,
+    image_asset_id: str,
+    slide_number: int,
+    body: ApplyLooksRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> ImageAsset:
+    """Draws the chosen looks (glow, two-tone wash, grid, Remove Background, rounded corners) on a picture that already exists,
+    including one the member uploaded. The original picture is kept as the slide's backdrop, so applying again with different
+    looks, or with none, always starts from it. No AI call is made. Kept as a new version."""
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    asset = ImageAsset(**doc)
+    slide = next((sl for sl in asset.slides if sl.slide_number == slide_number), None)
+    if slide is None:
+        raise HTTPException(status_code=404, detail="Slide not found.")
+    original_id = slide.background_media_id or slide.media_id
+    original = await _media_bytes(original_id, ctx.workspace_id)
+    if not original:
+        raise HTTPException(status_code=404, detail="This picture's file couldn't be found.")
+    if slide.layout is not None:
+        size = LAYOUT_DIMS[slide.layout]
+    else:
+        # A picture the member uploaded keeps its own shape; a very large one is kept to a sensible size.
+        with Image.open(io.BytesIO(original)) as source:
+            width, height = source.size
+        scale = min(1.0, 4096 / max(width, height))
+        size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    brand = await _get_brand_profile(asset.brand_id, ctx.workspace_id)
+    media = await _draw_and_store(
+        size=size, background_bytes=original, layers=slide.layers, brand=brand, brand_tokens=_brand_tokens_from(brand),
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=body.effects.model_dump(),
+    )
+    updated = [
+        sl.model_copy(update={"media_id": media.id, "background_media_id": original_id, "effects": body.effects.model_dump()})
+        if sl.slide_number == slide_number else sl
+        for sl in asset.slides
+    ]
+    new_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, "looks_applied", ctx.user_id)
+    return ImageAsset(**new_doc)
 
 
 class SetSlideRoleRequest(BaseModel):

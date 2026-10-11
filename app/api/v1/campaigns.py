@@ -501,6 +501,7 @@ async def start_campaign_run(
     )
 
     async def work(run: dict) -> dict:
+        # A pause or cancel takes effect before the next day starts, so every day that is made is saved whole.
         result = await generate_campaign_batch(campaign, workspace_id=ctx.workspace_id, user_id=ctx.user_id, run_id=run["id"])
         return {"new_piece_count": len(result["new_piece_ids"])}
 

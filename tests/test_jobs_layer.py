@@ -273,3 +273,53 @@ def test_the_duplicate_key_depends_on_who_what_and_with_which_data():
     assert a != jobs.idempotency_key("w", "other", "act", {"x": 1})
     assert a != jobs.idempotency_key("w2", "u", "act", {"x": 1})
     assert jobs.idempotency_key("w", "u", "act", {"x": 1}, client_key="k") == jobs.idempotency_key("w", "u", "act", {"x": 9}, client_key="k")
+
+
+async def test_a_job_with_one_long_call_is_stopped_at_once_by_a_cancel(signup_user, test_actions):
+    client, _, _, headers = await _ws(signup_user)
+    closed = []
+
+    async def one_long_call(ctx, payload, reporter):
+        try:
+            await asyncio.sleep(120)
+        except asyncio.CancelledError:
+            closed.append(True)
+            raise
+
+    action = test_actions("test.long_audio", one_long_call)
+    action.kind = "audio"  # audio and image work is one provider call
+    run = (await client.post("/api/v1/jobs", json={"action": "test.long_audio", "payload": {}}, headers=headers)).json()
+    await _wait_for(client, run["id"], ("running",), headers=headers)
+    await client.post(f"/api/v1/runs/{run['id']}/cancel", headers=headers)
+    ended = await _wait_for(client, run["id"], ("cancelled", "done", "failed"), seconds=15, headers=headers)
+    assert ended["status"] == "cancelled" and closed == [True]
+
+
+async def test_work_that_already_had_its_effect_is_done_not_cancelled_when_a_cancel_comes_last(signup_user, test_actions):
+    client, _, _, headers = await _ws(signup_user)
+    went_out = asyncio.Event()
+
+    async def publishes(ctx, payload, reporter):
+        await reporter.step("Publishing")
+        went_out.set()
+        await asyncio.sleep(2.5)  # the cancel arrives while the post is already out
+        return {"posted": True}
+
+    test_actions("test.publishes", publishes, cancel_counts_at_end=False)
+    run = (await client.post("/api/v1/jobs", json={"action": "test.publishes", "payload": {}}, headers=headers)).json()
+    await asyncio.wait_for(went_out.wait(), 10)
+    await client.post(f"/api/v1/runs/{run['id']}/cancel", headers=headers)
+    ended = await _wait_for(client, run["id"], ("cancelled", "done", "failed"), seconds=20, headers=headers)
+    assert ended["status"] == "done" and ended["result"]["data"] == {"posted": True}
+
+
+async def test_the_real_publish_and_bulk_jobs_report_what_happened_even_if_cancelled_last():
+    from app.shared.job_actions import register_all
+
+    register_all()
+    for name in ("publish.now", "publish.batch", "content.bulk_delete", "content.bulk_archive"):
+        assert jobs.ACTIONS[name].cancel_counts_at_end is False, name
+    for name in ("audio.cleanup", "audio.transcribe", "campaign.retry_media", "campaign.regenerate_media"):
+        assert jobs._interrupts(jobs.ACTIONS[name]), name
+    for name in ("text.generate", "campaign.next_batch", "publish.now"):
+        assert not jobs._interrupts(jobs.ACTIONS[name]), name
