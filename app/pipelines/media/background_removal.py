@@ -4,8 +4,10 @@ Runs on this server with a small free model (rembg's u2netp, about 5 MB, fetched
 service. It works on one picture at a time and takes a few seconds on a normal server CPU."""
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
+from collections import OrderedDict
 import threading
 from typing import Optional
 
@@ -16,6 +18,10 @@ logger = logging.getLogger(__name__)
 _MODEL = "u2netp"
 _session = None
 _lock = threading.Lock()
+#: The last few cut-outs, by picture. Applying a different look to the same picture reuses the cut-out instead of running the
+#: model again (the slow part).
+_CACHE_SIZE = 6
+_cache: "OrderedDict[str, bytes]" = OrderedDict()
 
 
 def available() -> bool:
@@ -39,11 +45,23 @@ def _get_session():
 
 def cut_out(image_bytes: bytes) -> Optional[bytes]:
     """The picture's subject with a transparent background, as PNG bytes, or None when it could not be done."""
+    key = hashlib.sha1(image_bytes).hexdigest()
+    with _lock:
+        hit = _cache.get(key)
+        if hit is not None:
+            _cache.move_to_end(key)
+            return hit
     try:
         from rembg import remove
 
         out = remove(image_bytes, session=_get_session())
-        return out if isinstance(out, bytes) else None
+        if not isinstance(out, bytes):
+            return None
+        with _lock:
+            _cache[key] = out
+            while len(_cache) > _CACHE_SIZE:
+                _cache.popitem(last=False)
+        return out
     except Exception as exc:  # noqa: BLE001 - a failure is reported to the member, never raised from here
         logger.warning("Background removal failed: %s", exc)
         return None

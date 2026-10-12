@@ -1,5 +1,6 @@
 """Shared file storage helpers using Cloudinary."""
 
+import asyncio
 import logging
 import re
 from enum import Enum
@@ -66,14 +67,18 @@ async def upload_file_detailed(
     a key is None when Cloudinary didn't report it for that file type.
     """
     _ensure_configured()
-    result = cloudinary.uploader.upload(
-        file,
-        upload_preset=content_type.value,       # uses the preset we created
-        folder=f"recast/{content_type.value.replace('recast_', '')}/{user_id}",
-        resource_type=_get_resource_type(content_type),
-        public_id=filename,
-        use_filename=bool(filename),
-        unique_filename=True,
+    # The upload library blocks until Cloudinary answers. In a thread, so the server keeps answering (a cancel, other members)
+    # while a large file goes up.
+    result = await asyncio.to_thread(
+        lambda: cloudinary.uploader.upload(
+            file,
+            upload_preset=content_type.value,       # uses the preset we created
+            folder=f"recast/{content_type.value.replace('recast_', '')}/{user_id}",
+            resource_type=_get_resource_type(content_type),
+            public_id=filename,
+            use_filename=bool(filename),
+            unique_filename=True,
+        )
     )
     duration = result.get("duration")
     return {
@@ -136,9 +141,8 @@ async def delete_file(public_id: str, content_type: ContentType) -> bool:
         True if deletion was successful.
     """
     _ensure_configured()
-    result = cloudinary.uploader.destroy(
-        public_id,
-        resource_type=_get_resource_type(content_type)
+    result = await asyncio.to_thread(
+        lambda: cloudinary.uploader.destroy(public_id, resource_type=_get_resource_type(content_type))
     )
     return result.get("result") == "ok"
 
@@ -166,7 +170,7 @@ async def delete_file_by_url(url: str) -> bool:
     kind, public_id = ref
     try:
         _ensure_configured()
-        result = cloudinary.uploader.destroy(public_id, resource_type=kind)
+        result = await asyncio.to_thread(lambda: cloudinary.uploader.destroy(public_id, resource_type=kind))
         return result.get("result") == "ok"
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not remove stored file %s: %s", public_id, exc)

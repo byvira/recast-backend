@@ -1219,10 +1219,28 @@ async def apply_looks(
         scale = min(1.0, 4096 / max(width, height))
         size = (max(1, round(width * scale)), max(1, round(height * scale)))
     brand = await _get_brand_profile(asset.brand_id, ctx.workspace_id)
-    media = await _draw_and_store(
+    drawing = asyncio.ensure_future(_draw_and_store(
         size=size, background_bytes=original, layers=slide.layers, brand=brand, brand_tokens=_brand_tokens_from(brand),
         workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=body.effects.model_dump(),
-    )
+    ))
+    # The member can stop this (a newer choice, leaving the page): when the browser hangs up, the drawing is stopped too and
+    # nothing is saved.
+    async def hang_up_watch() -> None:
+        while not drawing.done():
+            await asyncio.sleep(0.5)
+            if await request.is_disconnected():
+                drawing.cancel()
+                return
+
+    watcher = asyncio.ensure_future(hang_up_watch())
+    try:
+        media = await drawing
+    except asyncio.CancelledError:
+        if drawing.cancelled():
+            raise HTTPException(status_code=499, detail="Stopped.")
+        raise
+    finally:
+        watcher.cancel()
     updated = [
         sl.model_copy(update={"media_id": media.id, "background_media_id": original_id, "effects": body.effects.model_dump()})
         if sl.slide_number == slide_number else sl
