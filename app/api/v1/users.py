@@ -177,7 +177,7 @@ async def list_my_workspaces(
     ws_ids = [m["workspace_id"] for m in memberships]
     ws_docs = {
         w["id"]: w
-        for w in await workspaces.find({"id": {"$in": ws_ids}}).to_list(length=200)
+        for w in await workspaces.find({"id": {"$in": ws_ids}, "deleted_at": {"$exists": False}}).to_list(length=200)
     }
     default_id = current_user.get("default_workspace_id")
 
@@ -226,7 +226,6 @@ async def get_public_profile(
     return PublicProfileResponse(
         username=user["username"],
         name=user["name"],
-        email=user['email'],
         avatar_url=user.get("avatar_url", ""),
         bio=user.get("bio", ""),
         website=user.get("website", ""),

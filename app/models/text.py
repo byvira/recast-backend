@@ -160,6 +160,8 @@ class ExtrasConfig(BaseModel):
     carousel_format: bool = False
     # Send a post back to be shortened when it is over its network's character limit. Off: it is only flagged.
     enforce_char_limits: bool = True
+    # Attach a picture to the posts: one of the brand's own, or one made for the run. Off: the posts are text only.
+    default_picture: bool = True
 
 
 class GenerateTextRequest(BaseModel):

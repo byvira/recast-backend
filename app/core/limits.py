@@ -18,6 +18,8 @@ in the module that uses it.
     DESCRIBE_IMAGE_MAX_MB         4         a picture sent to the vision service for its description
     PUBLISH_VIDEO_MAX_MB          60        a video fetched into memory to be sent to a platform
     BG_REMOVAL_FREE_MB            300       free memory needed before Remove Background runs
+    IMAGES_PER_WORKSPACE_PER_DAY  60        AI pictures one workspace may make in a day (the free picture service has a daily ceiling
+                                            shared by everyone)
 """
 from __future__ import annotations
 
@@ -50,3 +52,4 @@ STORED_AUDIO_MAX_BYTES = _mb("STORED_AUDIO_MAX_MB", 120)
 DESCRIBE_IMAGE_MAX_BYTES = _mb("DESCRIBE_IMAGE_MAX_MB", 4)
 PUBLISH_VIDEO_MAX_BYTES = _mb("PUBLISH_VIDEO_MAX_MB", 60)
 BG_REMOVAL_FREE_MB = int(_number("BG_REMOVAL_FREE_MB", 300))
+IMAGES_PER_WORKSPACE_PER_DAY = int(_number("IMAGES_PER_WORKSPACE_PER_DAY", 60))

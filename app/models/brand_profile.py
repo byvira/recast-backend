@@ -311,9 +311,9 @@ class UpdateVisualIdentityBody(BaseModel):
 
 
 class AddTrainingSampleBody(BaseModel):
-    title: str
+    title: str = Field(max_length=200)
     source_type: Literal["post", "newsletter", "transcript", "notes"]
-    content: str
+    content: str = Field(max_length=20_000)
 
 
 class SetActiveBrandBody(BaseModel):
@@ -331,7 +331,7 @@ class PreviewRewriteBody(BaseModel):
     """My Voices' Playground tab — rewrite arbitrary sample text in this
     brand's real voice. Read-only: never persists anything."""
 
-    sample_text: str
+    sample_text: str = Field(max_length=4_000)
 
 
 class PreviewRewriteResponse(BaseModel):

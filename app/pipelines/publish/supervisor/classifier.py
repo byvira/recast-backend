@@ -34,7 +34,12 @@ _FIXABLE_MESSAGES = [
     "banned hashtag", "hashtag not allowed",
 ]
 
+_AUTH_HINTS = (
+    "token", "permission", "unauthor", "forbidden", "credential", "oauth", "scope", "access", "expired", "authent", "revoked", "login",
+)
+
 _AUTH_MESSAGES = [
+    "token has expired", "expiredtoken", "invalid or expired",
     "token expired", "invalid token", "access revoked",
     "permission denied", "unauthorized", "authentication",
     "oauth", "credentials", "forbidden",
@@ -52,6 +57,18 @@ _FATAL_MESSAGES = [
 ]
 
 
+#: What a member is told when the platform did not answer in time. The post may already be live, so it is never sent again on its own.
+TIMEOUT_NOTE = (
+    "The platform didn't answer in time, so we can't tell if the post went out. Check the platform first. "
+    "If it is there, choose \"I posted this myself\". If it isn't, send it again yourself."
+)
+
+
+def is_timeout(error_code, error_message: str = "") -> bool:
+    text = (error_message or "").lower()
+    return error_code == 408 or "timed out" in text or "took too long" in text
+
+
 def classify_error(
     error_code: int,
     error_message: str,
@@ -66,8 +83,12 @@ def classify_error(
     if any(phrase in message_lower for phrase in _QUOTA_MESSAGES):
         return ErrorType.TRANSIENT
 
-    # Auth check first — a 403 with "token expired" is AUTH not FATAL
-    if error_code in _AUTH_CODES:
+    # Auth check first — a 403 with "token expired" is AUTH not FATAL. A 401 always means the sign-in was refused. A 403 only does
+    # when it says so (or says nothing): platforms also answer 403 for "this content isn't allowed", and treating that as an
+    # expired sign-in sends the member to reconnect an account that is fine.
+    if error_code == 401:
+        return ErrorType.AUTH
+    if error_code == 403 and (not message_lower.strip() or any(hint in message_lower for hint in _AUTH_HINTS)):
         return ErrorType.AUTH
     for phrase in _AUTH_MESSAGES:
         if phrase in message_lower:

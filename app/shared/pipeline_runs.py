@@ -44,7 +44,7 @@ def _now() -> datetime:
 
 
 # What a job keeps for itself: the key that stops double starts and what it needs to start again after a restart.
-_INTERNAL_FIELDS = ("_id", "idem_key", "payload_digest", "active_key", "interrupted", "payload", "restartable", "restart_attempts", "action_secret")
+_INTERNAL_FIELDS = ("_id", "idem_key", "live_run_id", "payload_digest", "active_key", "interrupted", "payload", "restartable", "restart_attempts", "action_secret")
 
 
 def public(doc: Optional[dict]) -> Optional[dict]:
@@ -156,7 +156,8 @@ async def list_runs(
         flt["kind"] = kind
     for key, value in (ref or {}).items():
         flt[f"ref.{key}"] = value
-    return [d async for d in pipeline_runs.find(flt, {"_id": 0}).sort("created_at", -1).limit(100)]
+    # The saved result (up to 400 KB each) is left out of the list; it is on the run itself.
+    return [d async for d in pipeline_runs.find(flt, {"_id": 0, "result": 0}).sort("created_at", -1).limit(100)]
 
 
 async def active_run_for(workspace_id: str, kind: str, ref: dict) -> Optional[dict]:
@@ -419,7 +420,8 @@ async def fail_interrupted() -> int:
             ]}],
         },
         {"$set": {
-            "status": "failed", "error": "This was interrupted when the server restarted. Start it again.",
+            "status": "failed",
+            "error": "This was interrupted when the server restarted. Nothing was lost that you had already saved. Start it again (an upload needs the file sent again).",
             "finished_at": now, "updated_at": now,
         }, "$unset": {"active_key": ""}},
     )

@@ -16,7 +16,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import Field, BaseModel
 
 from app.core.middleware import limiter
 from app.core import limits
@@ -91,6 +91,9 @@ class EditPieceRequest(BaseModel):
     content: Optional[str] = None
     seo: Optional[dict] = None
     publish_options: Optional[dict] = None
+    # The version of the text this edit started from. When sent and the post has moved on (another tab, another member), the edit is
+    # refused instead of silently replacing the newer text.
+    base_version: Optional[int] = None
 
 
 class UpdatePieceMediaRequest(BaseModel):
@@ -227,7 +230,7 @@ async def export_session(
     elif format == "csv":
         body = _pieces_to_csv(pieces)
     else:
-        body = await _build_library_zip(pieces, ctx.workspace_id, session.get("brand_id"))
+        body = await _build_library_zip(pieces, ctx.workspace_id, session.get("brand_id"), only_for_pieces=True)
     return Response(content=body, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
@@ -333,6 +336,11 @@ async def edit_piece(
             await content_pieces.update_one({"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$set": updates})
 
     updated = piece
+    if body.content is not None and piece.get("publish_status") in ("published", "publishing"):
+        # What went out is kept as it was sent; the stored text must keep matching it.
+        raise HTTPException(status_code=409, detail="This post is already published or being published, so its text can't change.")
+    if body.content is not None and body.base_version is not None and body.base_version != piece.get("version_count", 1):
+        raise HTTPException(status_code=409, detail="This post was changed somewhere else while you were editing. Reload it to see the latest text.")
     if body.content is not None:
         updated = await update_piece_content(
             piece_id=piece_id,
@@ -342,6 +350,14 @@ async def edit_piece(
             instruction="User edited content manually",
             actor_user_id=ctx.user_id,
         )
+        if updated and piece.get("approval_status") == "approved":
+            # A post that was approved and is then rewritten has not been reviewed in its new form: it goes back to waiting, and the
+            # scheduled sender only sends approved posts.
+            await content_pieces.update_one(
+                {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+                {"$set": {"approval_status": "pending", "updated_at": datetime.now(timezone.utc)}},
+            )
+            updated = await get_piece(piece_id, ctx.workspace_id) or updated
     else:
         updated = await get_piece(piece_id, ctx.workspace_id)
     if not updated:
@@ -853,6 +869,40 @@ async def archive_piece(
     return updated
 
 
+class ApproveManyRequest(BaseModel):
+    piece_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+@router.post("/pieces/approve-many")
+@limiter.limit("20/minute")
+async def approve_many(
+    request: Request,
+    body: ApproveManyRequest,
+    ctx: WorkspaceContext = Depends(require("approve_content")),
+) -> dict:
+    """Approve the chosen posts in one call (the board's "approve all" used one request per post and hit the per-minute limit). The same
+    rules as approving one at a time: a post that was rejected, or that you wrote where another person must approve, is left and
+    named in `skipped` with the reason."""
+    approved: list[str] = []
+    skipped: list[dict] = []
+    queued = 0
+    for piece_id in dict.fromkeys(body.piece_ids):
+        piece = await get_piece(piece_id, ctx.workspace_id)
+        if not piece or piece.get("deleted"):
+            skipped.append({"piece_id": piece_id, "reason": "This post no longer exists."})
+        elif piece.get("approval_status") == "rejected":
+            skipped.append({"piece_id": piece_id, "reason": "This one was rejected, so it was left as it is."})
+        elif await blocks_self_approval(ctx.workspace_id, ctx.user_id, piece.get("user_id")):
+            skipped.append({"piece_id": piece_id, "reason": "Someone else needs to approve this one, since you wrote it."})
+        else:
+            updated = await update_piece_status(piece_id=piece_id, workspace_id=ctx.workspace_id, approval_status="approved")
+            if updated:
+                approved.append(piece_id)
+                if await promote_approved_intent(updated, ctx.workspace_id) == "queued":
+                    queued += 1
+    return {"approved": approved, "skipped": skipped, "queued_count": queued}
+
+
 @router.post("/approve-waiting")
 @limiter.limit("5/minute")
 async def approve_waiting(
@@ -865,15 +915,20 @@ async def approve_waiting(
     waiting = await content_pieces.find({
         "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "archived": {"$ne": True}, "approval_status": "pending",
     }).limit(500).to_list(length=500)
-    approved = queued = 0
+    approved = queued = skipped = 0
     for doc in waiting:
+        # The same rule as approving one post at a time: people do not approve their own work where the workspace says another
+        # person must.
+        if await blocks_self_approval(ctx.workspace_id, ctx.user_id, doc.get("user_id")):
+            skipped += 1
+            continue
         updated = await update_piece_status(piece_id=doc["piece_id"], workspace_id=ctx.workspace_id, approval_status="approved")
         if not updated:
             continue
         approved += 1
         if await promote_approved_intent(updated, ctx.workspace_id) == "queued":
             queued += 1
-    return {"approved_count": approved, "queued_count": queued}
+    return {"approved_count": approved, "queued_count": queued, "left_for_someone_else": skipped}
 
 
 @router.patch("/sessions/{session_id}/approve-all")
@@ -887,14 +942,14 @@ async def approve_all(
     session = await get_session(session_id, ctx.workspace_id)
     if session and await blocks_self_approval(ctx.workspace_id, ctx.user_id, session.get("user_id")):
         raise HTTPException(status_code=403, detail="Someone else needs to approve these, since you wrote them.")
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found.")
     count = await approve_all_pieces(session_id, ctx.workspace_id)
-    if count == 0:
-        raise HTTPException(status_code=404, detail="Session not found or no pieces.")
     # Posts generated with a planned time are queued now that they are approved.
     queued = 0
     planned = await content_pieces.find({
         "session_id": session_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True},
-        "intended_publish_at": {"$ne": None}, "publish_status": {"$in": [None, "pending"]},
+        "intended_publish_at": {"$ne": None}, "publish_status": {"$in": [None, "pending"]}, "approval_status": "approved",
     }).to_list(length=200)
     for piece in planned:
         if await promote_approved_intent(piece, ctx.workspace_id) == "queued":
@@ -910,6 +965,11 @@ async def remove_piece(
     ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> dict:
     """Soft delete a piece."""
+    existing = await get_piece(piece_id, ctx.workspace_id)
+    if existing and existing.get("publish_status") in ("queued", "publishing"):
+        # The same rule deleting a whole run already follows. A post waiting to go out, or going out this moment, is cancelled first;
+        # otherwise it could go live and then disappear from the library.
+        raise HTTPException(status_code=409, detail="This post is scheduled or being sent. Cancel it first, then you can delete it.")
     deleted = await delete_piece(piece_id, ctx.workspace_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Piece not found.")
@@ -993,6 +1053,13 @@ def _pieces_to_markdown(pieces: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def _csv_safe(value) -> str:
+    """A cell that starts with = + - or @ would run as a formula when the file is opened in a spreadsheet (a post's text is whatever a
+    person or a model wrote), so it is made plain text first."""
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in ("=", "+", "-", "@") else text
+
+
 def _pieces_to_csv(pieces: list[dict]) -> str:
     buf = io.StringIO()
     writer = csv.writer(buf)
@@ -1003,14 +1070,14 @@ def _pieces_to_csv(pieces: list[dict]) -> str:
         created = p.get("created_at")
         created_str = created.isoformat() if isinstance(created, datetime) else str(created or "")
         writer.writerow([
-            p.get("piece_id", ""),
-            p.get("platform", ""),
-            p.get("brand_name", ""),
-            p.get("stage", ""),
+            _csv_safe(p.get("piece_id", "")),
+            _csv_safe(p.get("platform", "")),
+            _csv_safe(p.get("brand_name", "")),
+            _csv_safe(p.get("stage", "")),
             p.get("word_count", ""),
             p.get("char_count", ""),
             created_str,
-            p.get("content", ""),
+            _csv_safe(p.get("content", "")),
         ])
     return buf.getvalue()
 
@@ -1041,7 +1108,7 @@ async def _fetch_media(url: str, client: httpx.AsyncClient, limit: asyncio.Semap
             return None
 
 
-async def _build_library_zip(pieces: list[dict], workspace_id: str, brand_id: Optional[str]) -> bytes:
+async def _build_library_zip(pieces: list[dict], workspace_id: str, brand_id: Optional[str], *, only_for_pieces: bool = False) -> bytes:
     """Posts as individual .txt files in text/, and every audio recording, image and attached media
     in media/ in its real format. Files that cannot be downloaded are listed in README.txt, never
     silently dropped, and never make the whole export fail."""
@@ -1049,8 +1116,12 @@ async def _build_library_zip(pieces: list[dict], workspace_id: str, brand_id: Op
     if brand_id:
         query["brand_id"] = brand_id
     query = {**query, "deleted": {"$ne": True}}
-    audio_docs = await audio_assets.find(query).sort("created_at", -1).to_list(length=500)
-    image_docs = await image_assets.find(query).sort("created_at", -1).to_list(length=500)
+    if only_for_pieces:
+        # One run's export holds that run's own posts and the audio and pictures made for them, not everything else in the workspace.
+        query["source_piece_id"] = {"$in": [p.get("piece_id") for p in pieces if p.get("piece_id")]}
+    # A recording's word list and a picture's layers are the large parts of these records and an export does not use them.
+    audio_docs = await audio_assets.find(query, {"transcript": 0, "approved_master_transcript": 0, "comments": 0}).sort("created_at", -1).to_list(length=500)
+    image_docs = await image_assets.find(query, {"slides.layers": 0, "comments": 0}).sort("created_at", -1).to_list(length=500)
 
     media_ids = {a.get("media_id") for a in audio_docs if a.get("media_id")}
     for a in audio_docs:

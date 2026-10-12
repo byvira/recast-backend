@@ -215,7 +215,7 @@ def _completed_card(doc: dict) -> dict:
 
 
 @router.get("/control-tower")
-@limiter.limit("60/minute")
+@limiter.limit("120/minute")
 async def control_tower(
     request: Request,
     ctx: WorkspaceContext = Depends(get_current_workspace),
@@ -298,6 +298,11 @@ async def _live_work(workspace_id: str) -> list[dict]:
         campaign_id = (run.get("ref") or {}).get("campaign_id")
         if campaign_id:
             covered.add(f"campaign:{campaign_id}")
+        # A job started from a page that also reports its own live progress carries that live entry's id in its saved
+        # payload; the saved run is the one with controls, so the live twin is not listed as a second card.
+        live_twin = run.get("live_run_id") or (run.get("payload") or {}).get("live_run_id")
+        if live_twin:
+            covered.add(str(live_twin))
         public = pipeline_runs.public(run) or {}
         cards.append({
             "id": run["id"],
@@ -614,6 +619,10 @@ async def set_autonomy_threshold(
     return await refresh_tuple(ctx.workspace_id, body.platform)
 
 
+#: How often a live stream looks at its member's access again.
+_RECHECK_SECONDS = 60
+
+
 @router.get("/stream")
 async def stream_activity(
     request: Request,
@@ -632,12 +641,24 @@ async def stream_activity(
     cursor_read = await inbox_mod.read_before(workspace_id, user_id)
 
     async def events():
+        nonlocal role, cursor_read
         q = live.subscribe(workspace_id)
+        last_checked = asyncio.get_event_loop().time()
         try:
             yield "event: ready\ndata: {}\n\n"
             while True:
                 if await request.is_disconnected() or live.is_dropped(workspace_id, q):
                     break
+                # Membership is looked at again every minute: a person removed from the workspace (or whose role changed) must not keep
+                # receiving its activity on a tab left open, and "mark all read" must show up in the rows sent after it.
+                if asyncio.get_event_loop().time() - last_checked > _RECHECK_SECONDS:
+                    last_checked = asyncio.get_event_loop().time()
+                    current = await workspace_members.find_one({"workspace_id": workspace_id, "user_id": user_id})
+                    if not current or current.get("status") != "active":
+                        yield "event: closed\ndata: {}\n\n"
+                        break
+                    role = current.get("role", "")
+                    cursor_read = await inbox_mod.read_before(workspace_id, user_id)
                 try:
                     row = await asyncio.wait_for(q.get(), timeout=_KEEPALIVE_SECONDS)
                 except asyncio.TimeoutError:

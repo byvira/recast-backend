@@ -167,10 +167,16 @@ def _log_task_result(task: "asyncio.Task[str | None]") -> None:
         logger.error("emit_event_background task crashed: %s", exc)
 
 
+_background_tasks: set = set()
+
+
 def emit_event_background(**kwargs: Any) -> "asyncio.Task[str | None]":
     """Fire-and-forget wrapper — schedules :func:`emit_event` on the running loop
     so it never sits on a request's await path. Exceptions are logged, not raised.
     """
     task = asyncio.create_task(emit_event(**kwargs))
+    # The event loop keeps only a weak reference to a task, so one nobody holds can be collected before it finishes.
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     task.add_done_callback(_log_task_result)
     return task

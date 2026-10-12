@@ -176,10 +176,10 @@ async def test_accept_invite_already_member_conflict(api_client, make_client):
     res = await api_client.post(
         f"/api/v1/invites/{ws_id}", json={"email": member_profile["email"], "role": "viewer"}
     )
-    token = res.json()["token"]
-
-    res = await member_client.post(f"/api/v1/invites/accept/{token}")
+    # Someone who is already a member is refused when the invite is made, so no second invite exists to accept.
     assert res.status_code == 409
+    accepted_again = await member_client.post("/api/v1/invites/accept/not-a-real-token")
+    assert accepted_again.status_code == 404
 
 
 async def test_accept_invite_expired_rejected(api_client, make_client):

@@ -35,9 +35,15 @@ class AttachmentRejected(Exception):
 
 
 def _clean_name(filename: str) -> str:
-    base = re.split(r"[\/]", filename or "file")[-1]
-    base = re.sub(r"[\x00-\x1f\x7f]", "", base).strip()
-    return (base or "file")[:120]
+    base = re.split(r"[\\/]", filename or "file")[-1]
+    base = re.sub(r"[\x00-\x1f\x7f]", "", base).strip() or "file"
+    if len(base) <= 120:
+        return base
+    # Too long: the middle is cut, never the extension (a name cut to 120 characters used to lose ".pdf" and then fail its own check).
+    stem, dot, ext = base.rpartition(".")
+    if dot and 0 < len(ext) <= 10:
+        return stem[: 120 - len(ext) - 1] + "." + ext
+    return base[:120]
 
 
 def _extension(name: str) -> str:
@@ -136,7 +142,9 @@ async def claim(file_ids: list[str], *, uploader_id: str, ticket_id: str) -> lis
         raise AttachmentRejected("The same file was added twice.")
     if len(file_ids) > MAX_ATTACHMENTS_PER_MESSAGE:
         raise AttachmentRejected(f"You can attach up to {MAX_ATTACHMENTS_PER_MESSAGE} files at a time.")
-    docs = await support_files.find({"id": {"$in": file_ids}, "uploaded_by": uploader_id}).to_list(len(file_ids))
+    docs = await support_files.find(
+        {"id": {"$in": file_ids}, "uploaded_by": uploader_id, "deleted": {"$ne": True}}
+    ).to_list(len(file_ids))
     by_id = {d["id"]: d for d in docs}
     entries: list[dict] = []
     for fid in file_ids:

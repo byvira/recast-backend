@@ -177,6 +177,11 @@ async def generate_stream(
         pipeline_error    — something failed
         ping              — keepalive every 45s
     """
+    # The same limit on running jobs the saved runs follow, so ten streams open at once cannot all run.
+    from app.shared import pipeline_runs
+
+    await pipeline_runs.assert_capacity(ctx.workspace_id)
+
     # Validate brand is in the caller's workspace and complete
     brand = await brand_profiles.find_one({
         "id":           brand_id,
@@ -287,7 +292,8 @@ async def generate_stream(
         except Exception as exc:
             logger.error("SSE stream error — session %s: %s", session_id, exc)
             yield _sse("pipeline_error", {
-                "message":     str(exc),
+                # The detail is in the log. What the browser gets is plain words, never a library's own error text.
+                "message":     "Something went wrong while writing your posts. Please try again.",
                 "recoverable": False,
             })
 
@@ -542,7 +548,7 @@ async def _run_and_report(
                 "Pipeline failed — session %s: %s",
                 session_id, exc, exc_info=True,
             )
-            await emitter.emit_error(message=str(exc), recoverable=False)
+            await emitter.emit_error(message="Something went wrong while writing your posts. Please try again.", recoverable=False)
 
     from app.pipelines.text.events import emit_run_completed
     await emit_run_completed(

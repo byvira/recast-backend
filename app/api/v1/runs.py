@@ -44,6 +44,12 @@ async def control_run(
     action: Literal["pause", "resume", "cancel"],
     ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> dict[str, Any]:
+    existing = await pipeline_runs.get_run(run_id, ctx.workspace_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="That run was not found.")
+    # Whoever started the work, or an owner or admin, can pause, resume or cancel it; another member cannot stop someone's publish.
+    if existing.get("created_by") != ctx.user_id and ctx.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only the person who started this, or an admin, can pause or cancel it.")
     doc = await pipeline_runs.control(run_id, ctx.workspace_id, action)
     if not doc:
         raise HTTPException(status_code=404, detail="That run was not found.")

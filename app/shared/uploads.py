@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from typing import BinaryIO, Optional
 
 from fastapi import HTTPException, UploadFile
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.core import limits
 
@@ -91,6 +91,23 @@ async def spool_limited(file: UploadFile, max_bytes: int, *, detail: Optional[st
     except BaseException:
         spool.close()
         raise
+
+
+def upright(data: bytes) -> bytes:
+    """The picture turned the way it was held when taken. A phone photo is stored sideways with a note saying how to turn it; anything
+    that ignores the note (drawing text on it, applying looks, cropping) shows it on its side. Returned unchanged when there is no
+    note or the file cannot be read."""
+    try:
+        with Image.open(io.BytesIO(data)) as picture:
+            if (picture.getexif() or {}).get(0x0112, 1) in (None, 1):
+                return data
+            fixed = ImageOps.exif_transpose(picture)
+            kind = picture.format or "JPEG"
+            out = io.BytesIO()
+            fixed.save(out, format=kind, **({"quality": 95} if kind in ("JPEG", "WEBP") else {}))
+            return out.getvalue()
+    except Exception:  # noqa: BLE001 - a file that cannot be turned is kept as it came
+        return data
 
 
 def assert_image_size(data: bytes, *, max_pixels: int = MAX_IMAGE_PIXELS) -> tuple[int, int]:

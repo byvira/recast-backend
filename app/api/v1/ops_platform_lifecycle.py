@@ -80,11 +80,10 @@ def _conflict() -> HTTPException:
 async def _connection_summary() -> dict[str, dict[str, int]]:
     """Per platform key: how many workspaces are connected, how they are doing, and how many tokens end within 7 days."""
     soon = datetime.now(timezone.utc) + timedelta(days=7)
-    rows = await workspace_connections.find(
-        {"is_active": True}, {"platform": 1, "health": 1, "expires_at": 1}
-    ).to_list(length=20000)
+    # One row at a time: only the counts are kept, never the list of connections.
+    cursor = workspace_connections.find({"is_active": True}, {"platform": 1, "health": 1, "expires_at": 1})
     out: dict[str, dict[str, int]] = {}
-    for row in rows:
+    async for row in cursor:
         entry = out.setdefault(row["platform"], {"connected": 0, "healthy": 0, "degraded": 0, "broken": 0, "expiring": 0})
         entry["connected"] += 1
         state = (row.get("health") or {}).get("state", "healthy")

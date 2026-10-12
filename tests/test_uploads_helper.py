@@ -104,3 +104,21 @@ async def test_a_link_that_trickles_is_stopped_by_the_total_deadline(monkeypatch
     with pytest.raises(link_fetch.LinkFetchError) as err:
         await link_fetch.fetch_audio("https://example.com/a.mp3", 1000)
     assert "too long" in str(err.value)
+
+
+def test_a_photo_stored_sideways_is_turned_upright():
+    out = io.BytesIO()
+    picture = Image.new("RGB", (40, 20), (200, 10, 10))  # 40 wide, 20 high
+    exif = Image.Exif()
+    exif[0x0112] = 6  # the camera note for "turn a quarter turn"
+    picture.save(out, format="JPEG", exif=exif)
+    with Image.open(io.BytesIO(uploads.upright(out.getvalue()))) as fixed:
+        assert fixed.size == (20, 40)
+
+
+def test_a_picture_with_no_turning_note_is_returned_untouched():
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(out, format="PNG")
+    data = out.getvalue()
+    assert uploads.upright(data) is data
+    assert uploads.upright(b"not a picture") == b"not a picture"

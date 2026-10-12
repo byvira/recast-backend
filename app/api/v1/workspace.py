@@ -1,6 +1,6 @@
 """Workspace creation and read routes."""
 
-from datetime import datetime, timezone
+from datetime import timedelta, datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -16,6 +16,11 @@ from app.core.tiers import TIER_DEFAULTS
 from app.db.mongo import users, workspaces, workspace_members
 from app.models.workspace import CreateWorkspaceBody, MediaUploadLimits, WorkspaceRole
 
+#: How long a deleted workspace is kept before everything in it is removed for good.
+DELETE_HOLD_DAYS = 30
+#: The most workspaces one person can own at a time (their personal one is not counted).
+MAX_OWNED_WORKSPACES = 50
+
 router = APIRouter()
 
 
@@ -25,7 +30,7 @@ class UpdateWorkspaceBody(BaseModel):
     # precedence chain that consumes this. Opaque string, no validation
     # against any fixed set; omit the field (not empty string) to leave the
     # current value untouched.
-    language: Optional[str] = None
+    language: Optional[str] = Field(None, max_length=40, pattern=r"^[A-Za-z][A-Za-z _\-()]*$")
     # Per-kind max upload size (Plan & Quotas) — app.api.v1.media reads
     # this instead of a hardcoded constant. Omit the field to leave the
     # current value (or the hardcoded default, if never set) untouched.
@@ -46,6 +51,13 @@ async def create_workspace(
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Create a workspace and add the caller as its owner, in one operation."""
+    # Until plans are billed, the number of workspaces one person can own is what limits this: without it a person could make any
+    # number of workspaces on the largest plan.
+    owned = await workspaces.count_documents(
+        {"owner_id": current_user["id"], "is_personal": False, "deleted_at": {"$exists": False}}
+    )
+    if owned >= MAX_OWNED_WORKSPACES:
+        raise HTTPException(status_code=400, detail=f"You already own {MAX_OWNED_WORKSPACES} workspaces, which is the most one person can have.")
     now = datetime.now(timezone.utc)
     workspace_id = str(uuid4())
     tier_config = TIER_DEFAULTS[body.tier]
@@ -98,7 +110,7 @@ async def list_my_workspaces(
     ws_ids = [m["workspace_id"] for m in memberships]
     ws_docs = {
         w["id"]: w
-        for w in await workspaces.find({"id": {"$in": ws_ids}}).to_list(length=200)
+        for w in await workspaces.find({"id": {"$in": ws_ids}, "deleted_at": {"$exists": False}}).to_list(length=200)
     }
     default_id = current_user.get("default_workspace_id")
     items = []
@@ -127,7 +139,7 @@ async def get_workspace(
 ) -> dict[str, Any]:
     """Fetch a workspace — caller must be a member."""
     doc = await workspaces.find_one({"id": workspace_id})
-    if not doc:
+    if not doc or doc.get("deleted_at"):
         raise HTTPException(status_code=404, detail="Workspace not found.")
 
     member = await workspace_members.find_one(
@@ -219,13 +231,21 @@ async def delete_workspace(
     member_ids = {m["user_id"] for m in members if m.get("user_id")}
     member_ids.add(current_user["id"])
 
-    await workspaces.delete_one({"id": workspace_id})
-    await workspace_members.delete_many({"workspace_id": workspace_id})
-    # Reset default_workspace_id for any member who had this as their default
-    await users.update_many(
-        {"default_workspace_id": workspace_id},
-        {"$set": {"default_workspace_id": None}},
+    # Not removed at once: the workspace is hidden from everyone and kept for DELETE_HOLD_DAYS, so a mistake can be undone (see
+    # restore below). After that a daily job removes everything it owned (see app.workers.workspace_purge).
+    now = datetime.now(timezone.utc)
+    await workspaces.update_one(
+        {"id": workspace_id},
+        {"$set": {"deleted_at": now, "purge_after": now + timedelta(days=DELETE_HOLD_DAYS), "deleted_by": current_user["id"]}},
     )
+    # Everyone who had it as their default is moved to a workspace that still exists.
+    from app.core.workspace import usable_workspace_id
+
+    for uid in member_ids:
+        await users.update_one(
+            {"id": uid, "default_workspace_id": workspace_id},
+            {"$set": {"default_workspace_id": await usable_workspace_id(uid)}},
+        )
 
     recipients = await users.find({"id": {"$in": list(member_ids)}}, {"email": 1}).to_list(length=200)
     for r in recipients:
@@ -236,7 +256,26 @@ async def delete_workspace(
                 {"WORKSPACE_NAME": ws["name"], "DELETED_BY_NAME": current_user["name"]},
             )
 
-    return {"workspace_id": workspace_id, "deleted": True}
+    return {"workspace_id": workspace_id, "deleted": True, "restorable_until": (now + timedelta(days=DELETE_HOLD_DAYS)).isoformat()}
+
+
+@router.post("/{workspace_id}/restore")
+@limiter.limit("10/minute")
+async def restore_workspace(
+    request: Request,
+    workspace_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Bring back a workspace deleted in the last DELETE_HOLD_DAYS days. Owner only."""
+    ws = await workspaces.find_one({"id": workspace_id})
+    if not ws or not ws.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="There is no deleted workspace with that id.")
+    if ws.get("owner_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can bring a workspace back.")
+    await workspaces.update_one(
+        {"id": workspace_id}, {"$unset": {"deleted_at": "", "purge_after": "", "deleted_by": ""}},
+    )
+    return {"workspace_id": workspace_id, "restored": True}
 
 
 @router.put("/{workspace_id}/members/{member_user_id}/role")
@@ -258,6 +297,19 @@ async def set_member_role(
     target = await workspace_members.find_one(
         {"workspace_id": workspace_id, "user_id": member_user_id}, {"role": 1}
     )
+    handing_over = body.role == WorkspaceRole.OWNER and ws and ws.get("owner_id") != member_user_id
+    if handing_over:
+        # There is one owner. Making someone else the owner is a hand-over: only the current owner can do it, the workspace's owner
+        # becomes that person, and the previous owner stays on as an admin. (Two people holding the owner role while only one was the
+        # owner on record left deleting the workspace and changing the plan in a half-way state.)
+        if ws.get("owner_id") != current_user["id"]:
+            raise HTTPException(status_code=403, detail="Only the current owner can hand the workspace to someone else.")
+        if not target:
+            raise HTTPException(status_code=404, detail="Member not found.")
+        await workspaces.update_one({"id": workspace_id}, {"$set": {"owner_id": member_user_id}})
+        await workspace_members.update_one(
+            {"workspace_id": workspace_id, "user_id": current_user["id"]}, {"$set": {"role": WorkspaceRole.ADMIN.value}},
+        )
     res = await workspace_members.update_one(
         {"workspace_id": workspace_id, "user_id": member_user_id},
         {"$set": {"role": body.role.value}},
@@ -329,8 +381,10 @@ async def remove_member(
             },
         )
 
+    from app.core.workspace import usable_workspace_id
+
     await users.update_one(
         {"id": member_user_id, "default_workspace_id": workspace_id},
-        {"$set": {"default_workspace_id": None}},
+        {"$set": {"default_workspace_id": await usable_workspace_id(member_user_id)}},
     )
     return {"workspace_id": workspace_id, "user_id": member_user_id, "removed": True}

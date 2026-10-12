@@ -490,12 +490,16 @@ async def top_performers(
     }
 
 
+#: The most posts one month of the calendar reads. A month with more says so instead of quietly leaving the rest out.
+CALENDAR_LIMIT = 2000
+
+
 @router.get("/calendar")
 @limiter.limit("30/minute")
 async def get_calendar(
     request:       Request,
-    year:          int  = Query(default=None),
-    month:         int  = Query(default=None),
+    year:          int  = Query(default=None, ge=2000, le=2100),
+    month:         int  = Query(default=None, ge=1, le=12),
     # JavaScript's Date.getTimezoneOffset(): minutes the viewer's clock is
     # behind UTC (India is -330). Days are bucketed on the viewer's own clock,
     # so a post scheduled for 11:30pm local shows on that day, not the next.
@@ -553,8 +557,10 @@ async def get_calendar(
                 },
             ],
         },
+        {"hooks": 0, "quality_issues": 0, "attachments": 0},
         sort=[("created_at", -1)],
-    ).to_list(length=500)
+    ).to_list(length=CALENDAR_LIMIT)
+    month_truncated = len(pieces) >= CALENDAR_LIMIT
 
     # One lookup for every campaign referenced this month, not one per piece.
     campaign_ids = {piece["campaign_id"] for piece in pieces if piece.get("campaign_id")}
@@ -651,4 +657,5 @@ async def get_calendar(
         "month":   month,
         "days":    days,
         "summary": summary,
+        "truncated": month_truncated,
     }

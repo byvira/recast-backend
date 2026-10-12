@@ -210,14 +210,26 @@ async def upload_attachment(
     """Store one file privately and return its id, to be attached to a ticket
     or reply. A file that fails the check is refused; if it was meant for a
     ticket, staff are told on that ticket."""
+    if ctx.user.get("support_muted"):
+        raise HTTPException(status_code=403, detail="Support is paused for your account. Please email hello@recast.so.")
     since = datetime.now(timezone.utc) - timedelta(hours=1)
+    # Refused files count too: they cost a scan each, and a repeated rejected attempt must not be free.
+    blocked = await support_ticket_events.count_documents(
+        {"actor_id": ctx.user_id, "type": "attachment_blocked", "created_at": {"$gte": since}}
+    )
     if (
-        await support_files.count_documents({"uploaded_by": ctx.user_id, "created_at": {"$gte": since}})
+        await support_files.count_documents({"uploaded_by": ctx.user_id, "created_at": {"$gte": since}}) + blocked
         >= rules.MAX_UPLOADS_PER_MEMBER_PER_HOUR
     ):
         raise _too_many("You have uploaded a lot of files in the last hour. Please try again later.")
 
-    data = await file.read(max(rules.MAX_ATTACHMENT_BYTES, rules.MAX_VIDEO_BYTES) + 1)
+    from app.shared.uploads import read_limited
+
+    # Read in pieces and stopped at the largest size any attachment may be; the file check below applies each kind's own limit.
+    data = await read_limited(
+        file, max(rules.MAX_ATTACHMENT_BYTES, rules.MAX_VIDEO_BYTES),
+        detail="That file is too large to attach.", status_code=422,
+    )
     try:
         doc = await files_service.store(
             uploader_id=ctx.user_id,
@@ -232,7 +244,16 @@ async def upload_attachment(
             ticket = await support_tickets.find_one(
                 {"id": ticket_id, "workspace_id": ctx.workspace_id, "created_by": ctx.user_id}
             )
-            if ticket:
+            already_noted = ticket and await support_ticket_events.count_documents(
+                {"ticket_id": ticket_id, "type": "attachment_blocked", "created_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=1)}}
+            )
+            if ticket and already_noted:
+                # One note an hour is enough: a repeated attempt must not fill the ticket with notes.
+                await log_event(
+                    ticket_id, actor_type="member", actor_id=ctx.user_id, actor_name=ctx.user.get("name", ""),
+                    type="attachment_blocked", data={"reason": str(exc)},
+                )
+            elif ticket:
                 now = datetime.now(timezone.utc)
                 note = {
                     "sender": "system",
@@ -247,7 +268,7 @@ async def upload_attachment(
                     {"$push": {"messages": note}, "$set": {"updated_at": now, "unread_for_ops": True}},
                 )
                 await log_event(
-                    ticket_id, actor_type="system", actor_id=None, actor_name="Ekavo",
+                    ticket_id, actor_type="member", actor_id=ctx.user_id, actor_name=ctx.user.get("name", ""),
                     type="attachment_blocked", data={"reason": str(exc)},
                 )
         raise HTTPException(status_code=422, detail=str(exc))
@@ -275,11 +296,30 @@ async def download_attachment(
     return await files_service.signed_link(file_doc)
 
 
+#: Tickets being filed right now, by member and category. A double click or a second tab would otherwise pass the duplicate check
+#: together (neither ticket is saved yet) and file two.
+_FILING: set[str] = set()
+
+
 @router.post("/tickets")
 @limiter.limit("10/minute")
 async def create_ticket(
     request: Request, body: SupportTicketCreate, ctx: WorkspaceContext = Depends(get_current_workspace)
 ) -> SupportTicketMemberView:
+    key = f"{ctx.workspace_id}:{ctx.user_id}:{body.category}"
+    if key in _FILING and not body.allow_duplicate:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "possible_duplicate", "message": "Your ticket is already being filed. Give it a moment.", "existing_ticket_id": None},
+        )
+    _FILING.add(key)
+    try:
+        return await _create_ticket(request, body, ctx)
+    finally:
+        _FILING.discard(key)
+
+
+async def _create_ticket(request: Request, body: SupportTicketCreate, ctx: WorkspaceContext) -> SupportTicketMemberView:
     if ctx.user.get("support_muted"):
         raise HTTPException(
             status_code=403, detail="Filing tickets is paused for your account. Please email hello@recast.so."
@@ -307,6 +347,13 @@ async def create_ticket(
                 },
             )
 
+    severity_value = body.severity.value
+    if severity_value == "P1" and await support_tickets.count_documents(
+        {"created_by": ctx.user_id, "severity": "P1", "created_at": {"$gte": now - timedelta(days=1)}}
+    ) >= 2:
+        # Urgent is for what is blocking work. After two in a day the rest are queued as normal, and staff can raise one.
+        severity_value = "P2"
+
     ticket_id = str(uuid4())
     attachments = await _claim_or_400(body.attachment_ids, ctx, ticket_id)
     doc = {
@@ -320,7 +367,7 @@ async def create_ticket(
         "created_by_email": ctx.user.get("email"),
         "subject": body.subject,
         "category": body.category,
-        "severity": body.severity.value,
+        "severity": severity_value,
         "status": "open",
         "messages": [
             {
@@ -339,7 +386,7 @@ async def create_ticket(
         "source_context": body.source_context.model_dump() if body.source_context else None,
         "client_env": body.client_env.model_dump(exclude_none=True) if body.client_env else None,
         "snoozed_until": None,
-        "sla": sla.compute(now, body.severity.value, ctx.workspace.get("tier"), await sla.get_config()),
+        "sla": sla.compute(now, severity_value, ctx.workspace.get("tier"), await sla.get_config()),
         "unread_for_member": False,
         "unread_for_ops": True,
         "last_member_message_at": now,
@@ -349,7 +396,13 @@ async def create_ticket(
         "resolved_at": None,
         "closed_at": None,
     }
-    await support_tickets.insert_one(doc)
+    try:
+        await support_tickets.insert_one(doc)
+    except Exception:
+        # The files were attached to this ticket a moment ago. With the ticket not saved they go back to unattached, so the member can
+        # send the form again with them instead of being told they "can't be attached".
+        await support_files.update_many({"id": {"$in": [a["file_id"] for a in attachments]}}, {"$set": {"ticket_id": None}})
+        raise
     await log_event(
         doc["id"], actor_type="member", actor_id=ctx.user_id, actor_name=doc["created_by_name"],
         type="created", data={"category": body.category, "severity": body.severity.value},
@@ -374,6 +427,9 @@ async def add_message(
     body: SupportMessageCreate,
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> SupportTicketMemberView:
+    if ctx.user.get("support_muted"):
+        # Pausing a member's support access covers replying and uploading too, not only opening new tickets.
+        raise HTTPException(status_code=403, detail="Support is paused for your account. Please email hello@recast.so.")
     ticket = await _own_ticket(ticket_id, ctx)
     if ticket["status"] == "closed":
         raise HTTPException(
@@ -400,9 +456,10 @@ async def add_message(
         set_fields.update(transition_fields(reopen_from, "investigating", now))
         set_fields["reminder_sent_at"] = None
         set_fields["close_warning_sent_at"] = None
-    await support_tickets.update_one(
-        {"id": ticket_id}, {"$push": {"messages": message.model_dump()}, "$set": set_fields}
-    )
+    flt = {"id": ticket_id, "status": ticket["status"]}
+    written = await support_tickets.update_one(flt, {"$push": {"messages": message.model_dump()}, "$set": set_fields})
+    if not written.matched_count:
+        raise HTTPException(status_code=409, detail="This ticket just changed. Reload it and send your message again.")
     await log_event(
         ticket_id, actor_type="member", actor_id=ctx.user_id, actor_name=ctx.user.get("name", ""),
         type="reopened" if reopen_from == "resolved" else "replied",
@@ -428,10 +485,12 @@ async def reopen_ticket(
         raise HTTPException(status_code=409, detail="Only a resolved ticket can be reopened.")
     now = datetime.now(timezone.utc)
     fields = transition_fields(ticket["status"], "investigating", now)
-    await support_tickets.update_one(
-        {"id": ticket_id},
+    reopened = await support_tickets.update_one(
+        {"id": ticket_id, "status": "resolved"},
         {"$set": {**fields, "updated_at": now, "unread_for_ops": True, "close_warning_sent_at": None}},
     )
+    if not reopened.matched_count:
+        raise HTTPException(status_code=409, detail="This ticket just changed. Reload it and look again.")
     await log_event(
         ticket_id, actor_type="member", actor_id=ctx.user_id, actor_name=ctx.user.get("name", ""),
         type="reopened",
@@ -458,10 +517,12 @@ async def close_ticket(
     now = datetime.now(timezone.utc)
     fields = transition_fields(ticket["status"], "closed", now)
     reason = "confirmed_resolved" if ticket["status"] == "resolved" else "withdrawn"
-    await support_tickets.update_one(
-        {"id": ticket_id},
+    closed = await support_tickets.update_one(
+        {"id": ticket_id, "status": ticket["status"]},
         {"$set": {**fields, "closed_reason": reason, "updated_at": now, "unread_for_ops": True}},
     )
+    if not closed.matched_count:
+        raise HTTPException(status_code=409, detail="This ticket just changed. Reload it and look again.")
     await log_event(
         ticket_id, actor_type="member", actor_id=ctx.user_id, actor_name=ctx.user.get("name", ""),
         type="closed", data={"reason": reason, "note": body.reason},
@@ -491,7 +552,10 @@ async def rate_ticket(
     if ticket["status"] not in ("resolved", "closed"):
         raise HTTPException(status_code=409, detail="You can rate a ticket once it is resolved.")
     now = datetime.now(timezone.utc)
-    rating = {"value": body.value, "comment": (body.comment or "").strip() or None, "at": now}
+    # Changing only the thumb keeps the comment already written; a comment is replaced only when a new one is sent.
+    kept = (ticket.get("rating") or {}).get("comment")
+    comment = (body.comment or "").strip() or kept
+    rating = {"value": body.value, "comment": comment, "at": now}
     await support_tickets.update_one({"id": ticket_id}, {"$set": {"rating": rating, "updated_at": now}})
     await log_event(
         ticket_id, actor_type="member", actor_id=ctx.user_id, actor_name=ctx.user.get("name", ""),

@@ -499,7 +499,6 @@ async def refresh_tokens(
 async def logout(
     request: Request,
     response: Response,
-    current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, str]:
     """Invalidate the current session by blacklisting tokens and clearing cookies.
 
@@ -533,6 +532,10 @@ async def logout(
             token = auth_header[7:]
 
     refresh_token = request.cookies.get("refresh_token")
+    if not token and not refresh_token:
+        raise HTTPException(status_code=401, detail="Not authenticated.")
+    # A session whose access token has already expired can still sign out: the tokens are ended and the cookies cleared whether or
+    # not they are still valid. (Requiring a valid access token left the refresh cookie alive after "Sign out" on an idle tab.)
     for each in (token, refresh_token):
         if each:
             await blacklist_token(each)
@@ -631,7 +634,9 @@ async def get_dev_last_otp(request: Request, identifier: str) -> dict[str, str]:
     there is nothing to leak by reading one back. 404s if no OTP is
     currently stored (none requested yet, or already consumed/expired).
     """
-    if settings.ENVIRONMENT == "production":
+    # Only a named development or test environment serves this. A staging server called anything else would otherwise return the live
+    # code for any account, which is a full account takeover.
+    if settings.ENVIRONMENT.lower() not in ("development", "dev", "local", "test", "testing"):
         raise HTTPException(status_code=404)
 
     normalized = normalize_identifier(identifier)

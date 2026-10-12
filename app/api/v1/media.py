@@ -74,7 +74,8 @@ ALLOWED_MIME_TYPES: dict[MediaKind, set[str]] = {
         "video/x-msvideo", "video/avi", "video/msvideo",
         "video/x-flv",
     },
-    MediaKind.AUDIO: {"audio/mpeg", "audio/wav", "audio/mp4", "audio/webm"},
+    # audio/ogg is what Firefox records in; it is read the same way as the others (soundfile and the speech service both take Ogg).
+    MediaKind.AUDIO: {"audio/mpeg", "audio/wav", "audio/mp4", "audio/webm", "audio/ogg"},
 }
 
 _MIME_TO_UPLOAD_TYPE: dict[MediaKind, UploadContentType] = {
@@ -118,7 +119,7 @@ async def _upload_media(request: Request, file: UploadFile, ctx: WorkspaceContex
             detail=f"Unsupported media type '{file.content_type}'. Allowed: {', '.join(allowed)}.",
         )
 
-    from app.shared.uploads import assert_image_size, read_limited
+    from app.shared.uploads import assert_image_size, read_limited, upright
 
     max_bytes = await _max_bytes_for(kind, ctx.workspace_id)
     contents = await read_limited(
@@ -129,6 +130,7 @@ async def _upload_media(request: Request, file: UploadFile, ctx: WorkspaceContex
         from app.agents.content_guard.media import assert_image_ok
 
         assert_image_size(contents)
+        contents = upright(contents)
 
         await assert_image_ok(contents, file.content_type or "image/jpeg", workspace_id=ctx.workspace_id, where="upload")
     spoken_words = None

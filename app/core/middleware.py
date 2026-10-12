@@ -156,7 +156,19 @@ class MaxBodySizeMiddleware:
 # Registered in main.py:
 # app.state.limiter = limiter
 #
-limiter = Limiter(key_func=get_remote_address)
+def client_key(request: Request) -> str:
+    """Who a rate limit counts. Behind the host's proxy the last entry of X-Forwarded-For is the address that proxy saw; the first
+    entries are whatever the caller chose to send, so trusting them would give every request a new bucket. Without the header (a
+    direct connection, tests) it is the connecting address."""
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        last = forwarded.split(",")[-1].strip()
+        if last:
+            return last
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=client_key)
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Log all incoming requests with request tracing and latency."""

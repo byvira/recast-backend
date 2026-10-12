@@ -47,7 +47,8 @@ async def get_member(workspace_id: str, user_id: str) -> dict:
     member = await workspace_members.find_one(
         {"workspace_id": workspace_id, "user_id": user_id}
     )
-    if not member:
+    if not member or member.get("status", "active") != "active":
+        # The same rule as resolving a workspace for a request: a member who has not accepted (or was suspended) has no rights yet.
         raise HTTPException(status_code=403, detail="Not a member of this workspace.")
     return member
 

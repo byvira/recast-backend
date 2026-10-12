@@ -119,7 +119,11 @@ async def test_wordpress_sign_in_is_checked_and_a_bad_password_is_explained(fake
         await wordpress.verify("https://blog.example.com", "sam", "wrong")
 
 
-async def test_a_wordpress_post_is_a_draft_by_default_with_a_cover_picture(fake):
+async def test_a_wordpress_post_is_a_draft_by_default_with_a_cover_picture(fake, monkeypatch):
+    async def allow(url):
+        return None
+
+    monkeypatch.setattr(common, "assert_safe_url", allow)  # the site's address is checked again before each send
     fake.replies[("POST", "/wp-json/wp/v2/media")] = (201, {"id": 55})
     fake.replies[("GET", "/cover.jpg")] = (200, {})
     fake.replies[("POST", "/wp-json/wp/v2/posts")] = (201, {"id": 90, "link": "https://blog.example.com/?p=90"})
@@ -135,7 +139,11 @@ async def test_a_wordpress_post_is_a_draft_by_default_with_a_cover_picture(fake)
     assert "author" not in body
 
 
-async def test_a_wordpress_refusal_says_to_reconnect_and_a_failed_cover_is_only_a_note(fake):
+async def test_a_wordpress_refusal_says_to_reconnect_and_a_failed_cover_is_only_a_note(fake, monkeypatch):
+    async def allow(url):
+        return None
+
+    monkeypatch.setattr(common, "assert_safe_url", allow)
     fake.replies[("POST", "/wp-json/wp/v2/posts")] = (401, {"message": "no"})
     result = await wordpress.publish(
         site="https://x", username="u", password="p", piece_id="p1", title="T", content="c", excerpt="", slug="", status="publish",

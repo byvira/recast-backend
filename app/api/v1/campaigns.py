@@ -365,9 +365,15 @@ async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> 
     if not piece_ids:
         return {}
     query = {"workspace_id": workspace_id, "source_piece_id": {"$in": piece_ids}, "deleted": {"$ne": True}}
-    audio = await audio_assets.find(query).to_list(length=None)
+    # Only the few fields this listing uses are read; a recording's transcript and a picture's layers are large and not needed here.
+    audio = await audio_assets.find(
+        query, {"_id": 0, "media_id": 1, "title": 1, "source_piece_id": 1},
+    ).to_list(length=2000)
     # a picture that was made again is replaced: the old one stays in the library but is not shown on the post
-    images = await image_assets.find({**query, "replaced_by": {"$exists": False}}).to_list(length=None)
+    images = await image_assets.find(
+        {**query, "replaced_by": {"$exists": False}},
+        {"_id": 0, "title": 1, "source_piece_id": 1, "slides.media_id": 1},
+    ).to_list(length=2000)
     media_ids = {a.get("media_id") for a in audio if a.get("media_id")}
     for doc in images:
         media_ids.update(s.get("media_id") for s in doc.get("slides", []) if s.get("media_id"))

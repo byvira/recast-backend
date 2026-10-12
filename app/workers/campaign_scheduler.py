@@ -77,6 +77,24 @@ async def _start_batch_run(campaign: dict) -> None:
     workspace_id = campaign["workspace_id"]
     if await pipeline_runs.active_run_for(workspace_id, "campaign", {"campaign_id": campaign["id"]}):
         return  # its last batch is still going
+    from app.db.mongo import workspace_members
+
+    creator = await workspace_members.find_one({"workspace_id": workspace_id, "user_id": campaign["created_by"]})
+    if not creator or creator.get("status", "active") != "active":
+        # The campaign runs as the person who made it. If they have left (or been removed or suspended), it is paused instead of
+        # carrying on with their rights; an owner can hand it to someone else by editing it.
+        reason = "The person who made this campaign is no longer in the workspace, so it was paused."
+        await get_campaigns_collection().update_one(
+            {"id": campaign["id"]},
+            {"$set": {"status": "paused", "cadence.next_run_at": None, "cadence.last_error": reason, "updated_at": datetime.now(timezone.utc)}},
+        )
+        await record_system(
+            workspace_id=workspace_id, key=f"campaign_run:{campaign['id']}", actor_name="Campaign scheduler",
+            category="content_generated", title=f"Campaign \"{campaign.get('name') or 'Untitled'}\" was paused", description=reason,
+            status="warning", target_id=campaign["id"], target_type="Campaign", target_label=campaign.get("name") or None,
+            href="/dashboard/campaigns",
+        )
+        return
     await pipeline_runs.assert_capacity(workspace_id)
     days = (campaign.get("cadence") or {}).get("days_per_batch", 7)
     try:

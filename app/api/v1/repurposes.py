@@ -33,6 +33,15 @@ def _first_line(text: str, limit: int = 80) -> str:
     return line if len(line) <= limit else line[: limit - 1].rsplit(" ", 1)[0] + "…"
 
 
+async def _exists(kind: str, out_id: str, workspace_id: str) -> bool:
+    if kind == "text":
+        return bool(await content_pieces.find_one({"piece_id": out_id, "workspace_id": workspace_id}, {"_id": 1}))
+    collection = image_assets if kind == "image" else audio_assets if kind == "audio" else None
+    if collection is None:
+        return True  # video results are not stored in a collection this route reads
+    return bool(await collection.find_one({"id": out_id, "workspace_id": workspace_id}, {"_id": 1}))
+
+
 async def _describe(row: dict, workspace_id: str) -> dict:
     """What the result is called and whether it still exists, read fresh so a rename or a deletion shows."""
     kind, out_id = row["output_kind"], row["output_id"]
@@ -81,6 +90,10 @@ async def record_repurpose(
     now = datetime.now(timezone.utc)
     saved = 0
     for out in body.outputs:
+        # Only results that exist in this workspace are noted, so a made-up or another workspace's id never becomes a row that later
+        # shows up as "removed".
+        if not await _exists(out.kind, out.id, ctx.workspace_id):
+            continue
         res = await repurposes.update_one(
             {
                 "workspace_id": ctx.workspace_id,

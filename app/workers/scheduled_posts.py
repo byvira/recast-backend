@@ -86,7 +86,8 @@ async def _notify_publish_failure(
 # A post that has been "publishing" longer than this was interrupted (a restart,
 # a crash). It is marked failed, never retried by itself: the platform may
 # already have posted it.
-PUBLISHING_STALE_AFTER = timedelta(minutes=15)
+# Longer than the longest one send may take (PUBLISH_POST_TIMEOUT_SECONDS), so a slow upload is never failed while it is still going.
+PUBLISHING_STALE_AFTER = timedelta(minutes=20)
 INTERRUPTED_MESSAGE = "Publishing was interrupted. Check the platform before trying again."
 
 
@@ -367,7 +368,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
     piece_id     = piece["piece_id"]
     # publish_target may be missing (or an older display-style value): derive it.
     platform     = platform_key(piece.get("publish_target") or piece.get("platform"))
-    user_id      = piece["user_id"]
+    user_id      = piece.get("user_id") or piece.get("created_by") or ""
     workspace_id = piece.get("workspace_id", "")
 
     if not workspace_id:
@@ -439,7 +440,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
     pub_request = await executor.build_request(
         piece, workspace_id, user_id, platform, token_data,
         # The text to send: a fixed version made by an earlier failed attempt (see the FIXABLE branch below), else the post as written.
-        content=piece.get("publish_content_override") or piece["content"],
+        content=piece.get("publish_content_override") or piece.get("content") or "",
         # The title, description and tags the member reviewed when scheduling a YouTube upload. Without them the publisher makes its own.
         youtube_metadata=piece.get("publish_youtube_metadata"),
     )
@@ -497,7 +498,11 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             )
         logger.info("Scheduled piece %s published to %s", piece_id, platform)
     else:
-        error_type = classify_error(result.error_code or 500, result.error_message or "")
+        from app.pipelines.publish.supervisor.classifier import TIMEOUT_NOTE, is_timeout
+
+        if is_timeout(result.error_code, result.error_message or ""):
+            result.error_message = TIMEOUT_NOTE
+        error_type = classify_error(result.error_code or 0, result.error_message or "")
         attempt = piece.get("publish_attempts", 0)
 
         # Self-heal an AUTH rejection once per piece: renew the token and
@@ -609,7 +614,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         )
         await _notify_publish_failure(
             piece_id=piece_id, platform=platform, user_id=user_id,
-            brand_id=piece["brand_id"], workspace_id=workspace_id,
+            brand_id=piece.get("brand_id") or "", workspace_id=workspace_id,
             error_message=result.error_message or "Unknown error",
             scheduled_at=iso_utc(piece.get("publish_scheduled_at")) or "",
         )

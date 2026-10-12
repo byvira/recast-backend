@@ -11,7 +11,7 @@ Audio is one narration per post (the same script voiced again would be an identi
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from app.core.workspace import WorkspaceContext
 from app.pipelines.media import duration
@@ -57,9 +57,10 @@ def _headline(content: str) -> str:
 
 async def _context(workspace_id: str, user_id: str) -> WorkspaceContext:
     workspace = await workspaces.find_one({"id": workspace_id}) or {"id": workspace_id}
-    member = await workspace_members.find_one({"workspace_id": workspace_id, "user_id": user_id}) or {
-        "workspace_id": workspace_id, "user_id": user_id, "role": "owner", "status": "active",
-    }
+    member = await workspace_members.find_one({"workspace_id": workspace_id, "user_id": user_id})
+    if not member or member.get("status", "active") != "active":
+        # No invented owner: work that is not done by a current member does not run with a member's rights.
+        raise PermissionError("The person who started this is no longer an active member of the workspace.")
     user = await users.find_one({"id": user_id}) or {"id": user_id}
     return WorkspaceContext(workspace, member, user)
 
@@ -169,7 +170,7 @@ async def _record_status(workspace_id: str, piece_id: str, states: dict[str, str
 
 
 async def generate_media_for_pieces(
-    campaign: dict[str, Any], piece_ids: list[str], *, workspace_id: str, user_id: str,
+    campaign: dict[str, Any], piece_ids: list[str], *, workspace_id: str, user_id: str, run_id: Optional[str] = None,
 ) -> dict[str, int]:
     """Make the planned media for each of `piece_ids`. Returns counts of what was made and what failed."""
     kinds = wanted_kinds(campaign.get("media_plan"))
@@ -186,6 +187,11 @@ async def generate_media_for_pieces(
     for piece in pieces[:MAX_POSTS_WITH_MEDIA_PER_RUN]:
         if not (piece.get("content") or "").strip():
             continue
+        if run_id:
+            # A pause or a cancel is honoured between posts, not only between days (a day can mean thirty posts of pictures and audio).
+            from app.shared import pipeline_runs
+
+            await pipeline_runs.checkpoint(run_id)
         states = await _make_for_piece(campaign, piece, kinds, ctx)
         await _record_status(workspace_id, piece["piece_id"], states)
         outcome["images"] += count if states.get("image") == "ready" else 0
@@ -210,6 +216,25 @@ async def regenerate_image_for_piece(
         return {"state": "missing", "note": None}
     if "image" not in wanted_kinds(campaign.get("media_plan")):
         return {"state": "missing", "note": "This campaign is not set up to make pictures."}
+    if piece_id in _REGENERATING:
+        return {"state": "failed", "note": "A new picture for this post is already being made."}
+    _REGENERATING.add(piece_id)
+    try:
+        return await _regenerate_image(campaign, piece, piece_id, workspace_id=workspace_id, user_id=user_id)
+    finally:
+        _REGENERATING.discard(piece_id)
+
+
+#: Posts whose picture is being made again right now. A second click would make a second paid picture and leave a wrong chain of
+#: replaced pictures.
+_REGENERATING: set[str] = set()
+
+
+async def _regenerate_image(
+    campaign: dict[str, Any], piece: dict, piece_id: str, *, workspace_id: str, user_id: str,
+) -> dict[str, Any]:
+    from app.api.v1.image_assets import create_image_asset
+    from app.db.mongo import image_assets, media_assets
 
     ctx = await _context(workspace_id, user_id)
     current = {"workspace_id": workspace_id, "source_piece_id": piece_id, "replaced_by": {"$exists": False}}
@@ -253,9 +278,22 @@ async def retry_media_for_piece(
         return {}
     failed = [k for k, v in (piece.get("media_status") or {}).items() if v == "failed" and k in GENERATED_KINDS]
     kinds = [k for k in wanted_kinds(campaign.get("media_plan")) if k in failed]
-    if not kinds:
+    # Each kind is claimed with one conditional write (failed to making), so two clicks or two tabs cannot both make it.
+    claimed: list[str] = []
+    for kind in kinds:
+        taken = await content_pieces.update_one(
+            {"workspace_id": workspace_id, "piece_id": piece_id, f"media_status.{kind}": "failed"},
+            {"$set": {f"media_status.{kind}": "making"}},
+        )
+        if taken.modified_count:
+            claimed.append(kind)
+    if not claimed:
         return {}
     ctx = await _context(workspace_id, user_id)
-    states = await _make_for_piece(campaign, piece, kinds, ctx)
+    try:
+        states = await _make_for_piece(campaign, piece, claimed, ctx)
+    except BaseException:
+        await _record_status(workspace_id, piece_id, {k: "failed" for k in claimed})
+        raise
     await _record_status(workspace_id, piece_id, states)
     return states

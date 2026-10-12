@@ -150,11 +150,13 @@ async def upsert_entry(entry: dict) -> Optional[dict]:
         # created_at is insert-only; a re-saved stored row (patch_entry)
         # carries it and would conflict with $setOnInsert.
         doc.pop("created_at", None)
-        await activity_entries.update_one(
-            {"_id": entry_id},
-            {"$set": doc, "$setOnInsert": {"created_at": now}},
-            upsert=True,
-        )
+        change: dict = {"$set": doc, "$setOnInsert": {"created_at": now}}
+        previous = await activity_entries.find_one({"_id": entry_id}, {"status": 1})
+        if previous and previous.get("status") != doc.get("status"):
+            # The same row re-recorded with a new outcome (a post that failed, was read, then recovered) is news again: whoever had read
+            # or hidden the earlier state sees this one.
+            change["$unset"] = {"read_by": "", "hidden_by": ""}
+        await activity_entries.update_one({"_id": entry_id}, change, upsert=True)
         doc["_id"] = entry_id
         await _publish_live(doc)
         return doc
@@ -170,8 +172,24 @@ async def patch_entry(entry_id: str, fields: dict) -> Optional[dict]:
         current = await activity_entries.find_one({"_id": entry_id})
         if not current:
             return None
+        # Only the fields that change are written. Writing the whole row back from this read would undo a "mark as read" or a hide made
+        # by someone else in between.
         merged = {**current, **fields}
-        return await upsert_entry(merged)
+        changes = {k: v for k, v in fields.items() if k != "_id"}
+        changes["updated_at"] = _now()
+        changes["search_text"] = _search_text(merged)
+        if merged.get("lane") == LANE_PASSIVE:
+            changes["expires_at"] = (merged.get("decided_at") or merged["occurred_at"]) + RETENTION
+        else:
+            changes["expires_at"] = None
+        from pymongo import ReturnDocument
+
+        updated = await activity_entries.find_one_and_update(
+            {"_id": entry_id}, {"$set": changes}, return_document=ReturnDocument.AFTER,
+        )
+        if updated:
+            await _publish_live(updated)
+        return updated
     except Exception as exc:  # noqa: BLE001
         logger.error("activity patch failed for %s: %s", entry_id, exc)
         return None

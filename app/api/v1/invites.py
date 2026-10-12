@@ -1,10 +1,12 @@
 """Invite creation, listing, preview, and acceptance routes."""
 
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from pymongo.errors import DuplicateKeyError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.core.auth import get_current_user
@@ -41,6 +43,18 @@ def _effective_status(invite: dict) -> str:
     return invite["status"]
 
 
+_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+async def _seats_used(workspace_id: str, now: datetime) -> int:
+    """Active members plus invites that are still open. An invite past its date no longer holds a seat."""
+    active = await workspace_members.count_documents({"workspace_id": workspace_id, "status": "active"})
+    open_invites = await invites.count_documents(
+        {"workspace_id": workspace_id, "status": InviteStatus.PENDING.value, "expires_at": {"$gt": now}}
+    )
+    return active + open_invites
+
+
 @router.post("/{workspace_id}", status_code=201)
 @limiter.limit("20/minute")
 async def create_invite(
@@ -51,26 +65,34 @@ async def create_invite(
 ) -> dict[str, Any]:
     """Create a pending invite, enforcing the workspace's tier seat limit."""
     await require_permission(workspace_id, current_user["id"], "invite_members")
+    if body.role.value == "owner":
+        # An admin may invite people, but handing out the owner role (billing, role changes) is the owner's decision.
+        await require_permission(workspace_id, current_user["id"], "manage_roles")
 
     ws = await workspaces.find_one({"id": workspace_id})
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found.")
 
-    active_count = await workspace_members.count_documents(
-        {"workspace_id": workspace_id, "status": "active"}
-    )
-    pending_count = await invites.count_documents(
-        {"workspace_id": workspace_id, "status": InviteStatus.PENDING.value}
-    )
+    email = body.email.strip().lower()
+    if not _EMAIL_SHAPE.match(email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    now = datetime.now(timezone.utc)
+    if await invites.find_one({
+        "workspace_id": workspace_id, "email": email, "status": InviteStatus.PENDING.value, "expires_at": {"$gt": now},
+    }):
+        raise HTTPException(status_code=409, detail="That person has already been invited. Resend the invite from the list instead.")
+    person = await users.find_one({"$or": [{"email": email}, {"auth_identifiers": email}]}, {"id": 1})
+    if person and await workspace_members.find_one({"workspace_id": workspace_id, "user_id": person["id"], "status": "active"}):
+        raise HTTPException(status_code=409, detail="That person is already a member of this workspace.")
+
     seats = ws["tier_config"]["seats"]
-    if active_count + pending_count >= seats:
+    if await _seats_used(workspace_id, now) >= seats:
         raise HTTPException(status_code=400, detail="Seat limit reached for this tier.")
 
-    now = datetime.now(timezone.utc)
     invite_doc = {
         "id": str(uuid4()),
         "workspace_id": workspace_id,
-        "email": body.email.lower(),
+        "email": email,
         "role": body.role.value,
         "token": secrets.token_urlsafe(32),
         "status": InviteStatus.PENDING.value,
@@ -79,6 +101,10 @@ async def create_invite(
         "expires_at": now + timedelta(days=7),
     }
     await invites.insert_one(invite_doc)
+    # Counted again now that the invite is saved: two admins inviting at the same moment cannot both take the last seat.
+    if await _seats_used(workspace_id, now) > seats:
+        await invites.delete_one({"id": invite_doc["id"]})
+        raise HTTPException(status_code=400, detail="Seat limit reached for this tier.")
 
     invite_link = f"{settings.FRONTEND_URL}/invite/{invite_doc['token']}"
     email_sent = await send_templated_email(
@@ -135,6 +161,10 @@ async def resend_invite(
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found.")
 
+    now_for_seats = datetime.now(timezone.utc)
+    if _effective_status(invite) == InviteStatus.EXPIRED.value and await _seats_used(workspace_id, now_for_seats) >= ws["tier_config"]["seats"]:
+        # An expired invite gave its seat back; bringing it back needs a free one.
+        raise HTTPException(status_code=400, detail="Seat limit reached for this tier.")
     new_expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await invites.update_one(
         {"id": invite_id},
@@ -275,17 +305,29 @@ async def accept_invite(
         raise HTTPException(status_code=409, detail="Already a member of this workspace.")
 
     now = datetime.now(timezone.utc)
-    await workspace_members.insert_one({
-        "id": str(uuid4()),
-        "workspace_id": invite["workspace_id"],
-        "user_id": current_user["id"],
-        "role": invite["role"],
-        "status": "active",
-        "joined_at": now,
-    })
-    await invites.update_one(
-        {"id": invite["id"]}, {"$set": {"status": InviteStatus.ACCEPTED.value}}
+    # The invite is claimed with one conditional write before the member is added, so a double click or two tabs cannot both accept
+    # it (the second would otherwise reach the unique member index and answer with a server error).
+    claimed = await invites.find_one_and_update(
+        {"id": invite["id"], "status": InviteStatus.PENDING.value},
+        {"$set": {"status": InviteStatus.ACCEPTED.value}},
     )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="This invite was just accepted.")
+    try:
+        await workspace_members.insert_one({
+            "id": str(uuid4()),
+            "workspace_id": invite["workspace_id"],
+            "user_id": current_user["id"],
+            "role": invite["role"],
+            "status": "active",
+            "joined_at": now,
+        })
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Already a member of this workspace.")
+    except Exception:
+        # The member was not added, so the invite goes back to waiting instead of being used up.
+        await invites.update_one({"id": invite["id"]}, {"$set": {"status": InviteStatus.PENDING.value}})
+        raise
 
     from app.shared.governance_events import emit_member_added
     emit_member_added(

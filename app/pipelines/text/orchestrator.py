@@ -416,7 +416,8 @@ async def run_text_pipeline(
     # solved by this row.
     eligible = [p for p in pieces if p.content and not p.media]
     shared_asset: Optional[MediaAsset] = None
-    if eligible:
+    # The member can choose posts without a picture; nothing is made or attached then.
+    if eligible and getattr(extras, "default_picture", True):
         shared_asset = await pick_default_image(
             piece_content=eligible[0].content,
             brand_profile=brand_profile,

@@ -128,9 +128,11 @@ async def _media_by_id(media_ids: list[str]) -> dict[str, SharedMedia]:
 
 
 def _client_ip(request: Request) -> str:
+    # Each proxy adds the address it saw to the END of the list, so the last entry is the one the host's own proxy recorded. The
+    # first entry is whatever the caller chose to send, and counting it would let anyone invent a new visitor on every request.
     forwarded = request.headers.get("x-forwarded-for", "")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -157,7 +159,7 @@ async def get_shared_asset(request: Request, token: str) -> SharedAssetResponse:
 
     if kind == "audio":
         asset = await audio_assets.find_one(
-            {"id": link["audio_asset_id"], "workspace_id": link["workspace_id"]},
+            {"id": link["audio_asset_id"], "workspace_id": link["workspace_id"], "deleted": {"$ne": True}},
         )
         if not asset:
             raise HTTPException(status_code=404, detail=_NOT_AVAILABLE)
@@ -171,13 +173,19 @@ async def get_shared_asset(request: Request, token: str) -> SharedAssetResponse:
             media=media,
             transcript=[
                 SharedWord(word=w["word"], start_s=w["start_s"], end_s=w["end_s"])
-                for w in asset.get("transcript", [])
+                # The shared file is the approved master, so its words are the timings that master was approved with. A cleanup made
+                # afterwards moved the current timings and would put the highlighted words out of step with the audio.
+                for w in (
+                    asset.get("approved_master_transcript")
+                    if asset.get("approved_master_media_id") and asset.get("approved_master_transcript") is not None
+                    else asset.get("transcript", [])
+                )
             ],
             allow_comments=bool(link.get("allow_comments")),
         )
 
     asset = await image_assets.find_one(
-        {"id": link["image_asset_id"], "workspace_id": link["workspace_id"]},
+        {"id": link["image_asset_id"], "workspace_id": link["workspace_id"], "deleted": {"$ne": True}},
     )
     if not asset:
         raise HTTPException(status_code=404, detail=_NOT_AVAILABLE)

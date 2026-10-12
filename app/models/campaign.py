@@ -162,6 +162,8 @@ class CampaignTextOptions(BaseModel):
     hashtags: bool = True
     carousel_format: bool = False
     enforce_char_limits: bool = True
+    # Attach a picture to each post. Off: text only.
+    default_picture: bool = True
 
 
 class Campaign(BaseModel):

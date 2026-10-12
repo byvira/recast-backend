@@ -13,6 +13,7 @@ No LLM is used here. Everything is recorded in the ticket's audit trail.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -76,13 +77,29 @@ def _platform_of(ticket: dict) -> Optional[str]:
     return src.get("id") if src.get("type") == "platform" else None
 
 
+#: Held while a ticket is being matched to an incident. Two tickets arriving together would otherwise each find no incident and
+#: each open one, so staff would see the same problem twice.
+_cluster_lock = asyncio.Lock()
+#: An open incident that has had no new ticket for this long no longer collects new ones: a "Billing" ticket weeks later is not part
+#: of an incident from weeks ago.
+INCIDENT_JOIN_WINDOW = timedelta(days=2)
+
+
 async def _cluster(ticket: dict, now: datetime) -> Optional[dict]:
+    async with _cluster_lock:
+        return await _cluster_locked(ticket, now)
+
+
+async def _cluster_locked(ticket: dict, now: datetime) -> Optional[dict]:
     """Attach to a matching open incident, or open one once enough tickets pile up."""
     category, platform = ticket.get("category"), _platform_of(ticket)
     if not category:
         return None
     existing = await support_incidents.find_one(
-        {"category": category, "platform": platform, "status": {"$in": ["open", "monitoring"]}}
+        {
+            "category": category, "platform": platform, "status": {"$in": ["open", "monitoring"]},
+            "updated_at": {"$gte": now - INCIDENT_JOIN_WINDOW},
+        }
     )
     if existing:
         await support_incidents.update_one(

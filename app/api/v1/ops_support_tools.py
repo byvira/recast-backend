@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import Query, APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.api.v1.ops_support import _actor, _get_ticket, _patch_ticket, _post_staff_message
@@ -200,6 +200,10 @@ class BulkBody(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+#: Bulk actions sent in the last few seconds, by who sent what to which tickets.
+_RECENT_BULK: dict[str, float] = {}
+
+
 @router.post("/tickets/bulk")
 @limiter.limit("20/minute")
 async def bulk(request: Request, body: BulkBody, staff: dict = Depends(require_platform_staff)) -> dict:
@@ -207,6 +211,20 @@ async def bulk(request: Request, body: BulkBody, staff: dict = Depends(require_p
     single-ticket code as a manual edit, so the same rules and audit events
     apply, and one failure does not stop the rest."""
     _require_role(staff, "lead", "Bulk actions need a lead.")
+    import hashlib
+    import json
+    import time
+
+    fingerprint = hashlib.sha256(
+        json.dumps([staff["id"], body.action, sorted(set(body.ids)), body.payload], sort_keys=True, default=str).encode()
+    ).hexdigest()
+    now_s = time.monotonic()
+    for key in [k for k, t in _RECENT_BULK.items() if now_s - t > 20]:
+        _RECENT_BULK.pop(key, None)
+    if fingerprint in _RECENT_BULK:
+        # A double click, or the request sent again after a slow answer. Replies and status changes are not made a second time.
+        raise HTTPException(status_code=409, detail="That was just done. Reload the list to see the result.")
+    _RECENT_BULK[fingerprint] = now_s
     payload = body.payload
     canned: Optional[dict] = None
     if body.action == "canned_reply":
@@ -296,10 +314,14 @@ async def merge_ticket(
         at = m["created_at"]
         return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
 
-    combined = sorted([*target.get("messages", []), *moved, marker], key=_when)
+    # The moved messages are added to the target's thread, kept in time order. Writing back the whole thread from the read made above
+    # would drop a reply the member sent to the target while this ran.
     await support_tickets.update_one(
         {"id": target["id"]},
-        {"$set": {"messages": combined, "updated_at": now, "unread_for_member": True, "unread_for_ops": True}},
+        {
+            "$push": {"messages": {"$each": [*moved, marker], "$sort": {"created_at": 1}}},
+            "$set": {"updated_at": now, "unread_for_member": True, "unread_for_ops": True},
+        },
     )
     await support_files.update_many({"ticket_id": source["id"]}, {"$set": {"ticket_id": target["id"]}})
 
@@ -323,7 +345,8 @@ async def merge_ticket(
 @router.delete("/tickets/{ticket_id}/messages/{index}")
 @limiter.limit("20/minute")
 async def delete_message(
-    request: Request, ticket_id: str, index: int, staff: dict = Depends(require_platform_staff)
+    request: Request, ticket_id: str, index: int, sent_at: Optional[str] = Query(default=None, max_length=64),
+    staff: dict = Depends(require_platform_staff),
 ) -> dict:
     """Admin only. The text and files are removed; a marker stays in the thread
     and the audit trail records who did it (never what it said)."""
@@ -333,6 +356,20 @@ async def delete_message(
     if index < 0 or index >= len(messages) or messages[index].get("is_deleted"):
         raise HTTPException(status_code=404, detail="Message not found.")
     original = messages[index]
+    if sent_at is not None:
+        # A merge or another removal in the meantime can move the messages, so a position alone can mean a different message than the
+        # one on screen. The page sends when the message was written, and a mismatch is refused.
+        written = original.get("created_at")
+        try:
+            said = datetime.fromisoformat(sent_at.replace("Z", "+00:00"))
+            if said.tzinfo is None:
+                said = said.replace(tzinfo=timezone.utc)
+            was = written if written.tzinfo else written.replace(tzinfo=timezone.utc)
+            same = abs((said - was).total_seconds()) < 0.01  # compared to the millisecond, which is what is stored
+        except (ValueError, AttributeError, TypeError):
+            same = True  # a time that cannot be read is not a reason to refuse
+        if not same:
+            raise HTTPException(status_code=409, detail="This conversation changed while you were looking at it. Reload it and try again.")
     file_ids = [a["file_id"] for a in original.get("attachments", [])]
     tombstone = {
         **original,

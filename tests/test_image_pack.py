@@ -52,7 +52,8 @@ async def test_a_pack_makes_that_many_real_images(signup_user, stubs):  # noqa: 
     assert len(stubs["uploads"]) == 6  # a clean picture and a finished picture for each of the 3 images
     # The background prompts really differ, so the pictures are not copies.
     assert len({b["prompt"] for b in stubs["backgrounds"]}) == 3
-    assert stubs["backgrounds"][0]["prompt"] == "a calm sunrise over hills"
+    # The look chosen for the picture is added to what the picture model is told (never to what is saved).
+    assert stubs["backgrounds"][0]["prompt"].startswith("a calm sunrise over hills")
 
 
 async def test_the_default_is_one_image(signup_user, stubs):  # noqa: F811

@@ -99,8 +99,36 @@ async def save_draft(
 
     set_fields = {"client_id": body.client_id} if body.client_id else {}
 
-    doc = await onboarding_drafts.find_one_and_update(
-        {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id},
+    # The same rule as the check above, but inside the write: the draft is only replaced if it is still the one this tab saw, so two
+    # tabs saving at the same instant cannot both pass the check and then overwrite each other.
+    guard: dict = {"workspace_id": ctx.workspace_id, "user_id": ctx.user_id}
+    if body.client_id and body.base_updated_at:
+        base = body.base_updated_at
+        base = base.astimezone(timezone.utc).replace(tzinfo=None) if base.tzinfo else base
+        guard["$or"] = [
+            {"client_id": {"$in": [body.client_id, None]}},
+            {"client_id": {"$exists": False}},
+            {"updated_at": {"$lte": base + timedelta(milliseconds=2)}},
+        ]
+
+    from pymongo.errors import DuplicateKeyError
+
+    try:
+        doc = await _write_draft(guard, body, now, set_fields, ctx)
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "draft_changed_elsewhere",
+                "message": "This setup was changed in another tab. Reload this page to see the latest.",
+            },
+        )
+    return _doc_to_draft_response(doc)
+
+
+async def _write_draft(guard: dict, body: SaveDraftBody, now: datetime, set_fields: dict, ctx: WorkspaceContext) -> dict:
+    return await onboarding_drafts.find_one_and_update(
+        guard,
         {
             "$set": {
                 "workspace_id":     ctx.workspace_id,
@@ -132,8 +160,6 @@ async def save_draft(
         upsert=True,
         return_document=True,
     )
-
-    return _doc_to_draft_response(doc)
 
 
 # ── GET /api/v1/onboarding/draft ──────────────────────────────────────────────

@@ -149,6 +149,19 @@ async def send_to_destination(request: Request, body: SendRequest, ctx: Workspac
         result = await service.send_piece(piece, ws, may_send_to_audience=body.confirm_send)
     except DestinationError as exc:
         await refuse(422 if "Confirm" in str(exc) or "Choose which" in str(exc) or "title" in str(exc) else 400, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        # Anything unexpected must not leave the post on "publishing" for the stuck-post sweep; the destination may already have it.
+        from datetime import datetime, timezone
+
+        from app.db.mongo import content_pieces
+
+        logger.error("Sending piece %s to %s raised: %s", body.piece_id, destination, exc)
+        message = "Sending hit an unexpected problem. Check the destination before trying again."
+        await content_pieces.update_one(
+            {"piece_id": body.piece_id, "workspace_id": ws, "publish_status": "publishing"},
+            {"$set": {"publish_status": "failed", "last_error": message, "updated_at": datetime.now(timezone.utc)}},
+        )
+        raise HTTPException(status_code=502, detail=message)
 
     if result.success:
         await service.record_success(piece, ws, result, user_id=ctx.user_id, role=ctx.role)

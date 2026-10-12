@@ -213,9 +213,6 @@ async def list_accounts(
     }
     for a in accounts:
         a["connected_by_name"] = connectors.get(a.get("connected_by", ""), {}).get("name", "")
-        # Whether the automatic renewal has given up: the screen warns about this, not about an expiry date that is renewed on time.
-        health = a.get("health") or {}
-        a["needs_reconnect"] = bool(health.get("escalated")) or int(health.get("failures") or 0) >= 2
         a["profile_url"] = normalize_profile_url(a.get("profile_url"))
         if a["platform"] == "instagram" and not a["profile_url"]:
             await _heal_instagram(ctx.workspace_id, a)
@@ -403,9 +400,24 @@ async def meta_callback(
             profile_url=_derive_profile_url("facebook", first_page.get("name", ""), first_page["id"]),
         )
         connected.append("facebook")
+        # Every Page this sign-in can post to is kept (with its own token and linked Instagram account), so the member can switch
+        # to another one later without signing in again. The first Page is used until they choose.
+        from app.db.mongo import workspace_connections
+        from app.pipelines.publish.token_store import encrypt_token
+
+        await workspace_connections.update_one(
+            {"workspace_id": workspace_id, "platform": "facebook"},
+            {"$set": {"meta_pages": [
+                {
+                    "id": p["id"], "name": p.get("name", ""), "access_token": encrypt_token(p["access_token"]),
+                    "ig_user_id": (p.get("instagram_business_account") or {}).get("id"),
+                }
+                for p in pages if p.get("id") and p.get("access_token")
+            ]}},
+        )
         logger.info(
-            "Facebook connected for user %s — page: %s",
-            user_id, first_page.get("name"),
+            "Facebook connected for user %s — page: %s (%d Pages available)",
+            user_id, first_page.get("name"), len(pages),
         )
     else:
         logger.info(
@@ -430,6 +442,54 @@ async def meta_callback(
     if "facebook" not in connected:
         notes.append("Facebook: no Facebook Pages found — create one at facebook.com/pages/create.")
     return _oauth_popup_response(False, "No platforms connected. " + " ".join(notes))
+
+class ChooseFacebookPageRequest(BaseModel):
+    page_id: str
+
+
+@router.put("/facebook/page")
+@limiter.limit("20/minute")
+async def choose_facebook_page(
+    request: Request,
+    body: ChooseFacebookPageRequest,
+    ctx: WorkspaceContext = Depends(require("manage_connections")),
+) -> dict:
+    """Switch which Facebook Page posts go to, among the Pages this sign-in can post to. If that Page has an Instagram Business account
+    linked, Instagram follows it; if not, Instagram stays as it was and the answer says so."""
+    from app.db.mongo import workspace_connections
+    from app.pipelines.publish.token_store import decrypt_token, get_token
+
+    connection = await workspace_connections.find_one({"workspace_id": ctx.workspace_id, "platform": "facebook"})
+    page = next((p for p in (connection or {}).get("meta_pages") or [] if p.get("id") == body.page_id), None)
+    if not connection or not page:
+        raise HTTPException(status_code=404, detail="That Page isn't one this sign-in can post to. Connect Facebook again to refresh the list.")
+
+    await save_token(
+        workspace_id=ctx.workspace_id, platform="facebook", access_token=decrypt_token(page["access_token"]), refresh_token=None,
+        expires_at=connection.get("expires_at"), platform_user_id=page["id"], username=page.get("name", ""),
+        connected_by=connection.get("connected_by", ""), profile_url=_derive_profile_url("facebook", page.get("name", ""), page["id"]),
+    )
+    # The name and picture shown for the account are read again for the new Page.
+    await workspace_connections.update_one(
+        {"workspace_id": ctx.workspace_id, "platform": "facebook"},
+        {"$unset": {"display_name": "", "avatar_url": "", "followers": "", "profile_checked_at": ""}},
+    )
+    note = None
+    instagram = await get_token(ctx.workspace_id, "instagram")
+    if instagram and page.get("ig_user_id"):
+        from app.pipelines.publish.meta.oauth import fetch_instagram_username
+
+        handle = await fetch_instagram_username(page["ig_user_id"], instagram["access_token"])
+        await workspace_connections.update_one(
+            {"workspace_id": ctx.workspace_id, "platform": "instagram"},
+            {"$set": {
+                "platform_user_id": page["ig_user_id"], **({"username": handle, "profile_url": _derive_profile_url("instagram", handle)} if handle else {}),
+            }, "$unset": {"display_name": "", "avatar_url": "", "followers": "", "profile_checked_at": ""}},
+        )
+    elif instagram:
+        note = "That Page has no Instagram Business account linked, so Instagram stays on the account it had."
+    return {"platform": "facebook", "page_id": page["id"], "page_name": page.get("name", ""), "note": note}
+
 
 @router.get("/threads/connect")
 @limiter.limit("10/minute")
@@ -794,13 +854,58 @@ async def disconnect_platform(
     platform: str,
     ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
-    """Remove a platform connection from the active workspace."""
-    await delete_token(ctx.workspace_id, platform)
+    """Remove a platform connection from the active workspace. YouTube and Google are one sign-in, so both go together and Google is
+    told to stop honouring it. Posts still scheduled for the platform are counted, so the member knows they will not go out."""
+    from app.db.mongo import content_pieces, workspace_connections
+
+    group = ("youtube", "google") if platform in ("youtube", "google") else (platform,)
+    existing = await workspace_connections.find_one({"workspace_id": ctx.workspace_id, "platform": {"$in": list(group)}})
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"{platform.capitalize()} isn't connected.")
+
+    if group != (platform,):
+        await _revoke_google(ctx.workspace_id)
+    for name in group:
+        await delete_token(ctx.workspace_id, name)
+
+    waiting = await content_pieces.count_documents({
+        "workspace_id": ctx.workspace_id, "publish_status": "queued", "publish_target": {"$in": list(group)},
+    })
+    try:
+        from app.shared.activity import record_system
+
+        await record_system(
+            workspace_id=ctx.workspace_id, key=f"disconnect:{ctx.workspace_id}:{platform}", actor_name=ctx.user.get("name") or "A member",
+            actor_user_id=ctx.user_id, category="account_connected", title=f"{platform.capitalize()} was disconnected",
+            description=(f"{waiting} scheduled post{'s' if waiting != 1 else ''} for it will not go out until it is connected again."
+                         if waiting else "No posts were waiting for it."),
+            status="warning" if waiting else "success", channel=platform, href="/dashboard/settings",
+        )
+    except Exception as exc:  # noqa: BLE001 - the disconnect itself is done
+        logger.warning("Could not write the Activity Log entry for disconnecting %s: %s", platform, exc)
     return {
         "platform":    platform,
         "disconnected": True,
-        "message":     f"{platform} disconnected.",
+        "scheduled_posts_affected": waiting,
+        "message":     f"{platform} disconnected."
+                       + (f" {waiting} scheduled post{'s' if waiting != 1 else ''} will not go out until you connect it again." if waiting else ""),
     }
+
+
+async def _revoke_google(workspace_id: str) -> None:
+    """Best effort: ask Google to stop honouring the saved sign-in. The connection is removed whether or not this works."""
+    try:
+        import httpx
+
+        from app.pipelines.publish.token_store import get_token
+
+        token = await get_token(workspace_id, "google") or await get_token(workspace_id, "youtube")
+        secret = (token or {}).get("refresh_token") or (token or {}).get("access_token")
+        if secret:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.post("https://oauth2.googleapis.com/revoke", data={"token": secret})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not revoke the Google sign-in for workspace %s: %s", workspace_id, exc)
 
 
 @router.get("/meta/debug")
@@ -810,10 +915,15 @@ async def debug_meta(
     ctx: WorkspaceContext = Depends(require("manage_connections")),
 ) -> dict:
     """
-    Debug Meta token step by step.
+    Debug Meta token step by step. Not available in production: it takes a token in the address (which ends up in logs) and returns
+    the account's Page tokens.
     Pass access_token as query param to skip steps 1-2,
     or leave empty to start fresh OAuth (requires hitting /meta/connect first).
     """
+    from app.core.config import settings as _settings
+
+    if _settings.ENVIRONMENT == "production":
+        raise HTTPException(status_code=404, detail="Not found.")
     access_token = request.query_params.get("access_token")
 
     if not access_token:

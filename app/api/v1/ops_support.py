@@ -121,7 +121,13 @@ async def staff_add_message(
 async def staff_upload(
     request: Request, file: UploadFile = File(...), staff: dict = Depends(require_platform_staff)
 ) -> dict:
-    data = await file.read(max(rules.MAX_ATTACHMENT_BYTES, rules.MAX_VIDEO_BYTES) + 1)
+    from app.shared.uploads import read_limited
+
+    # Read in pieces and stopped at the largest size any attachment may be; the file check below applies each kind's own limit.
+    data = await read_limited(
+        file, max(rules.MAX_ATTACHMENT_BYTES, rules.MAX_VIDEO_BYTES),
+        detail="That file is too large to attach.", status_code=422,
+    )
     try:
         doc = await files_service.store(
             uploader_id=staff["id"], uploader_type="staff", workspace_id="staff",
@@ -387,11 +393,14 @@ async def _patch_ticket(ticket_id: str, body: SupportTicketStaffUpdate, staff: d
     if body.severity is not None and body.severity.value != ticket["severity"]:
         sets["severity"] = body.severity.value
         events.append(("priority_changed", {"from": ticket["severity"], "to": body.severity.value}))
-        # New priority, new targets. What already happened (first reply, breaches) is kept.
-        sets["sla"] = sla.compute(
+        # New priority, new targets. What already happened (first reply, breaches) is kept, and only the targets are written, so a
+        # reply that stamps the first response at the same moment is not undone.
+        for key, value in sla.compute(
             ticket["created_at"], body.severity.value, ticket.get("workspace_tier"),
             await sla.get_config(), ticket.get("sla"),
-        )
+        ).items():
+            if key in ("first_response_due", "resolve_due"):
+                sets[f"sla.{key}"] = value
 
     if body.assignee_id is not None:
         if ticket["status"] == "closed":
@@ -432,7 +441,12 @@ async def _patch_ticket(ticket_id: str, body: SupportTicketStaffUpdate, staff: d
         # A status change the member should hear about.
         if any(t == "status_changed" for t, _ in events):
             sets["unread_for_member"] = True
-        await support_tickets.update_one({"id": ticket_id}, {"$set": sets})
+        flt: dict = {"id": ticket_id}
+        if any(t == "status_changed" for t, _ in events):
+            flt["status"] = ticket["status"]
+        saved = await support_tickets.update_one(flt, {"$set": sets})
+        if not saved.matched_count:
+            raise HTTPException(status_code=409, detail="This ticket just changed. Reload it and make your change again.")
         for etype, data in events:
             await log_event(ticket_id, type=etype, data=data, **_actor(staff))
         for etype, data in events:
@@ -525,9 +539,14 @@ async def _post_staff_message(ticket_id: str, body: SupportStaffMessageCreate, s
         sets.update(transition_fields(status_now, target, now))
         sets["unread_for_member"] = sets.get("unread_for_member", False) or not body.is_internal
 
-    await support_tickets.update_one(
-        {"id": ticket_id}, {"$push": {"messages": message.model_dump()}, "$set": sets}
-    )
+    # Only while the ticket is still in the status that was read, and (when this reply takes it) still unassigned, so two staff
+    # answering the same ticket, or a member closing it in the same second, are told to look again instead of overwriting each other.
+    guard: dict = {"id": ticket_id, "status": ticket["status"]}
+    if "assignee_id" in sets:
+        guard["assignee_id"] = {"$in": [None, ""]} if not ticket.get("assignee_id") else ticket["assignee_id"]
+    written = await support_tickets.update_one(guard, {"$push": {"messages": message.model_dump()}, "$set": sets})
+    if not written.matched_count:
+        raise HTTPException(status_code=409, detail="This ticket just changed (someone else replied or its status moved). Reload it and try again.")
     await log_event(
         ticket_id,
         type="note_added" if body.is_internal else "replied",

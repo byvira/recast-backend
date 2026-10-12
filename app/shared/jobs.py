@@ -246,6 +246,7 @@ async def submit(
             workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind=action.kind, title=action.title(parsed),
             steps_total=action.steps(parsed), href=action.href, active_key=f"job:{key}",
             extra={"action": action_name, "idem_key": key, "payload_digest": digest, "restartable": action.restartable, "restart_attempts": 0,
+                   "live_run_id": getattr(parsed, "live_run_id", None),
                    **({"payload": parsed.model_dump(mode="json")} if action.restartable else {})},
         )
     except runs.RunAlreadyActive as already:

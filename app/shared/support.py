@@ -57,7 +57,21 @@ def transition_fields(current: str, target: str, now: datetime) -> dict[str, Any
     elif current == S.RESOLVED.value:
         # Reopened: it is no longer resolved.
         fields["resolved_at"] = None
+    if target == S.WAITING_ON_MEMBER.value:
+        # The silence is measured from here, not from the last staff message, which may be days older.
+        fields["waiting_since"] = now
+    if current in (S.WAITING_ON_MEMBER.value, S.RESOLVED.value) and target not in (S.RESOLVED.value, S.CLOSED.value):
+        # Leaving a waiting or resolved state clears its reminders, so the next time it waits the member is reminded again.
+        fields["reminder_sent_at"] = None
+        fields["close_warning_sent_at"] = None
+        fields["waiting_since"] = None
     return fields
+
+
+def status_guard(ticket_id: str, expected_status: str) -> dict[str, Any]:
+    """The filter for a write that changes a ticket's status: it only matches while the ticket is still in the status that was read,
+    so two people acting in the same second cannot both move it (the second is told to look again)."""
+    return {"id": ticket_id, "status": expected_status}
 
 
 # ── Member-visible view ──────────────────────────────────────────────────────

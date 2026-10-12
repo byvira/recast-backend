@@ -91,8 +91,20 @@ def _expires_text(when: datetime) -> str:
     return f"{when.day} {when.strftime('%B %Y')}"
 
 
-async def create_invite(lead: dict[str, Any], actor: Optional[dict], source: str) -> tuple[dict[str, Any], str]:
-    """Make a fresh code for this lead. Any earlier open invite for the same address is revoked, so only the newest one works."""
+async def supersede_earlier(email: str, keep_id: str) -> None:
+    """Revoke every other open invite for this address, so only the newest one works. Called once the new invite has been sent: the old
+    code is only taken away when its replacement really reached the person."""
+    await signup_invites.update_many(
+        {"email": email, "used_at": None, "revoked": False, "id": {"$ne": keep_id}}, {"$set": {"revoked": True}},
+    )
+
+
+async def create_invite(
+    lead: dict[str, Any], actor: Optional[dict], source: str, *, supersede: bool = True,
+) -> tuple[dict[str, Any], str]:
+    """Make a fresh code for this lead. By default any earlier open invite for the same address is revoked at once, so only the
+    newest one works. Pass supersede=False when the invite is about to be sent, and call supersede_earlier after it has been: if the
+    email fails, the person keeps the code they already had."""
     config = await get_lead_settings()
     now = datetime.now(timezone.utc)
     code = secrets.token_urlsafe(18)
@@ -111,7 +123,8 @@ async def create_invite(lead: dict[str, Any], actor: Optional[dict], source: str
         "sent_at": None,
         "reminder_sent_at": None,
     }
-    await signup_invites.update_many({"email": lead["email"], "used_at": None, "revoked": False}, {"$set": {"revoked": True}})
+    if supersede:
+        await signup_invites.update_many({"email": lead["email"], "used_at": None, "revoked": False}, {"$set": {"revoked": True}})
     await signup_invites.insert_one(invite)
     return invite, code
 
@@ -188,11 +201,15 @@ async def sweep_invites() -> dict[str, int]:
         if not lead or lead.get("status") != "invited":
             continue
         # The code itself is not kept, so a reminder needs a fresh one. The old code stops working and the new one has the same end date.
-        fresh, code = await create_invite(lead, None, "reminder")
+        fresh, code = await create_invite(lead, None, "reminder", supersede=False)
         await signup_invites.update_one({"id": fresh["id"]}, {"$set": {"expires_at": invite["expires_at"], "sent_at": invite["sent_at"]}})
         fresh["expires_at"] = invite["expires_at"]
         if await send_invite(lead, fresh, code, reminder=True):
+            await supersede_earlier(lead["email"], fresh["id"])
             reminded += 1
+        else:
+            # The reminder did not go: the new code is dropped and the person keeps the one they were already sent.
+            await signup_invites.update_one({"id": fresh["id"]}, {"$set": {"revoked": True}})
     return {"expired": expired, "reminded": reminded}
 
 

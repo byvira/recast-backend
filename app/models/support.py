@@ -150,7 +150,7 @@ class SupportTicketEvent(BaseModel):
 class SupportSourceContext(BaseModel):
     """What the member was looking at when they filed the ticket."""
 
-    type: str = Field(pattern="^(post|platform|generation|page)$")
+    type: str = Field(pattern="^(post|platform|generation|campaign|page)$")
     id: Optional[str] = Field(default=None, max_length=80)
     route: Optional[str] = Field(default=None, max_length=200)
 

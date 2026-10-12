@@ -355,6 +355,11 @@ async def save_pipeline_result(
             piece_ids.append(adopted)
             continue
 
+        if not (piece.content or "").strip():
+            # A platform that came back with nothing is not saved as an empty post (it would show in Drafts, count as made and
+            # could be approved). The run's own result already says which platforms did not produce anything.
+            continue
+
         piece_id = str(uuid4())
         piece_ids.append(piece_id)
 
@@ -869,15 +874,19 @@ async def approve_all_pieces(session_id: str, workspace_id: str) -> int:
     if not session or session.get("workspace_id") != workspace_id:
         return 0
 
+    # Only posts still waiting for a decision are approved. One that was rejected stays rejected, and an archived one is left alone:
+    # "approve all" must not undo someone's earlier "no".
     session_filter = {
         "session_id": session_id,
         "workspace_id": workspace_id,
         "deleted": {"$ne": True},
+        "archived": {"$ne": True},
+        "approval_status": ApprovalStatus.PENDING.value,
     }
     # Pre-change state for the trust score's shadow log (one session = a
     # handful of pieces, so this read is small).
     before = await content_pieces.find(
-        {**session_filter, "approval_status": {"$ne": ApprovalStatus.APPROVED.value}},
+        session_filter,
         {"piece_id": 1, "workspace_id": 1, "platform": 1, "pipeline_type": 1,
          "approval_status": 1, "version_count": 1},
     ).to_list(length=200)

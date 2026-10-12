@@ -69,6 +69,7 @@ from app.pipelines.media.transform import build_export_url
 from app.pipelines.media.zip_export import build_slides_zip
 from app.shared.events import emit_event_background
 from app.core import limits
+from app.agents.content_guard.rules import content_hash
 from app.shared.heavy_work import run_heavy
 from app.shared.safe_fetch import get_limited
 from app.shared.llm import call_vision, set_usage_workspace
@@ -124,7 +125,11 @@ async def _fetch_logo_bytes(logo_url: str) -> Optional[bytes]:
     if not logo_url:
         return None
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        # Only a public web address is fetched (never a private or internal one), and a redirect is not followed to somewhere else.
+        from app.pipelines.publish.generic.safe_url import assert_safe_url
+
+        await assert_safe_url(logo_url)
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             resp, body = await get_limited(client, logo_url, MAX_FETCHED_IMAGE_BYTES)
             resp.raise_for_status()
             return body
@@ -303,16 +308,19 @@ async def _record_first_version(asset: ImageAsset) -> None:
 
 
 async def _bump_version(
-    asset_id: str, workspace_id: str, new_slides: list[Slide], action: str, actor_user_id: str
+    asset_id: str, workspace_id: str, new_slides: list[Slide], action: str, actor_user_id: str,
+    *, expected_version: Optional[int] = None,
 ) -> Optional[dict]:
     """Real versioning for multi-slide CRUD/governance actions — mirrors
     app.pipelines.text.storage.update_piece_content's "update doc, then
     insert a version snapshot of the new state" pattern (app.models.
     image_asset.ImageAssetVersion mirrors ContentPieceVersion by design)."""
-    doc = await image_assets.find_one({"id": asset_id, "workspace_id": workspace_id})
+    doc = await image_assets.find_one({"id": asset_id, "workspace_id": workspace_id, "deleted": {"$ne": True}})
     if not doc:
         return None
     current_version = doc.get("version_count", 1)
+    if expected_version is not None and current_version != expected_version:
+        raise HTTPException(status_code=409, detail="This picture was changed in another tab or by someone else. Reload it and try again.")
     now = datetime.now(timezone.utc)
 
     # generate/upload never write a version row for the asset's first state,
@@ -338,11 +346,17 @@ async def _bump_version(
     # saves that overlap both claim the same number. An approved master stays pinned: the new version sits beside it.
     ops: dict = {"$set": {"slides": slides_dump, "updated_at": now}, "$inc": {"version_count": 1}}
     from pymongo import ReturnDocument
+    # When the caller says which version it started from, the write only happens if the picture is still on that version, so two
+    # edits that overlap cannot each replace the other's slide list.
+    guard: dict = {"id": asset_id, "workspace_id": workspace_id}
+    if expected_version is not None:
+        guard["version_count"] = expected_version
     bumped = await image_assets.find_one_and_update(
-        {"id": asset_id, "workspace_id": workspace_id}, ops,
-        projection={"version_count": 1}, return_document=ReturnDocument.AFTER,
+        guard, ops, projection={"version_count": 1}, return_document=ReturnDocument.AFTER,
     )
     if not bumped:
+        if expected_version is not None:
+            raise HTTPException(status_code=409, detail="This picture was changed in another tab or by someone else. Reload it and try again.")
         return None
     new_version_number = bumped.get("version_count", current_version + 1)
     version = ImageAssetVersion(
@@ -356,7 +370,7 @@ async def _bump_version(
         created_at=now,
     )
     await image_asset_versions.insert_one(version.model_dump())
-    return await image_assets.find_one({"id": asset_id, "workspace_id": workspace_id})
+    return await image_assets.find_one({"id": asset_id, "workspace_id": workspace_id, "deleted": {"$ne": True}})
 
 
 def _piece_topic(piece: dict) -> str:
@@ -386,10 +400,10 @@ class GenerateImageAssetRequest(BaseModel):
     with no prompt yet reviewed — see the route's own docstring for the
     exact precedence."""
 
-    title: str
+    title: str = Field(max_length=200)
     brand_id: str
-    prompt: Optional[str] = None
-    negative_prompt: Optional[str] = None
+    prompt: Optional[str] = Field(None, max_length=4000)
+    negative_prompt: Optional[str] = Field(None, max_length=1000)
     seed: Optional[int] = None
     visual_profile: str = "midnight_swiss"
     active_layout: LayoutPreset = LayoutPreset.QUOTE_1_1
@@ -458,6 +472,9 @@ def _check_icon(name: Optional[str]) -> None:
 # screen gives up waiting before the server does, so a second click or a retry used to start the same pack again, with the
 # provider cost and a duplicate picture. While one is running, the same request is answered plainly instead.
 _GENERATE_IN_FLIGHT: set[str] = set()
+#: Pictures a slide is being added to right now. A second click (or a retry after a timeout) would add a duplicate slide and make a
+#: second paid picture.
+_ADD_SLIDE_IN_FLIGHT: set[str] = set()
 
 
 async def _generate_guard(body: GenerateImageAssetRequest, ctx: WorkspaceContext = Depends(require("create_content"))):
@@ -511,9 +528,18 @@ async def generate_image_asset_in_background(
     from app.shared import pipeline_runs
 
     await pipeline_runs.assert_capacity(ctx.workspace_id)
-    doc = await pipeline_runs.create_run(
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="image", title=f"Picture \"{body.title}\"", steps_total=1,
-    )
+    # The guard above is released when this request returns, but the picture is still being made. The run itself holds the key
+    # until it ends, so the same request sent again meanwhile is refused for the whole time.
+    import hashlib
+
+    start_key = hashlib.sha1(f"{ctx.workspace_id}:{ctx.user_id}:{body.model_dump_json()}".encode()).hexdigest()
+    try:
+        doc = await pipeline_runs.create_run(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="image", title=f"Picture \"{body.title}\"", steps_total=1,
+            active_key=f"image-generate:{start_key}",
+        )
+    except pipeline_runs.RunAlreadyActive:
+        raise HTTPException(status_code=409, detail="This picture is already being made. It will show in your history when it is ready.")
 
     async def work(run: dict) -> dict:
         await pipeline_runs.checkpoint(run["id"])
@@ -524,10 +550,31 @@ async def generate_image_asset_in_background(
     return pipeline_runs.public(doc)
 
 
+async def _assert_daily_allowance(workspace_id: str, wanted: int) -> None:
+    """A workspace may make a set number of AI pictures a day. The free picture service has one daily ceiling shared by everyone, so
+    one workspace asking for a pack of ten again and again must not use it all up."""
+    from datetime import datetime, timezone
+
+    from app.core import limits
+    from app.db.mongo import media_assets
+
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    made = await media_assets.count_documents(
+        {"workspace_id": workspace_id, "source": MediaSource.AI_GENERATED.value, "created_at": {"$gte": start}}
+    )
+    if made + wanted > limits.IMAGES_PER_WORKSPACE_PER_DAY:
+        left = max(0, limits.IMAGES_PER_WORKSPACE_PER_DAY - made)
+        raise HTTPException(
+            status_code=429,
+            detail=f"This workspace can make {limits.IMAGES_PER_WORKSPACE_PER_DAY} pictures a day and has {left} left today. Try again tomorrow, or make fewer.",
+        )
+
+
 async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceContext) -> ImageAsset:
     """The work behind POST /generate, callable without a request (campaign runs use it)."""
     _check_icon(body.icon_name)
     await assert_generation_allowed(ctx.workspace_id)
+    await _assert_daily_allowance(ctx.workspace_id, body.count)
 
     if body.active_layout not in SUPPORTED_LAYOUTS:
         raise HTTPException(
@@ -549,7 +596,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
         if not piece:
             raise HTTPException(status_code=404, detail="Source piece not found.")
         content = piece.get("content") or ""
-        source_content_hash = str(hash(content))
+        source_content_hash = content_hash(content)
         if not prompt:
             prompt = _build_raw_prompt(_piece_topic(piece), brand)
 
@@ -641,31 +688,48 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
     if body.count > 1:
         extra_prompts = [f"{p.rstrip()} {look}" if look and look not in p else p for p in image_pack.pack_prompts(prompt, body.count)[1:]]
         made = list(asset.slides)
-        for position, extra_prompt in enumerate(extra_prompts, start=2):
-            try:
-                extra = await _render_and_upload_slide(
-                    prompt=extra_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
-                    layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
+        try:
+            for position, extra_prompt in enumerate(extra_prompts, start=2):
+                try:
+                    extra = await _render_and_upload_slide(
+                        prompt=extra_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+                        layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
+                        text_content=SlideTextContent(
+                            headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
+                            icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
+                show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
+                        ),
+                        show_logo=use_logo, show_mascot=body.show_mascot, avoid=body.negative_prompt, effects=body.effects.model_dump(),
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep what was made
+                    logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
+                    break
+                made.append(Slide(
+                    slide_number=position, title=f"{body.title} ({position})", slide_type=body.active_layout.value,
+                    layout=body.active_layout, media_id=extra.media.id, background_media_id=extra.background_media_id, layers=extra.layers,
+                    effects=body.effects.model_dump(),
                     text_content=SlideTextContent(
                         headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
                         icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
-            show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
-                    ),
-                    show_logo=use_logo, show_mascot=body.show_mascot, avoid=body.negative_prompt, effects=body.effects.model_dump(),
-                )
-            except Exception as exc:  # noqa: BLE001 - keep what was made
-                logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
-                break
-            made.append(Slide(
-                slide_number=position, title=f"{body.title} ({position})", slide_type=body.active_layout.value,
-                layout=body.active_layout, media_id=extra.media.id, background_media_id=extra.background_media_id, layers=extra.layers,
-                effects=body.effects.model_dump(),
-                text_content=SlideTextContent(
-                    headline=body.headline, accent_keyword=body.accent_keyword, author=body.author,
-                    icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
-            show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
-                ).model_dump(),
-            ))
+                show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
+                    ).model_dump(),
+                ))
+        except asyncio.CancelledError:
+            # Stopped part-way (a cancel, or the server going down): the pictures made so far are kept, and the set says how many.
+            if len(made) > len(asset.slides):
+                try:
+                    await asyncio.shield(_bump_version(asset_id, ctx.workspace_id, made, "pack_generated", ctx.user_id))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not keep the pictures made before a stop for asset %s: %s", asset_id, exc)
+            stopped = f"Stopped after {len(made)} of {body.count} pictures."
+            try:
+                await asyncio.shield(image_assets.update_one(
+                    {"id": asset_id, "workspace_id": ctx.workspace_id},
+                    {"$set": {"qa_flagged": True, "qa_flag_reason": stopped}},
+                ))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not note the stop on asset %s: %s", asset_id, exc)
+            raise
         if len(made) > len(asset.slides):
             updated_doc = await _bump_version(asset_id, ctx.workspace_id, made, "pack_generated", ctx.user_id)
             asset = ImageAsset(**updated_doc)
@@ -731,11 +795,13 @@ async def upload_image_asset(
             detail=f"Unsupported image type '{file.content_type}'. Allowed: {', '.join(sorted(_IMAGE_MIME_TYPES))}.",
         )
 
-    from app.shared.uploads import assert_image_size, read_limited
+    from app.shared.uploads import assert_image_size, read_limited, upright
 
+    await _get_brand_profile(brand_id, ctx.workspace_id)  # the brand must be one of this workspace's
     max_bytes = await _max_bytes_for(MediaKind.IMAGE, ctx.workspace_id)
     contents = await read_limited(file, max_bytes, detail=f"Image must be {max_bytes // (1024 * 1024)}MB or smaller.")
     assert_image_size(contents)
+    contents = upright(contents)
 
     from app.agents.content_guard.media import assert_image_ok
 
@@ -813,6 +879,8 @@ class ExportImageAssetRequest(BaseModel):
     upscale: Literal[1, 2, 4] = 1
     dpi: Literal[72, 150, 300] = 300
     optimize: bool = True
+    # Which slide a single-picture export is of. Left out, it is the first slide.
+    slide_number: Optional[int] = None
 
 
 async def _download_slide_bytes(url: str) -> bytes:
@@ -834,7 +902,7 @@ async def export_image_asset(
     "create a real, distinct derivative" convention media.py's
     transform_media uses) for a single slide, or a real multi-slide bundle
     (pdf/zip, every real rendered slide, not just the first)."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
@@ -876,8 +944,11 @@ async def export_image_asset(
         await media_assets.insert_one(export_asset.model_dump())
         return export_asset
 
+    chosen = next((s for s in asset.slides if s.slide_number == body.slide_number), None) if body.slide_number else asset.slides[0]
+    if chosen is None:
+        raise HTTPException(status_code=404, detail="That slide doesn't exist on this picture.")
     source_doc = await media_assets.find_one(
-        {"id": asset.slides[0].media_id, "workspace_id": ctx.workspace_id}
+        {"id": chosen.media_id, "workspace_id": ctx.workspace_id}
     )
     if not source_doc:
         raise HTTPException(status_code=404, detail="The rendered slide's file is missing.")
@@ -917,7 +988,7 @@ async def export_image_asset(
         workspace_id=ctx.workspace_id,
         kind=MediaKind.IMAGE,
         url=new_url,
-        mime_type=f"image/{body.export_format}",
+        mime_type=mime_for(body.export_format),
         width=source.width,
         height=source.height,
         source=MediaSource.EDITED,
@@ -936,8 +1007,8 @@ async def export_image_asset(
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AddSlideRequest(BaseModel):
-    prompt: Optional[str] = None
-    negative_prompt: Optional[str] = None
+    prompt: Optional[str] = Field(None, max_length=4000)
+    negative_prompt: Optional[str] = Field(None, max_length=1000)
     seed: Optional[int] = None
     active_layout: LayoutPreset = LayoutPreset.QUOTE_1_1
     headline: str
@@ -968,11 +1039,24 @@ async def add_slide(
     Reuses the parent asset's own prompt when the caller doesn't give a
     new one, so adding slide 2 of a 5-slide carousel doesn't require
     re-typing the same prompt."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
+    slide_key = f"{ctx.workspace_id}:{image_asset_id}"
+    if slide_key in _ADD_SLIDE_IN_FLIGHT:
+        raise HTTPException(status_code=409, detail="A slide is already being added to this picture. Wait for it to appear.")
+    _ADD_SLIDE_IN_FLIGHT.add(slide_key)
+    try:
+        return await _add_slide(request, asset, body, ctx)
+    finally:
+        _ADD_SLIDE_IN_FLIGHT.discard(slide_key)
+
+
+async def _add_slide(request: Request, asset: ImageAsset, body: AddSlideRequest, ctx: WorkspaceContext) -> ImageAsset:
+    image_asset_id = asset.id
     await assert_generation_allowed(ctx.workspace_id)  # the same owner switch the first picture respects
+    await _assert_daily_allowance(ctx.workspace_id, 1)
     _check_icon(body.icon_name)
 
     if body.active_layout not in SUPPORTED_LAYOUTS:
@@ -1030,7 +1114,7 @@ class SaveLayersRequest(BaseModel):
 
 
 async def _slide_for_editing(image_asset_id: str, slide_number: int, workspace_id: str) -> tuple[ImageAsset, Slide, dict]:
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
@@ -1048,7 +1132,12 @@ async def _redraw_slide(asset: ImageAsset, slide: Slide, layers: list[Layer], br
     before the editor existed have no clean picture, so their finished picture (words and all) is used as the backdrop."""
     assert slide.layout is not None
     size = LAYOUT_DIMS[slide.layout]
-    background = await _media_bytes(slide.background_media_id or slide.media_id, ctx.workspace_id)
+    backdrop_id = slide.background_media_id or slide.media_id
+    background = await _media_bytes(backdrop_id, ctx.workspace_id)
+    if backdrop_id and background is None:
+        # The picture exists but could not be fetched right now. Redrawing without it would save a flat colour card as the new version
+        # and lose the real picture, so nothing is changed.
+        raise HTTPException(status_code=502, detail="Couldn't load this picture just now, so nothing was changed. Try again in a moment.")
     brand_tokens = _brand_tokens_from(brand)
     media = await _draw_and_store(size=size, background_bytes=background, layers=layers, brand=brand, brand_tokens=brand_tokens,
                                   workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=slide.effects)
@@ -1056,7 +1145,7 @@ async def _redraw_slide(asset: ImageAsset, slide: Slide, layers: list[Layer], br
         sl.model_copy(update={"media_id": media.id, "layers": layers}) if sl.slide_number == slide.slide_number else sl
         for sl in asset.slides
     ]
-    doc = await _bump_version(asset.id, ctx.workspace_id, updated, action, ctx.user_id)
+    doc = await _bump_version(asset.id, ctx.workspace_id, updated, action, ctx.user_id, expected_version=asset.version_count)
     return ImageAsset(**doc)
 
 
@@ -1117,7 +1206,7 @@ async def remove_slide(
 ) -> ImageAsset:
     """Removes one slide and renumbers the rest sequentially (1..N, no
     gaps) — real deletion with real version history, not a soft hide."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
@@ -1129,7 +1218,7 @@ async def remove_slide(
         raise HTTPException(status_code=400, detail="Can't remove the last slide of an image asset.")
 
     renumbered = [s.model_copy(update={"slide_number": i + 1}) for i, s in enumerate(remaining)]
-    updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, renumbered, "slide_removed", ctx.user_id)
+    updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, renumbered, "slide_removed", ctx.user_id, expected_version=asset.version_count)
     return ImageAsset(**updated_doc)
 
 
@@ -1145,7 +1234,7 @@ async def reorder_slides(
     body: ReorderSlidesRequest,
     ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> ImageAsset:
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
@@ -1157,7 +1246,7 @@ async def reorder_slides(
         )
 
     reordered = [by_number[n].model_copy(update={"slide_number": i + 1}) for i, n in enumerate(body.order)]
-    updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, reordered, "slides_reordered", ctx.user_id)
+    updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, reordered, "slides_reordered", ctx.user_id, expected_version=asset.version_count)
     return ImageAsset(**updated_doc)
 
 
@@ -1195,7 +1284,7 @@ async def set_image_details(
     res = await image_assets.update_one({"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"$set": changes})
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Image asset not found.")
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     return ImageAsset(**doc)
 
 
@@ -1215,7 +1304,7 @@ async def apply_looks(
     """Draws the chosen looks (glow, two-tone wash, grid, Remove Background, rounded corners) on a picture that already exists,
     including one the member uploaded. The original picture is kept as the slide's backdrop, so applying again with different
     looks, or with none, always starts from it. No AI call is made. Kept as a new version."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
@@ -1262,7 +1351,7 @@ async def apply_looks(
         if sl.slide_number == slide_number else sl
         for sl in asset.slides
     ]
-    new_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, "looks_applied", ctx.user_id)
+    new_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, "looks_applied", ctx.user_id, expected_version=asset.version_count)
     return ImageAsset(**new_doc)
 
 
@@ -1280,14 +1369,14 @@ async def set_slide_role(
     ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> ImageAsset:
     """Marks what a slide does in the set (hook, stat or takeaway), or clears it. Only a label; the picture is not redrawn."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
     if slide_number not in {s.slide_number for s in asset.slides}:
         raise HTTPException(status_code=404, detail="Slide not found.")
     updated = [s.model_copy(update={"role": body.role}) if s.slide_number == slide_number else s for s in asset.slides]
-    updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, "slide_role_set", ctx.user_id)
+    updated_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, "slide_role_set", ctx.user_id, expected_version=asset.version_count)
     return ImageAsset(**updated_doc)
 
 
@@ -1309,7 +1398,7 @@ async def approve_image_asset(
     approved_master_media_id is what a future export/publish/share-link
     flow should read, not necessarily whatever slide is currently first
     in the array if that ever changes after approval."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
@@ -1323,7 +1412,7 @@ async def approve_image_asset(
             "updated_at": datetime.now(timezone.utc),
         }},
     )
-    updated = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    updated = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     return ImageAsset(**updated)
 
 
@@ -1334,7 +1423,7 @@ async def reject_image_asset(
     image_asset_id: str,
     ctx: WorkspaceContext = Depends(require("approve_content")),
 ) -> ImageAsset:
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     await image_assets.update_one(
@@ -1344,7 +1433,7 @@ async def reject_image_asset(
             "updated_at": datetime.now(timezone.utc),
         }},
     )
-    updated = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    updated = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     return ImageAsset(**updated)
 
 
@@ -1359,7 +1448,7 @@ async def list_image_comments(
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> list[CommentPin]:
     doc = await image_assets.find_one(
-        {"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"comments": 1},
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"comments": 1},
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
@@ -1374,12 +1463,14 @@ async def create_image_comment(
     body: CommentPinCreate,
     ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> CommentPin:
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
     if not any(s.slide_number == body.slide_number for s in asset.slides):
         raise HTTPException(status_code=400, detail=f"Slide {body.slide_number} doesn't exist on this asset.")
+    if len(doc.get("comments", [])) >= MAX_PINS_PER_ASSET:
+        raise HTTPException(status_code=429, detail=f"This picture already has {MAX_PINS_PER_ASSET} notes. Remove some before adding more.")
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Write something for the note.")
@@ -1416,7 +1507,7 @@ async def update_image_comment(
     ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> CommentPin:
     result = await image_assets.find_one_and_update(
-        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "comments.id": comment_id},
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "comments.id": comment_id},
         {"$set": {"comments.$.resolved": body.resolved, "updated_at": datetime.now(timezone.utc)}},
         return_document=True,
     )
@@ -1435,7 +1526,7 @@ async def delete_image_comment(
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> Response:
     doc = await image_assets.find_one(
-        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "comments.id": comment_id}, {"comments": 1},
+        {"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "comments.id": comment_id}, {"comments": 1},
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Comment not found.")
@@ -1456,7 +1547,7 @@ async def check_image_contrast(
 ) -> list[ContrastResult]:
     """Real WCAG contrast check on the exact color pairs render_slide()
     draws for this asset's brand — not a guessed or generic pair."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     brand = await brand_profiles.find_one({"id": doc["brand_id"], "workspace_id": ctx.workspace_id})
@@ -1563,6 +1654,8 @@ async def remove_image_asset(
     )
     if done.matched_count == 0:
         raise HTTPException(status_code=404, detail="Image asset not found.")
+    # Anyone holding a share link to it can no longer open it.
+    await image_share_links.update_many({"image_asset_id": image_asset_id}, {"$set": {"revoked": True}})
     return {"id": image_asset_id, "deleted": True}
 
 
@@ -1614,12 +1707,16 @@ async def list_image_versions(
     image_asset_id: str,
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
+    # The newest 100, shown oldest first. (The oldest 100 were returned before, so a picture edited often stopped showing its latest
+    # versions.) The layers of each snapshot are large and not needed to list versions, so they are left out.
     versions = await image_asset_versions.find(
-        {"image_asset_id": image_asset_id, "workspace_id": ctx.workspace_id}
-    ).sort("version_number", 1).to_list(length=100)
+        {"image_asset_id": image_asset_id, "workspace_id": ctx.workspace_id},
+        {"slides_snapshot.layers": 0},
+    ).sort("version_number", -1).to_list(length=100)
+    versions.reverse()
     for v in versions:
         v.pop("_id", None)
     return {"image_asset_id": image_asset_id, "versions": versions, "total": len(versions)}
@@ -1633,7 +1730,7 @@ async def restore_image_version(
     version_number: int,
     ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> ImageAsset:
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     version_doc = await image_asset_versions.find_one({
@@ -1657,6 +1754,11 @@ class ShareLinkResponse(BaseModel):
     expires_at: datetime
 
 
+#: Caps that keep one picture's record from growing without end.
+MAX_SHARE_LINKS_PER_ASSET = 20
+MAX_PINS_PER_ASSET = 200
+
+
 @router.post("/{image_asset_id}/share-link", response_model=ShareLinkResponse, status_code=201)
 @limiter.limit("10/minute")
 async def create_image_share_link(
@@ -1670,12 +1772,16 @@ async def create_image_share_link(
     that's a separate, larger scope (a genuinely public, unauthenticated
     route) not built in this pass; the real backend contract exists so
     that page can be added without another backend change."""
-    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id})
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
 
-    token = secrets.token_urlsafe(24)
     now = datetime.now(timezone.utc)
+    if await image_share_links.count_documents(
+        {"image_asset_id": image_asset_id, "workspace_id": ctx.workspace_id, "revoked": {"$ne": True}, "expires_at": {"$gt": now}}
+    ) >= MAX_SHARE_LINKS_PER_ASSET:
+        raise HTTPException(status_code=429, detail=f"This picture already has {MAX_SHARE_LINKS_PER_ASSET} share links. Remove one first.")
+    token = secrets.token_urlsafe(24)
     expires_at = now + timedelta(days=30)
     link = ImageShareLink(
         token=token,
@@ -1702,7 +1808,7 @@ async def list_image_share_links(
     ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> list[ShareLinkItem]:
     """This image's links that still work — not revoked and not expired."""
-    if not await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id}, {"id": 1}):
+    if not await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"id": 1}):
         raise HTTPException(status_code=404, detail="Image asset not found.")
     now = datetime.now(timezone.utc)
     docs = await image_share_links.find(

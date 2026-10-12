@@ -8,12 +8,21 @@ RequestLoggingMiddleware, app/core/auth.py, and app/core/workspace.py.
 """
 
 import logging
+import re
 import sys
 from logging.config import dictConfig
 
 import structlog
 
 from app.core.config import settings
+
+
+_SECRET_IN_URL = re.compile(r"(?i)([?&](?:key|api_key|apikey|access_token|token|secret|client_secret|password|code)=)[^&\s\"']+")
+_BEARER = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{12,}")
+
+
+def _mask_secrets(text: str) -> str:
+    return _BEARER.sub(r"\1***", _SECRET_IN_URL.sub(r"\1***", text))
 
 
 class RequestContextFilter(logging.Filter):
@@ -25,6 +34,15 @@ class RequestContextFilter(logging.Filter):
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # A library's error text can carry the address it called, and that address can carry a key or a token in its query string.
+        # Those values are masked before the line is written anywhere.
+        try:
+            if isinstance(record.msg, str):
+                record.msg = _mask_secrets(record.msg)
+            if record.args:
+                record.args = tuple(_mask_secrets(a) if isinstance(a, str) else a for a in (record.args if isinstance(record.args, tuple) else (record.args,)))
+        except Exception:  # noqa: BLE001 - logging must never fail because of masking
+            pass
         ctx = structlog.contextvars.get_contextvars()
         record.request_id = ctx.get("request_id", "-")
         record.user_id = ctx.get("user_id", "-")

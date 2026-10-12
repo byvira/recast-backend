@@ -4,6 +4,7 @@ Invites are one-time codes sent by email. A batch stops at the daily cap so a mi
 writes to the lead audit trail.
 """
 
+import asyncio
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -12,6 +13,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
+from app.shared.support import has_role_at_least
 from app.core.auth import require_platform_staff
 from app.core.middleware import limiter
 from app.db.mongo import signup_invites, waitlist_leads
@@ -86,13 +88,20 @@ async def _invited_today() -> int:
 
 async def _invite_one(lead: dict[str, Any], user: dict, source: str) -> tuple[bool, str]:
     """Create and send one invite. Returns whether it went and, if not, why."""
-    invite, code = await invites.create_invite(lead, user, source)
+    invite, code = await invites.create_invite(lead, user, source, supersede=False)
     if not await invites.send_invite(lead, invite, code):
+        # Not sent: the new code is dropped and any code the person already has keeps working.
         await signup_invites.update_one({"id": invite["id"]}, {"$set": {"revoked": True}})
         return False, "The email could not be sent."
+    await invites.supersede_earlier(lead["email"], invite["id"])
     await waitlist_leads.update_one({"id": lead["id"]}, {"$set": {"status": "invited", "invited_at": datetime.now(timezone.utc)}})
     await record_event("waitlist", lead["id"], "invited", user, f"Invite sent to {lead['email']}")
     return True, ""
+
+
+#: Held while a batch of invites is counted against the daily limit and sent, so two staff sending together cannot both use the same
+#: room.
+_INVITE_LOCK = asyncio.Lock()
 
 
 @router.get("/invites")
@@ -104,10 +113,13 @@ async def list_invites(
     page_size: int = Query(25, ge=1, le=100),
     user: dict = Depends(require_platform_staff),
 ) -> dict[str, Any]:
-    docs = await signup_invites.find({}, _NO_ID).sort("created_at", -1).limit(500).to_list(500)
-    rows = [_row(doc) for doc in docs]
-    if state:
-        rows = [row for row in rows if row["state"] == state]
+    # Every invite is looked at (a long list used to be cut at the newest 500 before the state was filtered, so older ones could not
+    # be found). Only the rows of the chosen page are returned.
+    rows = []
+    async for doc in signup_invites.find({}, _NO_ID).sort("created_at", -1):
+        row = _row(doc)
+        if not state or row["state"] == state:
+            rows.append(row)
     start = (page - 1) * page_size
     config = await get_lead_settings()
     return {"items": rows[start : start + page_size], "total": len(rows), "page": page, "page_size": page_size, "invited_today": await _invited_today(), "daily_cap": config["daily_invite_cap"]}
@@ -117,6 +129,11 @@ async def list_invites(
 @limiter.limit("20/hour")
 async def invite_leads(request: Request, body: InviteBatch, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
     """Invite people from the waitlist. Each is checked on its own: one that cannot be invited does not stop the rest."""
+    async with _INVITE_LOCK:
+        return await _invite_leads_locked(body, user)
+
+
+async def _invite_leads_locked(body: InviteBatch, user: dict) -> dict[str, Any]:
     config = await get_lead_settings()
     room = max(0, int(config["daily_invite_cap"]) - await _invited_today())
     sent, skipped = 0, []
@@ -213,6 +230,9 @@ async def get_settings_route(request: Request, user: dict = Depends(require_plat
 @limiter.limit("30/hour")
 async def put_settings(request: Request, body: SettingsBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
     changes = {key: value for key, value in body.model_dump().items() if value is not None}
+    if "signup_mode" in changes and not has_role_at_least(user, "admin"):
+        # Who may create an account (anyone, invite only, closed) is a platform decision: it needs an admin, not any staff member.
+        raise HTTPException(status_code=403, detail="Only an admin can change who is allowed to sign up.")
     if changes:
         await save_lead_settings(changes)
         await record_event("settings", "*", "settings", user, ", ".join(sorted(changes)))

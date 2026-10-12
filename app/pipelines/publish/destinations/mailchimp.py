@@ -6,10 +6,13 @@ live account.
 from __future__ import annotations
 
 import base64
+import logging
 import re
 from typing import Optional
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from app.pipelines.publish.base import PublishResult
 from app.pipelines.publish.destinations.common import DestinationError, TIMEOUT, failure, reply_message, to_html
@@ -55,13 +58,16 @@ async def verify(api_key: str) -> dict:
 
 
 async def audiences(api_key: str) -> list[dict]:
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        response = await client.get(
-            f"{_base(api_key)}/lists", params={"count": 100, "fields": "lists.id,lists.name,lists.stats.member_count"}, headers=_headers(api_key),
-        )
-    if response.status_code != 200:
-        return []
-    return [{"id": a["id"], "name": a["name"], "members": (a.get("stats") or {}).get("member_count", 0)} for a in response.json().get("lists", [])]
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            response = await client.get(
+                f"{_base(api_key)}/lists", params={"count": 100, "fields": "lists.id,lists.name,lists.stats.member_count"}, headers=_headers(api_key),
+            )
+        if response.status_code != 200:
+            return []
+        return [{"id": a["id"], "name": a["name"], "members": (a.get("stats") or {}).get("member_count", 0)} for a in response.json().get("lists", [])]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return []  # an unreachable Mailchimp or an unexpected reply shows an empty list, not a server error
 
 
 def build_html(content: str) -> str:
@@ -92,6 +98,11 @@ async def publish(*, api_key: str, piece_id: str, audience_id: str, subject: str
             created = campaign.json()
             content_reply = await client.put(f"{base}/campaigns/{created['id']}/content", json={"html": build_html(content)}, headers=headers)
             if content_reply.status_code != 200:
+                # The empty campaign made a moment ago would stay in the member's Mailchimp, and every retry would add another.
+                try:
+                    await client.delete(f"{base}/campaigns/{created['id']}", headers=headers)
+                except httpx.HTTPError as exc:
+                    logger.warning("Could not remove the unfinished Mailchimp campaign %s: %s", created.get("id"), exc)
                 return failure("mailchimp", piece_id, content_reply, message=reply_message(content_reply), reconnect_label=LABEL)
             if send:
                 sent = await client.post(f"{base}/campaigns/{created['id']}/actions/send", headers=headers)

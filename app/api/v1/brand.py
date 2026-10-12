@@ -20,6 +20,7 @@ from app.db.mongo import audio_assets, brand_profiles, content_pieces, get_campa
 from app.models.brand_profile import (
     AddTrainingSampleBody,
     BrandProfile,
+    AudienceProfile,
     BrandType,
     CreateBrandProfileBody,
     PreviewRewriteBody,
@@ -30,6 +31,7 @@ from app.models.brand_profile import (
     UpdateBrandTypeBody,
     UpdateCalibrationBody,
     UpdateVisualIdentityBody,
+    VoiceTone,
     UpdateVoiceBody,
 )
 from app.pipelines.brand import profile_sections
@@ -190,6 +192,19 @@ def _get_step_mapping(brand_type: str) -> dict[str, int]:
         }
 
 
+def _checked(model, data: dict) -> dict:
+    """The step's data, kept only if it fits the shape the rest of the product reads. A value that does not (an old client, a hand-made
+    request) is refused here with a plain reason, instead of being saved and then breaking every page that loads the profile."""
+    from pydantic import ValidationError
+
+    try:
+        model(**data)  # checked, not rewritten: what the page sent is what is kept
+        return data
+    except ValidationError as exc:
+        field = ".".join(str(p) for p in exc.errors()[0].get("loc", ())) or "a field"
+        raise HTTPException(status_code=422, detail=f"One of the answers isn't valid ({field}). Check it and save again.")
+
+
 def _build_step_update(
     step: int,
     data: dict,
@@ -222,7 +237,7 @@ def _build_step_update(
 
     # Step 3 — type-specific for non-Person, audience for Person
     if is_person and step == mapping["audience"]:
-        update["audience"] = data
+        update["audience"] = _checked(AudienceProfile, data)
         return update
 
     if not is_person and step == mapping.get("type_specific", -1):
@@ -239,12 +254,12 @@ def _build_step_update(
 
     # Step 4 (non-Person) — audience
     if not is_person and step == mapping["audience"]:
-        update["audience"] = data
+        update["audience"] = _checked(AudienceProfile, data)
         return update
 
     # Voice tone step
     if step == mapping["voice_tone"]:
-        update["voice_tone"] = data
+        update["voice_tone"] = _checked(VoiceTone, data)
         return update
 
     # Setup step — split into three top-level fields
@@ -308,6 +323,10 @@ async def create_brand_profile(
     }
 
     await brand_profiles.insert_one(doc)
+    # Counted again now that this one is saved: two creates at the same moment cannot both take the last place.
+    if await brand_profiles.count_documents({"workspace_id": ctx.workspace_id}) > MAX_BRAND_PROFILES_PER_WORKSPACE:
+        await brand_profiles.delete_one({"id": brand_id})
+        raise HTTPException(status_code=400, detail="Maximum of 10 brand profiles per workspace reached.")
 
     return {"brand_profile_id": brand_id, "brand_type": body.brand_type.value}
 
@@ -543,16 +562,18 @@ async def get_brand_counts(
         raise HTTPException(status_code=404, detail="Brand profile not found.")
     scope = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
 
-    pieces = await content_pieces.find(
-        {**scope, "brand_id": brand_id}, {"archived": 1, "publish_status": 1, "approval_status": 1},
-    ).to_list(length=None)
+    # Read one row at a time and only counted, so a brand with tens of thousands of posts is never held in memory all at once.
     stages = {stage: 0 for stage in KANBAN_STAGES}
-    for p in pieces:
+    total = 0
+    async for p in content_pieces.find(
+        {**scope, "brand_id": brand_id}, {"archived": 1, "publish_status": 1, "approval_status": 1},
+    ):
         stage = compute_kanban_stage(p)
         stages[stage] = stages.get(stage, 0) + 1
+        total += 1
 
     return {
-        "posts": {"total": len(pieces), "by_stage": stages},
+        "posts": {"total": total, "by_stage": stages},
         "images": await image_assets.count_documents({**scope, "brand_id": brand_id, "deleted": {"$ne": True}}),
         "audio": await audio_assets.count_documents({**scope, "brand_id": brand_id, "deleted": {"$ne": True}}),
         "campaigns": await get_campaigns_collection().count_documents({**scope, "brand_id": brand_id}),
@@ -584,6 +605,9 @@ async def duplicate_brand_profile(
             break
     copy["identity"] = identity
     await brand_profiles.insert_one(copy)
+    if await brand_profiles.count_documents({"workspace_id": ctx.workspace_id}) > MAX_BRAND_PROFILES_PER_WORKSPACE:
+        await brand_profiles.delete_one({"id": copy["id"]})
+        raise HTTPException(status_code=400, detail="Maximum of 10 brand profiles per workspace reached.")
     return {"brand_profile_id": copy["id"]}
 
 
@@ -863,14 +887,15 @@ async def set_default_brand(
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
-    now = datetime.now(timezone.utc)
+    # The "version" a profile page checks is updated_at, so choosing which brand is the default must not touch it: it is not an edit of
+    # the profile, and changing it made every other open profile report "changed by someone else" with nobody else involved.
     await brand_profiles.update_many(
         {"workspace_id": ctx.workspace_id, "id": {"$ne": brand_id}},
-        {"$set": {"is_default": False, "updated_at": now}},
+        {"$set": {"is_default": False}},
     )
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": ctx.workspace_id},
-        {"$set": {"is_default": True, "updated_at": now}},
+        {"$set": {"is_default": True}},
     )
     updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     return _doc_to_brand_profile(updated)
@@ -894,7 +919,7 @@ async def set_active_brand(
 
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": ctx.workspace_id},
-        {"$set": {"is_active": body.is_active, "updated_at": datetime.now(timezone.utc)}},
+        {"$set": {"is_active": body.is_active}},
     )
     updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     return _doc_to_brand_profile(updated)
@@ -909,15 +934,17 @@ async def _generate_and_save_mascot(brand_id: str, workspace_id: str, user_id: s
     doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
     if not doc:
         return
-    asset = await generate_brand_mascot(brand_profile=doc, workspace_id=workspace_id, user_id=user_id)
+    try:
+        asset = await generate_brand_mascot(brand_profile=doc, workspace_id=workspace_id, user_id=user_id)
+    finally:
+        await brand_profiles.update_one({"id": brand_id, "workspace_id": workspace_id}, {"$unset": {"mascot_pending": ""}})
     if not asset:
         return
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": workspace_id},
         {
             "$set": {
-                "visual_identity.mascot_url": asset.url,
-                "updated_at": datetime.now(timezone.utc),
+                "visual_identity.mascot_url": asset.url,  # not an edit by the member, so the profile\'s version (updated_at) stays as it was
             }
         },
     )
@@ -958,9 +985,22 @@ async def complete_brand_profile(
         )
 
     if not (doc.get("visual_identity") or {}).get("mascot_url"):
-        asyncio.create_task(_generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id))
+        # Claimed with one conditional write, so two quick calls (a double click on Finish) make one mascot, not two. The task is held
+        # until it ends, because the loop keeps only a weak reference to a task nobody holds.
+        claimed = await brand_profiles.update_one(
+            {"id": brand_id, "workspace_id": ctx.workspace_id, "mascot_pending": {"$ne": True}},
+            {"$set": {"mascot_pending": True}},
+        )
+        if claimed.modified_count:
+            task = asyncio.create_task(_generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id))
+            _MASCOT_TASKS.add(task)
+            task.add_done_callback(_MASCOT_TASKS.discard)
 
     return {"brand_id": brand_id, "is_complete": True}
+
+
+#: Mascot pictures being made in the background.
+_MASCOT_TASKS: set = set()
 
 
 @router.post("/{brand_id}/visual-identity/mascot/regenerate", response_model=BrandProfile)
@@ -989,8 +1029,7 @@ async def regenerate_brand_mascot(
         {"id": brand_id, "workspace_id": ctx.workspace_id},
         {
             "$set": {
-                "visual_identity.mascot_url": asset.url,
-                "updated_at": datetime.now(timezone.utc),
+                "visual_identity.mascot_url": asset.url,  # not an edit by the member, so the profile\'s version (updated_at) stays as it was
             }
         },
     )
@@ -1010,6 +1049,13 @@ async def delete_brand_profile(
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
+    others = await brand_profiles.find({"workspace_id": ctx.workspace_id, "id": {"$ne": brand_id}}, {"id": 1}).sort("updated_at", -1).to_list(20)
+    if not others:
+        raise HTTPException(status_code=400, detail="This is your only voice. Make another one before removing it.")
+
     await brand_profiles.delete_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if doc.get("is_default"):
+        # The default went with it: the most recently changed voice takes its place, without touching its profile version.
+        await brand_profiles.update_one({"id": others[0]["id"], "workspace_id": ctx.workspace_id}, {"$set": {"is_default": True}})
 
     return {"message": "Brand profile deleted."}

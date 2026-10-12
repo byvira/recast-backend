@@ -34,6 +34,7 @@ from app.workers.run_reminders import remind_about_paused_runs
 from app.workers.scheduled_posts import process_scheduled_posts
 from app.workers.support_lifecycle import support_lifecycle_tick
 from app.workers.token_refresh import refresh_expiring_tokens
+from app.workers.workspace_purge import purge_deleted_workspaces
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,8 @@ JOBS: list[Job] = [
     # Token renewal — every 15 minutes; it only renews connections that are due. Some sign-ins (YouTube, Bluesky) last an hour or two,
     # so an hourly look let them lapse; long-lived ones are still renewed at most once a day.
     Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=_every(15, offset=11)),
+    # Workspaces deleted more than 30 days ago are removed for good, with everything they owned — daily.
+    Job("workspace_purge", _no_ctx(purge_deleted_workspaces), minute=frozenset({23}), hour=frozenset({4})),
     # Latest post/account metrics — every 6h.
     Job("analytics_refresh", _no_ctx(refresh_analytics),
         minute=frozenset({17}), hour=frozenset({0, 6, 12, 18})),

@@ -173,7 +173,31 @@ async def _save_result(
         return piece_ids
     except Exception as e:
         logger.error("Failed to save %s to storage: %s", label, e)
-        return []
+        return await _save_again(result, goal, tone, is_repurpose, label)
+
+
+async def _save_again(result, goal, tone, is_repurpose, label) -> list[str]:
+    """The save failed (a short database fault). It is tried twice more after a short wait; if it still cannot be saved the member is
+    told so plainly. Returning an empty list instead made the posts appear on screen with no id, so approving or editing them then
+    did nothing, and the member did not know they were not saved."""
+    import asyncio
+
+    for wait in (0.7, 2.0):
+        await asyncio.sleep(wait)
+        try:
+            _, piece_ids = await save_pipeline_result(
+                result=result,
+                goal=goal.value if hasattr(goal, "value") else goal,
+                tone=tone.value if hasattr(tone, "value") else tone,
+                is_repurpose=is_repurpose,
+            )
+            return piece_ids
+        except Exception as e:  # noqa: BLE001
+            logger.error("Saving %s failed again: %s", label, e)
+    raise HTTPException(
+        status_code=503,
+        detail="Your posts were written but couldn't be saved just now, so they aren't in your library. Please try again in a moment.",
+    )
 
 
 def _report_run(result: TextPipelineResult, *, requested: int, started: float, title: str) -> None:

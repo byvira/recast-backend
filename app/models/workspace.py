@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import field_validator, BaseModel, Field
 
 
 class WorkspaceTier(str, Enum):
@@ -46,6 +46,14 @@ class MediaUploadLimits(BaseModel):
 class CreateWorkspaceBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     tier: WorkspaceTier
+
+    @field_validator("name")
+    @classmethod
+    def _name_has_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Give the workspace a name.")
+        return value
 
 
 class Workspace(BaseModel):

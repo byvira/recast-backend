@@ -164,19 +164,19 @@ def _register_audio() -> None:
                   title=lambda p: "Clean up recording", steps_total=3, restartable=False, retries=0,
                   description="Apply the chosen cleanup as a new version.")
     _audio_action("audio.assemble", handler_name="assemble_audio_asset", settings_model=AssemblePlan, with_asset=True,
-                  title=lambda p: "Build episode", steps_total=3, restartable=True, retries=0,
+                  title=lambda p: "Build episode", steps_total=3, restartable=False, retries=0,
                   description="Build a finished episode into a new file.")
     _audio_action("audio.video", handler_name="make_video_from_audio_asset", settings_model=MakeVideoRequest, with_asset=True,
-                  title=lambda p: "Render video", steps_total=3, restartable=True, retries=0, guarded=True,
+                  title=lambda p: "Render video", steps_total=3, restartable=False, retries=0, guarded=True,
                   description="Make a captioned video from a recording.")
     _audio_action("audio.regenerate", handler_name="regenerate_audio_asset", settings_model=RegenerateAudioRequest, with_asset=True,
-                  title=lambda p: "Voice the script again", steps_total=2, restartable=False, retries=1,
+                  title=lambda p: "Voice the script again", steps_total=2, restartable=False, retries=0,
                   description="Voice a narration again as a new version.")
     _audio_action("audio.import", handler_name="import_audio_from_link", settings_model=ImportLinkRequest, with_asset=False,
-                  title=lambda p: "Import audio", steps_total=5, restartable=True, retries=1,
+                  title=lambda p: "Import audio", steps_total=5, restartable=False, retries=0,
                   description="Fetch audio from a link and make a recording from it.")
     _audio_action("audio.dialogue", handler_name="generate_dialogue", settings_model=GenerateDialogueRequest, with_asset=False,
-                  title=lambda p: "Make dialogue", steps_total=3, restartable=False, retries=1,
+                  title=lambda p: "Make dialogue", steps_total=3, restartable=False, retries=0,
                   description="Voice a conversation between several speakers.")
 
 

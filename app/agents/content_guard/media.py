@@ -8,6 +8,7 @@ vision model cannot be reached the picture is let through and the problem is log
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from collections import OrderedDict
@@ -87,12 +88,33 @@ async def check_image_bytes(data: bytes, mime_type: str = "image/jpeg") -> Scree
     return verdict
 
 
+def _shrink_for_check(data: bytes, mime_type: str) -> tuple[bytes, str]:
+    import io
+
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(data)) as picture:
+            picture = picture.convert("RGB")
+            picture.thumbnail((1600, 1600))
+            out = io.BytesIO()
+            picture.save(out, format="JPEG", quality=80)
+            return out.getvalue(), "image/jpeg"
+    except Exception:  # noqa: BLE001 - not readable as a picture: the first part is what is checked, as before
+        return data[:MAX_IMAGE_BYTES], mime_type
+
+
 async def assert_image_ok(data: bytes, mime_type: str, *, workspace_id: Optional[str], where: str) -> None:
     """Raise ContentRejected when the picture is unsafe. Never raises for any other reason."""
     if not data or not await _enabled():
         return
     try:
-        verdict = await check_image_bytes(data[:MAX_IMAGE_BYTES] if len(data) > MAX_IMAGE_BYTES else data, mime_type)
+        sample, sample_mime = data, mime_type
+        if len(data) > MAX_IMAGE_BYTES:
+            # A large picture is shrunk to a size the check can take, so the whole picture is judged. Cutting the bytes off (what was
+            # done before) judged half a file that could not even be opened.
+            sample, sample_mime = await asyncio.to_thread(_shrink_for_check, data, mime_type)
+        verdict = await check_image_bytes(sample, sample_mime)
     except Exception as exc:
         logger.warning("Content Guard picture check could not run, letting it through: %s", exc)
         return

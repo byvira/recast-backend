@@ -98,6 +98,13 @@ async def _events(target_id: str) -> list[dict[str, Any]]:
 
 # ── Overview ────────────────────────────────────────────────────────────────
 
+async def _referral_total() -> int:
+    """The sum of every person's referral count. (The earlier expression always came out as zero.)"""
+    async for row in waitlist_leads.aggregate([{"$group": {"_id": None, "n": {"$sum": "$referral_count"}}}]):
+        return int(row.get("n") or 0)
+    return 0
+
+
 @router.get("/overview")
 @limiter.limit("60/minute")
 async def overview(request: Request, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
@@ -121,7 +128,7 @@ async def overview(request: Request, user: dict = Depends(require_platform_staff
             "total": waitlist_total,
             "by_status": by_status,
             "new_this_week": await waitlist_leads.count_documents({"created_at": {"$gte": week_ago}}),
-            "referrals": sum([row async for row in waitlist_leads.aggregate([{"$group": {"_id": None, "n": {"$sum": "$referral_count"}}}])] and [0]) or 0,
+            "referrals": await _referral_total(),
             "activation_rate": round(by_status.get("activated", 0) / invited_ever, 3) if invited_ever else None,
             "top_sources": await top("source", 5),
             "roles": await top("role", 6),
@@ -362,6 +369,20 @@ async def reply_to_message(request: Request, message_id: str, body: ContactReply
         raise HTTPException(status_code=404, detail="That message was not found.")
     if doc.get("status") == "spam":
         raise HTTPException(status_code=409, detail="A message marked as spam cannot be answered.")
+    if message_id in _REPLYING:
+        raise HTTPException(status_code=409, detail="A reply to this message is already being sent.")
+    _REPLYING.add(message_id)
+    try:
+        return await _send_reply(message_id, doc, body, user)
+    finally:
+        _REPLYING.discard(message_id)
+
+
+#: Contact messages whose reply is being sent right now. A double click would otherwise email the person twice.
+_REPLYING: set[str] = set()
+
+
+async def _send_reply(message_id: str, doc: dict, body: ContactReply, user: dict) -> dict[str, Any]:
     sent = False
     try:
         sent = await send_templated_email(REPLY_TEMPLATE, doc["email"], {"NAME": doc["name"], "REFERENCE": doc.get("reference", ""), "MESSAGE": body.message})

@@ -44,12 +44,12 @@ async def run_support_lifecycle(now: Optional[datetime] = None) -> dict:
     now = now or datetime.now(timezone.utc)
     done = {
         "reminded": 0, "auto_resolved": 0, "close_warned": 0, "auto_closed": 0, "woken": 0,
-        "sla_breached": 0, "sla_digest": 0, "unassigned": 0, "alerts": 0, "retention": 0,
+        "sla_breached": 0, "sla_digest": 0, "unassigned": 0, "alerts": 0, "retention": 0, "unattached_files": 0,
     }
 
     # ── waiting on the member ────────────────────────────────────────────────
     async for t in support_tickets.find({"status": "waiting_on_member"}):
-        ref = _as_utc(t.get("last_staff_message_at")) or _as_utc(t.get("updated_at"))
+        ref = _as_utc(t.get("waiting_since")) or _as_utc(t.get("last_staff_message_at")) or _as_utc(t.get("updated_at"))
         if ref is None:
             continue
         silent_for = now - ref
@@ -142,10 +142,13 @@ async def run_support_lifecycle(now: Optional[datetime] = None) -> dict:
     async for t in support_tickets.find({"status": {"$nin": ["resolved", "closed"]}, "sla": {"$ne": None}}):
         s = t["sla"]
         first_due, resolve_due = _as_utc(s.get("first_response_due")), _as_utc(s.get("resolve_due"))
+        # The clock for the resolution target is not running while staff are waiting on the member, or while the ticket is snoozed:
+        # neither is time the team could have used.
+        paused = t.get("status") == "waiting_on_member" or bool(t.get("snoozed_until"))
         breached: list[tuple[str, str]] = []
         if not s.get("first_responded_at") and first_due and now > first_due and not s.get("breached_first"):
             breached.append(("sla.breached_first", "No first reply yet"))
-        if resolve_due and now > resolve_due and not s.get("breached_resolve"):
+        if resolve_due and now > resolve_due and not s.get("breached_resolve") and not paused:
             breached.append(("sla.breached_resolve", "Not resolved in time"))
         for field, why in breached:
             await support_tickets.update_one({"id": t["id"]}, {"$set": {field: True}})
@@ -177,6 +180,13 @@ async def run_support_lifecycle(now: Optional[datetime] = None) -> dict:
 
     # ── retention: closed tickets past their keep-until date lose their words ─
     done["retention"] = await enforce_retention(now)
+
+    # ── files uploaded but never attached to a ticket (a removed chip, an abandoned form) are removed after a day ─
+    from datetime import timedelta
+
+    from app.shared.support_privacy import _drain_files
+
+    done["unattached_files"] = await _drain_files({"ticket_id": None, "created_at": {"$lt": now - timedelta(days=1)}, "deleted": {"$ne": True}})
 
     # ── health alerts: each one at most once a day ───────────────────────────
     day = now.strftime("%Y-%m-%d")

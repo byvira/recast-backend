@@ -42,17 +42,27 @@ async def verify(site_url: str, username: str, password: str) -> dict:
     return {"site_url": site, "user_id": str(me.get("id", "")), "name": me.get("name") or username}
 
 
+async def _listing(site: str, path: str, params: dict, username: str, password: str, label: str) -> list[dict]:
+    """A list from the site, or an empty one when the site cannot be reached, is not a safe address any more, or answers with
+    something that is not a list. The address is checked again here: the site's DNS may have changed since it was connected."""
+    try:
+        site = await clean_site_url(site)
+        async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            response = await client.get(_api(site, path), params=params, headers=_headers(username, password))
+        if response.status_code != 200:
+            return []
+        return [{"id": str(row["id"]), "name": row["name"]} for row in response.json()]
+    except (DestinationError, httpx.HTTPError, ValueError, KeyError, TypeError):
+        return []
+
+
 async def categories(site: str, username: str, password: str) -> list[dict]:
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        response = await client.get(_api(site, "categories"), params={"per_page": 100, "_fields": "id,name"}, headers=_headers(username, password))
-    return [{"id": str(c["id"]), "name": c["name"]} for c in response.json()] if response.status_code == 200 else []
+    return await _listing(site, "categories", {"per_page": 100, "_fields": "id,name"}, username, password, "categories")
 
 
 async def authors(site: str, username: str, password: str) -> list[dict]:
     """People the member may post as. Empty when the site does not let this account list users."""
-    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-        response = await client.get(_api(site, "users"), params={"per_page": 50, "context": "edit", "_fields": "id,name"}, headers=_headers(username, password))
-    return [{"id": str(u["id"]), "name": u["name"]} for u in response.json()] if response.status_code == 200 else []
+    return await _listing(site, "users", {"per_page": 50, "context": "edit", "_fields": "id,name"}, username, password, "authors")
 
 
 async def _upload_cover(client: httpx.AsyncClient, site: str, headers: dict, picture) -> Optional[int]:
@@ -88,6 +98,11 @@ async def publish(*, site: str, username: str, password: str, piece_id: str, tit
         body["author"] = int(author_id)
     headers = _headers(username, password)
     note = None
+    try:
+        # Checked again before every send: the site's address may point somewhere else since it was connected.
+        site = await clean_site_url(site)
+    except DestinationError as exc:
+        return PublishResult(success=False, platform="wordpress", piece_id=piece_id, error_type="FATAL", error_code=422, error_message=str(exc))
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
             if pictures:

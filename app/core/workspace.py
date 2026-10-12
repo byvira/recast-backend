@@ -83,8 +83,39 @@ async def get_stream_workspace(
     return await _resolve_workspace(current_user, x_workspace_id or workspace_id)
 
 
+async def usable_workspace_id(user_id: str) -> Optional[str]:
+    """The workspace a person lands in when they have no (valid) default: their personal one first, then the one they joined first.
+    Deleted workspaces are never chosen."""
+    memberships = await workspace_members.find({"user_id": user_id, "status": "active"}).to_list(length=200)
+    docs = {
+        w["id"]: w
+        for w in await workspaces.find({"id": {"$in": [m["workspace_id"] for m in memberships]}, "deleted_at": {"$exists": False}}).to_list(length=200)
+    }
+    candidates = [m for m in memberships if m["workspace_id"] in docs]
+    candidates.sort(key=lambda m: (not docs[m["workspace_id"]].get("is_personal", False), str(m.get("joined_at") or "")))
+    return candidates[0]["workspace_id"] if candidates else None
+
+
 async def _resolve_workspace(current_user: dict[str, Any], requested: Optional[str]) -> WorkspaceContext:
     workspace_id = requested or current_user.get("default_workspace_id")
+    if not requested and workspace_id:
+        # The saved default may point at a workspace that was deleted or that the person left. Use (and save) one that works.
+        default = await workspaces.find_one({"id": workspace_id}, {"deleted_at": 1})
+        still_member = await workspace_members.find_one({"workspace_id": workspace_id, "user_id": current_user["id"], "status": "active"})
+        if not default or default.get("deleted_at") or not still_member:
+            workspace_id = None
+    if not workspace_id and not requested:
+        workspace_id = await usable_workspace_id(current_user["id"])
+        if not workspace_id:
+            # An account made while the first save failed has no workspace at all. Its personal one is made now, so the person is not
+            # left with every page refused.
+            workspace_id = await create_personal_workspace(
+                current_user["id"], name=f"{current_user.get('name') or 'My'}'s Workspace"
+            )
+        if workspace_id:
+            from app.db.mongo import users
+
+            await users.update_one({"id": current_user["id"]}, {"$set": {"default_workspace_id": workspace_id}})
     if not workspace_id:
         raise HTTPException(
             status_code=400,
@@ -98,7 +129,7 @@ async def _resolve_workspace(current_user: dict[str, Any], requested: Optional[s
         raise HTTPException(status_code=403, detail="Not a member of this workspace.")
 
     workspace = await workspaces.find_one({"id": workspace_id})
-    if not workspace:
+    if not workspace or workspace.get("deleted_at"):
         raise HTTPException(status_code=404, detail="Workspace not found.")
 
     structlog.contextvars.bind_contextvars(workspace_id=workspace_id)

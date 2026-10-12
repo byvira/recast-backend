@@ -204,6 +204,13 @@ async def get_all_tokens(workspace_id: str) -> list[dict]:
             "expires_at": a.get("expires_at"),
             "connected_by": a.get("connected_by", ""),
             "health": (a.get("health") or {}).get("state", "healthy"),
+            # Whether the automatic renewal has given up: the screen warns about this, not about an expiry date that is renewed on time.
+            "needs_reconnect": bool((a.get("health") or {}).get("escalated")) or int((a.get("health") or {}).get("failures") or 0) >= 2,
+            # The Facebook Pages this sign-in can post to (names only, never their tokens), and which one is in use.
+            "pages": [
+                {"id": p["id"], "name": p.get("name", ""), "selected": p["id"] == a.get("platform_user_id")}
+                for p in (a.get("meta_pages") or [])
+            ] if a["platform"] == "facebook" else None,
             # The account's public face, read from the platform (see profile.py).
             "display_name": a.get("display_name"),
             "avatar_url": a.get("avatar_url"),

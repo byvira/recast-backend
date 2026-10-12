@@ -29,6 +29,10 @@ router = APIRouter(dependencies=[Depends(support_request_log)])
 logger = logging.getLogger(__name__)
 
 MAX_CHATS_PER_MEMBER = 100
+#: Questions one member may put to the assistant in a day, and all members together. The platform pays for these calls, so neither a
+#: person nor a script can run the bill up.
+MAX_ASSISTANT_QUESTIONS_PER_MEMBER_PER_DAY = 100
+MAX_ASSISTANT_QUESTIONS_PER_DAY = 5000
 MAX_MESSAGES_PER_CHAT = 60
 HISTORY_TURNS = 10  # messages sent back to the model on each turn
 
@@ -132,6 +136,23 @@ def model_messages(history: list[dict], message: str) -> list[dict]:
     return turns
 
 
+async def _assistant_allowance(ctx: WorkspaceContext, now: datetime) -> None:
+    """One counter per day per member and one for everyone, each increased in a single step so parallel questions cannot slip past."""
+    from app.db.mongo import support_counters
+
+    day = now.strftime("%Y-%m-%d")
+    mine = await support_counters.find_one_and_update(
+        {"_id": f"assistant:{day}:{ctx.user_id}"}, {"$inc": {"n": 1}}, upsert=True, return_document=True,
+    )
+    if int(mine.get("n", 1)) > MAX_ASSISTANT_QUESTIONS_PER_MEMBER_PER_DAY:
+        raise HTTPException(status_code=429, detail="You've asked a lot of questions today. Please file a ticket and the team will help.")
+    everyone = await support_counters.find_one_and_update(
+        {"_id": f"assistant:{day}"}, {"$inc": {"n": 1}}, upsert=True, return_document=True,
+    )
+    if int(everyone.get("n", 1)) > MAX_ASSISTANT_QUESTIONS_PER_DAY:
+        raise HTTPException(status_code=503, detail="The assistant is very busy today. Please file a ticket and the team will help.")
+
+
 @router.post("/assist")
 @limiter.limit("15/minute")
 async def assist(
@@ -141,6 +162,7 @@ async def assist(
     chat = await _own_chat(body.chat_id, ctx) if body.chat_id else None
     if chat and len(chat.get("messages", [])) >= MAX_MESSAGES_PER_CHAT:
         raise HTTPException(status_code=409, detail="This chat is full. Start a new chat to keep going.")
+    await _assistant_allowance(ctx, now)
 
     history = (chat or {}).get("messages", [])[-HISTORY_TURNS:]
     guides = support_guides.search(body.message, limit=3)
@@ -178,11 +200,14 @@ async def assist(
         {"role": "assistant", "text": reply, "at": now},
     ]
     if chat:
-        await support_chats.update_one(
+        pushed = await support_chats.update_one(
             {"id": chat["id"]}, {"$push": {"messages": {"$each": entries}}, "$set": {"updated_at": now}}
         )
         chat_id, title = chat["id"], chat["title"]
-    else:
+        if not pushed.matched_count:
+            # The chat was deleted while the answer was being written. The exchange is kept as a new chat instead of being lost.
+            chat = None
+    if not chat:
         chat_id, title = str(uuid4()), _title(body.message)
         await support_chats.insert_one(
             {
@@ -281,8 +306,11 @@ async def live_status(request: Request, ctx: WorkspaceContext = Depends(get_curr
         "components": components,
         "incidents": [
             {
-                "id": i["id"], "title": i["title"], "status": i["status"],
-                "platform": i.get("platform"), "started_at": i["created_at"],
+                # The staff-written title may carry internal detail. Members see a title staff chose to publish, or a plain one.
+                "id": i["id"],
+                "title": i.get("public_title")
+                or (f"Problems publishing to {i['platform']}" if i.get("platform") else "A problem we are looking into"),
+                "status": i["status"], "platform": i.get("platform"), "started_at": i["created_at"],
             }
             for i in incidents
         ],

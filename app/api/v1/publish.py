@@ -356,8 +356,14 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
                 "note":             executor.dropped_note(result, piece, platform),
             }
 
+        # A failure that carries no status code is not assumed to be a temporary server error (which would retry something that can never
+        # succeed, such as a destination with no address saved): it is judged by what it says.
+        from app.pipelines.publish.supervisor.classifier import TIMEOUT_NOTE, is_timeout
+
+        if is_timeout(result.error_code, result.error_message or ""):
+            result.error_message = TIMEOUT_NOTE  # the post may be live: plain words, and never sent again on its own
         error_type = classify_error(
-            result.error_code or 500,
+            result.error_code or 0,
             result.error_message or "",
         )
 
@@ -598,13 +604,24 @@ async def youtube_playlists(
     token = await get_token(ctx.workspace_id, "youtube")
     if not token:
         raise HTTPException(status_code=400, detail="YouTube is not connected. Connect it to choose a playlist.")
-    try:
+    async def ask(access_token: str) -> "httpx.Response":
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
+            return await client.get(
                 "https://www.googleapis.com/youtube/v3/playlists",
                 params={"part": "snippet", "mine": "true", "maxResults": 50},
-                headers={"Authorization": f"Bearer {token['access_token']}"},
+                headers={"Authorization": f"Bearer {access_token}"},
             )
+
+    try:
+        response = await ask(token["access_token"])
+        if response.status_code == 401:
+            # The sign-in lapsed (YouTube's last an hour): renew it quietly once before asking the member to reconnect.
+            from app.workers.token_refresh import recover_connection
+
+            if await recover_connection(ctx.workspace_id, "youtube"):
+                renewed = await get_token(ctx.workspace_id, "youtube")
+                if renewed:
+                    response = await ask(renewed["access_token"])
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Couldn't reach YouTube. Try again.")
     if response.status_code in (401, 403):

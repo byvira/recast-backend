@@ -88,6 +88,7 @@ async def generate_campaign_batch(
         hashtags=bool(text_options.get("hashtags", True)),
         carousel_format=bool(text_options.get("carousel_format", False)),
         enforce_char_limits=bool(text_options.get("enforce_char_limits", True)),
+        default_picture=bool(text_options.get("default_picture", True)),
     )
 
     new_piece_ids: list[str] = []
@@ -119,8 +120,10 @@ async def generate_campaign_batch(
         if piece_ids and campaign_media.wanted_kinds(campaign.get("media_plan")):
             try:
                 await campaign_media.generate_media_for_pieces(
-                    campaign, piece_ids, workspace_id=workspace_id, user_id=user_id,
+                    campaign, piece_ids, workspace_id=workspace_id, user_id=user_id, run_id=run_id,
                 )
+            except pipeline_runs.RunCancelled:
+                raise  # a cancel stops the run here; the day's text is already saved
             except Exception as e:  # noqa: BLE001
                 logger.error("Campaign %s day %d media failed: %s", campaign["id"], day_index + 1, e)
         # Autonomous run — attributed to the campaign scheduler in the

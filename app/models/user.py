@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import field_validator, BaseModel, Field
 
 
 class SocialAccount(BaseModel):
@@ -100,12 +100,35 @@ class UserUpdateBody(BaseModel):
         pattern=r"^[a-zA-Z0-9_]+$",
     )
     bio: Optional[str] = Field(None, max_length=500)
-    website: Optional[str] = None
-    avatar_url: Optional[str] = None
-    timezone: Optional[str] = None
-    language: Optional[str] = None
-    preferred_platforms: Optional[list[str]] = None
+    # Shown on the public profile, so only web addresses are accepted (a "javascript:" value would run when someone clicks it).
+    website: Optional[str] = Field(None, max_length=300)
+    avatar_url: Optional[str] = Field(None, max_length=500)
+    timezone: Optional[str] = Field(None, max_length=64)
+    language: Optional[str] = Field(None, max_length=16)
+    preferred_platforms: Optional[list[str]] = Field(None, max_length=30)
     default_workspace_id: Optional[str] = None   # must be a workspace the caller belongs to
+
+    @field_validator("website", "avatar_url")
+    @classmethod
+    def _web_address_only(cls, value):
+        if value in (None, ""):
+            return value
+        if not value.lower().startswith(("https://", "http://")):
+            raise ValueError("Use a web address that starts with https://")
+        return value
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_timezone(cls, value):
+        if value in (None, ""):
+            return value
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(value)
+        except Exception:  # noqa: BLE001
+            raise ValueError("That time zone isn't one we know. Pick it from the list.")
+        return value
 
 
 class UserProfile(BaseModel):

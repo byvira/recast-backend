@@ -11,6 +11,7 @@ automatic recovery fails twice, so a failing post can never email on every attem
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -106,10 +107,30 @@ async def mark_published(
     update: dict = {"$set": updates}
     if increment_attempts:
         update["$inc"] = {"publish_attempts": 1}
+    # The post is already live on the platform here, so a brief database failure must not turn this into "failed" (a retry would
+    # then post it a second time). The write is tried a few times before giving up.
+    for attempt, wait in enumerate((0.3, 1.0, 3.0), start=1):
+        try:
+            await content_pieces.update_one({"piece_id": piece["piece_id"], "workspace_id": workspace_id}, update)
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Saving that piece %s is live on %s failed (try %d, platform id %s): %s",
+                piece["piece_id"], platform, attempt, result.platform_post_id, exc,
+            )
+            await asyncio.sleep(wait)
     await content_pieces.update_one({"piece_id": piece["piece_id"], "workspace_id": workspace_id}, update)
 
 
-async def after_published(
+async def after_published(*args, **kwargs) -> None:
+    """The follow-ups to a post going live (activity entry, events, notes). They never fail the post: it is already out."""
+    try:
+        await _after_published(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Follow-up work after a post went live failed: %s", exc)
+
+
+async def _after_published(
     piece: dict, workspace_id: str, platform: str, result, *, user_id: str, role: str = "", via: Optional[str] = None,
 ) -> None:
     """The event the Activity Log and analytics read, and the health mark that clears a sign-in problem. Never raises: a post that is

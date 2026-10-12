@@ -325,6 +325,10 @@ async def create_indexes() -> None:
     )
     await support_ticket_events.create_index([("ticket_id", 1), ("created_at", 1)])
     await support_notifications.create_index([("user_id", 1), ("audience", 1), ("read", 1), ("created_at", -1)])
+    # Onboarding step events are only read as funnel counts, so a year of them is plenty.
+    await onboarding_funnel_events.create_index("created_at", expireAfterSeconds=365 * 24 * 3600)
+    # Notifications older than half a year are of no use and would otherwise pile up for ever.
+    await support_notifications.create_index("created_at", expireAfterSeconds=180 * 24 * 3600)
     await support_ticket_context.create_index("ticket_id", unique=True)
     await support_files.create_index([("uploaded_by", 1), ("created_at", -1)])
     await support_files.create_index("ticket_id")

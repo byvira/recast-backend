@@ -14,7 +14,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import model_validator, BaseModel, Field
 
 
 class AudioSourceType(str, Enum):
@@ -434,11 +434,17 @@ class VideoClip(BaseModel):
 
 
 class MakeVideoRequest(BaseModel):
-    start_s: float = 0.0
-    end_s: Optional[float] = None   # None = the whole recording
-    style: str = "cover"
-    size: str = "square"
-    title: Optional[str] = None
+    start_s: float = Field(0.0, ge=0.0, le=86_400.0)
+    end_s: Optional[float] = Field(None, gt=0.0, le=86_400.0)   # None = the whole recording
+    style: str = Field("cover", max_length=40)
+    size: str = Field("square", max_length=40)
+    title: Optional[str] = Field(None, max_length=200)
+
+    @model_validator(mode="after")
+    def _span_makes_sense(self):
+        if self.end_s is not None and self.end_s <= self.start_s:
+            raise ValueError("The end of the clip has to be after its start.")
+        return self
     # a preset id from GET /audio-assets/video-presets; only used to give advice, never to block
     platform: Optional[str] = None
     show_title: bool = True

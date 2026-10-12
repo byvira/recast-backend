@@ -69,9 +69,45 @@ def _guard_public_url(url: str) -> None:
             )
 
 
+#: The most of a page that is read, and how many redirects are followed.
+MAX_PAGE_BYTES = 5 * 1024 * 1024
+MAX_REDIRECTS = 5
+#: The longest the whole download may take, however slowly the site sends it.
+TOTAL_DOWNLOAD_SECONDS = 20
+
+
+def _safe_download(url: str) -> str | None:
+    """The page's text, fetched so that every address it goes to is checked, not only the first.
+
+    A page that redirects to an internal address (or whose name is pointed at one after the first check) would otherwise be read by
+    the library's own fetch, which follows redirects without looking. Here each hop is checked before it is requested, the answer
+    is cut at MAX_PAGE_BYTES, and the whole download has one deadline."""
+    import time
+
+    import httpx
+
+    deadline = time.monotonic() + TOTAL_DOWNLOAD_SECONDS
+    current = url
+    with httpx.Client(follow_redirects=False, timeout=10.0, headers={"User-Agent": "Mozilla/5.0 (compatible; EkavoReader/1.0)"}) as client:
+        for _ in range(MAX_REDIRECTS + 1):
+            _guard_public_url(current)
+            with client.stream("GET", current) as response:
+                if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
+                    current = str(httpx.URL(current).join(response.headers["location"]))
+                    continue
+                if response.status_code >= 400:
+                    return None
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body += chunk
+                    if len(body) > MAX_PAGE_BYTES or time.monotonic() > deadline:
+                        break
+                return bytes(body[:MAX_PAGE_BYTES]).decode(response.encoding or "utf-8", errors="replace")
+    return None
+
+
 def _fetch_and_extract(url: str) -> str | None:
-    _guard_public_url(url)
-    downloaded = trafilatura.fetch_url(url)
+    downloaded = _safe_download(url)
     if not downloaded:
         return None
     return trafilatura.extract(
@@ -84,8 +120,7 @@ def _fetch_and_extract(url: str) -> str | None:
 
 
 def _fetch_and_preview(url: str) -> dict:
-    _guard_public_url(url)
-    downloaded = trafilatura.fetch_url(url)
+    downloaded = _safe_download(url)
     if not downloaded:
         return {"title": None, "snippet": None, "word_count": 0}
 

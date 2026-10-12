@@ -53,8 +53,10 @@ def _rate(part: int, whole: int) -> Optional[float]:
 
 
 async def compute(start: datetime, end: datetime) -> dict:
-    created = await support_tickets.find({"created_at": {"$gte": start, "$lte": end}}).to_list(5000)
-    resolved = await support_tickets.find({"resolved_at": {"$gte": start, "$lte": end}}).to_list(5000)
+    # The message threads are the bulk of a ticket and none of the figures below use them, so they are not read.
+    slim = {"messages": 0, "client_env": 0, "created_by_email": 0}
+    created = await support_tickets.find({"created_at": {"$gte": start, "$lte": end}}, slim).to_list(5000)
+    resolved = await support_tickets.find({"resolved_at": {"$gte": start, "$lte": end}}, slim).to_list(5000)
 
     by_category = Counter(t.get("category", "Other") for t in created)
     by_platform: Counter = Counter()

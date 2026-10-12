@@ -8,6 +8,7 @@ and logged; the function returns False so the caller can surface a friendly
 error (or simply carry on) rather than crashing.
 """
 
+import asyncio
 import logging
 import re
 
@@ -83,7 +84,7 @@ async def send_templated_email(
         sender = from_override or _DEFAULT_FROM
         payload = {"to": to, "template": {"id": template_id, "variables": variables}}
         try:
-            resend.Emails.send({"from": sender, **payload})
+            await asyncio.to_thread(resend.Emails.send, {"from": sender, **payload})
         except Exception as first:  # noqa: BLE001
             # A sending address Resend does not accept yet (its domain is not verified) must not stop every email: try the test sender
             # once. It only reaches the Resend account's owner, but that is better than nothing while the domain is being set up.
@@ -91,7 +92,7 @@ async def send_templated_email(
             if fallback == sender:
                 raise
             logger.warning("Email from %s was refused (%s); trying the test sender", sender, first)
-            resend.Emails.send({"from": fallback, **payload})
+            await asyncio.to_thread(resend.Emails.send, {"from": fallback, **payload})
         return True
     except Exception as exc:
         logger.error("Failed to send templated email '%s' to %s: %s", template_id, to, exc)

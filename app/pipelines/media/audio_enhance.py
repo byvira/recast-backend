@@ -50,6 +50,15 @@ def enhance_audio(audio_bytes: bytes, mime_type: str) -> tuple[bytes, dict]:
     data, samplerate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
     is_mono = data.ndim == 1
 
+    if not np.any(np.abs(data) > 1e-4):
+        # Digital silence has nothing to clean and no loudness. Noise reduction on it divides by zero and writes a corrupt file, so the
+        # recording is returned as it is.
+        out = io.BytesIO()
+        sf.write(out, data, samplerate, format="WAV")
+        return out.getvalue(), {
+            "denoise": False, "loudness_normalize": False, "target_lufs": None, "measured_loudness_before_lufs": None,
+        }
+
     if is_mono:
         denoised = nr.reduce_noise(y=data, sr=samplerate)
     else:
@@ -61,19 +70,28 @@ def enhance_audio(audio_bytes: bytes, mime_type: str) -> tuple[bytes, dict]:
         )
 
     meter = pyln.Meter(samplerate)
-    measured_loudness = meter.integrated_loudness(denoised)
+    try:
+        measured_loudness = meter.integrated_loudness(denoised)
+    except Exception:  # noqa: BLE001 - a clip too short or too quiet to measure
+        measured_loudness = float("-inf")
     # Real podcast delivery targets (pow/audio_image_pipeline/06-full-
     # workflow-and-localization.md step 5): -16 LUFS stereo, -19 LUFS mono.
     target_lufs = -19.0 if is_mono else -16.0
-    normalized = pyln.normalize.loudness(denoised, measured_loudness, target_lufs)
+    if not np.isfinite(measured_loudness):
+        # Silence (or near silence) has no loudness to bring to a target; asking for one would turn background hiss into a loud
+        # signal. The file is left as it is after noise reduction.
+        normalized = denoised
+        target_lufs = None
+    else:
+        normalized = pyln.normalize.loudness(denoised, measured_loudness, target_lufs)
 
     out_buf = io.BytesIO()
     sf.write(out_buf, normalized, samplerate, format="WAV")
     settings = {
         "denoise": True,
-        "loudness_normalize": True,
+        "loudness_normalize": target_lufs is not None,
         "target_lufs": target_lufs,
-        "measured_loudness_before_lufs": measured_loudness,
+        "measured_loudness_before_lufs": measured_loudness if np.isfinite(measured_loudness) else None,
     }
     return out_buf.getvalue(), settings
 
