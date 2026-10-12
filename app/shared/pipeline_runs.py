@@ -14,6 +14,7 @@ failed on startup so nothing looks busy forever.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 ACTIVE = ("queued", "running", "paused")
 FINISHED = ("done", "failed", "cancelled")
-KINDS = ("campaign", "text", "audio", "image", "video")
+KINDS = ("campaign", "text", "audio", "image", "video", "odette")
 POLL_SECONDS = 1.5
 #: A run that is going writes a sign of life this often. One with none for STALE_AFTER is taken to have died with its server.
 HEARTBEAT_SECONDS = 30
@@ -59,6 +60,8 @@ def public(doc: Optional[dict]) -> Optional[dict]:
         out["progress"] = min(95, round(100 * (out.get("steps_done") or 0) / total))
     else:
         out["progress"] = None
+    # `progress` is kept for existing readers. A campaign also has a `progress` (post counts), so the percentage has its own name too.
+    out["progress_percent"] = out["progress"]
     return out
 
 
@@ -170,6 +173,26 @@ async def active_run_for(workspace_id: str, kind: str, ref: dict) -> Optional[di
 async def _set(run_id: str, **fields: Any) -> None:
     fields["updated_at"] = _now()
     await pipeline_runs.update_one({"id": run_id}, {"$set": fields})
+
+
+_stage_sink: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar("_stage_sink", default=None)
+
+
+def bind_stage_sink(run_id: Optional[str]) -> None:
+    """Work started for this run (and every task it starts) can then say what it is doing with `announce_stage`."""
+    _stage_sink.set(run_id)
+
+
+async def announce_stage(label: str) -> None:
+    """Records what the current run is doing, in plain words. Does nothing when the work is not running as a saved run, and never
+    fails the work: a missed label only means the line stays as it was."""
+    run_id = _stage_sink.get()
+    if not run_id:
+        return
+    try:
+        await set_stage(run_id, label)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not record the stage for run %s: %s", run_id, exc)
 
 
 async def set_stage(run_id: str, label: str, **fields: Any) -> None:

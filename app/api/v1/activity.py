@@ -267,8 +267,9 @@ _RUN_PAGES = {
     "audio": "/dashboard/pipelines/audio",
     "image": "/dashboard/pipelines/image",
     "video": "/dashboard/pipelines/video",
+    "odette": "/dashboard/odette",
 }
-_RUN_LABELS = {"campaign": "Campaign", "text": "Text", "audio": "Audio", "image": "Image", "video": "Video"}
+_RUN_LABELS = {"campaign": "Campaign", "text": "Text", "audio": "Audio", "image": "Image", "video": "Video", "odette": "Odette"}
 
 
 def _run_eta(run: dict) -> str:
@@ -489,6 +490,21 @@ async def hide_entries(
     untouched; items still waiting on a decision are skipped (dismiss them)."""
     removed = await inbox_mod.hide(ctx.workspace_id, ctx.user_id, body.ids)
     return {"removed": removed, "skipped": len(body.ids) - removed}
+
+
+@router.get("/allowance")
+@limiter.limit("60/minute")
+async def allowance(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """What this workspace has left today of what has a daily ceiling (AI pictures), so the member sees it next to what spends it."""
+    from app.api.v1.image_assets import pictures_made_today
+    from app.core import limits
+
+    made = await pictures_made_today(ctx.workspace_id)
+    cap = limits.IMAGES_PER_WORKSPACE_PER_DAY
+    return {"pictures": {"limit": cap, "used": made, "left": max(0, cap - made)}}
 
 
 @router.get("/unread-count")

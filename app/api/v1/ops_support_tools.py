@@ -237,6 +237,8 @@ async def bulk(request: Request, body: BulkBody, staff: dict = Depends(require_p
 
         incident = await _get_incident(str(payload.get("incident_id", "")))
         linked = await _attach(incident["id"], body.ids, staff)
+        if not linked:
+            _RECENT_BULK.pop(fingerprint, None)  # nothing was done, so the same request may be sent again
         return {"done": linked, "failed": [{"id": i, "reason": "Already in that incident, or not found."} for i in dict.fromkeys(body.ids) if i not in linked]}
 
     done: list[str] = []
@@ -272,6 +274,9 @@ async def bulk(request: Request, body: BulkBody, staff: dict = Depends(require_p
         except Exception:
             logger.warning("Bulk %s failed for ticket %s", body.action, tid, exc_info=True)
             failed.append({"id": tid, "reason": "Something went wrong."})
+    if not done:
+        # Nothing was done (for example a ticket that was not ready for that status yet): the same request is allowed again once things change.
+        _RECENT_BULK.pop(fingerprint, None)
     return {"done": done, "failed": failed}
 
 

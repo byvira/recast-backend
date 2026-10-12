@@ -73,6 +73,10 @@ class JobAction:
     #: A cancel that arrives during the last step still turns the run into "cancelled". Off for work that has already had its effect
     #: when it returns (a post that went out, posts that were deleted), which must be reported as done and not as cancelled.
     cancel_counts_at_end: bool = True
+    #: What the run belongs to (for example the campaign), so pages and the Control Tower see it as that thing's work.
+    ref: Optional[Callable[[Any], dict]] = None
+    #: A start key shared with the older route that starts the same work, so the two can never run together.
+    active_key: Optional[Callable[[Any], str]] = None
     extra: dict = field(default_factory=dict)
 
 
@@ -173,6 +177,7 @@ def _worker(action: JobAction, payload: Any):
         assert_permission(ctx.member, action.permission)
         if action.gated:
             set_run_gate(run_gate(doc["id"]))
+        runs.bind_stage_sink(doc["id"])
         reporter = runs.StepReporter(doc["id"])
 
         attempt = 0
@@ -244,7 +249,9 @@ async def submit(
         # cannot both start.
         doc = await runs.create_run(
             workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind=action.kind, title=action.title(parsed),
-            steps_total=action.steps(parsed), href=action.href, active_key=f"job:{key}",
+            steps_total=action.steps(parsed), href=action.href,
+            ref=action.ref(parsed) if action.ref else None,
+            active_key=action.active_key(parsed) if action.active_key else f"job:{key}",
             extra={"action": action_name, "idem_key": key, "payload_digest": digest, "restartable": action.restartable, "restart_attempts": 0,
                    "live_run_id": getattr(parsed, "live_run_id", None),
                    **({"payload": parsed.model_dump(mode="json")} if action.restartable else {})},

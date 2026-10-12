@@ -184,14 +184,18 @@ async def generate_media_for_pieces(
         {"workspace_id": workspace_id, "piece_id": {"$in": piece_ids}, "deleted": {"$ne": True}},
     ).to_list(length=None)
 
-    for piece in pieces[:MAX_POSTS_WITH_MEDIA_PER_RUN]:
-        if not (piece.get("content") or "").strip():
-            continue
+    batch = [p for p in pieces[:MAX_POSTS_WITH_MEDIA_PER_RUN] if (p.get("content") or "").strip()]
+    for number, piece in enumerate(batch, start=1):
         if run_id:
             # A pause or a cancel is honoured between posts, not only between days (a day can mean thirty posts of pictures and audio).
             from app.shared import pipeline_runs
 
             await pipeline_runs.checkpoint(run_id)
+            # Real counts, so the batch's picture and audio steps show the work that exists instead of sitting at nothing.
+            what = " and ".join(w for w, k in (("pictures", "image"), ("audio", "audio")) if k in kinds) or "media"
+            await pipeline_runs.set_stage(
+                run_id, f"Making {what}: post {number} of {len(batch)}", media_done=number - 1, media_total=len(batch),
+            )
         states = await _make_for_piece(campaign, piece, kinds, ctx)
         await _record_status(workspace_id, piece["piece_id"], states)
         outcome["images"] += count if states.get("image") == "ready" else 0

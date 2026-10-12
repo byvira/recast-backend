@@ -51,7 +51,7 @@ async def test_zip_has_txt_posts_and_native_media_with_the_required_names(signup
     client, ws_id, brand_id = await _setup(signup_user)
     await _add_audio(ws_id, brand_id)
 
-    async def fake_fetch(url, client, limit):
+    async def fake_fetch(url, client, limit, budget=None):
         return b"AUDIO-BYTES"
 
     monkeypatch.setattr(content_module, "_fetch_media", fake_fetch)
@@ -69,7 +69,7 @@ async def test_a_file_that_cannot_be_downloaded_is_reported_not_fatal(signup_use
     client, ws_id, brand_id = await _setup(signup_user)
     await _add_audio(ws_id, brand_id)
 
-    async def failing_fetch(url, client, limit):
+    async def failing_fetch(url, client, limit, budget=None):
         return None
 
     monkeypatch.setattr(content_module, "_fetch_media", failing_fetch)
@@ -84,7 +84,7 @@ async def test_another_workspaces_media_is_never_included(signup_user, monkeypat
     await _add_audio("some-other-workspace", "b", url="https://files.test/secret.mp3")
     seen = []
 
-    async def fake_fetch(url, client, limit):
+    async def fake_fetch(url, client, limit, budget=None):
         seen.append(url)
         return b"x"
 

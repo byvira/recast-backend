@@ -197,7 +197,7 @@ async def test_make_video_validation(signup_user, stubs):
 
     assert (await client.post(url, json={"style": "not-real", "size": "square"}, headers=_h(ws_id))).status_code == 400
     assert (await client.post(url, json={"style": "solid", "size": "not-real"}, headers=_h(ws_id))).status_code == 400
-    assert (await client.post(url, json={"start_s": 5, "end_s": 2, "style": "solid", "size": "square"}, headers=_h(ws_id))).status_code == 400
+    assert (await client.post(url, json={"start_s": 5, "end_s": 2, "style": "solid", "size": "square"}, headers=_h(ws_id))).status_code == 422
     assert (await client.post("/api/v1/audio-assets/nope/video", json={"style": "solid", "size": "square"}, headers=_h(ws_id))).status_code == 404
 
     # No duration known and no end_s given: honestly refused, not a 0-length video. (A generated recording now carries its

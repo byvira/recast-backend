@@ -550,18 +550,24 @@ async def generate_image_asset_in_background(
     return pipeline_runs.public(doc)
 
 
-async def _assert_daily_allowance(workspace_id: str, wanted: int) -> None:
-    """A workspace may make a set number of AI pictures a day. The free picture service has one daily ceiling shared by everyone, so
-    one workspace asking for a pack of ten again and again must not use it all up."""
+async def pictures_made_today(workspace_id: str) -> int:
+    """How many AI pictures this workspace has made since midnight (UTC)."""
     from datetime import datetime, timezone
 
-    from app.core import limits
     from app.db.mongo import media_assets
 
     start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    made = await media_assets.count_documents(
+    return await media_assets.count_documents(
         {"workspace_id": workspace_id, "source": MediaSource.AI_GENERATED.value, "created_at": {"$gte": start}}
     )
+
+
+async def _assert_daily_allowance(workspace_id: str, wanted: int) -> None:
+    """A workspace may make a set number of AI pictures a day. The free picture service has one daily ceiling shared by everyone, so
+    one workspace asking for a pack of ten again and again must not use it all up."""
+    from app.core import limits
+
+    made = await pictures_made_today(workspace_id)
     if made + wanted > limits.IMAGES_PER_WORKSPACE_PER_DAY:
         left = max(0, limits.IMAGES_PER_WORKSPACE_PER_DAY - made)
         raise HTTPException(

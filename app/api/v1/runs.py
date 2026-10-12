@@ -17,7 +17,7 @@ router = APIRouter()
 @limiter.limit("120/minute")
 async def list_runs(
     request: Request,
-    kind: Optional[Literal["campaign", "text", "audio", "image", "video"]] = None,
+    kind: Optional[Literal["campaign", "text", "audio", "image", "video", "odette"]] = None,
     campaign_id: Optional[str] = None,
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict[str, Any]:

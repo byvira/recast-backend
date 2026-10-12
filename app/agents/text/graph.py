@@ -15,6 +15,17 @@ from app.agents.text.state import TextAgentState
 from app.agents.text import nodes
 
 
+def _says(label: str, node):
+    """The node, preceded by a line saying what the run is doing, so a background text run shows a real step."""
+    async def staged(state):
+        from app.shared.pipeline_runs import announce_stage
+
+        await announce_stage(label)
+        return await node(state)
+
+    return staged
+
+
 def build_single_platform_graph():
     """
     Builds and compiles the text generation graph for a single platform.
@@ -24,12 +35,12 @@ def build_single_platform_graph():
     graph = StateGraph(TextAgentState)
 
     graph.add_node("normalise",       nodes.normalise_node)
-    graph.add_node("build_context",   nodes.build_context_node)
-    graph.add_node("generate",        nodes.generate_node)
+    graph.add_node("build_context",   _says("Reading your source and your voice", nodes.build_context_node))
+    graph.add_node("generate",        _says("Writing your posts", nodes.generate_node))
     graph.add_node("generate_hooks",  nodes.hooks_node)       # "hooks" is a state key — renamed
     graph.add_node("generate_seo",    nodes.seo_node)         # "seo" could conflict — renamed
-    graph.add_node("quality_check",   nodes.quality_check_node)
-    graph.add_node("rewrite",         nodes.rewrite_node)
+    graph.add_node("quality_check",   _says("Checking your voice and rules", nodes.quality_check_node))
+    graph.add_node("rewrite",         _says("Improving a draft", nodes.rewrite_node))
     graph.add_node("flag_review",     nodes.flag_node)        # "flag" is safe but renamed for clarity
     graph.add_node("collect_output",  nodes.collect_output_node)
 

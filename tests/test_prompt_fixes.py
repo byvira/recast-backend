@@ -46,7 +46,7 @@ def test_an_empty_quote_becomes_the_real_words_and_words_outside_the_span_are_ig
 # ---- language lines in the templates -----------------------------------------------------------
 def test_the_templates_now_carry_a_language_line():
     line = "Write in Tamil."
-    hooks = load_prompt("text/hooks/generate", brand_context="b", platform_label="LinkedIn", banned_openings=[], banned_words=[], content="c", language_line=line)
+    hooks = load_prompt("text/hooks/generate", brand_context="b", platform_label="LinkedIn", banned_openings=[], banned_words=[], content="c", language_line=line, hook_count=3)
     assert line in hooks
     seo = load_prompt("text/seo/master", platform_instruction="p", content="c", language_line=line)
     assert line in seo

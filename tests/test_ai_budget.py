@@ -197,10 +197,10 @@ async def test_image_generation_is_exempt_because_it_spends_no_tokens(signup_use
 async def test_scheduled_campaigns_back_off_with_a_readable_reason(signup_user, monkeypatch):
     from app.workers import campaign_scheduler
 
-    client, _ = await signup_user()
+    client, user = await signup_user()
     ws_id = await create_workspace(client, "Budget Scheduler")
     await get_campaigns_collection().insert_one({
-        "id": "budget-campaign", "workspace_id": ws_id, "created_by": "someone",
+        "id": "budget-campaign", "workspace_id": ws_id, "created_by": user["id"],
         "brand_id": "b", "name": "Weekly", "topic_cluster": "topic", "status": "active", "deleted": False,
         "cadence": {"frequency": "daily", "next_run_at": datetime.now(timezone.utc) - timedelta(minutes=5),
                     "failures": 0},
@@ -211,6 +211,12 @@ async def test_scheduled_campaigns_back_off_with_a_readable_reason(signup_user, 
 
     monkeypatch.setattr(campaign_scheduler, "generate_campaign_batch", _over_budget)
     await campaign_scheduler.run_due_campaign_batches()
+    # The batch runs as a saved run in the background: wait for it to end before looking at the campaign.
+    import asyncio
+
+    from app.shared import pipeline_runs as _runs
+
+    await asyncio.gather(*list(_runs._tasks.values()), return_exceptions=True)
 
     doc = await get_campaigns_collection().find_one({"id": "budget-campaign"})
     assert doc["cadence"]["failures"] == 1

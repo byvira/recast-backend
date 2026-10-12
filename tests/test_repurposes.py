@@ -11,6 +11,11 @@ async def test_results_are_recorded_listed_a_page_at_a_time_and_unlinked(api_cli
     ws = await create_workspace(api_client, "Repurpose Record", tier="large")
     await audio_assets.insert_one({"id": "out-1", "workspace_id": ws, "title": "Narrated version", "approval_status": "approved"})
 
+    from app.db.mongo import content_pieces
+
+    # Only results that exist are noted, so the posts are real first; one is removed afterwards to see "removed" shown.
+    for i in range(5):
+        await content_pieces.insert_one({"piece_id": f"gone-{i}", "workspace_id": ws, "content": f"Post {i}", "platform": "linkedin"})
     outputs = [{"kind": "audio", "id": "out-1"}] + [{"kind": "text", "id": f"gone-{i}", "label": f"Post {i}"} for i in range(5)]
     first = await api_client.post("/api/v1/repurposes", json={"source_kind": "audio", "source_id": "src", "outputs": outputs}, headers=_h(ws))
     assert first.status_code == 201, first.text
@@ -19,6 +24,7 @@ async def test_results_are_recorded_listed_a_page_at_a_time_and_unlinked(api_cli
     again = await api_client.post("/api/v1/repurposes", json={"source_kind": "audio", "source_id": "src", "outputs": outputs}, headers=_h(ws))
     assert again.json()["recorded"] == 0
 
+    await content_pieces.delete_one({"piece_id": "gone-0", "workspace_id": ws})
     params = {"source_kind": "audio", "source_id": "src"}
     page1 = (await api_client.get("/api/v1/repurposes", params=params, headers=_h(ws))).json()
     assert page1["total"] == 6 and len(page1["items"]) == 4

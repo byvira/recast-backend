@@ -291,7 +291,7 @@ async def mark_notification_read(workspace_id: str, user_id: str, notif_id: str)
 
 # ── on-demand run ──────────────────────────────────────────────────────────
 
-async def trigger_run(workspace_id: str) -> dict:
+async def trigger_run(workspace_id: str, user_id: str | None = None) -> dict:
     """Run a supervisor reasoning pass in-process.
 
     Used to enqueue onto a separate arq worker process, but no such process
@@ -299,5 +299,27 @@ async def trigger_run(workspace_id: str) -> dict:
     directly on this event loop, same as the scheduled ticks.
     """
     from app.agents.supervisor.ticks import run_supervisor_now
+    from app.shared import pipeline_runs
+
+    if user_id:
+        # Saved as a run, so the pass shows as working in the Control Tower and the activity layer, and a second press while one is
+        # going is answered with the one that is.
+        try:
+            await pipeline_runs.assert_capacity(workspace_id)
+            doc = await pipeline_runs.create_run(
+                workspace_id=workspace_id, user_id=user_id, kind="odette", title="Odette review", steps_total=1,
+                href="/dashboard/odette", active_key=f"odette:{workspace_id}",
+            )
+        except pipeline_runs.RunAlreadyActive as already:
+            return {"status": "already_running", "run": pipeline_runs.public(already.existing) if already.existing else None}
+        except Exception as exc:  # noqa: BLE001 - at the job limit, the pass still runs, just not listed
+            logger.info("Odette pass for %s runs without a saved run: %s", workspace_id, exc)
+        else:
+            async def work(_run: dict) -> dict:
+                await run_supervisor_now({}, workspace_id)
+                return {}
+
+            pipeline_runs.start(doc, work, interrupt_on_cancel=True)
+            return {"status": "started_inline", "run": pipeline_runs.public(doc)}
     asyncio.create_task(run_supervisor_now({}, workspace_id))
     return {"status": "started_inline"}

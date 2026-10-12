@@ -39,6 +39,7 @@ from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggest
 from app.pipelines.brand.voice_playground import preview_rewrite_in_voice
 from app.pipelines.brand.trait_extraction import extract_sample_traits
 from app.pipelines.media.image_generation import generate_brand_mascot
+from app.shared import pipeline_runs as pipeline_runs_mod
 
 logger = logging.getLogger(__name__)
 
@@ -992,15 +993,39 @@ async def complete_brand_profile(
             {"$set": {"mascot_pending": True}},
         )
         if claimed.modified_count:
-            task = asyncio.create_task(_generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id))
-            _MASCOT_TASKS.add(task)
-            task.add_done_callback(_MASCOT_TASKS.discard)
+            run = await _register_mascot_run(brand_id, doc, ctx)
+
+            async def make_mascot(_run: dict) -> dict:
+                await _generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id)
+                return {}
+
+            if run is not None:
+                pipeline_runs_mod.start(run, make_mascot, interrupt_on_cancel=True)
+            else:
+                # The workspace is at its limit of running jobs: the picture is still made, just not listed as a job.
+                task = asyncio.create_task(_generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id))
+                _MASCOT_TASKS.add(task)
+                task.add_done_callback(_MASCOT_TASKS.discard)
 
     return {"brand_id": brand_id, "is_complete": True}
 
 
-#: Mascot pictures being made in the background.
+#: Mascot pictures being made in the background without a saved run (only when the workspace is at its limit of running jobs).
 _MASCOT_TASKS: set = set()
+
+
+async def _register_mascot_run(brand_id: str, doc: dict, ctx: WorkspaceContext) -> Optional[dict]:
+    """Saves the mascot picture as a run, so it shows in the Control Tower and the activity layer and can be stopped. Returns None
+    when it cannot be registered (the work is then done the plain way)."""
+    try:
+        await pipeline_runs_mod.assert_capacity(ctx.workspace_id)
+        return await pipeline_runs_mod.create_run(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="image",
+            title=f"Mascot for {doc.get('brand_name') or doc.get('name') or 'your brand'}",
+            ref={"brand_id": brand_id}, steps_total=1, href="/dashboard/settings", active_key=f"mascot:{brand_id}",
+        )
+    except (HTTPException, pipeline_runs_mod.RunAlreadyActive):
+        return None
 
 
 @router.post("/{brand_id}/visual-identity/mascot/regenerate", response_model=BrandProfile)
@@ -1018,7 +1043,32 @@ async def regenerate_brand_mascot(
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
-    asset = await generate_brand_mascot(brand_profile=doc, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+    run = await _register_mascot_run(brand_id, doc, ctx)
+    if run is None:
+        # Another mascot for this brand is being made, or the workspace is at its limit of running jobs.
+        raise HTTPException(status_code=409, detail="A mascot is already being made for this brand. Give it a moment.")
+
+    outcome: asyncio.Future = asyncio.get_running_loop().create_future()
+
+    async def make(_run: dict) -> dict:
+        try:
+            made = await generate_brand_mascot(brand_profile=doc, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+            if not outcome.done():
+                outcome.set_result(made)
+            return {}
+        except BaseException as exc:  # noqa: BLE001 - includes a cancel: the waiting request is told, then the run ends its own way
+            if not outcome.done():
+                outcome.set_exception(exc if isinstance(exc, Exception) else RuntimeError("stopped"))
+            raise
+
+    # The picture is made as a saved run (it can be seen and stopped), and this request waits for it so the page gets the result.
+    pipeline_runs_mod.start(run, make, interrupt_on_cancel=True)
+    try:
+        asset = await asyncio.shield(outcome)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        asset = None
     if not asset:
         raise HTTPException(
             status_code=502,

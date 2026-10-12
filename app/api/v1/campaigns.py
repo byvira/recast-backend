@@ -249,7 +249,7 @@ async def list_campaigns(
     ).to_list(length=200)
     progress_by_id = await _campaign_progress_bulk(ctx.workspace_id, [doc["id"] for doc in docs])
     return [
-        {**_doc_to_campaign(doc).model_dump(), "progress": progress_by_id[doc["id"]]}
+        {**_doc_to_campaign(doc).model_dump(), "progress": progress_by_id[doc["id"]], "post_counts": progress_by_id[doc["id"]]}
         for doc in docs
     ]
 
@@ -267,7 +267,7 @@ async def get_campaign(
     if not doc:
         raise HTTPException(status_code=404, detail="Campaign not found.")
     progress = await _campaign_progress(ctx.workspace_id, campaign_id)
-    return {**_doc_to_campaign(doc).model_dump(), "progress": progress}
+    return {**_doc_to_campaign(doc).model_dump(), "progress": progress, "post_counts": progress}
 
 
 @router.patch("/{campaign_id}", response_model=Campaign)
@@ -582,9 +582,11 @@ async def generate_next_batch(
 
     # This older route runs the batch inside the request. It must not run alongside a background batch for the same campaign, nor
     # past the workspace's limit on running jobs.
-    if await pipeline_runs.active_run_for(ctx.workspace_id, "campaign", {"campaign_id": campaign_id}):
-        raise HTTPException(status_code=409, detail="This campaign is already making a batch.")
-    await pipeline_runs.assert_capacity(ctx.workspace_id)
+    # (Started as a background job, the run is already registered with its campaign, so there is nothing to check here.)
+    if request is not None:
+        if await pipeline_runs.active_run_for(ctx.workspace_id, "campaign", {"campaign_id": campaign_id}):
+            raise HTTPException(status_code=409, detail="This campaign is already making a batch.")
+        await pipeline_runs.assert_capacity(ctx.workspace_id)
 
     try:
         result = await generate_campaign_batch(campaign, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
@@ -603,6 +605,7 @@ async def generate_next_batch(
     return {
         **_doc_to_campaign(updated).model_dump(),
         "progress": progress,
+        "post_counts": progress,
         "pieces_generated_this_run": len(result["new_piece_ids"]),
     }
 

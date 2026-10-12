@@ -233,8 +233,11 @@ async def test_a_team_of_six_or_more_alerts_the_team_once(api_client, mail):
 
 
 async def test_settings_can_be_changed_by_staff_and_are_validated(make_client):
-    staff, _ = await _staff(make_client)
+    staff, user = await _staff(make_client)
     assert (await staff.put(f"{L}/settings", json={"signup_mode": "sometimes"})).status_code == 422
+    # Who may sign up is a platform decision: a staff member who is not an admin is refused, an admin may change it.
+    assert (await staff.put(f"{L}/settings", json={"signup_mode": "invite"})).status_code == 403
+    await users.update_one({"id": user["id"]}, {"$set": {"support_role": "admin"}})
     saved = (await staff.put(f"{L}/settings", json={"signup_mode": "invite", "daily_invite_cap": 40, "digest_recipients": ["Team@Example.com", "team@example.com"]})).json()
     assert saved["effective_signup_mode"] == "invite" and saved["daily_invite_cap"] == 40 and saved["digest_recipients"] == ["team@example.com"]
 

@@ -113,7 +113,7 @@ async def run_supervisor_pass(
 ) -> dict:
     """Owner-only: trigger a supervisor reasoning pass now (enqueues on the arq
     worker). Returns immediately."""
-    return await service.trigger_run(ctx.workspace_id)
+    return await service.trigger_run(ctx.workspace_id, ctx.user_id)
 
 
 @router.post("/kill-switch")

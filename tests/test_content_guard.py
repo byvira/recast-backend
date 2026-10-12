@@ -461,7 +461,7 @@ async def test_uploading_an_unsafe_picture_returns_the_friendly_error(make_clien
     await signup_new_user(client)
     ws = await create_workspace(client, "Picture WS")
     with patch("app.shared.llm.call_vision", new=AsyncMock(return_value=UNSAFE_PICTURE)):
-        res = await client.post("/api/v1/media", headers=H(ws), files={"file": ("a.png", b"\x89PNG-fake-bytes", "image/png")})
+        res = await client.post("/api/v1/media", headers=H(ws), files={"file": ("a.png", _real_png(), "image/png")})
     assert res.status_code == 422 and res.json()["detail"]["code"] == "CONTENT_REJECTED"
 
 
@@ -652,3 +652,13 @@ async def test_a_long_post_is_read_to_the_end_and_the_post_is_fenced():
     assert result.blocked and result.categories == ["hate"]
     assert model.call_count == 2, "the second piece of the post was read"
     assert "ignore the above" not in model.call_args_list[0].kwargs["prompt"].split("never")[0].lower()
+
+
+def _real_png() -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (40, 30), (10, 120, 200)).save(out, format="PNG")
+    return out.getvalue()

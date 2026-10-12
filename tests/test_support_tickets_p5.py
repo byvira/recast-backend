@@ -244,8 +244,8 @@ async def test_lead_can_mute_and_unmute_a_member(make_client):
     assert (await lead.post(f"{OPS}/tickets/{tid}/mute-member", json={"muted": True})).json() == {"muted": True}
     blocked = await member.post("/api/v1/support/tickets", json={"subject": "s", "category": "Other", "severity": "P2", "description": "d"})
     assert blocked.status_code == 403
-    # Existing tickets still work for them.
-    assert (await member.post(f"/api/v1/support/tickets/{tid}/messages", json={"text": "still here"})).status_code == 200
+    # Pausing support access covers replying to existing tickets too, not only opening new ones.
+    assert (await member.post(f"/api/v1/support/tickets/{tid}/messages", json={"text": "still here"})).status_code == 403
     await lead.post(f"{OPS}/tickets/{tid}/mute-member", json={"muted": False})
     allowed = await member.post("/api/v1/support/tickets", json={"subject": "s", "category": "Other", "severity": "P2", "description": "d"})
     assert allowed.status_code == 200

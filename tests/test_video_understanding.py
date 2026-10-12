@@ -397,9 +397,21 @@ def _stub_upload(monkeypatch, **fields):
     monkeypatch.setattr(media_module, "upload_file_detailed", _fake)
 
 
+def _real_png() -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (40, 30), (10, 120, 200)).save(out, format="PNG")
+    return out.getvalue()
+
+
 async def _upload(client, ws_id, name, content_type):
+    # A picture upload is checked to really be a picture, so image uploads send real picture bytes.
+    data = _real_png() if content_type.startswith("image/") else b"bytes"
     return await client.post(
-        "/api/v1/media", files={"file": (name, b"bytes", content_type)}, headers={"X-Workspace-Id": ws_id},
+        "/api/v1/media", files={"file": (name, data, content_type)}, headers={"X-Workspace-Id": ws_id},
     )
 
 

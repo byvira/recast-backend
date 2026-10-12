@@ -244,7 +244,7 @@ class CampaignPieceRef(CampaignRef):
     piece_id: str = Field(min_length=1, max_length=64)
 
 
-def _campaign_action(name: str, model: type[BaseModel], handler_name: str, title, steps: int, description: str) -> None:
+def _campaign_action(name: str, model: type[BaseModel], handler_name: str, title, steps: int, description: str, *, own_batch: bool = False) -> None:
     async def run(ctx: Any, payload: Any, reporter: Any) -> Any:
         from app.api.v1 import campaigns
 
@@ -256,6 +256,9 @@ def _campaign_action(name: str, model: type[BaseModel], handler_name: str, title
     register(JobAction(
         name=name, permission="create_content", payload_model=model, run=run, kind="campaign", title=title,
         steps=lambda p: steps, href="/dashboard/pipelines/new", gated=True, retries=0, description=description,
+        # A whole batch belongs to its campaign and shares the start key of the batch route, so one campaign never runs two batches.
+        ref=(lambda p: {"campaign_id": p.campaign_id}) if own_batch else None,
+        active_key=(lambda p: f"campaign:{p.campaign_id}") if own_batch else None,
     ))
 
 
@@ -281,7 +284,7 @@ def register_all() -> None:
     _text_action("text.regenerate", RegenerateRequest, "regenerate_content",
                  lambda p: f"Regenerate {p.platform}", lambda p: 1)
     _campaign_action("campaign.next_batch", CampaignRef, "generate_next_batch", lambda p: "Campaign: next batch", 1,
-                     "Make the next batch of posts for a campaign.")
+                     "Make the next batch of posts for a campaign.", own_batch=True)
     _campaign_action("campaign.retry_media", CampaignPieceRef, "retry_post_media", lambda p: "Campaign: retry media", 1,
                      "Make again the media that failed for one post.")
     _campaign_action("campaign.regenerate_media", CampaignPieceRef, "regenerate_post_image", lambda p: "Campaign: new picture", 1,
