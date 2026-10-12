@@ -46,12 +46,21 @@ class CleanupSettings(BaseModel):
     mouth_click_removal: Optional[float] = Field(default=None, ge=0.05, le=1.0)   # de-click strength
     room_tone_fill: bool = False                                                  # needs a real cut to fill
     remove_echo: bool = False                                                     # real external call, see module docstring
+    gain_db: Optional[float] = Field(default=None, ge=-12.0, le=12.0)             # plain volume change, after everything else
+
+    def is_empty_without_echo(self) -> bool:
+        """True when echo reduction is the only thing chosen, so skipping it would leave nothing to do."""
+        return not any((
+            self.noise_reduction, self.target_lufs, self.highpass_hz, self.lowpass_hz,
+            self.compressor, self.de_esser, self.silence_trim_s, self.remove_fillers,
+            self.mouth_click_removal, self.room_tone_fill, self.gain_db,
+        ))
 
     def is_empty(self) -> bool:
         return not any((
             self.noise_reduction, self.target_lufs, self.highpass_hz, self.lowpass_hz,
             self.compressor, self.de_esser, self.silence_trim_s, self.remove_fillers,
-            self.mouth_click_removal, self.room_tone_fill, self.remove_echo,
+            self.mouth_click_removal, self.room_tone_fill, self.remove_echo, self.gain_db,
         ))
 
 
@@ -293,6 +302,25 @@ def _declick(channel: np.ndarray, sr: int, amount: float) -> np.ndarray:
     return out.astype("float32")
 
 
+def _soft_limit(x: np.ndarray, ceiling: float = 1.0, knee: float = 0.8) -> np.ndarray:
+    """Rounds off the peaks that pass `ceiling` instead of flattening them or turning the whole recording back down: below `knee`
+    nothing changes, above it the signal bends smoothly toward the ceiling."""
+    knee = min(knee, ceiling * 0.9)
+    magnitude = np.abs(x)
+    over = magnitude > knee
+    if not np.any(over):
+        return x
+    room = ceiling - knee
+    bent = knee + room * np.tanh((magnitude - knee) / room)
+    return np.where(over, np.sign(x) * bent, x).astype("float32")
+
+
+# Platform and broadcast loudness rules ask for the loudest peak to stay 1 dB under full scale; without a standard chosen the
+# limit stays just under full scale.
+STANDARD_PEAK_CEILING = 10 ** (-1.0 / 20)   # -1 dBFS
+PLAIN_PEAK_CEILING = 0.99
+
+
 def apply_cleanup(
     audio_bytes: bytes, settings: CleanupSettings, transcript: list[dict],
 ) -> tuple[bytes, list[dict], dict]:
@@ -360,14 +388,23 @@ def apply_cleanup(
             measured = meter.integrated_loudness(mono_for_meter)
             if np.isfinite(measured):
                 out = pyln.normalize.loudness(out, measured, settings.target_lufs)
+                out = _soft_limit(out, STANDARD_PEAK_CEILING)
                 applied["target_lufs"] = settings.target_lufs
                 applied["measured_loudness_before_lufs"] = round(float(measured), 2)
         except ValueError:
             raise CleanupError("This recording is too short to measure loudness.")
 
+    ceiling = STANDARD_PEAK_CEILING if settings.target_lufs is not None else PLAIN_PEAK_CEILING
+    # 4. A plain volume change, last of all, so it moves the finished recording up or down by exactly what was asked.
+    if settings.gain_db:
+        out = (out * (10 ** (settings.gain_db / 20))).astype("float32")
+        if settings.gain_db > 0:
+            out = _soft_limit(out, ceiling)
+        applied["gain_db"] = settings.gain_db
+
     peak = float(np.max(np.abs(out))) if out.size else 0.0
-    if peak > 0.99:  # never hand back a clipped file
-        out = out * (0.99 / peak)
+    if peak > ceiling:  # never hand back a clipped file, or one over the peak limit of the chosen standard
+        out = out * (ceiling / peak)
 
     buf = io.BytesIO()
     sf.write(buf, out if out.shape[1] > 1 else out[:, 0], sr, format="WAV")

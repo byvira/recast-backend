@@ -100,7 +100,7 @@ from app.shared.language import workspace_language
 from app.pipelines.media import narration_delivery
 from app.pipelines.media import duration as spoken_length
 from app.pipelines.media import fit_script as script_fitting
-from app.pipelines.media.echo_reduction import BASIC_CLEANUP_NOTE, EchoReductionError, basic_cleanup, reduce_echo
+from app.pipelines.media.echo_reduction import BASIC_CLEANUP_NOTE, ECHO_SKIPPED_NOTE, EchoReductionError, basic_cleanup, reduce_echo
 from app.pipelines.media.music_library import list_library_tracks
 from app.pipelines.media.soundbite_extraction import SoundbiteExtractionError, evaluate_quality, trim_span
 from app.agents.content_guard.media import assert_speech_ok, episode_is_safe, transcript_text
@@ -2421,6 +2421,7 @@ async def _cleanup_audio_asset(audio_asset_id: str, body: CleanupSettings, ctx: 
     source_bytes = await _download_media_bytes(media["url"])
 
     echo_note: Optional[str] = None
+    echo_skipped = False
     if body.remove_echo:
         try:
             source_bytes = await reduce_echo(source_bytes)
@@ -2430,7 +2431,12 @@ async def _cleanup_audio_asset(audio_asset_id: str, body: CleanupSettings, ctx: 
                 source_bytes = await basic_cleanup(source_bytes)
                 echo_note = BASIC_CLEANUP_NOTE
             except EchoReductionError:
-                raise HTTPException(status_code=400, detail=str(exc))
+                if not body.is_empty_without_echo():
+                    # The member also chose other options: those still run, and the note says echo could not be done.
+                    echo_skipped = True
+                    echo_note = ECHO_SKIPPED_NOTE
+                else:
+                    raise HTTPException(status_code=400, detail=str(exc))
 
     transcript = [dict(w) for w in doc.get("transcript", [])]
     await run.step("Applying your changes")
@@ -2438,10 +2444,12 @@ async def _cleanup_audio_asset(audio_asset_id: str, body: CleanupSettings, ctx: 
         cleaned, new_transcript, applied = await run_heavy(apply_cleanup, source_bytes, body, transcript)
     except CleanupError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if body.remove_echo:
+    if body.remove_echo and not echo_skipped:
         applied["remove_echo"] = "basic" if echo_note else True
         if echo_note:
             applied["remove_echo_note"] = echo_note
+    elif echo_skipped:
+        applied["remove_echo_note"] = echo_note
 
     await run.step("Saving the new version")
     try:
@@ -2461,7 +2469,7 @@ async def _cleanup_audio_asset(audio_asset_id: str, body: CleanupSettings, ctx: 
     updated = await _bump_audio_version(
         audio_asset_id, ctx.workspace_id, new_media.id, doc.get("script"),
         # the version list says when the basic echo cleanup was used because the full one was not available
-        "cleanup_basic_echo" if echo_note else "cleanup", ctx.user_id,
+        "cleanup_basic_echo" if echo_note and not echo_skipped else "cleanup", ctx.user_id,
         transcript=new_transcript,
         extra_set={"dsp_settings": {**doc.get("dsp_settings", {}), "cleanup": applied}},
     )
@@ -2845,7 +2853,10 @@ async def sound_checks(
     if not media:
         raise HTTPException(status_code=400, detail="This recording has no audio file to check.")
     audio_bytes = await _download_media_bytes(media["url"])
-    return {"audio_asset_id": audio_asset_id, "media_id": media["id"], "checks": await run_sound_checks(audio_bytes)}
+    # a recording the member leveled to a loudness standard is judged against that standard
+    chosen = ((doc.get("dsp_settings") or {}).get("cleanup") or {}).get("target_lufs")
+    target = float(chosen) if isinstance(chosen, (int, float)) else None
+    return {"audio_asset_id": audio_asset_id, "media_id": media["id"], "checks": await run_sound_checks(audio_bytes, target)}
 
 
 @router.get("/{audio_asset_id}/render-jobs")

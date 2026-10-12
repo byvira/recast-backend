@@ -926,21 +926,25 @@ async def set_active_brand(
     return _doc_to_brand_profile(updated)
 
 
-async def _generate_and_save_mascot(brand_id: str, workspace_id: str, user_id: str) -> None:
+#: What a mascot run says when no picture came back, so the run shows as not finished instead of done.
+MASCOT_NOT_MADE = "We couldn't draw a mascot this time. You can try again from Brand Assets."
+
+
+async def _generate_and_save_mascot(brand_id: str, workspace_id: str, user_id: str) -> bool:
     """Row 16 — fire-and-forget mascot generation. Runs after the response
     that triggered it has already returned (asyncio.create_task), so a
     slow or failed generation never blocks brand completion or the manual
     regenerate endpoint below. Re-reads the doc fresh rather than trusting
-    a stale copy, since this runs after the caller's own response."""
+    a stale copy, since this runs after the caller's own response. Returns whether a mascot was made and saved."""
     doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id})
     if not doc:
-        return
+        return False
     try:
         asset = await generate_brand_mascot(brand_profile=doc, workspace_id=workspace_id, user_id=user_id)
     finally:
         await brand_profiles.update_one({"id": brand_id, "workspace_id": workspace_id}, {"$unset": {"mascot_pending": ""}})
     if not asset:
-        return
+        return False
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": workspace_id},
         {
@@ -949,6 +953,7 @@ async def _generate_and_save_mascot(brand_id: str, workspace_id: str, user_id: s
             }
         },
     )
+    return True
 
 
 @router.put("/{brand_id}/complete")
@@ -996,7 +1001,8 @@ async def complete_brand_profile(
             run = await _register_mascot_run(brand_id, doc, ctx)
 
             async def make_mascot(_run: dict) -> dict:
-                await _generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id)
+                if not await _generate_and_save_mascot(brand_id, ctx.workspace_id, ctx.user_id):
+                    raise RuntimeError(MASCOT_NOT_MADE)
                 return {}
 
             if run is not None:
@@ -1055,6 +1061,8 @@ async def regenerate_brand_mascot(
             made = await generate_brand_mascot(brand_profile=doc, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
             if not outcome.done():
                 outcome.set_result(made)
+            if not made:
+                raise RuntimeError(MASCOT_NOT_MADE)
             return {}
         except BaseException as exc:  # noqa: BLE001 - includes a cancel: the waiting request is told, then the run ends its own way
             if not outcome.done():

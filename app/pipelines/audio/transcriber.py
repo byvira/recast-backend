@@ -8,12 +8,17 @@ audio agent, just word-level (not segment-level) so the result matches
 end_s), and taking raw bytes directly rather than requiring a file path.
 """
 
+import asyncio
 import contextlib
 import logging
 import re
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Optional
 
 from app.models.audio_asset import TranscriptWord
+from app.shared.heavy_work import heavy_slot
 from app.shared.llm import GroqModel, get_groq_client
 
 logger = logging.getLogger(__name__)
@@ -59,6 +64,44 @@ def strip_punctuation(words: list[TranscriptWord]) -> list[TranscriptWord]:
     return [w.model_copy(update={"word": _EDGE_MARKS.sub("", w.word) or w.word}) for w in words]
 
 
+# The speech service refuses a file over 25 MB, which a long or high-quality recording easily is. Above this size the file is
+# first made into a small speech-quality copy (mono, 16 kHz, 32 kbps: about 15 minutes per 4 MB). Word timings are unchanged,
+# since only the quality is lowered, not the length.
+_WHISPER_MAX_BYTES = 24 * 1024 * 1024
+
+
+async def _fit_for_whisper(audio_bytes: bytes, filename: str) -> tuple[bytes, str]:
+    """The same recording small enough to send, or the original when it is already small or cannot be shrunk."""
+    if len(audio_bytes) <= _WHISPER_MAX_BYTES:
+        return audio_bytes, filename
+    tmp = tempfile.mkdtemp(prefix="recast-stt-")
+    try:
+        import imageio_ffmpeg
+
+        src, dst = Path(tmp) / "in.audio", Path(tmp) / "out.mp3"
+        src.write_bytes(audio_bytes)
+        async with heavy_slot():
+            proc = await asyncio.create_subprocess_exec(
+                imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", str(dst),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=600)
+            except asyncio.TimeoutError:
+                proc.kill()
+                logger.warning("Shrinking a long recording for transcription took too long")
+                return audio_bytes, filename
+        if proc.returncode != 0 or not dst.exists():
+            logger.warning("Shrinking a long recording for transcription failed (ffmpeg exit %s)", proc.returncode)
+            return audio_bytes, filename
+        return dst.read_bytes(), f"{Path(filename).stem}.mp3"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Shrinking a long recording for transcription failed: %s", exc)
+        return audio_bytes, filename
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 async def transcribe_audio_detailed(
     audio_bytes: bytes, filename: str, language: Optional[str] = None, punctuate: Optional[bool] = None,
 ) -> tuple[list[TranscriptWord], Optional[str]]:
@@ -67,6 +110,7 @@ async def transcribe_audio_detailed(
     hard-coded "en" made any non-English recording come back as garbled
     English. Returns ([], None) (never raises) on any provider failure."""
     try:
+        audio_bytes, filename = await _fit_for_whisper(audio_bytes, filename)
         client = get_groq_client()
         kwargs: dict = {}
         if language:

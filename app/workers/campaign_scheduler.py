@@ -57,6 +57,15 @@ async def run_due_campaign_batches() -> None:
                 "Skipping scheduled campaign %s — workspace %s has generation paused.",
                 campaign.get("id"), campaign["workspace_id"],
             )
+            # Said once a day per campaign (the key repeats the same row), not every minute the tick passes it by.
+            await record_system(
+                workspace_id=campaign["workspace_id"], key=f"campaign_held:{campaign['id']}:{now.strftime('%Y-%m-%d')}",
+                actor_name="Campaign scheduler", category="content_generated",
+                title=f"Campaign \"{campaign.get('name') or 'Untitled'}\" is waiting",
+                description="Writing is switched off for this workspace, so the next posts were not made. They are made once it is switched back on.",
+                status="warning", target_id=campaign["id"], target_type="Campaign", target_label=campaign.get("name") or None,
+                href="/dashboard/campaigns",
+            )
             continue
 
         # A scheduled batch is a saved run like a manual one: it shows in Control Tower, can be paused or cancelled, ends with a note

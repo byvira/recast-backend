@@ -15,6 +15,7 @@ import time
 import httpx
 
 from app.core.config import settings
+from app.shared.heavy_work import heavy_slot
 
 AUDIO_ISOLATION_URL = "https://api.elevenlabs.io/v1/audio-isolation"
 
@@ -29,6 +30,7 @@ BASIC_CLEANUP_NOTE = (
     "Basic cleanup was used: it lowers steady background noise and low rumble. It cannot remove a true room echo, "
     "which needs the paid ElevenLabs plan."
 )
+ECHO_SKIPPED_NOTE = "Echo reduction could not run on this recording, so it was skipped. Everything else you chose was applied."
 # a gentle high-pass for rumble, then broadband noise reduction; loudness is left to the later steps
 _BASIC_FILTER = "highpass=f=80,afftdn=nr=12:nf=-28:tn=1"
 
@@ -46,15 +48,17 @@ async def basic_cleanup(audio_bytes: bytes) -> bytes:
     try:
         src, dst = Path(tmp) / "in.audio", Path(tmp) / "out.wav"
         src.write_bytes(audio_bytes)
-        proc = await asyncio.create_subprocess_exec(
-            imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src), "-af", _BASIC_FILTER, "-ar", "44100", str(dst),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            await asyncio.wait_for(proc.communicate(), timeout=300)
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise EchoReductionError("Basic cleanup took too long and was stopped. Try a shorter recording.")
+        # ffmpeg is heavy on a small server, so it waits for the same single slot as every other heavy job
+        async with heavy_slot():
+            proc = await asyncio.create_subprocess_exec(
+                imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-i", str(src), "-af", _BASIC_FILTER, "-ar", "44100", str(dst),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise EchoReductionError("Basic cleanup took too long and was stopped. Try a shorter recording.")
         if proc.returncode != 0 or not dst.exists():
             raise EchoReductionError("Basic cleanup could not process this recording.")
         return dst.read_bytes()

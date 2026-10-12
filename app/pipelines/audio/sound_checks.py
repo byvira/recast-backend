@@ -18,6 +18,8 @@ import subprocess
 import tempfile
 from typing import Optional
 
+from app.shared.heavy_work import run_heavy
+
 GOOD_LOUDNESS_RANGE = (-20.0, -12.0)   # LUFS
 CLIP_PEAK_DB = -0.5                    # dBFS at or above this may distort
 LONG_SILENCE_S = 3.0
@@ -50,21 +52,31 @@ def parse_report(report: str) -> dict:
     return metrics
 
 
-def judge(metrics: dict) -> list[dict]:
-    """The three checks as {id, label, status, message}; status is "good" or "attention", or "unknown" when it could not be read."""
+STANDARD_TOLERANCE_LU = 2.0   # how far from a chosen loudness standard still counts as on target
+
+
+def judge(metrics: dict, target_lufs: Optional[float] = None) -> list[dict]:
+    """The three checks as {id, label, status, message}; status is "good" or "attention", or "unknown" when it could not be read.
+    When the member leveled the recording to a loudness standard, loudness is judged against that target, not the usual range."""
     checks = []
     lufs = metrics.get("loudness_lufs")
     low, high = GOOD_LOUDNESS_RANGE
+    if target_lufs is not None:
+        low, high = target_lufs - STANDARD_TOLERANCE_LU, target_lufs + STANDARD_TOLERANCE_LU
     if lufs is None:
         checks.append({"id": "loudness", "label": "Loudness", "status": "unknown", "message": "Couldn't measure the loudness."})
     elif lufs < low:
         checks.append({"id": "loudness", "label": "Loudness", "status": "attention",
-                       "message": f"Quiet ({lufs:.0f} LUFS). Spoken word usually sits near -16, so this may sound faint. Raise the level in Cleanup."})
+                       "message": (f"Quiet ({lufs:.0f} LUFS). You leveled it to {target_lufs:.0f}, so something changed it since. Level it again in Cleanup."
+                                   if target_lufs is not None else
+                                   f"Quiet ({lufs:.0f} LUFS). Spoken word usually sits near -16, so this may sound faint. Raise the level in Cleanup.")})
     elif lufs > high:
         checks.append({"id": "loudness", "label": "Loudness", "status": "attention",
-                       "message": f"Loud ({lufs:.0f} LUFS). Spoken word usually sits near -16, so this may sound harsh. Lower the level in Cleanup."})
+                       "message": (f"Loud ({lufs:.0f} LUFS). You leveled it to {target_lufs:.0f}, so something changed it since. Level it again in Cleanup."
+                                   if target_lufs is not None else
+                                   f"Loud ({lufs:.0f} LUFS). Spoken word usually sits near -16, so this may sound harsh. Lower the level in Cleanup.")})
     else:
-        checks.append({"id": "loudness", "label": "Loudness", "status": "good", "message": f"Comfortable ({lufs:.0f} LUFS)."})
+        checks.append({"id": "loudness", "label": "Loudness", "status": "good", "message": (f"On target ({lufs:.0f} LUFS, aimed at {target_lufs:.0f})." if target_lufs is not None else f"Comfortable ({lufs:.0f} LUFS).")})
 
     peak = metrics.get("peak_db")
     if peak is None:
@@ -109,7 +121,7 @@ def _measure_blocking(audio_bytes: bytes) -> Optional[dict]:
             pass
 
 
-async def run_sound_checks(audio_bytes: bytes) -> list[dict]:
+async def run_sound_checks(audio_bytes: bytes, target_lufs: Optional[float] = None) -> list[dict]:
     """Measure a recording and judge it. Never raises: a recording that cannot be read gives three "unknown" checks."""
     metrics = await run_heavy(_measure_blocking, audio_bytes)
-    return judge(metrics or {"loudness_lufs": None, "peak_db": None, "silences": []})
+    return judge(metrics or {"loudness_lufs": None, "peak_db": None, "silences": []}, target_lufs)

@@ -298,3 +298,49 @@ async def test_when_the_full_echo_cleanup_is_not_available_the_basic_one_is_used
 
     versions = (await client.get(f"/api/v1/audio-assets/{asset['id']}/versions", headers=_h(ws_id))).json()["versions"]
     assert [v["action"] for v in versions] == ["created", "cleanup_basic_echo"]
+
+
+def _gain_source(level: float) -> bytes:
+    t = np.arange(SR * 3) / SR
+    buf = io.BytesIO()
+    sf.write(buf, (np.sin(2 * np.pi * 220 * t) * level).astype("float32"), SR, format="WAV")
+    return buf.getvalue()
+
+
+def _rms(wav: bytes) -> float:
+    data, _ = sf.read(io.BytesIO(wav), dtype="float32")
+    return float(np.sqrt(np.mean(data ** 2)))
+
+
+@pytest.mark.parametrize("db", [6.0, -6.0, 12.0])
+def test_volume_change_moves_the_level_by_exactly_what_was_asked(db):
+    source = _gain_source(0.1)
+    out, _, applied = apply_cleanup(source, CleanupSettings(gain_db=db), [])
+    assert 20 * np.log10(_rms(out) / _rms(source)) == pytest.approx(db, abs=0.05)
+    assert applied["gain_db"] == db
+
+
+def test_volume_boost_on_a_loud_recording_never_clips():
+    out, _, _ = apply_cleanup(_gain_source(0.7), CleanupSettings(gain_db=12.0), [])
+    data, _ = sf.read(io.BytesIO(out), dtype="float32")
+    # the file is 16-bit, so 0.99 is stored a rounding step away from itself; what matters is that it stays below full scale
+    assert float(np.max(np.abs(data))) < 0.995
+
+
+def test_volume_change_alone_counts_as_something_to_do():
+    assert not CleanupSettings(gain_db=3.0).is_empty()
+    with pytest.raises(CleanupError):
+        apply_cleanup(_gain_source(0.1), CleanupSettings(), [])
+
+
+def test_a_chosen_loudness_standard_keeps_peaks_a_decibel_under_full_scale():
+    t = np.arange(SR * 6) / SR
+    # a quiet recording with a few short loud bursts, which levelling up to -14 LUFS pushes past full scale
+    x = np.sin(2 * np.pi * 220 * t) * 0.05
+    x[SR: SR + 800] = np.sin(2 * np.pi * 220 * t[:800]) * 0.9
+    buf = io.BytesIO()
+    sf.write(buf, x.astype("float32"), SR, format="WAV")
+    out, _, applied = apply_cleanup(buf.getvalue(), CleanupSettings(target_lufs=-14.0), [])
+    data, _ = sf.read(io.BytesIO(out), dtype="float32")
+    assert applied["target_lufs"] == -14.0
+    assert float(np.max(np.abs(data))) <= 10 ** (-1.0 / 20) + 1e-3

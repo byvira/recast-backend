@@ -11,7 +11,7 @@ passed even while every Text route was quietly turning its 403 into a generic
 
 from datetime import datetime, timedelta, timezone
 
-from app.db.mongo import brand_profiles, get_campaigns_collection
+from app.db.mongo import activity_entries, brand_profiles, get_campaigns_collection
 from tests.conftest import create_workspace, invite_and_accept
 
 _PAUSED = "Generation is paused"
@@ -202,3 +202,33 @@ async def test_scheduler_skips_a_halted_workspace_without_backing_off(signup_use
     if next_run.tzinfo is None:
         next_run = next_run.replace(tzinfo=timezone.utc)
     assert next_run < datetime.now(timezone.utc)
+
+
+
+async def test_scheduler_says_so_once_a_day_when_a_halted_workspace_holds_a_campaign_back(signup_user, monkeypatch):
+    """The campaign is skipped on every tick while the switch is armed, but the member is told once, not once a minute."""
+    from app.workers import campaign_scheduler
+
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "KS Scheduler Note")
+    await _set_halted(client, ws_id, True)
+    due_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    await get_campaigns_collection().insert_one({
+        "id": "ks-campaign-note", "workspace_id": ws_id, "created_by": "someone",
+        "brand_id": "b", "name": "Held campaign", "topic_cluster": "topic",
+        "status": "active", "deleted": False,
+        "cadence": {"frequency": "daily", "next_run_at": due_at, "failures": 0},
+    })
+
+    async def _should_not_run(*args, **kwargs):
+        raise AssertionError("a halted workspace's campaign must not generate")
+
+    monkeypatch.setattr(campaign_scheduler, "generate_campaign_batch", _should_not_run)
+
+    await campaign_scheduler.run_due_campaign_batches()
+    await campaign_scheduler.run_due_campaign_batches()
+    await campaign_scheduler.run_due_campaign_batches()
+
+    rows = await activity_entries.find({"workspace_id": ws_id, "_id": {"$regex": "^system:campaign_held:"}}).to_list(10)
+    assert len(rows) == 1
+    assert "waiting" in rows[0]["title"] and "Held campaign" in rows[0]["title"]

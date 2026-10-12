@@ -28,6 +28,11 @@ def _get_gate() -> asyncio.Semaphore:
     return _gate
 
 
+def heavy_slot() -> asyncio.Semaphore:
+    """The gate itself, for heavy work that is not a plain function (a subprocess such as ffmpeg): `async with heavy_slot():`."""
+    return _get_gate()
+
+
 async def run_heavy(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run the blocking function `fn` in a thread, after waiting for a free slot."""
     async with _get_gate():
