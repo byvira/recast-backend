@@ -1033,22 +1033,39 @@ async def upload_audio_in_background(
 
     from app.shared import jobs, pipeline_runs
 
-    data = await file.read()
-    name, content_type = file.filename, file.content_type
+    from app.shared.uploads import spool_limited
+
+    if (file.content_type or "") not in _AUDIO_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported audio type '{file.content_type}'. Allowed: {', '.join(sorted(_AUDIO_MIME_TYPES))}.",
+        )
+    # Room is checked before the file is read, and the file goes to a temporary file, not into memory, so waiting for the run
+    # to finish costs no memory.
     await pipeline_runs.assert_capacity(ctx.workspace_id)
-    doc = await pipeline_runs.create_run(
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="audio", title=f"Upload: {title[:80]}", steps_total=4,
-    )
+    max_bytes = await _max_bytes_for(MediaKind.AUDIO, ctx.workspace_id)
+    data = await spool_limited(file, max_bytes, detail=f"Audio must be {max_bytes // (1024 * 1024)}MB or smaller.")
+    name, content_type = file.filename, file.content_type
+    try:
+        doc = await pipeline_runs.create_run(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="audio", title=f"Upload: {title[:80]}", steps_total=4,
+        )
+    except BaseException:
+        data.close()
+        raise
     inner = getattr(upload_audio_asset, "__wrapped__", upload_audio_asset)
 
     async def work(run: dict) -> dict:
-        member_ctx = await jobs.build_context(ctx.workspace_id, ctx.user_id)
-        upload = UploadFile(file=io.BytesIO(data), filename=name, headers=Headers({"content-type": content_type or ""}))
-        asset = await inner(request=None, title=title, brand_id=brand_id, file=upload, ctx=member_ctx, run=pipeline_runs.StepReporter(run["id"]))
-        return {
-            "data": {"asset_id": asset.id, "version_count": getattr(asset, "version_count", 1)},
-            "href": f"/dashboard/pipelines/audio?asset={asset.id}",
-        }
+        try:
+            member_ctx = await jobs.build_context(ctx.workspace_id, ctx.user_id)
+            upload = UploadFile(file=data, filename=name, headers=Headers({"content-type": content_type or ""}))
+            asset = await inner(request=None, title=title, brand_id=brand_id, file=upload, ctx=member_ctx, run=pipeline_runs.StepReporter(run["id"]))
+            return {
+                "data": {"asset_id": asset.id, "version_count": getattr(asset, "version_count", 1)},
+                "href": f"/dashboard/pipelines/audio?asset={asset.id}",
+            }
+        finally:
+            data.close()
 
     pipeline_runs.start(doc, work, interrupt_on_cancel=True)
     return pipeline_runs.public(doc)
@@ -1086,12 +1103,10 @@ async def upload_audio_asset(
             detail=f"Unsupported audio type '{file.content_type}'. Allowed: {', '.join(sorted(_AUDIO_MIME_TYPES))}.",
         )
 
-    contents = await file.read()
+    from app.shared.uploads import read_limited
+
     max_bytes = await _max_bytes_for(MediaKind.AUDIO, ctx.workspace_id)
-    if len(contents) > max_bytes:
-        raise HTTPException(
-            status_code=400, detail=f"Audio must be {max_bytes // (1024 * 1024)}MB or smaller."
-        )
+    contents = await read_limited(file, max_bytes, detail=f"Audio must be {max_bytes // (1024 * 1024)}MB or smaller.")
 
     return await _ingest_audio(
         contents=contents, content_type=content_type, filename=file.filename or "audio.mp3",

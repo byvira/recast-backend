@@ -30,94 +30,118 @@ from app.core.logger import logger
 # clear size-limit error — confirmed live against the deployed backend.
 MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
 
-# Exempt by prefix — this path is entirely upload/transform routes, nothing
-# JSON-only to keep protected here.
-_EXEMPT_PATH_PREFIXES = ("/api/v1/media",)
+_MB = 1024 * 1024
 
-# Exempt by exact route shape instead of a bare suffix for campaigns — only
-# the thumbnail upload (POST /api/v1/campaigns/{id}/thumbnail) is a real
-# UploadFile route (same stale-cap bug as /api/v1/media above, own 5MB
-# check via MAX_THUMBNAIL_BYTES). The rest of /api/v1/campaigns (create,
-# batch-generate, suggest-topics, ...) is JSON and should keep the 2MB
-# anti-abuse cap, so this doesn't use a blanket prefix exemption.
-#
-# A bare string-suffix match (`path.endswith("/thumbnail")`) was too broad:
-# any future unrelated route that happens to end in "/thumbnail" (a typo'd
-# route name, a settings field) would silently inherit this bypass — the
-# exact CORS-masking failure mode this middleware exists to prevent,
-# reopened by a naming coincidence. Matched by real shape instead: exactly
-# one path segment (the campaign id) between "/api/v1/campaigns/" and
-# "/thumbnail", nothing else.
+# Real file-upload routes get their own, larger ceiling instead of the JSON cap. The ceiling is the biggest file the route can
+# ever accept (the workspace schema maxima: image 25 MB, audio 100 MB, video 200 MB, support attachments and videos 10 and
+# 50 MB, thumbnails 5 MB, campaign source files 10 MB) plus room for the form around it. Each route still checks its own,
+# lower, per-workspace limit while it reads. Paths are matched exactly (or by the one shape below), never by suffix, so a
+# lookalike route does not inherit the bigger ceiling.
+_UPLOAD_PREFIX_LIMITS: tuple[tuple[str, int], ...] = (("/api/v1/media", 210 * _MB),)
+_UPLOAD_PATH_LIMITS: dict[str, int] = {
+    "/api/v1/image-assets/upload": 30 * _MB,
+    "/api/v1/audio-assets/upload": 110 * _MB,
+    "/api/v1/audio-assets/upload/background": 110 * _MB,
+    "/api/v1/thumbnails/upload": 6 * _MB,
+    "/api/v1/support/uploads": 55 * _MB,
+    "/api/v1/ops/support/uploads": 55 * _MB,
+    "/api/v1/campaigns/source-file": 11 * _MB,
+}
 _CAMPAIGN_THUMBNAIL_PATH_RE = re.compile(r"^/api/v1/campaigns/[^/]+/thumbnail$")
-
-# The other real file-upload routes, matched by exact path (never a suffix or
-# prefix, for the reason above). Each checks its own size downstream: images
-# and audio by the workspace's per-kind limit (app.api.v1.media._max_bytes_for),
-# support attachments by support_rules.MAX_ATTACHMENT_BYTES (10 MB). Left under
-# the 2MB JSON cap they were rejected here, before CORS, so the browser showed a
-# CORS error instead of a size message (seen live on image uploads).
-_UPLOAD_PATHS = frozenset({
-    "/api/v1/image-assets/upload",
-    "/api/v1/audio-assets/upload",
-    "/api/v1/thumbnails/upload",
-    "/api/v1/support/uploads",
-    "/api/v1/ops/support/uploads",
-})
+_CAMPAIGN_THUMBNAIL_LIMIT = 6 * _MB
 
 
-class MaxBodySizeMiddleware(BaseHTTPMiddleware):
-    """Reject requests whose declared Content-Length exceeds the cap.
+def body_limit_for(path: str) -> int:
+    """The largest request body accepted on `path`."""
+    if path in _UPLOAD_PATH_LIMITS:
+        return _UPLOAD_PATH_LIMITS[path]
+    for prefix, limit in _UPLOAD_PREFIX_LIMITS:
+        if path.startswith(prefix):
+            return limit
+    if _CAMPAIGN_THUMBNAIL_PATH_RE.match(path):
+        return _CAMPAIGN_THUMBNAIL_LIMIT
+    return MAX_REQUEST_BODY_BYTES
 
-    Starlette/FastAPI enforce no body size limit by default. This checks the
-    Content-Length header up front so an oversized request is rejected before
-    it's ever read into memory. Requests without Content-Length (chunked
-    transfer) pass through uninspected here — none of this app's clients use
-    chunked uploads today.
 
-    Paths under _EXEMPT_PATH_PREFIXES, or exactly matching
-    _CAMPAIGN_THUMBNAIL_PATH_RE, skip this check entirely — they have their
-    own real, kind-aware size validation downstream, and shouldn't be
-    capped by a limit sized for JSON API bodies.
+class _BodyTooLarge(Exception):
+    """Raised from inside the receive channel when a body with no declared length goes past its ceiling."""
+
+
+class MaxBodySizeMiddleware:
+    """Refuse a request body larger than its route's ceiling (see `body_limit_for`).
+
+    Two checks: the declared Content-Length is looked at first, so an oversize request is refused before anything is read; and
+    the bytes actually received are counted, so a body sent in chunks with no Content-Length (or one that lies about its
+    length) is stopped at the ceiling too instead of being read whole into memory.
+
+    This sits outside the CORS layer, so a rejection adds the CORS headers itself; otherwise the browser reports a CORS error
+    and hides the real reason ("request too large").
     """
 
     def __init__(self, app, allowed_origins: Iterable[str] = ()) -> None:
-        super().__init__(app)
-        # Origins the CORS layer allows. This middleware runs outside it, so a
-        # rejection here must add the CORS headers itself or the browser hides
-        # the real reason ("request too large") behind a CORS error.
+        self.app = app
         self._allowed_origins = frozenset(allowed_origins)
 
-    def _cors_headers(self, request: Request) -> dict[str, str]:
-        origin = request.headers.get("origin")
+    def _cors_headers(self, headers: dict[bytes, bytes]) -> list[tuple[bytes, bytes]]:
+        origin = headers.get(b"origin", b"").decode("latin-1")
         if origin and origin in self._allowed_origins:
-            return {
-                "Access-Control-Allow-Origin": origin,
-                "Access-Control-Allow-Credentials": "true",
-                "Vary": "Origin",
-            }
-        return {}
+            return [
+                (b"access-control-allow-origin", origin.encode("latin-1")),
+                (b"access-control-allow-credentials", b"true"),
+                (b"vary", b"Origin"),
+            ]
+        return []
 
-    async def dispatch(self, request: Request, call_next) -> Response:
-        path = request.url.path
-        if (
-            path.startswith(_EXEMPT_PATH_PREFIXES)
-            or path in _UPLOAD_PATHS
-            or _CAMPAIGN_THUMBNAIL_PATH_RE.match(path)
-        ):
-            return await call_next(request)
+    async def _reject(self, scope, send) -> None:
+        headers = dict(scope.get("headers") or [])
+        body = b'{"detail":"Request body too large."}'
+        await send({
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]
+            + self._cors_headers(headers),
+        })
+        await send({"type": "http.response.body", "body": body})
 
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        limit = body_limit_for(scope["path"])
+        headers = dict(scope.get("headers") or [])
+        declared = headers.get(b"content-length")
+        if declared is not None:
             try:
-                if int(content_length) > MAX_REQUEST_BODY_BYTES:
-                    return JSONResponse(
-                        status_code=413,
-                        content={"detail": "Request body too large."},
-                        headers=self._cors_headers(request),
-                    )
+                if int(declared) > limit:
+                    await self._reject(scope, send)
+                    return
             except ValueError:
                 pass
-        return await call_next(request)
+
+        received = 0
+        started = False
+
+        async def counted_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body") or b"")
+                if received > limit:
+                    raise _BodyTooLarge()
+            return message
+
+        async def tracked_send(message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counted_receive, tracked_send)
+        except _BodyTooLarge:
+            if started:
+                raise
+            await self._reject(scope, send)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

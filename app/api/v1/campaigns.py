@@ -573,9 +573,10 @@ async def upload_campaign_thumbnail(
             detail=f"Unsupported image type '{file.content_type}'. Use JPEG, PNG, or WebP.",
         )
 
-    contents = await file.read()
-    if len(contents) > MAX_THUMBNAIL_BYTES:
-        raise HTTPException(status_code=400, detail="Thumbnail must be 5MB or smaller.")
+    from app.shared.uploads import assert_image_size, read_limited
+
+    contents = await read_limited(file, MAX_THUMBNAIL_BYTES, detail="Thumbnail must be 5MB or smaller.")
+    assert_image_size(contents)  # also confirms the bytes really are a picture, whatever type the browser claimed
 
     try:
         thumbnail_url = await upload_file(contents, UploadContentType.THUMBNAIL, ctx.user_id)

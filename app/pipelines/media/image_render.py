@@ -214,6 +214,10 @@ class SlideTextContent(BaseModel):
     illustration_accent: bool = False
     # False draws the picture with no headline, no icon and no band over it.
     show_text: bool = True
+    # How large the headline is on the type scale (None keeps the standard size), and the rounding of the picture's inner
+    # shapes. Kept so "start again" and slides added later draw the same way.
+    type_ratio: Optional[float] = None
+    inner_radius: Optional[float] = None
 
 
 #: Steps up the type scale from body size to headline size. With the usual perfect-fourth ratio (1.333) this gives the same

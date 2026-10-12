@@ -11,7 +11,7 @@ Uses a tiny standalone app, so no database or login is needed.
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from app.core.middleware import MAX_REQUEST_BODY_BYTES, MaxBodySizeMiddleware
 
@@ -24,7 +24,8 @@ def _client(allowed=(ORIGIN,)) -> httpx.AsyncClient:
     app.add_middleware(MaxBodySizeMiddleware, allowed_origins=list(allowed))
 
     @app.post("/{full_path:path}")
-    async def echo(full_path: str) -> dict:
+    async def echo(full_path: str, request: Request) -> dict:
+        await request.body()  # a real route reads its body; the middleware counts what arrives
         return {"ok": True, "path": full_path}
 
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
@@ -92,3 +93,50 @@ async def test_a_rejection_without_an_origin_has_no_cors_headers():
         res = await _post(client, "/api/v1/text/generate", origin=None)
     assert res.status_code == 413
     assert "access-control-allow-origin" not in res.headers
+
+
+# ── Per-route ceilings and chunked bodies (added with the memory-safety pass) ─────────────────────────────────────────
+
+async def _chunks(total: int, piece: int = 256 * 1024):
+    sent = 0
+    while sent < total:
+        n = min(piece, total - sent)
+        sent += n
+        yield b"x" * n
+
+
+async def test_a_chunked_body_with_no_length_is_stopped_at_the_json_cap():
+    async with _client() as client:
+        res = await client.post("/api/v1/text/generate", content=_chunks(MAX_REQUEST_BODY_BYTES + 512 * 1024), headers={"origin": ORIGIN})
+    assert res.status_code == 413
+    assert res.headers["access-control-allow-origin"] == ORIGIN
+
+
+async def test_a_chunked_body_is_stopped_at_an_upload_routes_own_ceiling():
+    from app.core.middleware import body_limit_for
+
+    limit = body_limit_for("/api/v1/thumbnails/upload")
+    async with _client() as client:
+        ok = await client.post("/api/v1/thumbnails/upload", content=_chunks(limit - 256 * 1024))
+        big = await client.post("/api/v1/thumbnails/upload", content=_chunks(limit + 512 * 1024))
+    assert ok.status_code == 200
+    assert big.status_code == 413
+
+
+@pytest.mark.parametrize("path", [
+    "/api/v1/audio-assets/upload/background",
+    "/api/v1/campaigns/source-file",
+    "/api/v1/campaigns/abc123/thumbnail",
+])
+async def test_the_routes_that_were_wrongly_capped_accept_a_normal_file(path):
+    async with _client() as client:
+        res = await _post(client, path, size=3 * 1024 * 1024)
+    assert res.status_code == 200
+
+
+async def test_an_upload_route_still_has_a_ceiling():
+    from app.core.middleware import body_limit_for
+
+    async with _client() as client:
+        res = await _post(client, "/api/v1/campaigns/source-file", size=body_limit_for("/api/v1/campaigns/source-file") + 1)
+    assert res.status_code == 413

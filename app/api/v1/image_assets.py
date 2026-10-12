@@ -68,6 +68,7 @@ from app.pipelines.media.pdf_export import generate_carousel_pdf
 from app.pipelines.media.transform import build_export_url
 from app.pipelines.media.zip_export import build_slides_zip
 from app.shared.events import emit_event_background
+from app.shared.safe_fetch import get_limited
 from app.shared.llm import call_vision, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
 from app.shared.storage import ContentType as UploadContentType, upload_file
@@ -102,6 +103,10 @@ async def _get_brand_profile(brand_id: str, workspace_id: str) -> dict:
     return brand
 
 
+#: The biggest picture fetched back from storage (a logo, a mascot, a slide). Bigger answers are refused, not read.
+MAX_FETCHED_IMAGE_BYTES = 25 * 1024 * 1024
+
+
 async def _fetch_logo_bytes(logo_url: str) -> Optional[bytes]:
     """Real fetch of the brand's already-uploaded logo (Cloudinary URL from
     My Voices > Brand Assets) — never generated, never a placeholder. A
@@ -112,9 +117,9 @@ async def _fetch_logo_bytes(logo_url: str) -> Optional[bytes]:
         return None
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(logo_url)
+            resp, body = await get_limited(client, logo_url, MAX_FETCHED_IMAGE_BYTES)
             resp.raise_for_status()
-            return resp.content
+            return body
     except Exception as exc:  # noqa: BLE001
         logger.warning("Logo fetch failed for %s, skipping: %s", logo_url, exc)
         return None
@@ -718,12 +723,11 @@ async def upload_image_asset(
             detail=f"Unsupported image type '{file.content_type}'. Allowed: {', '.join(sorted(_IMAGE_MIME_TYPES))}.",
         )
 
-    contents = await file.read()
+    from app.shared.uploads import assert_image_size, read_limited
+
     max_bytes = await _max_bytes_for(MediaKind.IMAGE, ctx.workspace_id)
-    if len(contents) > max_bytes:
-        raise HTTPException(
-            status_code=400, detail=f"Image must be {max_bytes // (1024 * 1024)}MB or smaller."
-        )
+    contents = await read_limited(file, max_bytes, detail=f"Image must be {max_bytes // (1024 * 1024)}MB or smaller.")
+    assert_image_size(contents)
 
     from app.agents.content_guard.media import assert_image_ok
 
@@ -805,9 +809,9 @@ class ExportImageAssetRequest(BaseModel):
 
 async def _download_slide_bytes(url: str) -> bytes:
     async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.get(url)
+        resp, body = await get_limited(client, url, MAX_FETCHED_IMAGE_BYTES)
         resp.raise_for_status()
-        return resp.content
+        return body
 
 
 @router.post("/{image_asset_id}/export", response_model=MediaAsset, status_code=201)

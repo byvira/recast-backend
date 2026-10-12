@@ -11,6 +11,8 @@ from urllib.parse import urljoin
 
 import httpx
 
+from app.shared.safe_fetch import get_limited
+
 from app.pipelines.publish.generic.safe_url import UnsafeUrl, assert_safe_url
 
 MAX_BYTES = 512 * 1024
@@ -57,10 +59,11 @@ async def fetch_preview(url: str) -> LinkPreview:
     async with httpx.AsyncClient(timeout=10.0, follow_redirects=False, headers={"User-Agent": "Recast-LinkPreview/1.0"}) as client:
         for _ in range(MAX_REDIRECTS + 1):
             await assert_safe_url(current)
-            response = await client.get(current)
+            # Only the first part of the page is read, however large the page is.
+            response, body = await get_limited(client, current, MAX_BYTES, truncate=True)
             if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
                 current = urljoin(current, response.headers["location"])
                 continue
             response.raise_for_status()
-            return parse_preview(response.text[:MAX_BYTES], current)
+            return parse_preview(body.decode(response.encoding or "utf-8", errors="replace"), current)
     raise UnsafeUrl("That address redirects too many times.")

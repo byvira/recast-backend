@@ -107,16 +107,17 @@ async def upload_media(
             detail=f"Unsupported media type '{file.content_type}'. Allowed: {', '.join(allowed)}.",
         )
 
-    contents = await file.read()
+    from app.shared.uploads import assert_image_size, read_limited
+
     max_bytes = await _max_bytes_for(kind, ctx.workspace_id)
-    if len(contents) > max_bytes:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{kind.value.capitalize()} must be {max_bytes // (1024 * 1024)}MB or smaller.",
-        )
+    contents = await read_limited(
+        file, max_bytes, detail=f"{kind.value.capitalize()} must be {max_bytes // (1024 * 1024)}MB or smaller."
+    )
 
     if kind == MediaKind.IMAGE:
         from app.agents.content_guard.media import assert_image_ok
+
+        assert_image_size(contents)
 
         await assert_image_ok(contents, file.content_type or "image/jpeg", workspace_id=ctx.workspace_id, where="upload")
     spoken_words = None
