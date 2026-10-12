@@ -842,14 +842,17 @@ async def export_image_asset(
             raise HTTPException(status_code=502, detail="Couldn't fetch one of this asset's slides. Try again.") from exc
 
         if body.export_format == "pdf":
-            bundle = generate_carousel_pdf([enlarge(data, body.upscale) for data in slide_bytes])
+            # Heavy picture work runs in a thread so the server keeps answering other requests meanwhile.
+            bundle = await asyncio.to_thread(lambda: generate_carousel_pdf([enlarge(data, body.upscale) for data in slide_bytes]))
             mime_type = "application/pdf"
         else:
-            zip_entries = [
-                (f"slide_{i + 1}.png", render_export(data, export_format="png", upscale=body.upscale, dpi=body.dpi, optimize=body.optimize))
-                for i, data in enumerate(slide_bytes)
-            ]
-            bundle = build_slides_zip(zip_entries)
+            def build_zip() -> bytes:
+                return build_slides_zip([
+                    (f"slide_{i + 1}.png", render_export(data, export_format="png", upscale=body.upscale, dpi=body.dpi, optimize=body.optimize))
+                    for i, data in enumerate(slide_bytes)
+                ])
+
+            bundle = await asyncio.to_thread(build_zip)
             mime_type = "application/zip"
 
         url = await upload_file(bundle, UploadContentType.EXPORT, ctx.user_id)

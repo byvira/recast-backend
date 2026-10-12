@@ -8,18 +8,37 @@ from app.pipelines.media import background_removal
 from app.shared import storage
 
 
-def test_cutout_is_reused_for_the_same_picture(monkeypatch):
+def _png(size=(40, 30)):
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", size, (200, 10, 10)).save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_mask_is_reused_for_the_same_picture(monkeypatch):
+    from PIL import Image
+
     calls = []
     monkeypatch.setattr(background_removal, "_get_session", lambda: object())
+    monkeypatch.setattr(background_removal, "free_memory_mb", lambda: None)
     import rembg
 
-    monkeypatch.setattr(rembg, "remove", lambda data, session=None: calls.append(1) or b"png")
+    monkeypatch.setattr(rembg, "remove", lambda img, session=None, only_mask=False: calls.append(1) or Image.new("L", img.size, 255))
     background_removal._cache.clear()
-    assert background_removal.cut_out(b"picture") == b"png"
-    assert background_removal.cut_out(b"picture") == b"png"
+    first = background_removal.cut_out(_png())
+    assert first and background_removal.cut_out(_png())
     assert len(calls) == 1
-    background_removal.cut_out(b"another")
+    background_removal.cut_out(_png((50, 50)))
     assert len(calls) == 2
+
+
+def test_removal_is_declined_when_memory_is_short(monkeypatch):
+    background_removal._cache.clear()
+    monkeypatch.setattr(background_removal, "free_memory_mb", lambda: 120)
+    assert background_removal.cut_out(_png()) is None
 
 
 @pytest.mark.asyncio

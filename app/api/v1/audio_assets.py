@@ -1113,7 +1113,7 @@ async def _ingest_audio(
     media_mime = content_type
     if is_dsp_supported(content_type):
         try:
-            media_bytes, dsp_settings = enhance_audio(contents, content_type)
+            media_bytes, dsp_settings = await asyncio.to_thread(enhance_audio, contents, content_type)
             media_mime = "audio/wav"
         except Exception as exc:  # noqa: BLE001
             logger.warning("DSP enhancement failed, using original upload: %s", exc)

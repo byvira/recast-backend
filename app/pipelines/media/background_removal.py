@@ -18,10 +18,14 @@ logger = logging.getLogger(__name__)
 _MODEL = "u2netp"
 _session = None
 _lock = threading.Lock()
-#: The last few cut-outs, by picture. Applying a different look to the same picture reuses the cut-out instead of running the
-#: model again (the slow part).
-_CACHE_SIZE = 6
+#: The last few masks, by picture. A mask is small (the model works on a reduced copy), so keeping several costs almost nothing.
+#: Applying a different look to the same picture reuses it instead of running the model again.
+_CACHE_SIZE = 12
 _cache: "OrderedDict[str, bytes]" = OrderedDict()
+#: The model works on a copy no larger than this on its long side; the mask is then stretched to the picture's size.
+_WORK_SIDE = 640
+#: Free memory the model needs while it runs (measured: about 250 MB above what the server already holds).
+_NEEDED_FREE_MB = 300
 
 
 def available() -> bool:
@@ -33,35 +37,76 @@ def available() -> bool:
     return True
 
 
+def free_memory_mb() -> Optional[float]:
+    """Memory left before this server's limit, or None when the limit cannot be read (a laptop, not a container)."""
+    try:
+        with open("/sys/fs/cgroup/memory.max") as f:
+            raw = f.read().strip()
+        if raw == "max":
+            return None
+        with open("/sys/fs/cgroup/memory.current") as f:
+            used = int(f.read().strip())
+        return (int(raw) - used) / 1048576
+    except (OSError, ValueError):
+        return None
+
+
 def _get_session():
     global _session
     with _lock:
         if _session is None:
+            import onnxruntime as ort
             from rembg import new_session
 
-            _session = new_session(_MODEL)
+            # No pre-reserved memory pool and one thread: slower by a second or two, but a far smaller footprint.
+            options = ort.SessionOptions()
+            options.enable_cpu_mem_arena = False
+            options.enable_mem_pattern = False
+            options.intra_op_num_threads = 1
+            _session = new_session(_MODEL, sess_opts=options)
         return _session
 
 
-def cut_out(image_bytes: bytes) -> Optional[bytes]:
-    """The picture's subject with a transparent background, as PNG bytes, or None when it could not be done."""
+def _mask_for(image_bytes: bytes) -> Optional[bytes]:
     key = hashlib.sha1(image_bytes).hexdigest()
     with _lock:
         hit = _cache.get(key)
         if hit is not None:
             _cache.move_to_end(key)
             return hit
-    try:
-        from rembg import remove
+    free = free_memory_mb()
+    if free is not None and free < _NEEDED_FREE_MB:
+        logger.warning("Background removal skipped: only %.0f MB of memory free", free)
+        return None
+    from rembg import remove
 
-        out = remove(image_bytes, session=_get_session())
-        if not isinstance(out, bytes):
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        small = source.convert("RGB")
+    small.thumbnail((_WORK_SIDE, _WORK_SIDE))
+    mask = remove(small, session=_get_session(), only_mask=True)
+    out = io.BytesIO()
+    mask.convert("L").save(out, format="PNG")
+    data = out.getvalue()
+    with _lock:
+        _cache[key] = data
+        while len(_cache) > _CACHE_SIZE:
+            _cache.popitem(last=False)
+    return data
+
+
+def cut_out(image_bytes: bytes) -> Optional[bytes]:
+    """The picture's subject with a transparent background, as PNG bytes, or None when it could not be done."""
+    try:
+        mask_png = _mask_for(image_bytes)
+        if mask_png is None:
             return None
-        with _lock:
-            _cache[key] = out
-            while len(_cache) > _CACHE_SIZE:
-                _cache.popitem(last=False)
-        return out
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            subject = source.convert("RGBA")
+        with Image.open(io.BytesIO(mask_png)) as mask:
+            subject.putalpha(mask.convert("L").resize(subject.size, Image.LANCZOS))
+        out = io.BytesIO()
+        subject.save(out, format="PNG")
+        return out.getvalue()
     except Exception as exc:  # noqa: BLE001 - a failure is reported to the member, never raised from here
         logger.warning("Background removal failed: %s", exc)
         return None
