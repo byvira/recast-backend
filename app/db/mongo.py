@@ -300,6 +300,9 @@ async def create_indexes() -> None:
     await safety_events.create_index([("created_at", -1)])
     await safety_events.create_index("fingerprint", unique=True)
     await pipeline_runs.create_index("id", unique=True)
+    # One active run per start key (a double click, two tabs, the scheduler against a manual start). The key is removed when
+    # the run ends, so the same work can be started again.
+    await pipeline_runs.create_index("active_key", unique=True, partialFilterExpression={"active_key": {"$type": "string"}})
     await pipeline_runs.create_index([("workspace_id", 1), ("status", 1), ("created_at", -1)])
 
     # ── Remy/Odette scaffolding ──────────────────────────────────────────

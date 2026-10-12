@@ -52,7 +52,15 @@ async def _create_campaign(client, brand_id: str, **overrides) -> str:
     body.update(overrides)
     res = await client.post("/api/v1/campaigns/", json=body)
     assert res.status_code == 201, res.text
-    return res.json()["id"]
+    campaign_id = res.json()["id"]
+    if (body.get("cadence") or {}).get("frequency") != "manual":
+        # A new automatic campaign is first due a few minutes from now; these tests need it due already.
+        from datetime import timedelta
+
+        await get_campaigns_collection().update_one(
+            {"id": campaign_id}, {"$set": {"cadence.next_run_at": datetime.now(timezone.utc) - timedelta(minutes=1)}},
+        )
+    return campaign_id
 
 
 async def test_run_due_campaign_batches_generates_for_due_campaign(api_client, mock_llm):

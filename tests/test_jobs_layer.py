@@ -110,7 +110,10 @@ async def test_a_client_key_stops_a_retry_from_starting_a_second_job(signup_user
     test_actions("test.keyed", slow)
     a = await client.post("/api/v1/jobs", json={"action": "test.keyed", "payload": {"note": "1"}}, headers={**headers, "Idempotency-Key": "k-1"})
     b = await client.post("/api/v1/jobs", json={"action": "test.keyed", "payload": {"note": "2"}}, headers={**headers, "Idempotency-Key": "k-1"})
-    assert b.json()["id"] == a.json()["id"] and b.json()["already_running"] is True
+    # The same key with a different request is refused, not answered with the first request's run.
+    assert b.status_code == 409
+    again = await client.post("/api/v1/jobs", json={"action": "test.keyed", "payload": {"note": "1"}}, headers={**headers, "Idempotency-Key": "k-1"})
+    assert again.json()["id"] == a.json()["id"] and again.json()["already_running"] is True
     await _wait_for(client, a.json()["id"], ("done", "failed"), headers=headers)
 
 

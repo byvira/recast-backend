@@ -8,6 +8,7 @@ Odette flag) is decided by ``app.pipelines.publish.health`` — only after
 recovery fails twice in a row, never on the first failure.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -38,11 +39,29 @@ def _as_utc(value) -> Optional[datetime]:
     return None
 
 
+#: A sign-in that lasts no longer than this is "short-lived" and is renewed when half its life is gone.
+SHORT_LIVED = timedelta(hours=24)
+#: Short-lived sign-ins: wait this long before trying again after a failed or a quiet-escalated renewal.
+SHORT_FAILED_RETRY_AFTER = timedelta(minutes=10)
+SHORT_ESCALATED_RETRY_AFTER = timedelta(minutes=30)
+MIN_RENEW_MARGIN = timedelta(minutes=10)
+
+
 def _is_due(account: dict, now: datetime) -> bool:
     expires_at = _as_utc(account.get("expires_at"))
     if not expires_at or expires_at > now + RENEW_WITHIN:
         return False
     h = account.get("health") or {}
+    remaining = expires_at - now
+    renewed_at = _as_utc(account.get("last_refreshed_at"))
+    lifetime = (expires_at - renewed_at) if renewed_at and expires_at > renewed_at else None
+    if (lifetime is not None and lifetime <= SHORT_LIVED) or (lifetime is None and remaining <= timedelta(hours=2)):
+        # Renewed by its own lifetime, not by a fixed daily clock: a sign-in that lasts an hour is renewed before the hour is up.
+        if remaining > max(MIN_RENEW_MARGIN, (lifetime or timedelta(hours=1)) / 2):
+            return False
+        wait = SHORT_ESCALATED_RETRY_AFTER if h.get("escalated") else SHORT_FAILED_RETRY_AFTER if int(h.get("failures") or 0) > 0 else timedelta(0)
+        last_try = max((t for t in (_as_utc(h.get("checked_at")),) if t), default=None)
+        return not last_try or now - last_try >= wait
     if h.get("escalated"):
         wait = ESCALATED_RETRY_AFTER
     elif int(h.get("failures") or 0) > 0:
@@ -56,9 +75,28 @@ def _is_due(account: dict, now: datetime) -> bool:
 META_PLATFORMS = ("instagram", "facebook", "threads")
 
 
+_refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
 async def refresh_connection(account: dict) -> tuple[bool, str]:
     """Renew one connection's access token. Returns (ok, error). Also used by
-    the publish paths to recover from an expired token on the spot."""
+    the publish paths to recover from an expired token on the spot.
+
+    One renewal per connection at a time: some platforms (Bluesky) issue a new refresh token on every renewal and stop accepting
+    the old one, so two renewals using the same snapshot would make the second fail and wrongly mark the connection broken. The
+    second caller waits, then finds the connection already renewed and uses that."""
+    key = (account["workspace_id"], account["platform"])
+    lock = _refresh_locks.setdefault(key, asyncio.Lock())
+    seen = _as_utc(account.get("last_refreshed_at"))
+    async with lock:
+        current = await workspace_connections.find_one({"workspace_id": key[0], "platform": key[1]})
+        renewed = _as_utc((current or {}).get("last_refreshed_at"))
+        if current and renewed and (seen is None or renewed > seen) and (datetime.now(timezone.utc) - renewed) < timedelta(minutes=2):
+            return True, ""  # someone else renewed it a moment ago
+        return await _refresh_connection_locked(current or account)
+
+
+async def _refresh_connection_locked(account: dict) -> tuple[bool, str]:
     platform = account["platform"]
     try:
         publisher = get_publisher(platform)
@@ -106,7 +144,7 @@ async def recover_connection(workspace_id: str, platform: str) -> bool:
     return ok
 
 
-@distributed_job_lock("refresh_expiring_tokens", ttl_seconds=3600)
+@distributed_job_lock("refresh_expiring_tokens", ttl_seconds=600)
 async def refresh_expiring_tokens() -> None:
     """Hourly: renew every due connection (see ``_is_due``)."""
     now = datetime.now(timezone.utc)

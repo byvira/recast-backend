@@ -58,7 +58,9 @@ async def _max_bytes_for(kind: MediaKind, workspace_id: str) -> int:
             limits = MediaUploadLimits(**ws["media_upload_limits"])
     except Exception as exc:  # noqa: BLE001 — never block an upload over a settings-read failure
         logger.warning("Failed to read media_upload_limits for workspace %s, using defaults: %s", workspace_id, exc)
-    return getattr(limits, _LIMIT_FIELD[kind]) * 1024 * 1024
+    from app.shared.uploads import clamp_upload_limit
+
+    return clamp_upload_limit(getattr(limits, _LIMIT_FIELD[kind]) * 1024 * 1024)
 
 ALLOWED_MIME_TYPES: dict[MediaKind, set[str]] = {
     MediaKind.IMAGE: {"image/jpeg", "image/png", "image/webp"},
@@ -96,6 +98,15 @@ async def upload_media(
     file: UploadFile = File(...),
     ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> MediaAsset:
+    """Upload an image/video/audio file. A big file waits for any other big upload to finish, so a few at once cannot add up
+    past the server's memory."""
+    from app.shared.uploads import large_upload_slot
+
+    async with large_upload_slot(file):
+        return await _upload_media(request, file, ctx)
+
+
+async def _upload_media(request: Request, file: UploadFile, ctx: WorkspaceContext) -> MediaAsset:
     """Upload an image/video/audio file, returning a real MediaAsset to
     attach to a piece (GeneratedPiece.media) or reference directly in a
     publish request — never re-uploaded per platform after this."""

@@ -64,8 +64,9 @@ JOBS: list[Job] = [
     Job("campaign_batches", _no_ctx(run_due_campaign_batches)),
     # Paused work that was forgotten: a note after 1, 3 and 7 days.
     Job("run_reminders", _no_ctx(remind_about_paused_runs), minute=_every(10, offset=4)),
-    # Token renewal — hourly; it only renews connections that are due.
-    Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=frozenset({11})),
+    # Token renewal — every 15 minutes; it only renews connections that are due. Some sign-ins (YouTube, Bluesky) last an hour or two,
+    # so an hourly look let them lapse; long-lived ones are still renewed at most once a day.
+    Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=_every(15, offset=11)),
     # Latest post/account metrics — every 6h.
     Job("analytics_refresh", _no_ctx(refresh_analytics),
         minute=frozenset({17}), hour=frozenset({0, 6, 12, 18})),

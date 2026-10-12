@@ -782,6 +782,8 @@ async def update_piece_content(
                 "updated_at": now,
             },
             "$inc": {"version_count": 1},
+            # The member's new text is what goes out: a trimmed copy kept from an earlier failed send must not outrank it.
+            "$unset": {"publish_content_override": ""},
         },
         projection={"version_count": 1},
         return_document=ReturnDocument.AFTER,

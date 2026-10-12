@@ -67,6 +67,7 @@ import httpx
 from PIL import Image
 from pymongo import ReturnDocument
 
+from app.shared.heavy_work import run_heavy
 from app.shared.brand_name import brand_display_name
 from app.shared.llm_health.track import fallback_scope, note_fallback_failed, track
 from app.core.config import settings
@@ -760,7 +761,7 @@ async def generate_brand_image(
 
         logo_bytes = await _fetch_logo(((brand_profile.get("visual_identity") or {}).get("logo_url")) or "")
         if logo_bytes:
-            image_bytes = stamp_logo(image_bytes, logo_bytes)
+            image_bytes = await run_heavy(stamp_logo, image_bytes, logo_bytes)
 
         url = await upload_file(image_bytes, UploadContentType.IMAGE, user_id)
         asset = MediaAsset(

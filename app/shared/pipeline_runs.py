@@ -44,7 +44,7 @@ def _now() -> datetime:
 
 
 # What a job keeps for itself: the key that stops double starts and what it needs to start again after a restart.
-_INTERNAL_FIELDS = ("_id", "idem_key", "payload", "restartable", "restart_attempts", "action_secret")
+_INTERNAL_FIELDS = ("_id", "idem_key", "payload_digest", "active_key", "interrupted", "payload", "restartable", "restart_attempts", "action_secret")
 
 
 def public(doc: Optional[dict]) -> Optional[dict]:
@@ -78,10 +78,24 @@ async def assert_capacity(workspace_id: str) -> None:
         )
 
 
+class RunAlreadyActive(Exception):
+    """A run with the same start key is already going. `existing` is that run."""
+
+    def __init__(self, existing: Optional[dict]) -> None:
+        super().__init__("A run with this key is already active.")
+        self.existing = existing
+
+
 async def create_run(
     *, workspace_id: str, user_id: str, kind: str, title: str, ref: Optional[dict] = None,
     steps_total: Optional[int] = None, href: Optional[str] = None, extra: Optional[dict] = None,
+    active_key: Optional[str] = None,
 ) -> dict:
+    """Save a new run. With an active_key, only one active run may hold the key: a second start with the same key raises
+    RunAlreadyActive (a unique index decides, so two requests arriving together cannot both start). The workspace's limit on
+    running jobs is checked again after the row is saved, so requests arriving together cannot both take the last slot."""
+    from pymongo.errors import DuplicateKeyError
+
     now = _now()
     doc = {
         "id": str(uuid4()), "workspace_id": workspace_id, "created_by": user_id, "kind": kind, "title": title[:200],
@@ -91,8 +105,38 @@ async def create_run(
         "last_reminded_at": None, "reminders_sent": 0,
         **(extra or {}),
     }
-    await pipeline_runs.insert_one(dict(doc))
+    if active_key:
+        doc["active_key"] = active_key
+    try:
+        await pipeline_runs.insert_one(dict(doc))
+    except DuplicateKeyError:
+        raise RunAlreadyActive(await pipeline_runs.find_one({"active_key": active_key}, {"_id": 0}))
+    await _drop_if_over_capacity(doc)
     return doc
+
+
+async def _drop_if_over_capacity(doc: dict) -> None:
+    """Keep only the oldest MAX_ACTIVE_PER_WORKSPACE active runs. A run that is not among them (it lost a race for the last slot)
+    is removed again and the member is told to wait."""
+    from fastapi import HTTPException
+
+    async def kept() -> bool:
+        oldest = await pipeline_runs.find(
+            {"workspace_id": doc["workspace_id"], "status": {"$in": list(ACTIVE)}}, {"id": 1},
+        ).sort("_id", 1).limit(MAX_ACTIVE_PER_WORKSPACE).to_list(MAX_ACTIVE_PER_WORKSPACE)
+        return doc["id"] in {r["id"] for r in oldest}
+
+    # Looked at twice, a moment apart, so starts that arrived together (and whose rows were not all visible the first time) settle
+    # on the same oldest few.
+    if await kept():
+        await asyncio.sleep(0.05)
+        if await kept():
+            return
+    await pipeline_runs.delete_one({"id": doc["id"]})
+    raise HTTPException(
+        status_code=429,
+        detail=f"{MAX_ACTIVE_PER_WORKSPACE} jobs are already running. Wait for one to finish, or cancel one, then start this again.",
+    )
 
 
 async def get_run(run_id: str, workspace_id: str) -> Optional[dict]:
@@ -185,10 +229,15 @@ async def control(run_id: str, workspace_id: str, action: str) -> Optional[dict]
         # on "Cancelling" until a later sweep.
         await _finish({**doc, "id": run_id}, "cancelled")
         return await get_run(run_id, workspace_id)
+    if action in ("pause", "resume") and _has_no_live_worker(doc):
+        # Nothing is working on it any more, so there is nothing to pause or resume. Say so instead of leaving a request nobody reads.
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=409, detail="This is no longer running on the server, so it can't be paused or resumed. Start it again.")
     if action == "pause":
         await _set(run_id, pause_requested=True)
     elif action == "resume":
-        await _set(run_id, pause_requested=False, last_reminded_at=None)
+        await _set(run_id, pause_requested=False, last_reminded_at=None, reminders_sent=0)
     elif action == "cancel":
         # A paused run is cancelled at its next checkpoint, which comes within a moment.
         await _set(run_id, cancel_requested=True, pause_requested=False)
@@ -198,7 +247,16 @@ async def control(run_id: str, workspace_id: str, action: str) -> Optional[dict]
 
 
 async def _finish(doc: dict, status: str, *, result: Optional[dict] = None, error: Optional[str] = None) -> None:
-    await _set(doc["id"], status=status, result=result, error=error, finished_at=_now(), pause_requested=False)
+    now = _now()
+    # Only a run that is still active is closed, so a late finish can never overwrite an outcome already recorded. The start key is
+    # released so the same work can be started again.
+    closed = await pipeline_runs.update_one(
+        {"id": doc["id"], "status": {"$in": list(ACTIVE)}},
+        {"$set": {"status": status, "result": result, "error": error, "finished_at": now, "updated_at": now, "pause_requested": False},
+         "$unset": {"active_key": ""}},
+    )
+    if not closed.modified_count:
+        return
     if status == "cancelled" and doc.get("kind") == "campaign" and (doc.get("ref") or {}).get("campaign_id"):
         # A cancelled batch must not be started again by the next scheduler tick: the campaign waits for its next turn.
         try:
@@ -242,7 +300,7 @@ def _plain(exc: Exception) -> str:
     return str(detail or exc)[:300] or "The work could not be finished."
 
 
-async def _watch_cancel(run_id: str, task: "asyncio.Future", flag: list, max_seconds: Optional[float] = None) -> None:
+async def _watch_cancel(run_id: str, task: "asyncio.Future", flag: list, max_seconds: Optional[float] = None, *, honour_cancel: bool = True) -> None:
     """Stops `task` as soon as the member cancels the run, instead of waiting for it to reach a checkpoint. A run that goes on
     past `max_seconds` (a provider that never answers) is stopped too, so it cannot sit on "running" for ever."""
     began = asyncio.get_event_loop().time()
@@ -252,6 +310,8 @@ async def _watch_cancel(run_id: str, task: "asyncio.Future", flag: list, max_sec
             flag.append("timeout")
             task.cancel()
             return
+        if not honour_cancel:
+            continue
         try:
             doc = await pipeline_runs.find_one({"id": run_id}, {"cancel_requested": 1})
         except Exception as exc:  # noqa: BLE001 - one missed look is fine, the next one comes in a moment
@@ -264,11 +324,18 @@ async def _watch_cancel(run_id: str, task: "asyncio.Future", flag: list, max_sec
 
 
 class RunTimedOut(Exception):
-    """Raised inside `start` when an interruptible run went on longer than its limit."""
+    """Raised inside `start` when a run went on longer than its limit."""
+
+    def __init__(self, seconds: Optional[float] = None) -> None:
+        super().__init__("The run took too long.")
+        self.seconds = seconds
 
 
 #: How long a run that is one long call may take before it is stopped as failed.
 MAX_SECONDS_BY_KIND = {"image": 15 * 60, "audio": 40 * 60, "campaign": 15 * 60}
+#: The longest any other run may take (a batch of several days, a bulk action). A run past it is stopped and marked failed, so it
+#: cannot hold one of the workspace's slots for ever.
+MAX_SECONDS_DEFAULT = 60 * 60
 
 
 def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]], *, interrupt_on_cancel: bool = False) -> None:
@@ -280,7 +347,10 @@ def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]], *, inter
 
     async def beat() -> None:
         while True:
-            await _set(doc["id"], heartbeat_at=_now())
+            try:
+                await _set(doc["id"], heartbeat_at=_now())
+            except Exception as exc:  # noqa: BLE001 - one failed write must not make a live run look dead
+                logger.warning("Could not record a sign of life for run %s: %s", doc["id"], exc)
             await asyncio.sleep(HEARTBEAT_SECONDS)
 
     async def runner() -> None:
@@ -288,28 +358,27 @@ def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]], *, inter
         watcher = None
         try:
             await _set(doc["id"], status="running", started_at=_now(), heartbeat_at=_now())
-            if interrupt_on_cancel:
-                work_task = asyncio.ensure_future(work(doc))
-                cancelled_by_member: list = []
-                watcher = asyncio.create_task(_watch_cancel(doc["id"], work_task, cancelled_by_member, MAX_SECONDS_BY_KIND.get(doc.get("kind", ""))))
-                try:
-                    result = await work_task
-                except asyncio.CancelledError:
-                    if cancelled_by_member == ["cancel"]:
-                        raise RunCancelled()
-                    if cancelled_by_member == ["timeout"]:
-                        raise RunTimedOut()
-                    raise
-            else:
-                result = await work(doc)
+            # Every run is watched for a time limit; a run that honours a cancel at once (interrupt_on_cancel) is also stopped on request.
+            work_task = asyncio.ensure_future(work(doc))
+            cancelled_by_member: list = []
+            limit = MAX_SECONDS_BY_KIND.get(doc.get("kind", "")) if interrupt_on_cancel else MAX_SECONDS_DEFAULT
+            watcher = asyncio.create_task(_watch_cancel(doc["id"], work_task, cancelled_by_member, limit, honour_cancel=interrupt_on_cancel))
+            try:
+                result = await work_task
+            except asyncio.CancelledError:
+                if cancelled_by_member == ["cancel"]:
+                    raise RunCancelled()
+                if cancelled_by_member == ["timeout"]:
+                    raise RunTimedOut(limit)
+                raise
             if result and result.get("href"):
                 doc["href"] = result["href"]
                 await _set(doc["id"], href=doc["href"])
             await _finish(doc, "done", result=result)
         except RunCancelled:
             await _finish(doc, "cancelled")
-        except RunTimedOut:
-            minutes = int(MAX_SECONDS_BY_KIND.get(doc.get("kind", ""), 0) // 60) or 15
+        except RunTimedOut as timed_out:
+            minutes = int((timed_out.seconds or MAX_SECONDS_DEFAULT) // 60) or 1
             await _finish(doc, "failed", error=f"This took longer than {minutes} minutes, so it was stopped. Try again.")
         except Exception as exc:  # noqa: BLE001
             logger.error("Run %s (%s) failed: %s", doc["id"], doc["kind"], exc, exc_info=True)
@@ -329,28 +398,42 @@ async def fail_interrupted() -> int:
     now = _now()
     cutoff = now - STALE_AFTER
     # Runs the member cancelled whose server died before they stopped are closed as cancelled (not failed, and never restarted).
+    mine = list(_tasks)  # runs this server is working on are never taken for dead
     async for stale in pipeline_runs.find(
         {
-            "status": {"$in": list(ACTIVE)}, "cancel_requested": True,
-            "$and": [
+            "id": {"$nin": mine}, "status": {"$in": list(ACTIVE)}, "cancel_requested": True,
+            "$or": [{"interrupted": True}, {"$and": [
                 {"$or": [{"heartbeat_at": {"$lt": cutoff}}, {"heartbeat_at": {"$exists": False}}, {"heartbeat_at": None}]},
                 {"created_at": {"$lt": cutoff}},
-            ],
+            ]}],
         },
         {"_id": 0},
     ).limit(200):
         await _finish(stale, "cancelled")
     res = await pipeline_runs.update_many(
         {
-            "status": {"$in": list(ACTIVE)},
-            "$and": [
+            "id": {"$nin": mine}, "status": {"$in": list(ACTIVE)},
+            "$or": [{"interrupted": True}, {"$and": [
                 {"$or": [{"heartbeat_at": {"$lt": cutoff}}, {"heartbeat_at": {"$exists": False}}, {"heartbeat_at": None}]},
                 {"created_at": {"$lt": cutoff}},
-            ],
+            ]}],
         },
         {"$set": {
             "status": "failed", "error": "This was interrupted when the server restarted. Start it again.",
             "finished_at": now, "updated_at": now,
-        }},
+        }, "$unset": {"active_key": ""}},
     )
     return res.modified_count
+
+
+async def mark_interrupted_for_shutdown() -> int:
+    """Called as the server shuts down. The runs this server is working on are stopped and marked, so a restart finds them at
+    once: safe-to-repeat jobs are started again, the rest are closed as failed with a plain message. Without this they would
+    look alive for another two minutes."""
+    ids = list(_tasks)
+    if not ids:
+        return 0
+    await pipeline_runs.update_many({"id": {"$in": ids}, "status": {"$in": list(ACTIVE)}}, {"$set": {"interrupted": True}})
+    for task in list(_tasks.values()):
+        task.cancel()
+    return len(ids)

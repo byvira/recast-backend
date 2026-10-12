@@ -34,10 +34,11 @@ async def skip_to_next_cadence(campaign_id: str) -> None:
     """Moves an automatic campaign's next batch to its next turn (a day or a week from now). A manual campaign is left alone."""
     campaign = await get_campaigns_collection().find_one({"id": campaign_id}, {"cadence": 1})
     delta = _CADENCE_DELTA.get(((campaign or {}).get("cadence") or {}).get("frequency", "manual"))
+    # A cancelled batch starts fresh next time: the resume marker goes, the days it made stay.
+    changes: dict[str, Any] = {"$unset": {"cadence.batch_done_days": ""}}
     if delta:
-        await get_campaigns_collection().update_one(
-            {"id": campaign_id}, {"$set": {"cadence.next_run_at": datetime.now(timezone.utc) + delta}},
-        )
+        changes["$set"] = {"cadence.next_run_at": datetime.now(timezone.utc) + delta}
+    await get_campaigns_collection().update_one({"id": campaign_id}, changes)
 
 
 async def generate_campaign_batch(
@@ -63,7 +64,11 @@ async def generate_campaign_batch(
         workspace_id=workspace_id, user_id=user_id, text=campaign["topic_cluster"],
     )
 
-    days = campaign.get("cadence", {}).get("days_per_batch", 7)
+    days = max(1, min(30, int(campaign.get("cadence", {}).get("days_per_batch") or 7)))
+    # A batch that failed part-way saved its finished days; this attempt carries on from the first day that is missing.
+    start_day = int(campaign.get("cadence", {}).get("batch_done_days") or 0)
+    if start_day >= days:
+        start_day = 0
 
     try:
         platforms = [Platform(p) for p in campaign["platforms"]]
@@ -91,12 +96,24 @@ async def generate_campaign_batch(
     day_started = [time.monotonic()]
 
     async def persist_day(day_index: int, result: TextPipelineResult) -> None:
-        try:
-            _, piece_ids = await save_pipeline_result(result, campaign_id=campaign["id"])
-            new_piece_ids.extend(piece_ids)
-        except Exception as e:
-            logger.error("Failed to save campaign %s day %d: %s", campaign["id"], day_index + 1, e)
-            piece_ids = []
+        piece_ids: list[str] = []
+        for attempt in (1, 2):
+            try:
+                _, piece_ids = await save_pipeline_result(result, campaign_id=campaign["id"])
+                break
+            except Exception as e:  # noqa: BLE001
+                logger.error("Failed to save campaign %s day %d (try %d): %s", campaign["id"], day_index + 1, attempt, e)
+                if attempt == 2:
+                    # Not saved: stop here, so the run says so and the next attempt starts again from this day. Carrying on would
+                    # report a finished batch with a day missing.
+                    raise RuntimeError(f"Day {day_index + 1} could not be saved. Nothing after it was made. Try again.") from e
+        new_piece_ids.extend(piece_ids)
+        # The day is saved whole and recorded on the campaign at once, so a failure later leaves the campaign consistent and the
+        # next attempt resumes after it.
+        await get_campaigns_collection().update_one(
+            {"id": campaign["id"]},
+            {"$push": {"piece_ids": {"$each": piece_ids}}, "$set": {"cadence.batch_done_days": day_index + 1, "updated_at": datetime.now(timezone.utc)}},
+        )
         # Media is an extra on top of the saved text: it only runs when the campaign asked for it,
         # and a failure there is logged and never undoes the day's text.
         if piece_ids and campaign_media.wanted_kinds(campaign.get("media_plan")):
@@ -153,6 +170,7 @@ async def generate_campaign_batch(
                 tone=ToneOverride(tone_value),
                 on_day_complete=persist_day,
                 before_day=(lambda _i: pipeline_runs.checkpoint(run_id)) if run_id else None,
+                start_day=start_day,
             )
         except pipeline_runs.RunCancelled:
             cancelled = True
@@ -166,12 +184,15 @@ async def generate_campaign_batch(
         **({"status": CampaignStatus.ACTIVE.value} if campaign["status"] == CampaignStatus.DRAFT.value else {}),
     }
     delta = _CADENCE_DELTA.get(frequency)
-    if delta:
-        update["cadence.next_run_at"] = now + delta
+    # A campaign that is not daily or weekly has no next automatic run: leaving an old time in place would make the scheduler start
+    # it again every minute.
+    update["cadence.next_run_at"] = (now + delta) if delta else None
 
+    # The days were added to the campaign as they were saved. A finished batch clears the resume marker; a cancelled one keeps the
+    # days it made and also starts fresh next time.
     await get_campaigns_collection().update_one(
         {"id": campaign["id"]},
-        {"$push": {"piece_ids": {"$each": new_piece_ids}}, "$set": update},
+        {"$set": update, "$unset": {"cadence.batch_done_days": ""}},
     )
 
     if cancelled:

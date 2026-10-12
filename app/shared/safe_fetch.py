@@ -8,7 +8,7 @@ from __future__ import annotations
 import httpx
 
 
-class ResponseTooLarge(Exception):
+class ResponseTooLarge(httpx.HTTPError):
     """The answer is larger than the limit that was asked for."""
 
 

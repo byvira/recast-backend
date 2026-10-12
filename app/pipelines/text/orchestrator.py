@@ -40,6 +40,7 @@ from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
 from app.pipelines.media.default_image import pick_default_image
 from app.pipelines.media.pdf_export import generate_pieces_pdf
 from app.pipelines.publish.spine import platform_key, to_utc_datetime
+from app.shared.heavy_work import run_heavy
 from app.shared.storage import ContentType, upload_file
 from app.agents.text.event_emitter import EventEmitter
 from uuid import uuid4
@@ -484,7 +485,7 @@ async def run_text_pipeline(
     if metadata.get("pdf_export") and any(p.content.strip() for p in pieces):
         try:
             brand_name = brand_display_name(brand_profile)
-            pdf_bytes = generate_pieces_pdf(pieces, brand_name=brand_name)
+            pdf_bytes = await run_heavy(generate_pieces_pdf, pieces, brand_name=brand_name)
             pdf_export_url = await upload_file(
                 file=pdf_bytes,
                 content_type=ContentType.EXPORT,
@@ -934,6 +935,7 @@ async def run_batch_pipeline(
     on_day_complete: Optional[Callable[[int, TextPipelineResult], Awaitable[None]]] = None,
     before_day: Optional[Callable[[int], Awaitable[None]]] = None,
     tone=None,
+    start_day: int = 0,
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
@@ -967,6 +969,9 @@ async def run_batch_pipeline(
 
     before_day, when given, is awaited with the day's index before that day starts. A caller uses it to wait while a run
     is paused or to stop by raising.
+
+    start_day skips the days before it, so a batch that failed part-way can carry on from the first day that is missing instead of
+    making (and paying for) the days it already saved.
     """
     if emitter:
         await emitter.emit_log(f"Planning {days} days of content angles for this topic…")
@@ -1001,6 +1006,8 @@ async def run_batch_pipeline(
 
     results = []
     for i, angle in enumerate(angles[:days]):
+        if i < start_day:
+            continue
         if before_day:
             await before_day(i)
         logger.info("Batch day %d/%d — angle: %s", i + 1, days, angle[:60])

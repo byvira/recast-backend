@@ -33,6 +33,7 @@ from PIL import Image, ImageDraw, ImageFont
 from app.db.mongo import media_assets
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.pipelines.media.image_generation import generate_brand_image, last_failure_reason
+from app.shared.heavy_work import run_heavy
 from app.shared.storage import ContentType as UploadContentType, upload_file
 
 logger = logging.getLogger(__name__)
@@ -193,7 +194,7 @@ async def pick_default_image(
 
     try:
         hook_text = _hook_line(piece_content)
-        png_bytes = render_quote_card(hook_text, visual_identity)
+        png_bytes = await run_heavy(render_quote_card, hook_text, visual_identity)
         url = await upload_file(png_bytes, UploadContentType.IMAGE, user_id)
         asset = MediaAsset(
             id=str(uuid4()),

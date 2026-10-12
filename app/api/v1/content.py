@@ -19,6 +19,9 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.middleware import limiter
+from app.core import limits
+from app.shared.heavy_work import run_heavy
+from app.shared.safe_fetch import ResponseTooLarge, get_limited
 from app.shared.tier_policy import blocks_self_approval
 from app.core.notifications import send_templated_email
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -699,18 +702,24 @@ async def schedule_piece(
     if audience_send and not body.confirm_send:
         raise HTTPException(status_code=422, detail="Confirm that this should be sent to the whole audience at that time.")
 
-    updated = await update_piece_status(
-        piece_id=piece_id,
-        workspace_id=ctx.workspace_id,
-        publish_status="queued",
-        publish_scheduled_at=scheduled_at,
-        publish_target=slug,
+    # One conditional write: it only queues a post that is not published or being published at this instant, so a send that was
+    # claimed while the checks above ran is never overwritten back to queued (which would post it a second time). A new schedule
+    # also starts the retry count over and drops the trimmed text and recovery flag a past failure left behind.
+    queued = await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id, "publish_status": {"$nin": ["published", "publishing"]}},
+        {
+            "$set": {
+                "publish_status": "queued", "publish_scheduled_at": scheduled_at, "publish_target": slug,
+                "publish_attempts": 0, "updated_at": datetime.now(timezone.utc),
+            },
+            "$unset": {"schedule_note": "", "publish_content_override": "", "auth_recovery_tried": "", "last_error": "", "last_error_code": ""},
+        },
     )
+    if not queued.matched_count:
+        raise HTTPException(status_code=409, detail="This post is already published or being published.")
+    updated = await get_piece(piece_id, ctx.workspace_id)
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
-    await content_pieces.update_one(
-        {"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$unset": {"schedule_note": ""}},
-    )
     # The confirmation to send to a whole audience is kept with the schedule, so the worker never sends without it.
     await content_pieces.update_one(
         {"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$set": {"publish_send_confirmed": bool(audience_send)}},
@@ -804,19 +813,23 @@ async def cancel_schedule_piece(
             detail=f"Piece is '{piece.get('publish_status')}', not scheduled — nothing to cancel.",
         )
 
-    updated = await update_piece_status(
-        piece_id=piece_id,
-        workspace_id=ctx.workspace_id,
-        publish_status="pending",
-        publish_scheduled_at="",
-        publish_target="",
+    if piece.get("publish_status") == "publishing":
+        # The platform is being sent this post right now. Cancelling would not stop it, and the worker's retry could bring it back.
+        raise HTTPException(status_code=409, detail="This post is being sent right now, so it can't be cancelled. Check the platform in a minute.")
+    cancelled = await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id, "publish_status": {"$in": ["queued", "scheduled", "failed"]}},
+        {
+            "$set": {
+                "publish_status": "pending", "publish_scheduled_at": "", "publish_target": "",
+                "publish_attempts": 0, "updated_at": datetime.now(timezone.utc),
+            },
+            # The reviewed YouTube details, the trimmed text and the recovery flag all belonged to that schedule.
+            "$unset": {"publish_youtube_metadata": "", "publish_content_override": "", "auth_recovery_tried": ""},
+        },
     )
-    # The reviewed YouTube details belonged to that schedule.
-    await content_pieces.update_one(
-        {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
-        {"$unset": {"publish_youtube_metadata": ""}},
-    )
-    return updated
+    if not cancelled.matched_count:
+        raise HTTPException(status_code=409, detail="This post changed while you were cancelling it. Refresh and look again.")
+    return await get_piece(piece_id, ctx.workspace_id)
 
 
 @router.patch("/pieces/{piece_id}/archive")
@@ -1003,13 +1016,26 @@ def _pieces_to_csv(pieces: list[dict]) -> str:
 
 
 
-async def _fetch_media(url: str, client: httpx.AsyncClient, limit: asyncio.Semaphore) -> Optional[bytes]:
-    """One stored media file, or None if it cannot be downloaded (never raises)."""
+#: One export holds its files in memory while the ZIP is built, so it is limited in total and per file. Files over the limit are
+#: listed in the README (and stay in the Library), never silently dropped.
+EXPORT_MAX_FILE_BYTES = limits.EXPORT_ZIP_FILE_BYTES
+EXPORT_MAX_TOTAL_BYTES = limits.EXPORT_ZIP_TOTAL_BYTES
+
+
+async def _fetch_media(url: str, client: httpx.AsyncClient, limit: asyncio.Semaphore, budget: dict) -> Optional[bytes]:
+    """One stored media file, or None if it cannot be downloaded or would take the export past its size budget (never raises)."""
     async with limit:
+        remaining = budget["left"]
+        if remaining <= 0:
+            return None
         try:
-            res = await client.get(url)
+            res, body = await get_limited(client, url, min(EXPORT_MAX_FILE_BYTES, remaining))
             res.raise_for_status()
-            return res.content
+            budget["left"] -= len(body)
+            return body
+        except ResponseTooLarge:
+            logger.info("Library export: %s is too large to include", url)
+            return None
         except httpx.HTTPError as exc:
             logger.warning("Library export: couldn't download %s: %s", url, exc)
             return None
@@ -1041,15 +1067,16 @@ async def _build_library_zip(pieces: list[dict], workspace_id: str, brand_id: Op
     fetched: dict[str, bytes] = {}
     failed: list[str] = []
     if to_fetch:
-        limit = asyncio.Semaphore(6)
+        limit = asyncio.Semaphore(2)
+        budget = {"left": EXPORT_MAX_TOTAL_BYTES}
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            results = await asyncio.gather(*(_fetch_media(f.url, client, limit) for f in to_fetch))
+            results = await asyncio.gather(*(_fetch_media(f.url, client, limit, budget) for f in to_fetch))
         for f, data in zip(to_fetch, results):
             if data is None:
                 failed.append(f.label or f.name)
             else:
                 fetched[f.name] = data
-    return library_archive.build_zip(planned, fetched, failed, skipped)
+    return await run_heavy(library_archive.build_zip, planned, fetched, failed, skipped)
 
 
 _EXPORT_CONTENT_TYPES = {

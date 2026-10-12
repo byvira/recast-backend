@@ -194,6 +194,11 @@ async def _return_unapproved(piece: dict, message: str) -> None:
         logger.error("held-back activity row failed for %s: %s", piece["piece_id"], exc)
 
 
+#: How many scheduled posts are sent at the same time, and the longest one send may take.
+PUBLISH_CONCURRENCY = 3
+PUBLISH_POST_TIMEOUT_SECONDS = 12 * 60
+
+
 @distributed_job_lock("process_scheduled_posts", ttl_seconds=55)
 async def process_scheduled_posts() -> None:
     """
@@ -218,31 +223,41 @@ async def process_scheduled_posts() -> None:
     from app.agents.content_guard.config import ensure_fresh
 
     await ensure_fresh()  # the gate below reads the current content safety settings
-    for candidate in due:
+    gate = asyncio.Semaphore(PUBLISH_CONCURRENCY)
+
+    async def publish_one(candidate: dict) -> None:
         piece_id = candidate["piece_id"]
-        piece = await _claim_due_piece(piece_id, now)
-        if piece is None:
-            continue  # somebody else took it (or it was cancelled) first
-        try:
-            # Only approved posts go out; a flagged one only if a person already
-            # chose "publish anyway" when scheduling it.
-            await check_piece_before_send(piece, piece.get("workspace_id") or "")
-            block = check_gate(piece, honour_recorded_override=True)
-            if block:
-                await _return_unapproved(piece, block.message)
-                continue
-            await _publish_scheduled_piece(piece)
-        except Exception as e:
-            logger.error("Failed to publish scheduled piece %s: %s", piece_id, e)
-            # Never leave it on "publishing". Not retried: the platform may have posted.
-            await content_pieces.update_one(
-                {"piece_id": piece_id, "publish_status": "publishing"},
-                {"$set": {
-                    "publish_status": "failed",
-                    "last_error": "Publishing hit an unexpected problem. Check the platform before trying again.",
-                    "updated_at": datetime.now(timezone.utc),
-                }},
-            )
+        async with gate:
+            piece = await _claim_due_piece(piece_id, now)
+            if piece is None:
+                return  # somebody else took it (or it was cancelled) first
+            try:
+                # Only approved posts go out; a flagged one only if a person already
+                # chose "publish anyway" when scheduling it. A send that takes longer than the limit is stopped here, before the
+                # stuck-post sweep would fail it.
+                async def send() -> None:
+                    await check_piece_before_send(piece, piece.get("workspace_id") or "")
+                    block = check_gate(piece, honour_recorded_override=True)
+                    if block:
+                        await _return_unapproved(piece, block.message)
+                        return
+                    await _publish_scheduled_piece(piece)
+
+                await asyncio.wait_for(send(), timeout=PUBLISH_POST_TIMEOUT_SECONDS)
+            except Exception as e:
+                logger.error("Failed to publish scheduled piece %s: %s", piece_id, e)
+                # Never leave it on "publishing". Not retried: the platform may have posted.
+                await content_pieces.update_one(
+                    {"piece_id": piece_id, "publish_status": "publishing"},
+                    {"$set": {
+                        "publish_status": "failed",
+                        "last_error": "Publishing hit an unexpected problem. Check the platform before trying again.",
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                )
+
+    # A few posts go out at once, so one slow upload (a video, an Instagram carousel) does not hold back every other member's posts.
+    await asyncio.gather(*(publish_one(c) for c in due))
 
 
 async def _fail_before_publish(piece: dict, platform: str, user_id: str, workspace_id: str, message: str) -> None:
@@ -491,7 +506,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
         if error_type == ErrorType.AUTH and not piece.get("auth_recovery_tried"):
             recovered = await recover_connection(workspace_id, platform)
             await content_pieces.update_one(
-                {"piece_id": piece_id},
+                {"piece_id": piece_id, "publish_status": "publishing"},
                 {"$set": {
                     "auth_recovery_tried": True,
                     **({
@@ -534,7 +549,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             fixed, fixed_text = fix_content(platform, pub_request.content, result.error_message or "")
             if fixed:
                 await content_pieces.update_one(
-                    {"piece_id": piece_id},
+                    {"piece_id": piece_id, "publish_status": "publishing"},
                     {"$set": {
                         "publish_status": "queued",
                         "publish_scheduled_at": datetime.now(timezone.utc) + timedelta(seconds=15),
@@ -550,7 +565,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             delay = get_retry_delay(error_type, attempt) or 60
             next_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
             await content_pieces.update_one(
-                {"piece_id": piece_id},
+                {"piece_id": piece_id, "publish_status": "publishing"},
                 {
                     "$set": {
                         "publish_status": "queued",
@@ -584,7 +599,7 @@ async def _publish_scheduled_piece(piece: dict) -> None:
             return
 
         await content_pieces.update_one(
-            {"piece_id": piece_id},
+            {"piece_id": piece_id, "publish_status": "publishing"},
             {"$set": {
                 "publish_status": "failed",
                 "last_error":     result.error_message,

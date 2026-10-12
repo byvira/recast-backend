@@ -13,6 +13,8 @@ from typing import Optional
 
 from PIL import Image
 
+from app.core import limits
+
 logger = logging.getLogger(__name__)
 
 _MODEL = "u2netp"
@@ -25,7 +27,7 @@ _cache: "OrderedDict[str, bytes]" = OrderedDict()
 #: The model works on a copy no larger than this on its long side; the mask is then stretched to the picture's size.
 _WORK_SIDE = 640
 #: Free memory the model needs while it runs (measured: about 250 MB above what the server already holds).
-_NEEDED_FREE_MB = 300
+_NEEDED_FREE_MB = limits.BG_REMOVAL_FREE_MB
 
 
 def available() -> bool:

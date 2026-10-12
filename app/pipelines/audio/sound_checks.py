@@ -111,5 +111,5 @@ def _measure_blocking(audio_bytes: bytes) -> Optional[dict]:
 
 async def run_sound_checks(audio_bytes: bytes) -> list[dict]:
     """Measure a recording and judge it. Never raises: a recording that cannot be read gives three "unknown" checks."""
-    metrics = await asyncio.to_thread(_measure_blocking, audio_bytes)
+    metrics = await run_heavy(_measure_blocking, audio_bytes)
     return judge(metrics or {"loudness_lufs": None, "peak_db": None, "silences": []})

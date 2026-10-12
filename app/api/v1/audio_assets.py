@@ -24,6 +24,9 @@ from pydantic import BaseModel, Field
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
+from app.core import limits
+from app.shared.heavy_work import run_heavy
+from app.shared.safe_fetch import ResponseTooLarge, get_limited
 from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -1128,7 +1131,7 @@ async def _ingest_audio(
     media_mime = content_type
     if is_dsp_supported(content_type):
         try:
-            media_bytes, dsp_settings = await asyncio.to_thread(enhance_audio, contents, content_type)
+            media_bytes, dsp_settings = await run_heavy(enhance_audio, contents, content_type)
             media_mime = "audio/wav"
         except Exception as exc:  # noqa: BLE001
             logger.warning("DSP enhancement failed, using original upload: %s", exc)
@@ -2150,13 +2153,19 @@ async def import_audio_from_link(
 # current file and records the result as a new, restorable version.
 # ─────────────────────────────────────────────────────────────────────────────
 
+#: The biggest stored recording loaded back for processing (the upload ceiling is 50 MB; a rendered episode can be a little larger).
+MAX_STORED_AUDIO_BYTES = limits.STORED_AUDIO_MAX_BYTES
+
+
 async def _download_media_bytes(url: str) -> bytes:
     """The stored file behind a media asset (our own storage, not a user link)."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            res = await client.get(url)
+            res, body = await get_limited(client, url, MAX_STORED_AUDIO_BYTES)
             res.raise_for_status()
-            return res.content
+            return body
+    except ResponseTooLarge:
+        raise HTTPException(status_code=413, detail="This recording is too large to process here.")
     except httpx.HTTPError as exc:
         logger.warning("Couldn't load stored audio %s: %s", url, exc)
         raise HTTPException(status_code=502, detail="Couldn't load this recording. Try again.")
@@ -2255,7 +2264,7 @@ async def cleanup_audio_asset(
     transcript = [dict(w) for w in doc.get("transcript", [])]
     await run.step("Applying your changes")
     try:
-        cleaned, new_transcript, applied = await asyncio.to_thread(apply_cleanup, source_bytes, body, transcript)
+        cleaned, new_transcript, applied = await run_heavy(apply_cleanup, source_bytes, body, transcript)
     except CleanupError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     if body.remove_echo:
@@ -2521,7 +2530,7 @@ async def assemble_audio_asset(
 
     await run.step("Mixing the episode")
     try:
-        wav, mixed = await asyncio.to_thread(
+        wav, mixed = await run_heavy(
             assemble_episode, voice_bytes=voice_bytes, plan=body, intro_bytes=intro_bytes,
             outro_bytes=outro_bytes, sponsor_bytes=sponsor_bytes, bed_bytes=bed_bytes,
             transition_sfx_bytes=transition_bytes, signature_bytes=signature_bytes,
@@ -3216,7 +3225,7 @@ async def refine_soundbites(
         cleaned = clip_bytes
         if settings_kwargs:
             try:
-                cleaned, _, _ = await asyncio.to_thread(
+                cleaned, _, _ = await run_heavy(
                     apply_cleanup, clip_bytes, CleanupSettings(**settings_kwargs), clip_words or [],
                 )
             except CleanupError as exc:

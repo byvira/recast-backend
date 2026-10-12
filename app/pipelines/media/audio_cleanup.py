@@ -22,6 +22,8 @@ import noisereduce as nr
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
+
+from app.pipelines.media.audio_budget import check_fits
 from pydantic import BaseModel, Field
 from scipy.signal import butter, sosfilt, sosfiltfilt
 
@@ -58,6 +60,9 @@ class CleanupError(ValueError):
 
 
 def _decode(audio_bytes: bytes) -> tuple[np.ndarray, int]:
+    too_long = check_fits(audio_bytes)
+    if too_long:
+        raise CleanupError(too_long)
     try:
         data, sr = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=True)
     except Exception as exc:  # noqa: BLE001

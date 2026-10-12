@@ -123,7 +123,8 @@ if settings.SENTRY_DSN:
     )
     logger.info("Sentry initialised (environment=%s, release=%s)", settings.ENVIRONMENT, _release_sha())
 
-scheduler = AsyncIOScheduler()
+# A job that was due while the server was busy or restarting still runs, up to an hour late, and a pile of missed ticks runs once.
+scheduler = AsyncIOScheduler(job_defaults={"misfire_grace_time": 3600, "coalesce": True})
 
 
 @asynccontextmanager
@@ -200,6 +201,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     logger.info("Shutting down application...")
+    try:
+        from app.shared import pipeline_runs as _runs
+
+        stopped = await _runs.mark_interrupted_for_shutdown()
+        if stopped:
+            logger.info("%d background runs were marked so the next start finds them at once.", stopped)
+    except Exception as exc:  # noqa: BLE001 - shutting down must go on
+        logger.warning("Could not mark the running jobs before shutdown: %s", exc)
     scheduler.shutdown()
     await agent_workers.stop()
     try:

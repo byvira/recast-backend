@@ -79,11 +79,15 @@ async def _start_batch_run(campaign: dict) -> None:
         return  # its last batch is still going
     await pipeline_runs.assert_capacity(workspace_id)
     days = (campaign.get("cadence") or {}).get("days_per_batch", 7)
-    doc = await pipeline_runs.create_run(
-        workspace_id=workspace_id, user_id=campaign["created_by"], kind="campaign",
-        title=f"Campaign \"{campaign.get('name') or 'Untitled'}\"", ref={"campaign_id": campaign["id"]},
-        steps_total=days, href=f"/dashboard/pipelines/new?campaignId={campaign['id']}",
-    )
+    try:
+        doc = await pipeline_runs.create_run(
+            workspace_id=workspace_id, user_id=campaign["created_by"], kind="campaign",
+            title=f"Campaign \"{campaign.get('name') or 'Untitled'}\"", ref={"campaign_id": campaign["id"]},
+            steps_total=days, href=f"/dashboard/pipelines/new?campaignId={campaign['id']}",
+            active_key=f"campaign:{campaign['id']}",
+        )
+    except pipeline_runs.RunAlreadyActive:
+        return  # a batch for this campaign is already going
 
     async def work(run: dict) -> dict:
         try:

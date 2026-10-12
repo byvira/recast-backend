@@ -63,3 +63,44 @@ def test_pillow_is_set_to_refuse_decompression_bombs():
     from PIL import Image as PILImage
 
     assert PILImage.MAX_IMAGE_PIXELS == uploads.MAX_IMAGE_PIXELS
+
+
+def test_a_workspace_limit_is_never_above_the_hard_ceiling():
+    assert uploads.clamp_upload_limit(200 * 1024 * 1024) == uploads.HARD_UPLOAD_BYTES
+    assert uploads.clamp_upload_limit(5 * 1024 * 1024) == 5 * 1024 * 1024
+
+
+async def test_big_uploads_take_turns_and_small_ones_do_not_wait():
+    import asyncio
+
+    big = UploadFile(file=io.BytesIO(b""), filename="b", size=uploads.LARGE_UPLOAD_BYTES + 1)
+    small = UploadFile(file=io.BytesIO(b""), filename="s", size=100)
+    running = {"now": 0, "peak": 0}
+
+    async def job(f):
+        async with uploads.large_upload_slot(f):
+            running["now"] += 1
+            running["peak"] = max(running["peak"], running["now"])
+            await asyncio.sleep(0.05)
+            running["now"] -= 1
+
+    await asyncio.gather(job(big), job(big), job(big))
+    assert running["peak"] == 1
+    running["peak"] = 0
+    await asyncio.gather(job(small), job(small), job(small))
+    assert running["peak"] == 3
+
+
+async def test_a_link_that_trickles_is_stopped_by_the_total_deadline(monkeypatch):
+    import asyncio
+
+    from app.pipelines.audio import link_fetch
+
+    async def slow(url, max_bytes):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(link_fetch, "_get_bytes", slow)
+    monkeypatch.setattr(link_fetch, "TOTAL_FETCH_SECONDS", 0.05)
+    with pytest.raises(link_fetch.LinkFetchError) as err:
+        await link_fetch.fetch_audio("https://example.com/a.mp3", 1000)
+    assert "too long" in str(err.value)

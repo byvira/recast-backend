@@ -17,6 +17,8 @@ from typing import Optional
 
 import numpy as np
 import soundfile as sf
+
+from app.pipelines.media.audio_budget import check_fits
 from pydantic import BaseModel, Field
 from scipy.signal import butter, resample_poly, sosfilt
 
@@ -50,6 +52,9 @@ class AssemblePlan(BaseModel):
 
 
 def _decode(data: bytes, what: str) -> tuple[np.ndarray, int]:
+    too_long = check_fits(data)
+    if too_long:
+        raise AssembleError(too_long)
     try:
         audio, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
     except Exception as exc:  # noqa: BLE001

@@ -18,8 +18,8 @@ top of pipelines that already exist, not a new generation engine).
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 from uuid import uuid4
 
 import httpx
@@ -48,6 +48,20 @@ from app.pipelines.text.storage import KANBAN_STAGES, compute_kanban_stage
 from app.shared.storage import ContentType as UploadContentType, upload_file
 
 MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024  # 5MB
+def _check_platforms_by_day(platforms_by_day: Optional[list[list[str]]]) -> None:
+    """Refuse a day-by-day platform list with an unknown platform or an empty day now, not when the batch runs hours later."""
+    for number, day in enumerate(platforms_by_day or [], start=1):
+        if not day:
+            raise HTTPException(status_code=400, detail=f"Day {number} has no platform. Choose at least one for every day.")
+        for name in day:
+            try:
+                Platform(name)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid platform on day {number}: {name}")
+
+
+#: How long after it is made (or its frequency changes) an automatic campaign first becomes due.
+FIRST_RUN_GRACE = timedelta(minutes=10)
 ALLOWED_THUMBNAIL_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 router = APIRouter()
@@ -161,6 +175,7 @@ async def create_campaign(
         raise HTTPException(status_code=400, detail=f"Invalid platform: {e}")
     if not platforms:
         raise HTTPException(status_code=400, detail="At least one platform is required.")
+    _check_platforms_by_day(body.platforms_by_day)
 
     topic_cluster = body.topic_cluster
     source_url = None
@@ -185,7 +200,9 @@ async def create_campaign(
     # next_run_at is server-computed only — CampaignCadence is embedded
     # directly in the request body, so a client could otherwise set it
     # itself and jump the scheduler's queue.
-    cadence["next_run_at"] = now if cadence.get("frequency") != "manual" else None
+    # An automatic campaign is first due a few minutes from now, not at this instant: the page starts the first batch by hand
+    # straight after creating it, and a scheduler tick landing in between used to start it first and make that start fail.
+    cadence["next_run_at"] = now + FIRST_RUN_GRACE if cadence.get("frequency") != "manual" else None
     doc = {
         "id": str(uuid4()),
         "workspace_id": ctx.workspace_id,
@@ -274,6 +291,8 @@ async def update_campaign(
             update["platforms"] = [Platform(p).value for p in payload["platforms"]]
         except ValueError as e:
             raise HTTPException(status_code=400, detail=f"Invalid platform: {e}")
+    if payload.get("platforms_by_day") is not None:
+        _check_platforms_by_day(payload["platforms_by_day"])
     for field in ("name", "topic_cluster", "status", "cadence", "platforms_by_day"):
         if field in payload and payload[field] is not None:
             update[field] = payload[field]
@@ -292,7 +311,20 @@ async def update_campaign(
         # Same server-computed-only rule as create_campaign — recompute
         # next_run_at from the new frequency rather than trust the client.
         now = datetime.now(timezone.utc)
-        update["cadence"]["next_run_at"] = now if update["cadence"].get("frequency") != "manual" else None
+        current = await get_campaigns_collection().find_one(
+            {"id": campaign_id, "workspace_id": ctx.workspace_id}, {"cadence": 1},
+        )
+        before = (current or {}).get("cadence") or {}
+        after = update["cadence"]
+        # What the scheduler keeps (failures, last error, resume marker) is carried over, not wiped by an edit.
+        for kept in ("failures", "last_error", "batch_done_days"):
+            if kept in before and kept not in after:
+                after[kept] = before[kept]
+        if after.get("frequency") == before.get("frequency") and before.get("next_run_at") is not None:
+            # Renaming the campaign or changing a platform sends the cadence back unchanged: the next run keeps its time.
+            after["next_run_at"] = before["next_run_at"]
+        else:
+            after["next_run_at"] = now + FIRST_RUN_GRACE if after.get("frequency") != "manual" else None
 
     if not update:
         raise HTTPException(status_code=400, detail="Nothing to update.")
@@ -318,6 +350,12 @@ async def delete_campaign(
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Campaign not found.")
+    # A batch still being made for a deleted campaign would keep spending and write into it: it is stopped.
+    from app.shared import pipeline_runs
+
+    running = await pipeline_runs.active_run_for(ctx.workspace_id, "campaign", {"campaign_id": campaign_id})
+    if running:
+        await pipeline_runs.control(running["id"], ctx.workspace_id, "cancel")
 
 
 async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> dict[str, list[dict]]:
@@ -443,7 +481,8 @@ async def export_campaign(
 ) -> Response:
     """One ZIP: a .docx with every post's text (each naming where its media is) and a media/
     folder per post. Media that cannot be downloaded is marked in the document, not fatal."""
-    from app.api.v1.content import _fetch_media  # same downloader the library export uses
+    from app.api.v1.content import EXPORT_MAX_TOTAL_BYTES, _fetch_media  # same downloader and size budget the library export uses
+    from app.shared.heavy_work import run_heavy
 
     doc = await get_campaigns_collection().find_one(
         {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
@@ -459,12 +498,13 @@ async def export_campaign(
     items = [m for p in posts for m in p.media][:200]
     media_bytes: dict[str, bytes] = {}
     if items:
-        limit = asyncio.Semaphore(6)
+        limit = asyncio.Semaphore(2)
+        budget = {"left": EXPORT_MAX_TOTAL_BYTES}
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            results = await asyncio.gather(*(_fetch_media(m.url, client, limit) for m in items))
+            results = await asyncio.gather(*(_fetch_media(m.url, client, limit, budget) for m in items))
         media_bytes = {m.path: data for m, data in zip(items, results) if data is not None}
 
-    body = campaign_archive.build_zip(doc.get("name") or "Campaign", posts, media_bytes)
+    body = await run_heavy(campaign_archive.build_zip, doc.get("name") or "Campaign", posts, media_bytes)
     return Response(
         content=body,
         media_type="application/zip",
@@ -494,11 +534,15 @@ async def start_campaign_run(
 
     await pipeline_runs.assert_capacity(ctx.workspace_id)
     days = (campaign.get("cadence") or {}).get("days_per_batch", 7)
-    doc = await pipeline_runs.create_run(
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="campaign",
-        title=f"Campaign \"{campaign.get('name') or 'Untitled'}\"", ref={"campaign_id": campaign_id},
-        steps_total=days, href=f"/dashboard/pipelines/new?campaignId={campaign_id}",
-    )
+    try:
+        doc = await pipeline_runs.create_run(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="campaign",
+            title=f"Campaign \"{campaign.get('name') or 'Untitled'}\"", ref={"campaign_id": campaign_id},
+            steps_total=days, href=f"/dashboard/pipelines/new?campaignId={campaign_id}",
+            active_key=f"campaign:{campaign_id}",
+        )
+    except pipeline_runs.RunAlreadyActive:
+        raise HTTPException(status_code=409, detail="This campaign is already making a batch.")
 
     async def work(run: dict) -> dict:
         # A pause or cancel takes effect before the next day starts, so every day that is made is saved whole.
@@ -527,6 +571,14 @@ async def generate_next_batch(
     )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found.")
+
+    from app.shared import pipeline_runs
+
+    # This older route runs the batch inside the request. It must not run alongside a background batch for the same campaign, nor
+    # past the workspace's limit on running jobs.
+    if await pipeline_runs.active_run_for(ctx.workspace_id, "campaign", {"campaign_id": campaign_id}):
+        raise HTTPException(status_code=409, detail="This campaign is already making a batch.")
+    await pipeline_runs.assert_capacity(ctx.workspace_id)
 
     try:
         result = await generate_campaign_batch(campaign, workspace_id=ctx.workspace_id, user_id=ctx.user_id)

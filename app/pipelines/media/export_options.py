@@ -9,11 +9,15 @@ from typing import Literal
 
 from PIL import Image
 
+from app.core import limits
+
 UpscaleFactor = Literal[1, 2, 4]
 Dpi = Literal[72, 150, 300]
 
-#: A picture is never made larger than this on its longest side, so a large source at 4x cannot use up the server's memory.
+#: A picture is never made larger than this on its longest side, nor than this many pixels in all. A 3000 x 3000 cover at 4x would be
+#: 144 million pixels (576 MB once decoded), so the size limit is on the total, not only the longest side.
 MAX_SIDE_PX = 8000
+MAX_PIXELS = limits.EXPORT_MAX_PIXELS
 
 _FORMATS = {"png": "PNG", "webp": "WEBP", "jpg": "JPEG", "jpeg": "JPEG"}
 _MIME = {"png": "image/png", "webp": "image/webp", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
@@ -28,18 +32,25 @@ def is_default_export(upscale: int, dpi: int, optimize: bool) -> bool:
     return upscale == 1 and dpi == 300 and optimize
 
 
+def _enlarged_image(data: bytes, upscale: int) -> Image.Image:
+    """The picture as a decoded image at up to `upscale` times its size, limited by MAX_SIDE_PX and MAX_PIXELS."""
+    img = Image.open(io.BytesIO(data))
+    img.load()
+    if upscale <= 1:
+        return img
+    width, height = img.size
+    factor = min(upscale, MAX_SIDE_PX / max(width, height), (MAX_PIXELS / (width * height)) ** 0.5)
+    if factor <= 1:
+        return img
+    img = img.convert("RGBA") if img.mode in ("P", "LA") else img
+    return img.resize((max(1, int(width * factor)), max(1, int(height * factor))), Image.LANCZOS)  # rounded down so the pixel cap holds
+
+
 def enlarge(data: bytes, upscale: int) -> bytes:
     """The same picture at `upscale` times the size, as PNG bytes. 1x returns it untouched."""
     if upscale <= 1:
         return data
-    img = Image.open(io.BytesIO(data))
-    img.load()
-    width, height = img.size
-    factor = min(upscale, MAX_SIDE_PX / max(width, height))
-    if factor <= 1:
-        return data
-    img = img.convert("RGBA") if img.mode in ("P", "LA") else img
-    img = img.resize((round(width * factor), round(height * factor)), Image.LANCZOS)
+    img = _enlarged_image(data, upscale)
     out = io.BytesIO()
     img.save(out, format="PNG")
     return out.getvalue()
@@ -49,8 +60,7 @@ def render_export(data: bytes, *, export_format: str, upscale: int = 1, dpi: int
     """The picture saved as `export_format` with the chosen size, resolution and file-size setting."""
     if export_format not in _FORMATS:
         raise ValueError(f"Cannot export as {export_format!r}.")
-    img = Image.open(io.BytesIO(enlarge(data, upscale)))
-    img.load()
+    img = _enlarged_image(data, upscale)  # decoded once; no PNG round trip in between
     fmt = _FORMATS[export_format]
     out = io.BytesIO()
     if fmt == "JPEG":

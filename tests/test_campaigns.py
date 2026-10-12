@@ -436,6 +436,16 @@ async def test_generate_next_batch_tags_pieces_with_batch_day_index_and_angle(ap
 # Thumbnail upload — real Cloudinary call mocked out, never hits the network
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _tiny_png() -> bytes:
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(out, format="PNG")
+    return out.getvalue()
+
+
 async def test_upload_campaign_thumbnail(api_client, monkeypatch):
     await signup_new_user(api_client)
     brand_id = await _create_brand(api_client)
@@ -451,7 +461,7 @@ async def test_upload_campaign_thumbnail(api_client, monkeypatch):
 
     res = await api_client.post(
         f"/api/v1/campaigns/{campaign_id}/thumbnail",
-        files={"file": ("thumb.png", b"\x89PNG\r\n\x1a\n fake bytes", "image/png")},
+        files={"file": ("thumb.png", _tiny_png(), "image/png")},
     )
     assert res.status_code == 200, res.text
     assert res.json()["thumbnail_url"] == "https://res.cloudinary.com/demo/image/upload/v1/recast/thumbnails/fake.png"
@@ -553,7 +563,7 @@ async def test_campaign_export_is_a_zip_with_the_docx_and_each_posts_media(api_c
     # a piece from another campaign must not appear
     await content_pieces.insert_one({**base, "id": sfx + "-2", "piece_id": sfx + "-2", "campaign_id": "other", "content": "Not mine"})
 
-    async def fake_fetch(url, client, limit):
+    async def fake_fetch(url, client, limit, budget=None):
         return b"PNG"
 
     monkeypatch.setattr(content_module, "_fetch_media", fake_fetch)

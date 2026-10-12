@@ -134,9 +134,17 @@ def _normalize_mime(header_mime: str, url: str) -> Optional[str]:
     return None
 
 
+#: The longest a link download may take in all.
+TOTAL_FETCH_SECONDS = 120
+
+
 async def fetch_audio(url: str, max_bytes: int) -> tuple[bytes, str, str]:
     """Returns (bytes, mime_type, filename) of a direct audio file link."""
-    body, headers, final_url = await _get_bytes(url.strip(), max_bytes)
+    try:
+        # One deadline for the whole download: a host that sends a byte at a time never trips the per-read timeout.
+        body, headers, final_url = await asyncio.wait_for(_get_bytes(url.strip(), max_bytes), timeout=TOTAL_FETCH_SECONDS)
+    except asyncio.TimeoutError:
+        raise LinkFetchError("That link took too long to download.")
     mime = _normalize_mime(headers.get("content-type", ""), final_url)
     if not mime:
         raise LinkFetchError("That link isn't an audio file. It should end in .mp3, .wav or .m4a.")

@@ -66,8 +66,9 @@ class CampaignCadence(BaseModel):
     requests) — it's what app.workers.campaign_scheduler polls to find
     campaigns due for automatic regeneration."""
 
-    frequency: str = "manual"  # "manual" | "daily" | "weekly"
-    days_per_batch: int = 7  # passed straight to run_batch_pipeline's `days`
+    # Only these three: any other word would never move the next run on, and the scheduler would start the campaign again every minute.
+    frequency: Literal["manual", "daily", "weekly"] = "manual"
+    days_per_batch: int = Field(7, ge=1, le=30)  # passed straight to run_batch_pipeline's `days`
     next_run_at: Optional[datetime] = None
 
 

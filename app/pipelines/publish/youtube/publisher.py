@@ -33,9 +33,14 @@ from typing import Optional
 
 import httpx
 
+from app.core import limits
+from app.shared.safe_fetch import ResponseTooLarge, get_limited
 from app.db.mongo import brand_profiles, media_assets
 from app.models.media import MediaTranscriptWord
 from app.pipelines.media.captions import build_cues, language_code, to_srt
+
+#: The largest video fetched into memory to be sent on (the member upload ceiling is 50 MB).
+MAX_VIDEO_BYTES = limits.PUBLISH_VIDEO_MAX_BYTES
 from app.pipelines.publish.base import (
     PlatformPublisher,
     PublishRequest,
@@ -280,11 +285,11 @@ class YouTubePublisher(PlatformPublisher):
 
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
-                video_resp = await client.get(asset.url)
+                video_resp, video_bytes = await get_limited(client, asset.url, MAX_VIDEO_BYTES)
                 video_resp.raise_for_status()
 
                 video_id = await self._upload_video(
-                    client, access_token, video_resp.content,
+                    client, access_token, video_bytes,
                     asset.mime_type or "video/*", metadata, request.options,
                 )
 
@@ -312,6 +317,12 @@ class YouTubePublisher(PlatformPublisher):
                     media_dropped_reason=caption_note,
                 )
 
+        except ResponseTooLarge:
+            return PublishResult(
+                success=False, platform="youtube", piece_id=request.piece_id,
+                error_type="FIXABLE", error_code=413,
+                error_message=f"This video is larger than {MAX_VIDEO_BYTES // (1024 * 1024)} MB, which is the most that can be sent from here. Use a smaller file.",
+            )
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             try:

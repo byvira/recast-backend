@@ -213,6 +213,9 @@ async def list_accounts(
     }
     for a in accounts:
         a["connected_by_name"] = connectors.get(a.get("connected_by", ""), {}).get("name", "")
+        # Whether the automatic renewal has given up: the screen warns about this, not about an expiry date that is renewed on time.
+        health = a.get("health") or {}
+        a["needs_reconnect"] = bool(health.get("escalated")) or int(health.get("failures") or 0) >= 2
         a["profile_url"] = normalize_profile_url(a.get("profile_url"))
         if a["platform"] == "instagram" and not a["profile_url"]:
             await _heal_instagram(ctx.workspace_id, a)
@@ -738,13 +741,16 @@ async def connect_platform(
 async def oauth_callback(
     request: Request,
     platform: str,
-    code: str = Query(...),
-    state: str = Query(...),
+    code: str = Query(None),
+    state: str = Query(None),
     error: str = Query(None),
 ) -> HTMLResponse:
-    """Handle OAuth callback from platform."""
+    """Handle OAuth callback from platform. A denial comes back with no code, so code and state are optional here and the denial is
+    answered with the usual popup message instead of a raw validation error."""
     if error:
         return _oauth_popup_response(False, f"OAuth denied: {error}")
+    if not code or not state:
+        return _oauth_popup_response(False, "The sign-in didn't finish. Please try connecting again.")
 
     state_data = await _consume_state(state)
     if not state_data:

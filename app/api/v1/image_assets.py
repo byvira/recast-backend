@@ -68,6 +68,8 @@ from app.pipelines.media.pdf_export import generate_carousel_pdf
 from app.pipelines.media.transform import build_export_url
 from app.pipelines.media.zip_export import build_slides_zip
 from app.shared.events import emit_event_background
+from app.core import limits
+from app.shared.heavy_work import run_heavy
 from app.shared.safe_fetch import get_limited
 from app.shared.llm import call_vision, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
@@ -80,11 +82,17 @@ router = APIRouter()
 _DESCRIBE_IMAGE_PROMPT = load_prompt("media/image_describe")
 
 
+#: Pictures larger than this are not sent to the vision service for a description.
+MAX_DESCRIBE_BYTES = limits.DESCRIBE_IMAGE_MAX_BYTES
+
+
 async def _describe_uploaded_image(contents: bytes, mime_type: str, workspace_id: str) -> Optional[str]:
     """Best-effort description of an uploaded image (its alt text, and the
     only "text" an uploaded image has for Remy/Odette to read). Returns None
     — never raises, never blocks the upload — if the vision provider is
     unavailable, slow, or the workspace's AI budget is used up."""
+    if len(contents) > MAX_DESCRIBE_BYTES:
+        return None  # a large file is not sent to the vision service; the picture still uploads, without a description
     try:
         await assert_ai_budget_available(workspace_id)
         set_usage_workspace(workspace_id)
@@ -104,7 +112,7 @@ async def _get_brand_profile(brand_id: str, workspace_id: str) -> dict:
 
 
 #: The biggest picture fetched back from storage (a logo, a mascot, a slide). Bigger answers are refused, not read.
-MAX_FETCHED_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_FETCHED_IMAGE_BYTES = limits.FETCHED_IMAGE_MAX_BYTES
 
 
 async def _fetch_logo_bytes(logo_url: str) -> Optional[bytes]:
@@ -196,14 +204,14 @@ async def _draw_and_store(
         # original background back.
         from app.pipelines.media import background_removal
 
-        cutout = await asyncio.to_thread(background_removal.cut_out, background_bytes)
+        cutout = await run_heavy(background_removal.cut_out, background_bytes)
         if not cutout:
             raise HTTPException(
                 status_code=503,
                 detail="Removing the background isn't available right now. Switch it off to make the picture, or try again in a moment.",
             )
         background_bytes = background_removal.on_colour(cutout, brand_tokens.primary_hex)
-    png = await asyncio.to_thread(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets, effects=effects)
+    png = await run_heavy(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets, effects=effects)
     note = _fallback_note(background_bytes)
     # Tamil and Hindi need a text-shaping engine to draw every combination correctly. If this server does not have one, say so on
     # the picture instead of letting a wrongly ordered letter go unnoticed.
@@ -643,7 +651,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                         icon_name=body.icon_name, illustration_accent=body.illustration_accent, show_text=body.show_text,
             show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
                     ),
-                    show_logo=use_logo, effects=body.effects.model_dump(),
+                    show_logo=use_logo, show_mascot=body.show_mascot, avoid=body.negative_prompt, effects=body.effects.model_dump(),
                 )
             except Exception as exc:  # noqa: BLE001 - keep what was made
                 logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
@@ -847,7 +855,7 @@ async def export_image_asset(
 
         if body.export_format == "pdf":
             # Heavy picture work runs in a thread so the server keeps answering other requests meanwhile.
-            bundle = await asyncio.to_thread(lambda: generate_carousel_pdf([enlarge(data, body.upscale) for data in slide_bytes]))
+            bundle = await run_heavy(lambda: generate_carousel_pdf([enlarge(data, body.upscale) for data in slide_bytes]))
             mime_type = "application/pdf"
         else:
             def build_zip() -> bytes:
@@ -856,7 +864,7 @@ async def export_image_asset(
                     for i, data in enumerate(slide_bytes)
                 ])
 
-            bundle = await asyncio.to_thread(build_zip)
+            bundle = await run_heavy(build_zip)
             mime_type = "application/zip"
 
         url = await upload_file(bundle, UploadContentType.EXPORT, ctx.user_id)
@@ -885,7 +893,7 @@ async def export_image_asset(
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="Couldn't fetch this picture. Try again.") from exc
         try:
-            data = render_export(source_bytes, export_format=body.export_format, upscale=body.upscale, dpi=body.dpi, optimize=body.optimize)
+            data = await run_heavy(render_export, source_bytes, export_format=body.export_format, upscale=body.upscale, dpi=body.dpi, optimize=body.optimize)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         custom_url = await upload_file(data, UploadContentType.EXPORT, ctx.user_id)
@@ -964,6 +972,7 @@ async def add_slide(
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
+    await assert_generation_allowed(ctx.workspace_id)  # the same owner switch the first picture respects
     _check_icon(body.icon_name)
 
     if body.active_layout not in SUPPORTED_LAYOUTS:

@@ -119,8 +119,11 @@ def is_temporary(exc: BaseException) -> bool:
 def idempotency_key(workspace_id: str, user_id: str, action: str, payload: dict, client_key: Optional[str] = None) -> str:
     if client_key:
         return f"{workspace_id}:{user_id}:{action}:{client_key.strip()[:120]}"
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:32]
-    return f"{workspace_id}:{user_id}:{action}:{digest}"
+    return f"{workspace_id}:{user_id}:{action}:{payload_digest(payload)}"
+
+
+def payload_digest(payload: dict) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:32]
 
 
 def make_result(value: Any) -> dict:
@@ -204,6 +207,14 @@ def _worker(action: JobAction, payload: Any):
     return work
 
 
+def _same_request_or_refuse(existing: dict, digest: str) -> tuple[dict, bool]:
+    """A repeat of a request that is already running answers with that run. The same Idempotency-Key sent with a different request
+    is a mistake on the caller's side and is refused, not answered with the first request's run."""
+    if existing.get("payload_digest") not in (None, digest):
+        raise HTTPException(status_code=409, detail="That key was already used for a different request. Use a new key.")
+    return runs.public(existing), True
+
+
 async def submit(
     *, action_name: str, payload: dict, ctx: WorkspaceContext, client_key: Optional[str] = None,
 ) -> tuple[dict, bool]:
@@ -222,17 +233,25 @@ async def submit(
         raise HTTPException(status_code=422, detail=json.loads(exc.json(include_url=False, include_context=False)))
 
     key = idempotency_key(ctx.workspace_id, ctx.user_id, action_name, parsed.model_dump(mode="json"), client_key)
+    digest = payload_digest(parsed.model_dump(mode="json"))
     existing = await pipeline_runs.find_one({"idem_key": key, "status": {"$in": list(runs.ACTIVE)}}, {"_id": 0})
     if existing:
-        return runs.public(existing), True
+        return _same_request_or_refuse(existing, digest)
 
     await runs.assert_capacity(ctx.workspace_id)
-    doc = await runs.create_run(
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind=action.kind, title=action.title(parsed),
-        steps_total=action.steps(parsed), href=action.href,
-        extra={"action": action_name, "idem_key": key, "restartable": action.restartable, "restart_attempts": 0,
-               **({"payload": parsed.model_dump(mode="json")} if action.restartable else {})},
-    )
+    try:
+        # The key is also the run's start key: a unique index lets only one active run hold it, so two requests arriving together
+        # cannot both start.
+        doc = await runs.create_run(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind=action.kind, title=action.title(parsed),
+            steps_total=action.steps(parsed), href=action.href, active_key=f"job:{key}",
+            extra={"action": action_name, "idem_key": key, "payload_digest": digest, "restartable": action.restartable, "restart_attempts": 0,
+                   **({"payload": parsed.model_dump(mode="json")} if action.restartable else {})},
+        )
+    except runs.RunAlreadyActive as already:
+        if already.existing:
+            return _same_request_or_refuse(already.existing, digest)
+        raise HTTPException(status_code=409, detail="This is already being started. Give it a moment.")
     runs.start(doc, _worker(action, parsed), interrupt_on_cancel=_interrupts(action))
     return runs.public(doc), False
 
@@ -248,10 +267,11 @@ async def resume_interrupted() -> int:
         "status": {"$in": list(runs.ACTIVE)}, "restartable": True, "restart_attempts": {"$lt": MAX_RESTARTS},
         # Work the member cancelled is never started again, even if its server died before it could stop.
         "cancel_requested": {"$ne": True},
-        "$and": [
+        "id": {"$nin": list(runs._tasks)},
+        "$or": [{"interrupted": True}, {"$and": [
             {"$or": [{"heartbeat_at": {"$lt": cutoff}}, {"heartbeat_at": {"$exists": False}}, {"heartbeat_at": None}]},
             {"created_at": {"$lt": cutoff}},
-        ],
+        ]}],
     }, {"_id": 0}).limit(50):
         action = ACTIONS.get(stale.get("action", ""))
         if action is None or not stale.get("payload"):
@@ -259,7 +279,7 @@ async def resume_interrupted() -> int:
         claimed = await pipeline_runs.find_one_and_update(
             {"id": stale["id"], "restart_attempts": stale.get("restart_attempts", 0), "status": {"$in": list(runs.ACTIVE)}},
             {"$set": {"status": "queued", "heartbeat_at": datetime.now(timezone.utc), "stage": "Starting again after a restart",
-                      "steps_done": 0, "paused_at": None, "pause_requested": False},
+                      "steps_done": 0, "paused_at": None, "pause_requested": False, "interrupted": False},
              "$inc": {"restart_attempts": 1}},
             projection={"_id": 0}, return_document=True,
         )

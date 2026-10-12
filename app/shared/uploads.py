@@ -7,19 +7,46 @@ file is refused after at most `max_bytes` plus one piece. The request body itsel
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import tempfile
+from contextlib import asynccontextmanager
 from typing import BinaryIO, Optional
 
 from fastapi import HTTPException, UploadFile
 from PIL import Image
 
+from app.core import limits
+
 CHUNK_BYTES = 1024 * 1024
 #: Pictures larger than this many pixels are refused. The picture's file size says little: a few MB of PNG can hold a
 #: 12000 x 12000 picture, which takes about 570 MB once decoded.
-MAX_IMAGE_PIXELS = 40_000_000
+MAX_IMAGE_PIXELS = limits.IMAGE_MAX_PIXELS
 #: Kept in memory up to this size; larger files in a temporary file on disk.
 SPOOL_MEMORY_BYTES = 2 * 1024 * 1024
+
+#: The most one upload may be, whatever a workspace's own limit says. A file read for processing is held in memory about twice
+#: while it is copied on to storage, and the server has 512 MB in all.
+HARD_UPLOAD_BYTES = limits.UPLOAD_HARD_LIMIT_BYTES
+#: Files at least this big are handled one at a time, so a few big uploads at once cannot add up past the memory.
+LARGE_UPLOAD_BYTES = limits.LARGE_UPLOAD_BYTES
+_large_upload_gate = asyncio.Semaphore(1)
+
+
+def clamp_upload_limit(limit_bytes: int) -> int:
+    """A workspace's own upload limit, never above the server's hard ceiling."""
+    return min(limit_bytes, HARD_UPLOAD_BYTES)
+
+
+@asynccontextmanager
+async def large_upload_slot(file: UploadFile):
+    """Held while a big upload is read and handled. Small files pass straight through; big ones wait their turn."""
+    if (getattr(file, "size", None) or 0) < LARGE_UPLOAD_BYTES:
+        yield
+        return
+    async with _large_upload_gate:
+        yield
+
 
 # Make Pillow itself refuse (not just warn about) a decompression bomb anywhere it decodes.
 Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS

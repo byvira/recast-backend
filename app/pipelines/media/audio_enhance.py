@@ -21,6 +21,8 @@ import noisereduce as nr
 import numpy as np
 import pyloudnorm as pyln
 import soundfile as sf
+
+from app.pipelines.media.audio_budget import check_fits
 from scipy.signal import resample
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,9 @@ def enhance_audio(audio_bytes: bytes, mime_type: str) -> tuple[bytes, dict]:
     check `is_dsp_supported` first and skip calling this for an
     unsupported format rather than treating an exception as the normal
     "not supported" path."""
+    too_long = check_fits(audio_bytes)
+    if too_long:
+        raise ValueError(too_long)  # the caller keeps the original recording
     data, samplerate = sf.read(io.BytesIO(audio_bytes), dtype="float32")
     is_mono = data.ndim == 1
 
