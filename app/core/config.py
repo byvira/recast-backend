@@ -304,6 +304,9 @@ class Settings(BaseSettings):
     # ── Publish Pipeline ──────────────────────────────────────────────────
     # Max retries before supervisor flags a post for human review
     PUBLISH_MAX_RETRIES: int = 3
+    # Posting to a LinkedIn Company Page. Off until LinkedIn approves the app for it (the w_organization_social and r_organization_admin
+    # permissions are granted only after a review). Everything else for it is built; this one switch opens it.
+    LINKEDIN_ORG_POSTING_ENABLED: bool = False
     # Typing suggestions (see app/pipelines/suggest.py): how many AI continuations one member may ask for in a day, and in all for the
     # whole app in a minute. Past either, only the member's own words and their brand's words are suggested (no AI call).
     SUGGEST_DAILY_CAP: int = 150

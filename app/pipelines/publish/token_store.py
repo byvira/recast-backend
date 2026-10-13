@@ -90,7 +90,7 @@ async def save_token(
 
     now = datetime.now(timezone.utc)
     previous = await workspace_connections.find_one(
-        {"workspace_id": workspace_id, "platform": platform}, {"health.state": 1, "health.reason": 1}
+        {"workspace_id": workspace_id, "platform": platform}, {"health.state": 1, "health.reason": 1, "platform_user_id": 1}
     )
     previous_state = ((previous or {}).get("health") or {}).get("state", "healthy")
     was_disconnected_by_ops = ((previous or {}).get("health") or {}).get("reason") == "ops_disconnected"
@@ -122,8 +122,12 @@ async def save_token(
                 "connected_by": connected_by,
                 "connected_at": now,
             },
-            # Reconnecting clears a disconnect made by Ops.
-            "$unset": {"disconnected_by_ops": ""},
+            # Reconnecting clears a disconnect made by Ops. Signing in as a different account also clears where posts were going, because a
+            # Company Page chosen for one sign-in means nothing for another; a renewal of the same account keeps it.
+            "$unset": {
+                "disconnected_by_ops": "",
+                **({"post_target": ""} if previous and previous.get("platform_user_id") not in (None, platform_user_id) else {}),
+            },
         },
         upsert=True,
     )
@@ -166,6 +170,8 @@ async def get_token(workspace_id: str, platform: str) -> Optional[dict]:
             "username": account.get("username"),
             "profile_url": account.get("profile_url"),
             "is_active": account.get("is_active", True),
+            # Where posts go when it is not the connected account itself (see post_targets.py); None means the connected account.
+            "post_target": account.get("post_target"),
         }
     except InvalidToken:
         logger.error(
@@ -211,6 +217,10 @@ async def get_all_tokens(workspace_id: str) -> list[dict]:
                 {"id": p["id"], "name": p.get("name", ""), "selected": p["id"] == a.get("platform_user_id")}
                 for p in (a.get("meta_pages") or [])
             ] if a["platform"] == "facebook" else None,
+            # Where posts go: the connected account unless the member chose a Company Page or Page (see post_targets.py).
+            "post_target": (
+                {"kind": a["post_target"].get("kind"), "name": a["post_target"].get("name", "")} if a.get("post_target") else None
+            ),
             # The account's public face, read from the platform (see profile.py).
             "display_name": a.get("display_name"),
             "avatar_url": a.get("avatar_url"),

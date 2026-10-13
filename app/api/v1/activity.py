@@ -517,6 +517,20 @@ async def unread_count(
     return {"unread": await inbox_mod.unread_count(ctx.workspace_id, ctx.user_id, ctx.role)}
 
 
+@router.get("/attention")
+@limiter.limit("120/minute")
+async def attention(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The one number behind every "needs you" badge (the top bar, the floating pill): unread decisions plus unread failures. `unread` is
+    everything unread in the inbox, which also includes finished work and what the assistant did, and is shown more quietly."""
+    return {
+        "needs_you": await inbox_mod.attention_count(ctx.workspace_id, ctx.user_id, ctx.role),
+        "unread": await inbox_mod.unread_count(ctx.workspace_id, ctx.user_id, ctx.role),
+    }
+
+
 class DecisionBody(BaseModel):
     decision: Literal["accept", "dismiss", "snooze"]
     snooze_hours: int = Field(24, ge=1, le=24 * 14)

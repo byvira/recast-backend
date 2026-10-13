@@ -776,7 +776,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
                     batch_mode=state.get("batch_mode", False),
                     schedule_mode=state.get("schedule_mode", "now"),
                     scheduled_at=state.get("scheduled_at"),
-                    input_text=state.get("raw_input"),
+                    input_text=state.get("source_url") or state.get("raw_input"),
                     extras={
                         k: bool(state["extras"][k])
                         for k in ("hook_variations", "hashtags", "auto_cta", "seo_meta", "grammar_check", "plagiarism_check", "avoid_blacklist", "pdf_export")

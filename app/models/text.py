@@ -252,6 +252,8 @@ class NormalisedInput(BaseModel):
     target_platforms: list[Platform]
     session_id: str
     language: str = "en"
+    # The link a URL run was made from, kept so History shows the link and not the page's text.
+    source_url: Optional[str] = None
 
 
 class AgentTask(BaseModel):
@@ -429,6 +431,11 @@ class PreviewUrlResponse(BaseModel):
     title: Optional[str] = None
     snippet: Optional[str] = None
     word_count: int = 0
+    # Whether the run can write from this page (the run's own rule), why not in plain words, and whether only the start of a long page
+    # will be used.
+    readable: bool = False
+    problem: Optional[str] = None
+    will_trim: bool = False
 
 
 class TextPipelineResult(BaseModel):

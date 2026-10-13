@@ -92,9 +92,14 @@ async def upload_image(client: httpx.AsyncClient, access_token: str, owner: str,
     return value["image"]
 
 
+def author_urn(request: PublishRequest) -> str:
+    """Who a LinkedIn post is published as: the Company Page the member chose, or else the connected profile."""
+    return request.author_urn or f"urn:li:person:{request.platform_user_id}"
+
+
 async def publish_with_posts_api(request: PublishRequest, access_token: str) -> PublishResult:
     """Publishes a post that has several pictures, picture descriptions or a link card."""
-    owner = f"urn:li:person:{request.platform_user_id}"
+    owner = author_urn(request)
     options = request.options or {}
     pictures = [m for m in request.media if m.kind.value == "image"][:MAX_PICTURES]
     dropped: Optional[str] = None

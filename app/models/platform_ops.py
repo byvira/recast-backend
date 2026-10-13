@@ -21,6 +21,12 @@ class RolloutChange(BaseModel):
     version: int = Field(..., ge=0)
 
 
+class DestinationsChange(BaseModel):
+    """Opens or closes optional posting destinations for a platform, by kind (for example {"organization": true})."""
+    destinations: dict[str, bool] = Field(default_factory=dict, max_length=10)
+    version: int = Field(..., ge=0)
+
+
 class LiveTestRecord(BaseModel):
     note: str = Field("", max_length=500)
     version: int = Field(..., ge=0)

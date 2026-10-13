@@ -31,6 +31,9 @@ class PublishRequest:
     # site (this file and app/workers/scheduled_posts.py).
     media: list[MediaAsset] = field(default_factory=list)
     platform_user_id: str = ""
+    # Who the post is published as, when it is not the connected account itself (for example a LinkedIn Company Page: "urn:li:organization:123").
+    # Empty means the connected account.
+    author_urn: str = ""
     scheduled_at: Optional[datetime] = None
     # YouTube-only — a real, brand-grounded title/description/tags/category/
     # privacy/made-for-kids draft (see app.pipelines.publish.youtube.metadata),

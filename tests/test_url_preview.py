@@ -42,21 +42,23 @@ async def test_preview_url_returns_nulls_when_page_not_fetchable():
          patch("app.pipelines.text.scraper._safe_download", return_value=None):
         result = await preview_url("https://example.com/unreachable")
 
-    assert result == {"title": None, "snippet": None, "word_count": 0}
+    assert (result["title"], result["snippet"], result["word_count"]) == (None, None, 0)
+    assert result["readable"] is False and result["problem"], "the member is told why, in words"
 
 
 async def test_preview_url_rejects_invalid_format():
-    with pytest.raises(ValueError, match="Invalid URL format"):
+    with pytest.raises(ValueError, match="web address"):
         await preview_url("not-a-url")
 
 
-async def test_preview_url_raises_on_blocked_ssrf_target():
+async def test_preview_url_refuses_a_blocked_ssrf_target_without_naming_it():
     with patch(
         "app.pipelines.text.scraper._guard_public_url",
-        side_effect=BlockedURLError("blocked"),
+        side_effect=BlockedURLError("blocked 169.254.169.254"),
     ):
-        with pytest.raises(ValueError, match="blocked"):
-            await preview_url("http://169.254.169.254/latest/meta-data/")
+        result = await preview_url("http://169.254.169.254/latest/meta-data/")
+    assert result["readable"] is False and result["title"] is None
+    assert "169.254" not in (result["problem"] or ""), "the member is not told which internal address was refused"
 
 
 def test_a_redirect_to_an_internal_address_is_refused(monkeypatch):
@@ -78,6 +80,6 @@ def test_a_redirect_to_an_internal_address_is_refused(monkeypatch):
 
     real_client = httpx.Client
     monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
-    with pytest.raises(scraper.BlockedURLError):
+    with pytest.raises(scraper.UrlFetchError):
         scraper._safe_download("https://example.com/start")
     assert calls[-1].startswith("http://169.254")  # the second address was checked before it was requested

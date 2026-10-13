@@ -53,6 +53,8 @@ class TextAgentState(TypedDict):
     # ─────────────────────────────────────────────────────────────
 
     raw_input: str
+    # The link a URL run was made from (what History shows and re-opens), as opposed to raw_input, which is the page's text.
+    source_url: Optional[str]
     source_type: InputSourceType
     target_platforms: list[Platform]
     current_platform: Platform
@@ -220,6 +222,7 @@ def build_initial_state(
     emitter: Any = None,
     session_id: str = "",
     workspace_id: str = "",
+    source_url: Optional[str] = None,
 ) -> TextAgentState:
     """
     Build a clean initial state for one platform graph run.
@@ -236,6 +239,7 @@ def build_initial_state(
         emitter=emitter or EventEmitter(),
         # Raw input
         raw_input=raw_input,
+        source_url=source_url,
         source_type=source_type,
         target_platforms=target_platforms,
         current_platform=current_platform,

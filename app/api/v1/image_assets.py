@@ -1382,26 +1382,57 @@ async def apply_looks_with_cutout(
     return await _apply_looks(request, image_asset_id, slide_number, parsed, ctx, cutout_bytes=data)
 
 
+#: The most pictures one "apply to all" call draws. A set is a handful of pictures; this keeps one request from holding the drawing slot for long.
+MAX_LOOKS_SLIDES = 12
+
+
 async def _apply_looks(
     request: Request, image_asset_id: str, slide_number: int, effects: dict, ctx: WorkspaceContext, cutout_bytes: Optional[bytes] = None,
 ) -> ImageAsset:
+    return await _apply_looks_many(
+        request, image_asset_id, [slide_number], effects, ctx, {slide_number: cutout_bytes} if cutout_bytes else None,
+    )
+
+
+async def _apply_looks_many(
+    request: Request, image_asset_id: str, slide_numbers: Optional[list[int]], effects: dict, ctx: WorkspaceContext,
+    cutouts: Optional[dict[int, bytes]] = None,
+) -> ImageAsset:
+    """Draws the same looks on one picture, several, or all of a set, one at a time, and saves them as one new version. Every picture
+    starts from its original, so the looks replace whatever was on it. If any picture fails nothing is saved."""
     doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
     asset = ImageAsset(**doc)
-    slide = next((sl for sl in asset.slides if sl.slide_number == slide_number), None)
-    if slide is None:
+    targets = [sl for sl in asset.slides if slide_numbers is None or sl.slide_number in slide_numbers]
+    if not targets:
         raise HTTPException(status_code=404, detail="Slide not found.")
-    original_id = slide.background_media_id or slide.media_id
-    original = await _media_bytes(original_id, ctx.workspace_id)
-    if not original:
-        raise HTTPException(status_code=404, detail="This picture's file couldn't be found.")
-    size = _slide_canvas(slide, original)
+    if len(targets) > MAX_LOOKS_SLIDES:
+        raise HTTPException(status_code=400, detail=f"Looks can be applied to at most {MAX_LOOKS_SLIDES} pictures at once.")
     brand = await _get_brand_profile(asset.brand_id, ctx.workspace_id)
-    drawing = asyncio.ensure_future(_draw_and_store(
-        size=size, background_bytes=original, layers=slide.layers, brand=brand, brand_tokens=_brand_tokens_from(brand),
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=effects, cutout_bytes=cutout_bytes,
-    ))
+    brand_tokens = _brand_tokens_from(brand)
+    many = len(targets) > 1
+
+    async def draw_all() -> dict[int, tuple[MediaAsset, Optional[str]]]:
+        drawn: dict[int, tuple[MediaAsset, Optional[str]]] = {}
+        for slide in targets:
+            original_id = slide.background_media_id or slide.media_id
+            original = await _media_bytes(original_id, ctx.workspace_id)
+            if not original:
+                raise HTTPException(status_code=404, detail=(f"Picture {slide.slide_number}: " if many else "") + "This picture's file couldn't be found.")
+            try:
+                media = await _draw_and_store(
+                    size=_slide_canvas(slide, original), background_bytes=original, layers=slide.layers, brand=brand, brand_tokens=brand_tokens,
+                    workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=effects, cutout_bytes=(cutouts or {}).get(slide.slide_number),
+                )
+            except HTTPException as exc:
+                if many:
+                    raise HTTPException(status_code=exc.status_code, detail=f"Picture {slide.slide_number}: {exc.detail}") from exc
+                raise
+            drawn[slide.slide_number] = (media, original_id)
+        return drawn
+
+    drawing = asyncio.ensure_future(draw_all())
     # The member can stop this (a newer choice, leaving the page): when the browser hangs up, the drawing is stopped too and
     # nothing is saved.
     async def hang_up_watch() -> None:
@@ -1413,7 +1444,7 @@ async def _apply_looks(
 
     watcher = asyncio.ensure_future(hang_up_watch())
     try:
-        media = await drawing
+        drawn = await drawing
     except asyncio.CancelledError:
         if drawing.cancelled():
             raise HTTPException(status_code=499, detail="Stopped.")
@@ -1421,12 +1452,49 @@ async def _apply_looks(
     finally:
         watcher.cancel()
     updated = [
-        sl.model_copy(update={"media_id": media.id, "background_media_id": original_id, "effects": effects})
-        if sl.slide_number == slide_number else sl
+        sl.model_copy(update={"media_id": drawn[sl.slide_number][0].id, "background_media_id": drawn[sl.slide_number][1], "effects": effects})
+        if sl.slide_number in drawn else sl
         for sl in asset.slides
     ]
-    new_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, "looks_applied", ctx.user_id, expected_version=asset.version_count)
+    action = "looks_applied_all" if many else "looks_applied"
+    new_doc = await _bump_version(image_asset_id, ctx.workspace_id, updated, action, ctx.user_id, expected_version=asset.version_count)
     return ImageAsset(**new_doc)
+
+
+@router.post("/{image_asset_id}/looks", response_model=ImageAsset)
+@limiter.limit("10/minute")
+async def apply_looks_to_all(
+    request: Request,
+    image_asset_id: str,
+    effects: str = Form(...),
+    slide_numbers: Optional[str] = Form(default=None),
+    cutout_slides: Optional[str] = Form(default=None),
+    cutouts: list[UploadFile] = File(default=[]),
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> ImageAsset:
+    """Draws the chosen looks on every picture of a set (or the `slide_numbers` named), replacing any look already on them, and saves them
+    as one new version. For Remove Background the subjects are cut out in the browser and sent as `cutouts`, one PNG for each number in
+    `cutout_slides`, in the same order."""
+    import json
+
+    from app.shared.uploads import assert_image_size, read_limited
+
+    try:
+        parsed = SlideEffectsRequest(**json.loads(effects)).model_dump()
+        numbers = [int(n) for n in json.loads(slide_numbers)] if slide_numbers else None
+        cutout_numbers = [int(n) for n in json.loads(cutout_slides)] if cutout_slides else []
+    except Exception as exc:  # noqa: BLE001 - any malformed value is the same answer
+        raise HTTPException(status_code=422, detail="The looks could not be read. Try again.") from exc
+    if len(cutout_numbers) != len(cutouts):
+        raise HTTPException(status_code=422, detail="Each cut-out needs its picture number.")
+    found: dict[int, bytes] = {}
+    for number, upload in zip(cutout_numbers, cutouts):
+        if (upload.content_type or "") != "image/png":
+            raise HTTPException(status_code=400, detail="The cut-outs have to be PNG pictures.")
+        data = await read_limited(upload, limits.FETCHED_IMAGE_MAX_BYTES, detail="That cut-out is too large.")
+        assert_image_size(data)
+        found[number] = data
+    return await _apply_looks_many(request, image_asset_id, numbers, parsed, ctx, found or None)
 
 
 class SetSlideRoleRequest(BaseModel):

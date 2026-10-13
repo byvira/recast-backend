@@ -80,6 +80,15 @@ async def unread_count(workspace_id: str, user_id: str, role: str) -> int:
     return await activity_entries.count_documents(query)
 
 
+async def attention_count(workspace_id: str, user_id: str, role: str) -> int:
+    """How many unread things need the member: a decision waiting for them, or something that failed. Work that merely finished, and
+    what the assistant did on its own, are in the unread count but are not counted here. One source for every badge, so they agree."""
+    query = inbox_query(workspace_id, user_id, role, await hidden_flags_for(workspace_id))
+    cursor = await read_before(workspace_id, user_id)
+    query["$and"] = list(query["$and"]) + unread_filter(user_id, cursor)["$and"] + [{"$or": [{"lane": LANE_ACTIVE}, {"status": "failed"}]}]
+    return await activity_entries.count_documents(query)
+
+
 async def list_inbox(workspace_id: str, user_id: str, role: str) -> dict:
     docs = await activity_entries.find(inbox_query(workspace_id, user_id, role, await hidden_flags_for(workspace_id))).sort(
         [("occurred_at", -1), ("_id", -1)]

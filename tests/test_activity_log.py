@@ -423,6 +423,32 @@ async def test_a_single_item_can_be_marked_read_by_id(api_client):
     assert (await _inbox(api_client, ws_id))["unread"] == 0
 
 
+async def test_needs_you_counts_decisions_and_failures_not_good_news(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Needs You", tier="large")
+    h = _ws_headers(ws_id)
+
+    async def counts():
+        return (await api_client.get("/api/v1/activity/attention", headers=h)).json()
+
+    assert await counts() == {"needs_you": 0, "unread": 0}
+    # work that simply finished is unread, but nobody needs to do anything about it
+    await record_system(workspace_id=ws_id, key="pub:ok", actor_name="Publishing scheduler", category="post_published", title="Went live", description="")
+    assert await counts() == {"needs_you": 0, "unread": 1}
+    # a failure needs the member, and so does a decision waiting for them
+    await record_system(workspace_id=ws_id, key="run:r1", actor_name="Ekavo", category="content_generated", title="Picture failed", description="It stopped.", status="failed", target_id="r1", target_type="Run")
+    assert (await counts())["needs_you"] == 1
+    await _odette_flag(ws_id)
+    now = await counts()
+    assert now["needs_you"] == 2 and now["unread"] == 3
+    # the same failure written again (a retry of the same run) is still one thing
+    await record_system(workspace_id=ws_id, key="run:r1", actor_name="Ekavo", category="content_generated", title="Picture failed", description="It stopped again.", status="failed", target_id="r1", target_type="Run")
+    assert (await counts())["needs_you"] == 2
+    # reading everything clears the number
+    await api_client.post("/api/v1/activity/inbox/read", json={}, headers=h)
+    assert (await counts())["needs_you"] == 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Read / unread / delete + sidebar count + Control Tower "up next"
 # ─────────────────────────────────────────────────────────────────────────────

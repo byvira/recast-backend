@@ -18,7 +18,7 @@ from app.api.v1.platforms import _serialize
 from app.core.auth import require_platform_staff
 from app.core.middleware import limiter
 from app.db.mongo import content_pieces, platform_configs, workspace_connections, workspaces
-from app.models.platform_ops import FactsVerified, LiveTestRecord, PurgeCredentials, RolloutChange, StageChange, TestSend
+from app.models.platform_ops import DestinationsChange, FactsVerified, LiveTestRecord, PurgeCredentials, RolloutChange, StageChange, TestSend
 from app.pipelines.platform_ops.events import record_platform_event
 from app.pipelines.platform_ops.holds import count_impact
 from app.pipelines.platform_ops.lifecycle import TransitionRefused, change_stage
@@ -259,6 +259,58 @@ async def set_rollout(request: Request, key: str, body: RolloutChange, user: dic
         before=ops["rollout"], after=rollout,
     )
     return {"ops": saved}
+
+
+def _destination_rows(definition: PlatformDefinition, ops: dict[str, Any]) -> list[dict[str, Any]]:
+    from app.pipelines.publish.destinations_support import default_enabled, effective, kinds_for
+
+    return [
+        {
+            "kind": k.kind, "label": k.label, "switchable": k.switchable, "needs_approval": k.needs_approval, "note": k.note,
+            "enabled": effective(ops, definition.key, k.kind), "default": default_enabled(definition.key, k.kind),
+        }
+        for k in kinds_for(definition.key)
+    ]
+
+
+@router.get("/{key}/destinations")
+@limiter.limit("60/minute")
+async def get_destinations(request: Request, key: str, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """The posting destinations this platform has beyond the connected account itself, and whether each is open to members."""
+    definition = _definition(key)
+    ops = await get_ops(definition)
+    return {"platform": key, "version": ops["version"], "destinations": _destination_rows(definition, ops)}
+
+
+@router.put("/{key}/destinations")
+@limiter.limit("20/minute")
+async def set_destinations(request: Request, key: str, body: DestinationsChange, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """Opens or closes a posting destination for everyone (for example LinkedIn Company Pages, once LinkedIn has approved them)."""
+    _require_owner(user)
+    from app.pipelines.publish.destinations_support import kinds_for
+
+    definition = _definition(key)
+    allowed = {k.kind: k for k in kinds_for(key)}
+    for kind in body.destinations:
+        if kind not in allowed:
+            raise HTTPException(status_code=400, detail={"code": "unknown_destination", "message": f"{definition.label} has no '{kind}' destination."})
+        if not allowed[kind].switchable:
+            raise HTTPException(status_code=400, detail={"code": "not_switchable", "message": f"{allowed[kind].label} is always on."})
+    ops = await get_ops(definition)
+    if ops["version"] != body.version:
+        raise _conflict()
+    merged = {**(ops.get("destinations") or {}), **body.destinations}
+    try:
+        saved = await save_ops(definition, {"destinations": merged}, expected_version=body.version, actor_id=user["id"])
+    except VersionConflict:
+        raise _conflict()
+    await record_platform_event(
+        event="platform.destinations_changed", definition=definition, actor_user_id=user["id"], actor_role="owner",
+        workspace_id=_workspace_of(user),
+        description=f"{definition.label} posting destinations: " + ", ".join(f"{allowed[k].label} {'on' if v else 'off'}" for k, v in body.destinations.items()) + ".",
+        before=ops.get("destinations") or {}, after=merged,
+    )
+    return {"platform": key, "version": saved["version"], "destinations": _destination_rows(definition, saved)}
 
 
 @router.post("/{key}/purge-credentials")

@@ -12,6 +12,7 @@ from app.pipelines.publish.base import (
     PublishRequest,
     PublishResult,
 )
+from app.pipelines.publish.linkedin.posts_api import author_urn
 from app.pipelines.publish.validators import validate_linkedin
 from app.pipelines.publish.linkedin.oauth import (
     build_auth_url,
@@ -33,8 +34,8 @@ _RECIPE_BY_KIND = {
 
 class LinkedInPublisher(PlatformPublisher):
 
-    def build_auth_url(self, state: str) -> str:
-        return build_auth_url(state)
+    def build_auth_url(self, state: str, include_org: bool = False) -> str:
+        return build_auth_url(state, include_org)
 
     async def exchange_token(self, code: str) -> dict:
         return await exchange_code(code)
@@ -46,7 +47,7 @@ class LinkedInPublisher(PlatformPublisher):
         return validate_linkedin(content)
 
     async def _register_and_upload_asset(
-        self, client: httpx.AsyncClient, person_id: str, access_token: str, asset_url: str, kind: str
+        self, client: httpx.AsyncClient, owner_urn: str, access_token: str, asset_url: str, kind: str
     ) -> str:
         """LinkedIn's UGC API needs bytes uploaded first, unlike Meta's
         fetch-by-URL pattern — this is why LinkedIn overrides the base
@@ -65,7 +66,7 @@ class LinkedInPublisher(PlatformPublisher):
             json={
                 "registerUploadRequest": {
                     "recipes": [_RECIPE_BY_KIND[kind]],
-                    "owner": f"urn:li:person:{person_id}",
+                    "owner": owner_urn,
                     "serviceRelationships": [
                         {"relationshipType": "OWNER", "identifier": "urn:li:userGeneratedContent"}
                     ],
@@ -135,7 +136,7 @@ class LinkedInPublisher(PlatformPublisher):
             try:
                 async with httpx.AsyncClient() as upload_client:
                     asset_urn = await self._register_and_upload_asset(
-                        upload_client, request.platform_user_id, access_token, asset.url, asset.kind.value
+                        upload_client, author_urn(request), access_token, asset.url, asset.kind.value
                     )
                 share_content["shareMediaCategory"] = asset.kind.value.upper()
                 share_content["media"] = [{"status": "READY", "media": asset_urn}]
@@ -144,7 +145,7 @@ class LinkedInPublisher(PlatformPublisher):
                 media_dropped_reason = "LinkedIn media upload failed — published as text only"
 
         payload = {
-            "author":          f"urn:li:person:{request.platform_user_id}",
+            "author":          author_urn(request),
             "lifecycleState":  "PUBLISHED",
             "specificContent": {
                 "com.linkedin.ugc.ShareContent": share_content

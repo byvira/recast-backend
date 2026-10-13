@@ -175,6 +175,7 @@ async def _run_single_platform(
         user_id=normalised.user_id,
         brand_id=normalised.brand_id,
         raw_input=normalised.raw_content,
+        source_url=normalised.source_url,
         emitter=emitter or EventEmitter(),
         session_id=session_id or str(uuid4()),
         source_type=normalised.source_type,
@@ -821,7 +822,7 @@ async def _run_single_repurpose(
             is_repurpose=True,
             schedule_mode=schedule_mode,
             scheduled_at=scheduled_at,
-            input_text=normalised.raw_content,
+            input_text=normalised.source_url or normalised.raw_content,
         )
         piece_id = await save_live_piece(
             session_id=normalised.session_id,

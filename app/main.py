@@ -20,7 +20,7 @@ from app.api.v1 import auth as auth_router
 from app.api.v1 import brand as brand_router
 from app.api.v1 import onboarding_draft as drafts_router
 from app.api.v1 import users as users_router
-from app.api.v1 import audio_assets, content, suggest, destinations, image_assets, media, oauth, publish
+from app.api.v1 import audio_assets, content, post_targets, suggest, destinations, image_assets, media, oauth, publish
 from app.api.v1 import presets as presets_router
 from app.api.v1 import campaigns as campaigns_router
 from app.api.v1 import repurposes as repurposes_router
@@ -388,6 +388,7 @@ app.include_router(video.router,          prefix="/api/v1/video",      tags=["Vi
 app.include_router(image_assets.router, prefix="/api/v1/image-assets", tags=["Image Assets"])
 app.include_router(audio_assets.router, prefix="/api/v1/audio-assets", tags=["Audio Assets"])
 app.include_router(suggest.router, prefix="/api/v1/suggest", tags=["Suggestions"])
+app.include_router(post_targets.router, prefix="/api/v1/post-targets", tags=["Post targets"])
 app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["Analytics"])
 app.include_router(search_router.router, prefix="/api/v1/search", tags=["Search"])
 app.include_router(share_router.router, prefix="/api/v1/share", tags=["Share"])

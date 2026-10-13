@@ -8,11 +8,12 @@ transcript   → source_type TRANSCRIPT → pass through (from audio/video pipel
 """
 
 import logging
+from typing import Optional
 from uuid import uuid4
 
 from app.db.mongo import brand_profiles
 from app.models.text import ContentIntent, InputSourceType, NormalisedInput, Platform
-from app.pipelines.text.scraper import scrape_url
+from app.pipelines.text.scraper import scrape_url, tidy_address
 from app.prompts.registry import load_prompt
 from app.shared.llm import GroqModel, call_llm, call_llm_structured
 
@@ -96,12 +97,12 @@ async def normalise_input(
     """
     session_id = str(uuid4())
     raw_content = content
+    source_url: Optional[str] = None
 
     if source_type == InputSourceType.URL:
         logger.info("Scraping URL for session %s", session_id)
-        raw_content = await scrape_url(content)
-        if len(raw_content) < 100:
-            raise ValueError(f"Could not extract readable content from URL: {content}")
+        source_url = tidy_address(content)
+        raw_content = await scrape_url(source_url)
 
     elif source_type == InputSourceType.TOPIC:
         logger.info("Researching topic for session %s", session_id)
@@ -129,6 +130,7 @@ async def normalise_input(
         target_platforms=platforms,
         session_id=session_id,
         language=language,
+        source_url=source_url,
     )
 
 

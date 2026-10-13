@@ -36,6 +36,8 @@ def derived_default(definition: PlatformDefinition) -> dict[str, Any]:
         "facts_verified": None,
         "paused": None,
         "retired": None,
+        # Which optional posting destinations Ops has opened or closed, by kind (see publish/destinations_support.py). Empty means defaults.
+        "destinations": {},
         "stage_history": [],
         "updated_at": None,
         "updated_by": None,

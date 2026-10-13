@@ -22,6 +22,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.pipelines.text.scraper import UrlFetchError
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require_stream
 from app.db.mongo import brand_profiles
@@ -543,6 +544,10 @@ async def _run_and_report(
         if isinstance(exc, HTTPException):
             logger.info("Pipeline rejected — session %s: %s", session_id, exc.detail)
             await emitter.emit_error(message=str(exc.detail), recoverable=False)
+        elif isinstance(exc, UrlFetchError):
+            # A link that could not be read has its own plain reason (a login page, a PDF, a missing page); say it, not a generic failure.
+            logger.info("Link could not be read — session %s: %s", session_id, exc)
+            await emitter.emit_error(message=str(exc), recoverable=False)
         else:
             logger.error(
                 "Pipeline failed — session %s: %s",

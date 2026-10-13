@@ -787,7 +787,13 @@ async def connect_platform(
         )
 
     state    = await _create_state(ctx.user_id, platform, ctx.workspace_id, _opener_origin(request))
-    auth_url = publisher.build_auth_url(state)
+    if platform == "linkedin":
+        from app.pipelines.publish.destinations_support import destination_enabled
+
+        # Company Page permissions are asked for only once Ops has opened Company Pages (LinkedIn rejects the sign-in page otherwise).
+        auth_url = publisher.build_auth_url(state, include_org=await destination_enabled("linkedin", "organization"))
+    else:
+        auth_url = publisher.build_auth_url(state)
 
     return {
         "platform": platform,

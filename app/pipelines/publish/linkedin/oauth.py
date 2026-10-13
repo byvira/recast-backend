@@ -17,9 +17,17 @@ LINKEDIN_TOKEN_URL   = "https://www.linkedin.com/oauth/v2/accessToken"
 LINKEDIN_PROFILE_URL = "https://api.linkedin.com/v2/userinfo"
 
 SCOPES = ["openid", "profile", "email", "w_member_social"]
+#: Added only once LinkedIn has approved the app for Company Pages (see LINKEDIN_ORG_POSTING_ENABLED): asking for them earlier makes the
+#: sign-in page fail for everyone.
+ORG_SCOPES = ["w_organization_social", "r_organization_admin"]
+LINKEDIN_ORG_ACLS_URL = "https://api.linkedin.com/v2/organizationAcls"
 
 
-def build_auth_url(state: str) -> str:
+def scopes(include_org: bool = False) -> list[str]:
+    return SCOPES + (ORG_SCOPES if include_org else [])
+
+
+def build_auth_url(state: str, include_org: bool = False) -> str:
     """
     Build the LinkedIn OAuth authorization URL.
     Redirect user here to start the OAuth flow.
@@ -28,7 +36,7 @@ def build_auth_url(state: str) -> str:
         "response_type": "code",
         "client_id":     settings.LINKEDIN_CLIENT_ID,
         "redirect_uri":  settings.LINKEDIN_REDIRECT_URI,
-        "scope":         " ".join(SCOPES),
+        "scope":         " ".join(scopes(include_org)),
         "state":         state,
     }
     return f"{LINKEDIN_AUTH_URL}?{urlencode(params)}"
@@ -129,3 +137,28 @@ async def refresh_access_token(refresh_token: str) -> dict:
             "access_token": data["access_token"],
             "expires_at":   expires_at,
         }
+
+
+async def list_admin_organizations(access_token: str) -> list[dict]:
+    """The Company Pages this sign-in administers, as [{"id": "123", "name": "Acme"}]. Needs the r_organization_admin permission, which
+    LinkedIn grants only after approving the app, so before then this is simply an empty list."""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(
+                LINKEDIN_ORG_ACLS_URL,
+                params={
+                    "q": "roleAssignee", "role": "ADMINISTRATOR", "state": "APPROVED",
+                    "projection": "(elements*(organization~(id,localizedName)))",
+                },
+                headers={"Authorization": f"Bearer {access_token}", "X-Restli-Protocol-Version": "2.0.0"},
+            )
+            response.raise_for_status()
+            found: list[dict] = []
+            for element in response.json().get("elements", []):
+                organization = element.get("organization~") or {}
+                if organization.get("id") is not None and organization.get("localizedName"):
+                    found.append({"id": str(organization["id"]), "name": str(organization["localizedName"])})
+            return found
+    except Exception as exc:  # noqa: BLE001 - not approved yet, or a busy LinkedIn: no Pages to offer
+        logger.info("LinkedIn Company Pages could not be listed: %s", exc)
+        return []

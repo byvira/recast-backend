@@ -71,6 +71,11 @@ async def build_request(
         options=piece.get("publish_options") or {},
     )
     request.platform_user_id = (token or {}).get("platform_user_id", "")
+    target = (token or {}).get("post_target") or {}
+    # A saved Company Page is honoured only while Ops has Company Pages open; otherwise the post goes to the connected profile.
+    from app.pipelines.publish.destinations_support import destination_enabled
+
+    request.author_urn = target.get("urn", "") if target.get("kind") == "organization" and await destination_enabled(platform, "organization") else ""
     return request
 
 

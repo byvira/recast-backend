@@ -3,6 +3,7 @@
 import asyncio
 import ipaddress
 import logging
+import re
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
@@ -25,6 +26,40 @@ _BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal"}
 
 class BlockedURLError(ValueError):
     """Raised when a URL targets a private/internal/cloud-metadata address."""
+
+
+class UrlFetchError(ValueError):
+    """A page that could not be read, with a reason that is clear and safe to show the member as it is."""
+
+
+#: What the member is told for each way a link can fail. Written for the member: no addresses, codes or library names.
+NOT_A_WEB_ADDRESS = "That doesn't look like a web address. Paste the full link, starting with https://"
+CANT_OPEN = "We couldn't open that address. Check the link and try again, or paste the text instead."
+NEEDS_LOGIN = "That page asks for a login, or doesn't let automated readers in. Open it, copy the text and paste it instead."
+NOT_FOUND = "That page wasn't found. Check the link."
+SITE_BUSY = "That site isn't answering right now. Try again in a moment, or paste the text instead."
+TOO_SLOW = "That site took too long to answer. Try again, or paste the text instead."
+IS_A_PDF = "That link is a PDF, which can't be read here. Open it, copy the text and paste it instead."
+NOT_AN_ARTICLE = "That link is a {kind}, not an article. Paste the text you want to use instead."
+NOT_A_PAGE = "That link isn't a web page we can read. Paste the text you want to use instead."
+NO_TEXT = (
+    "We couldn't find readable article text on that page. It may need a login or be built so it can't be read automatically. "
+    "Paste the text instead."
+)
+
+#: The least text a page must give before it is used. The preview and the run use the same number, so a page that previews well can
+#: be written from, and one that cannot be is said so before anyone presses run.
+MIN_READABLE_CHARS = 100
+#: What a run keeps of a page (see normalizer.py); the preview says when a page is longer than this.
+RUN_KEEPS_CHARS = 8000
+
+
+def tidy_address(url: str) -> str:
+    """The address as the member most likely meant it: spaces trimmed, and https:// added when only a site name was pasted."""
+    url = (url or "").strip()
+    if url and "://" not in url and re.match(r"^[\w-]+(\.[\w-]+)+(/|\?|#|$)", url):
+        return "https://" + url
+    return url
 
 
 def _resolve_all_ips(hostname: str) -> list[str]:
@@ -76,33 +111,70 @@ MAX_REDIRECTS = 5
 TOTAL_DOWNLOAD_SECONDS = 20
 
 
+def _kind_of(content_type: str) -> str | None:
+    """What a non-page link is, in a word, or None when the type is a readable one (or not stated)."""
+    if not content_type:
+        return None
+    if content_type.startswith("application/pdf"):
+        return "pdf"
+    for prefix, word in (("image/", "picture"), ("video/", "video"), ("audio/", "recording")):
+        if content_type.startswith(prefix):
+            return word
+    readable = ("text/", "html", "xml", "json")
+    return "other" if not any(part in content_type for part in readable) else None
+
+
 def _safe_download(url: str) -> str | None:
     """The page's text, fetched so that every address it goes to is checked, not only the first.
 
     A page that redirects to an internal address (or whose name is pointed at one after the first check) would otherwise be read by
     the library's own fetch, which follows redirects without looking. Here each hop is checked before it is requested, the answer
-    is cut at MAX_PAGE_BYTES, and the whole download has one deadline."""
+    is cut at MAX_PAGE_BYTES, and the whole download has one deadline. A link that cannot be read raises UrlFetchError with the reason."""
     import time
 
     import httpx
 
     deadline = time.monotonic() + TOTAL_DOWNLOAD_SECONDS
     current = url
-    with httpx.Client(follow_redirects=False, timeout=10.0, headers={"User-Agent": "Mozilla/5.0 (compatible; EkavoReader/1.0)"}) as client:
-        for _ in range(MAX_REDIRECTS + 1):
-            _guard_public_url(current)
-            with client.stream("GET", current) as response:
-                if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
-                    current = str(httpx.URL(current).join(response.headers["location"]))
-                    continue
-                if response.status_code >= 400:
-                    return None
-                body = bytearray()
-                for chunk in response.iter_bytes():
-                    body += chunk
-                    if len(body) > MAX_PAGE_BYTES or time.monotonic() > deadline:
-                        break
-                return bytes(body[:MAX_PAGE_BYTES]).decode(response.encoding or "utf-8", errors="replace")
+    try:
+        with httpx.Client(follow_redirects=False, timeout=10.0, headers={"User-Agent": "Mozilla/5.0 (compatible; EkavoReader/1.0)"}) as client:
+            for _ in range(MAX_REDIRECTS + 1):
+                try:
+                    _guard_public_url(current)
+                except BlockedURLError as exc:
+                    logger.info("A link was refused: %s", exc)
+                    raise UrlFetchError(CANT_OPEN) from exc
+                with client.stream("GET", current) as response:
+                    if response.status_code in (301, 302, 303, 307, 308) and response.headers.get("location"):
+                        current = str(httpx.URL(current).join(response.headers["location"]))
+                        continue
+                    status = response.status_code
+                    if status in (401, 403, 407, 451):
+                        raise UrlFetchError(NEEDS_LOGIN)
+                    if status in (404, 410):
+                        raise UrlFetchError(NOT_FOUND)
+                    if status == 429 or status >= 500:
+                        raise UrlFetchError(SITE_BUSY)
+                    if status >= 400:
+                        raise UrlFetchError(CANT_OPEN)
+                    kind = _kind_of(response.headers.get("content-type", "").split(";")[0].strip().lower())
+                    if kind == "pdf":
+                        raise UrlFetchError(IS_A_PDF)
+                    if kind == "other":
+                        raise UrlFetchError(NOT_A_PAGE)
+                    if kind:
+                        raise UrlFetchError(NOT_AN_ARTICLE.format(kind=kind))
+                    body = bytearray()
+                    for chunk in response.iter_bytes():
+                        body += chunk
+                        if len(body) > MAX_PAGE_BYTES or time.monotonic() > deadline:
+                            break
+                    return bytes(body[:MAX_PAGE_BYTES]).decode(response.encoding or "utf-8", errors="replace")
+    except httpx.TimeoutException as exc:
+        raise UrlFetchError(TOO_SLOW) from exc
+    except httpx.HTTPError as exc:
+        logger.info("A link could not be reached: %s", exc)
+        raise UrlFetchError(CANT_OPEN) from exc
     return None
 
 
@@ -122,7 +194,7 @@ def _fetch_and_extract(url: str) -> str | None:
 def _fetch_and_preview(url: str) -> dict:
     downloaded = _safe_download(url)
     if not downloaded:
-        return {"title": None, "snippet": None, "word_count": 0}
+        return {"title": None, "snippet": None, "word_count": 0, "readable": False, "problem": NO_TEXT, "will_trim": False}
 
     text = trafilatura.extract(
         downloaded, include_comments=False, include_tables=True, no_fallback=False, config=_config,
@@ -131,6 +203,7 @@ def _fetch_and_preview(url: str) -> dict:
 
     snippet = None
     word_count = 0
+    clean = ""
     if text:
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         clean = "\n".join(lines)
@@ -139,38 +212,38 @@ def _fetch_and_preview(url: str) -> dict:
         if len(clean) > 220:
             snippet += "…"
 
+    readable = len(clean) >= MIN_READABLE_CHARS
     return {
         "title": (metadata.title if metadata else None) or None,
         "snippet": snippet,
         "word_count": word_count,
+        # The same rule the run uses: a page that previews with only a title cannot be written from, and is said so here.
+        "readable": readable,
+        "problem": None if readable else NO_TEXT,
+        "will_trim": len(clean) > RUN_KEEPS_CHARS,
     }
 
 
 async def preview_url(url: str) -> dict:
-    """Fetch a URL and return {title, snippet, word_count} for a live "what
-    will be scraped" preview before the user commits to running the
-    pipeline — the frontend's URL input used to show a hardcoded fake
-    preview card ("blog.example.com", a canned Discord-community quote) for
-    literally any URL typed in, regardless of what was actually there.
+    """Fetch a URL and return {title, snippet, word_count, readable, problem, will_trim} for a live "what will be scraped" preview
+    before the user commits to running the pipeline.
 
-    Does not raise when the page isn't extractable — returns nulls instead,
-    so the frontend can say "couldn't preview this page" without treating
-    it as a hard error. The real scrape_url() (used by generation itself)
-    still raises ValueError on the same condition, since that path can't
-    proceed without real content.
+    A link that cannot be read does not raise: it returns `readable: false` and a `problem` in plain words, so the page can say why
+    next to the field. Only a link that is not a web address at all raises ValueError.
     """
+    url = tidy_address(url)
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc or parsed.scheme not in ("http", "https"):
-        raise ValueError(f"Invalid URL format: {url}")
+        raise ValueError(NOT_A_WEB_ADDRESS)
 
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(_executor, _fetch_and_preview, url)
-    except BlockedURLError as e:
-        raise ValueError(str(e))
-    except Exception as e:
-        logger.warning("Preview fetch failed for %s: %s", url, e)
-        return {"title": None, "snippet": None, "word_count": 0}
+    except UrlFetchError as exc:
+        return {"title": None, "snippet": None, "word_count": 0, "readable": False, "problem": str(exc), "will_trim": False}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Preview fetch failed for %s: %s", url, exc)
+        return {"title": None, "snippet": None, "word_count": 0, "readable": False, "problem": CANT_OPEN, "will_trim": False}
 
 
 async def scrape_url(url: str) -> str:
@@ -180,29 +253,25 @@ async def scrape_url(url: str) -> str:
     Social platform post URLs (Instagram, Facebook, Twitter, TikTok) will return
     empty or garbage — those are handled via OAuth account connections, not scraping.
     YouTube URLs work partially — description only if page is not JS-gated.
+
+    Raises UrlFetchError, whose message is written for the member, when the page cannot be read.
     """
+    url = tidy_address(url)
     parsed = urlparse(url)
-    if not parsed.scheme or not parsed.netloc:
-        raise ValueError(f"Invalid URL format: {url}")
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"Only http and https URLs are supported.")
+    if not parsed.scheme or not parsed.netloc or parsed.scheme not in ("http", "https"):
+        raise UrlFetchError(NOT_A_WEB_ADDRESS)
 
     loop = asyncio.get_running_loop()
     try:
         text = await loop.run_in_executor(_executor, _fetch_and_extract, url)
-    except BlockedURLError as e:
-        logger.warning("Blocked SSRF attempt for %s: %s", url, e)
-        raise ValueError(str(e))
-    except Exception as e:
-        logger.error("Trafilatura failed for %s: %s", url, e)
-        raise ValueError(f"Could not fetch URL: {url}")
+    except UrlFetchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Trafilatura failed for %s: %s", url, exc)
+        raise UrlFetchError(CANT_OPEN) from exc
 
-    if not text or len(text.strip()) < 100:
-        raise ValueError(
-            f"Could not extract readable content from URL: {url}. "
-            "The page may require a login, JavaScript rendering, or is behind a paywall. "
-            "Try pasting the content directly using Write mode."
-        )
+    if not text or len(text.strip()) < MIN_READABLE_CHARS:
+        raise UrlFetchError(NO_TEXT)
 
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     clean = "\n".join(lines)

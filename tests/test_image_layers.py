@@ -232,3 +232,83 @@ async def test_a_picture_made_before_the_editor_is_not_drawn_over_twice(signup_u
 
     reset = await client.post(f"{base}/reset", headers=_h(ws_id))
     assert reset.status_code == 200 and reset.json()["slides"][0]["layers"] == [], "no second headline stacked on the old words"
+
+
+# ---- looks on every picture of a set -------------------------------------------------------------------------------------------------------
+async def _pack(client, ws_id, brand_id, count=3):
+    res = await _generate(client, ws_id, brand_id, count=count)
+    assert res.status_code in (200, 201), res.text
+    return res.json()
+
+
+def _looks_form(effects: dict, **extra):
+    import json
+
+    return {"effects": json.dumps(effects), **{k: json.dumps(v) if not isinstance(v, str) else v for k, v in extra.items()}}
+
+
+EFFECTS = {"glow": True, "dual_tone": False, "grid": True, "remove_background": False, "corner_radius": 0.05}
+
+
+async def test_looks_are_applied_to_every_picture_of_a_set_in_one_new_version(signup_user, stubs, served):  # noqa: F811
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _pack(client, ws_id, brand_id, 3)
+    before = {sl["slide_number"]: sl["media_id"] for sl in asset["slides"]}
+    assert len(before) == 3
+
+    res = await client.post(f"/api/v1/image-assets/{asset['id']}/looks", data=_looks_form(EFFECTS), headers=_h(ws_id))
+    assert res.status_code == 200, res.text
+    out = res.json()
+    assert out["version_count"] == asset["version_count"] + 1, "one version for the whole set, not one per picture"
+    for sl in out["slides"]:
+        assert sl["effects"]["glow"] is True and sl["effects"]["grid"] is True
+        assert sl["media_id"] != before[sl["slide_number"]]
+        assert sl["background_media_id"], "the original is kept so the looks can be switched off again"
+
+
+async def test_apply_to_all_replaces_a_look_that_was_already_there(signup_user, stubs, served):  # noqa: F811
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _pack(client, ws_id, brand_id, 2)
+    await client.post(f"/api/v1/image-assets/{asset['id']}/slides/1/looks", json={"effects": {**EFFECTS, "glow": False, "grid": False, "dual_tone": True}}, headers=_h(ws_id))
+    res = await client.post(f"/api/v1/image-assets/{asset['id']}/looks", data=_looks_form(EFFECTS), headers=_h(ws_id))
+    assert [sl["effects"]["dual_tone"] for sl in res.json()["slides"]] == [False, False]
+    assert [sl["effects"]["glow"] for sl in res.json()["slides"]] == [True, True]
+
+
+async def test_looks_can_name_the_pictures_and_bad_requests_change_nothing(signup_user, stubs, served):  # noqa: F811
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _pack(client, ws_id, brand_id, 3)
+    url = f"/api/v1/image-assets/{asset['id']}/looks"
+    some = await client.post(url, data=_looks_form(EFFECTS, slide_numbers=[1, 3]), headers=_h(ws_id))
+    assert some.status_code == 200
+    glow = {sl["slide_number"]: sl["effects"].get("glow") for sl in some.json()["slides"]}
+    assert glow == {1: True, 2: None, 3: True} or glow[2] in (None, False)
+
+    version = some.json()["version_count"]
+    assert (await client.post(url, data={"effects": "not json"}, headers=_h(ws_id))).status_code == 422
+    assert (await client.post(url, data=_looks_form(EFFECTS, slide_numbers=[99]), headers=_h(ws_id))).status_code == 404
+    assert (await client.post(url, data=_looks_form(EFFECTS, cutout_slides=[1]), headers=_h(ws_id))).status_code == 422  # a cut-out number with no cut-out
+    unchanged = (await client.get(f"/api/v1/image-assets/{asset['id']}", headers=_h(ws_id))).json()
+    assert unchanged["version_count"] == version
+
+
+async def test_a_failing_picture_stops_the_whole_set_and_says_which(signup_user, stubs, served, monkeypatch):  # noqa: F811
+    from fastapi import HTTPException
+
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _pack(client, ws_id, brand_id, 3)
+    real = image_module._draw_and_store
+    calls = {"n": 0}
+
+    async def flaky(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise HTTPException(status_code=503, detail="Removing the background isn't available right now.")
+        return await real(**kwargs)
+
+    monkeypatch.setattr(image_module, "_draw_and_store", flaky)
+    res = await client.post(f"/api/v1/image-assets/{asset['id']}/looks", data=_looks_form(EFFECTS), headers=_h(ws_id))
+    assert res.status_code == 503 and res.json()["detail"].startswith("Picture 2:")
+    after = (await client.get(f"/api/v1/image-assets/{asset['id']}", headers=_h(ws_id))).json()
+    assert after["version_count"] == asset["version_count"], "nothing is saved when one picture fails"
+    assert all(not sl["effects"].get("glow") for sl in after["slides"])
