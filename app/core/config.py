@@ -304,8 +304,13 @@ class Settings(BaseSettings):
     # ── Publish Pipeline ──────────────────────────────────────────────────
     # Max retries before supervisor flags a post for human review
     PUBLISH_MAX_RETRIES: int = 3
-    # Longest script one narration is made from. Our own guard against a runaway request, not a provider limit.
-    AUDIO_SCRIPT_MAX_CHARS: int = 15000
+    # Typing suggestions (see app/pipelines/suggest.py): how many AI continuations one member may ask for in a day, and in all for the
+    # whole app in a minute. Past either, only the member's own words and their brand's words are suggested (no AI call).
+    SUGGEST_DAILY_CAP: int = 150
+    SUGGEST_APP_PER_MINUTE: int = 25
+    # Longest script one narration is made from: about 30 minutes of speech (the longest recording the app assembles). Our own guard
+    # against a runaway request, not a provider limit; a long script is read in parts (media/speech_chunks.py).
+    AUDIO_SCRIPT_MAX_CHARS: int = 30000
     # On (owner decision 2026-10-03): a post in one non-English language under the brand's own tone keeps English brand, product,
     # technical and business terms in English, translates everyday words, and keeps any word native speakers normally say in
     # English. Switch off with ENGLISH_TERMS_STAY_ENGLISH=false.

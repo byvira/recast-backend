@@ -107,6 +107,8 @@ class UserUpdateBody(BaseModel):
     language: Optional[str] = Field(None, max_length=16)
     preferred_platforms: Optional[list[str]] = Field(None, max_length=30)
     default_workspace_id: Optional[str] = None   # must be a workspace the caller belongs to
+    # Grey suggestions while typing in text boxes. On unless the member turns it off.
+    prompt_suggestions: Optional[bool] = None
 
     @field_validator("website", "avatar_url")
     @classmethod
@@ -201,6 +203,7 @@ class UserProfileResponse(BaseModel):
     # same UX-nicety-only caveat as is_master_admin above; the real gate is
     # app.core.auth.require_platform_staff.
     is_platform_staff:   bool = False
+    prompt_suggestions:  bool = True
 
 
 class PublicProfileResponse(BaseModel):

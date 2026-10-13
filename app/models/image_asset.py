@@ -112,6 +112,13 @@ class Slide(BaseModel):
     # finished picture, drawn from these. Slides made before the editor existed have neither and stay as they were.
     background_media_id: Optional[str] = None
     layers: list[Layer] = []
+    # The drawing size in pixels for a slide with no layout (a picture the member uploaded keeps its own shape). A slide made
+    # from a layout takes its size from the layout.
+    width: Optional[int] = None
+    height: Optional[int] = None
+    # True for a picture made before the editor existed once it has been edited: its backdrop is the finished picture, words
+    # included, because the clean picture was never kept.
+    baked_text: bool = False
 
 
 class CommentPin(BaseModel):

@@ -199,17 +199,45 @@ async def _fetch_layer_assets(layers: list[Layer], brand: dict, workspace_id: st
     return {lid: data for lid, data in await asyncio.gather(*(one(layer) for layer in wanted)) if data}
 
 
+def _scaled_size(picture: bytes) -> tuple[int, int]:
+    """A picture's own shape, kept to a sensible size (a very large one is scaled down to 4096 on its long side)."""
+    with Image.open(io.BytesIO(picture)) as source:
+        width, height = source.size
+    scale = min(1.0, 4096 / max(width, height))
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _slide_canvas(slide: Slide, picture: Optional[bytes]) -> tuple[int, int]:
+    """The size a slide is drawn at: its layout's size, else the size saved for it, else its own picture's shape."""
+    if slide.layout is not None:
+        return LAYOUT_DIMS[slide.layout]
+    if slide.width and slide.height:
+        return slide.width, slide.height
+    if picture:
+        return _scaled_size(picture)
+    raise HTTPException(status_code=404, detail="This picture's file couldn't be found.")
+
+
 async def _draw_and_store(
     *, size: tuple[int, int], background_bytes: Optional[bytes], layers: list[Layer], brand: dict, brand_tokens: BrandTokens,
-    workspace_id: str, user_id: str, effects: Optional[dict] = None,
+    workspace_id: str, user_id: str, effects: Optional[dict] = None, cutout_bytes: Optional[bytes] = None,
 ) -> MediaAsset:
     assets = await _fetch_layer_assets(layers, brand, workspace_id)
     if background_bytes and (effects or {}).get("remove_background"):
         # The subject stands on the brand colour. The stored picture is never changed, so switching this off again brings the
-        # original background back.
+        # original background back. The cutout is normally made in the member's browser (it needs no server memory); this
+        # server makes it only when the request came without one.
         from app.pipelines.media import background_removal
 
-        cutout = await run_heavy(background_removal.cut_out, background_bytes)
+        if cutout_bytes:
+            cutout = await run_heavy(background_removal.fit_cutout, cutout_bytes, background_bytes)
+        else:
+            cutout = await run_heavy(background_removal.cut_out, background_bytes)
+        if not cutout and cutout_bytes:
+            raise HTTPException(
+                status_code=422,
+                detail="We couldn't find a clear subject to cut out of this picture. Try a picture with one main subject.",
+            )
         if not cutout:
             raise HTTPException(
                 status_code=503,
@@ -836,6 +864,7 @@ async def upload_image_asset(
     # it shows. A short description (best-effort) becomes its alt text and
     # the text Remy and Odette read.
     description = await _describe_uploaded_image(contents, file.content_type, ctx.workspace_id)
+    canvas_size = _scaled_size(contents)
 
     asset_id = str(uuid4())
     asset = ImageAsset(
@@ -854,6 +883,8 @@ async def upload_image_asset(
                 title=title,
                 slide_type="upload",
                 media_id=media.id,
+                width=canvas_size[0],
+                height=canvas_size[1],
             )
         ],
         approval_status=ImageApprovalStatus.PENDING,
@@ -1127,8 +1158,6 @@ async def _slide_for_editing(image_asset_id: str, slide_number: int, workspace_i
     slide = next((sl for sl in asset.slides if sl.slide_number == slide_number), None)
     if slide is None:
         raise HTTPException(status_code=404, detail="Slide not found.")
-    if slide.layout is None:
-        raise HTTPException(status_code=400, detail="This picture was uploaded, not designed here, so it has no layers to edit.")
     brand = await _get_brand_profile(asset.brand_id, workspace_id)
     return asset, slide, brand
 
@@ -1136,10 +1165,9 @@ async def _slide_for_editing(image_asset_id: str, slide_number: int, workspace_i
 async def _redraw_slide(asset: ImageAsset, slide: Slide, layers: list[Layer], brand: dict, ctx: WorkspaceContext, action: str) -> ImageAsset:
     """Draws the given layers over the slide's clean picture, stores the result and saves it as a new version. Slides made
     before the editor existed have no clean picture, so their finished picture (words and all) is used as the backdrop."""
-    assert slide.layout is not None
-    size = LAYOUT_DIMS[slide.layout]
     backdrop_id = slide.background_media_id or slide.media_id
     background = await _media_bytes(backdrop_id, ctx.workspace_id)
+    size = _slide_canvas(slide, background)
     if backdrop_id and background is None:
         # The picture exists but could not be fetched right now. Redrawing without it would save a flat colour card as the new version
         # and lose the real picture, so nothing is changed.
@@ -1147,10 +1175,17 @@ async def _redraw_slide(asset: ImageAsset, slide: Slide, layers: list[Layer], br
     brand_tokens = _brand_tokens_from(brand)
     media = await _draw_and_store(size=size, background_bytes=background, layers=layers, brand=brand, brand_tokens=brand_tokens,
                                   workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=slide.effects)
-    updated = [
-        sl.model_copy(update={"media_id": media.id, "layers": layers}) if sl.slide_number == slide.slide_number else sl
-        for sl in asset.slides
-    ]
+    change: dict = {"media_id": media.id, "layers": layers}
+    if slide.layout is None:
+        # An uploaded picture is its own clean picture: it is kept as the backdrop (so the next edit draws over it, not over
+        # the finished picture) and its drawing size is kept with it.
+        change.update({"background_media_id": backdrop_id, "width": size[0], "height": size[1]})
+    elif not slide.background_media_id:
+        # A picture made before the editor existed has no clean picture, only the finished one with its words in it. That is kept as
+        # the backdrop, so the next edit draws over it and not over the last edit, and it is marked so the words are known to be part
+        # of the picture.
+        change.update({"background_media_id": backdrop_id, "baked_text": True})
+    updated = [sl.model_copy(update=change) if sl.slide_number == slide.slide_number else sl for sl in asset.slides]
     doc = await _bump_version(asset.id, ctx.workspace_id, updated, action, ctx.user_id, expected_version=asset.version_count)
     return ImageAsset(**doc)
 
@@ -1188,8 +1223,14 @@ async def reset_slide_layers(
     """Goes back to the design the picture started with (headline, band, accent bar, logo), rebuilt from the slide's own
     text settings. Kept as a new version, so the edited design can be restored."""
     asset, slide, brand = await _slide_for_editing(image_asset_id, slide_number, ctx.workspace_id)
+    if slide.layout is None or slide.baked_text:
+        # An uploaded picture (or one made before the editor existed) starts with no layers: starting again takes every edit off and
+        # shows the picture as it was.
+        if not slide.background_media_id:
+            raise HTTPException(status_code=400, detail="This picture hasn't been edited yet, so there is nothing to start again from.")
+        return await _redraw_slide(asset, slide, [], brand, ctx, "design_reset")
     if not slide.background_media_id:
-        raise HTTPException(status_code=400, detail="This picture was made before the editor existed, so there is no clean picture to rebuild from.")
+        raise HTTPException(status_code=400, detail="This picture hasn't been edited yet, so there is nothing to start again from.")
     tc = slide.text_content or {}
     visual_identity = brand.get("visual_identity") or {}
     layers = default_layers(
@@ -1310,6 +1351,40 @@ async def apply_looks(
     """Draws the chosen looks (glow, two-tone wash, grid, Remove Background, rounded corners) on a picture that already exists,
     including one the member uploaded. The original picture is kept as the slide's backdrop, so applying again with different
     looks, or with none, always starts from it. No AI call is made. Kept as a new version."""
+    return await _apply_looks(request, image_asset_id, slide_number, body.effects.model_dump(), ctx)
+
+
+@router.post("/{image_asset_id}/slides/{slide_number}/looks/cutout", response_model=ImageAsset)
+@limiter.limit("20/minute")
+async def apply_looks_with_cutout(
+    request: Request,
+    image_asset_id: str,
+    slide_number: int,
+    effects: str = Form(...),
+    cutout: UploadFile = File(...),
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> ImageAsset:
+    """The same as /looks, for Remove Background made in the member's browser: the picture's subject (a PNG with a transparent
+    background) comes with the request, and the server only places it on the brand colour. This is how Remove Background works on a
+    small server, because the cutout itself needs no server memory."""
+    import json
+
+    from app.shared.uploads import assert_image_size, read_limited
+
+    try:
+        parsed = SlideEffectsRequest(**json.loads(effects)).model_dump()
+    except Exception as exc:  # noqa: BLE001 - any malformed value is the same answer
+        raise HTTPException(status_code=422, detail="The looks could not be read. Try again.") from exc
+    if (cutout.content_type or "") != "image/png":
+        raise HTTPException(status_code=400, detail="The cut-out has to be a PNG picture.")
+    data = await read_limited(cutout, limits.FETCHED_IMAGE_MAX_BYTES, detail="That cut-out is too large.")
+    assert_image_size(data)
+    return await _apply_looks(request, image_asset_id, slide_number, parsed, ctx, cutout_bytes=data)
+
+
+async def _apply_looks(
+    request: Request, image_asset_id: str, slide_number: int, effects: dict, ctx: WorkspaceContext, cutout_bytes: Optional[bytes] = None,
+) -> ImageAsset:
     doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Image asset not found.")
@@ -1321,18 +1396,11 @@ async def apply_looks(
     original = await _media_bytes(original_id, ctx.workspace_id)
     if not original:
         raise HTTPException(status_code=404, detail="This picture's file couldn't be found.")
-    if slide.layout is not None:
-        size = LAYOUT_DIMS[slide.layout]
-    else:
-        # A picture the member uploaded keeps its own shape; a very large one is kept to a sensible size.
-        with Image.open(io.BytesIO(original)) as source:
-            width, height = source.size
-        scale = min(1.0, 4096 / max(width, height))
-        size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    size = _slide_canvas(slide, original)
     brand = await _get_brand_profile(asset.brand_id, ctx.workspace_id)
     drawing = asyncio.ensure_future(_draw_and_store(
         size=size, background_bytes=original, layers=slide.layers, brand=brand, brand_tokens=_brand_tokens_from(brand),
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=body.effects.model_dump(),
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=effects, cutout_bytes=cutout_bytes,
     ))
     # The member can stop this (a newer choice, leaving the page): when the browser hangs up, the drawing is stopped too and
     # nothing is saved.
@@ -1353,7 +1421,7 @@ async def apply_looks(
     finally:
         watcher.cancel()
     updated = [
-        sl.model_copy(update={"media_id": media.id, "background_media_id": original_id, "effects": body.effects.model_dump()})
+        sl.model_copy(update={"media_id": media.id, "background_media_id": original_id, "effects": effects})
         if sl.slide_number == slide_number else sl
         for sl in asset.slides
     ]
@@ -1544,6 +1612,28 @@ async def delete_image_comment(
         {"$pull": {"comments": {"id": comment_id}}, "$set": {"updated_at": datetime.now(timezone.utc)}},
     )
     return Response(status_code=204)
+
+
+@router.get("/{image_asset_id}/slides/{slide_number}/original")
+@limiter.limit("60/minute")
+async def get_slide_original(
+    request: Request,
+    image_asset_id: str,
+    slide_number: int,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> Response:
+    """The slide's original picture (the one the looks are drawn from), so the browser can cut the subject out of it without
+    fetching from the storage address directly. Only this workspace's own pictures can be read here."""
+    doc = await image_assets.find_one({"id": image_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Image asset not found.")
+    slide = next((sl for sl in ImageAsset(**doc).slides if sl.slide_number == slide_number), None)
+    if slide is None:
+        raise HTTPException(status_code=404, detail="Slide not found.")
+    data = await _media_bytes(slide.background_media_id or slide.media_id, ctx.workspace_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="This picture's file couldn't be found.")
+    return Response(content=data, media_type="application/octet-stream", headers={"Cache-Control": "private, max-age=300"})
 
 
 @router.get("/{image_asset_id}/contrast-check", response_model=list[ContrastResult])

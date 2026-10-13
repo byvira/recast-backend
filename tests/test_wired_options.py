@@ -219,6 +219,35 @@ def test_background_removal_makes_a_real_cutout():
     assert Image.open(io.BytesIO(out)).mode == "RGBA"
 
 
+def _rgba_png(size, color):
+    buf = io.BytesIO()
+    Image.new("RGBA", size, color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_a_browser_cutout_is_fitted_to_the_original_size():
+    from app.pipelines.media.background_removal import fit_cutout
+
+    original = _rgba_png((200, 100), (10, 10, 10, 255))
+    cut = Image.new("RGBA", (100, 50), (0, 0, 0, 0))
+    ImageDraw.Draw(cut).ellipse((20, 10, 80, 40), fill=(200, 30, 30, 255))
+    buf = io.BytesIO()
+    cut.save(buf, "PNG")
+    fitted = fit_cutout(buf.getvalue(), original)
+    assert fitted is not None
+    out = Image.open(io.BytesIO(fitted))
+    assert out.size == (200, 100) and out.mode == "RGBA"
+
+
+def test_a_cutout_with_nothing_cut_or_nothing_found_is_refused():
+    from app.pipelines.media.background_removal import fit_cutout
+
+    original = _rgba_png((50, 50), (10, 10, 10, 255))
+    assert fit_cutout(_rgba_png((50, 50), (1, 2, 3, 255)), original) is None  # all visible: nothing was cut out
+    assert fit_cutout(_rgba_png((50, 50), (1, 2, 3, 0)), original) is None  # all gone: no subject found
+    assert fit_cutout(b"not a picture", original) is None
+
+
 def test_the_looks_change_a_picture_and_none_leaves_it_alone():
     from app.pipelines.media.image_effects import apply_effects
 

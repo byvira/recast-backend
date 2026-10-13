@@ -436,7 +436,7 @@ def respell(text: str, lexicon: Optional[MemberLexicon]) -> str:
 _elevenlabs_skip_until = 0.0  # time.monotonic() until which ElevenLabs is not tried after a plan or key refusal
 
 
-async def _synthesize(
+async def _synthesize_part(
     *,
     text: str,
     voice_settings: MemberVoiceSettings,
@@ -526,6 +526,54 @@ async def _synthesize(
         if settings.ELEVENLABS_API_KEY:
             note_fallback_failed("deepgram", "speech", "text_to_speech", "ElevenLabs failed and the Deepgram fallback failed too.")
         return None
+
+
+async def _synthesize(
+    *,
+    text: str,
+    voice_settings: MemberVoiceSettings,
+    lexicon: Optional[MemberLexicon],
+    workspace_id: str,
+    user_id: str,
+    timed: bool,
+    language: Optional[str] = None,
+) -> Optional[SpeechResult]:
+    """One narration from a script of any length the app accepts. A script a voice service can take in one request goes as it
+    is; a longer one is cut at paragraph and sentence ends (speech_chunks), read part by part in order, and joined: the audio
+    end to end, and every word's time moved by the length of the parts before it. If any part cannot be made the whole
+    narration is not made, so there is never a recording with a missing stretch."""
+    from app.pipelines.media import duration
+    from app.pipelines.media.speech_chunks import split_for_speech
+
+    parts = split_for_speech(text)
+    if len(parts) <= 1:
+        return await _synthesize_part(
+            text=text, voice_settings=voice_settings, lexicon=lexicon, workspace_id=workspace_id,
+            user_id=user_id, timed=timed, language=language,
+        )
+
+    audio = b""
+    words: list[TranscriptWord] = []
+    timings_complete = timed
+    elapsed = 0.0
+    for number, part in enumerate(parts, start=1):
+        result = await _synthesize_part(
+            text=part, voice_settings=voice_settings, lexicon=lexicon, workspace_id=workspace_id,
+            user_id=user_id, timed=timed, language=language,
+        )
+        if result is None:
+            logger.warning("Narration stopped at part %d of %d for workspace %s.", number, len(parts), workspace_id)
+            return None
+        audio += result.audio
+        length = duration.audio_duration_seconds(result.audio) or duration.duration_from_words(result.words or []) or 0.0
+        if result.words:
+            words.extend(w.model_copy(update={"start_s": round(w.start_s + elapsed, 3), "end_s": round(w.end_s + elapsed, 3)}) for w in result.words)
+        else:
+            timings_complete = False
+        elapsed += length
+    # Word times from only some of the parts would put captions out of step with the voice, so they are kept only when every
+    # part has them.
+    return SpeechResult(audio=audio, words=words if timings_complete and words else None)
 
 
 async def synthesize_speech(

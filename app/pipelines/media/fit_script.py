@@ -6,6 +6,7 @@ cannot be expanded well, it is returned unchanged with the reason, never a bad r
 
 from __future__ import annotations
 
+from app.core.config import settings
 from app.pipelines.text.claims import unsupported_claims
 import logging
 from typing import Awaitable, Callable, Optional
@@ -16,7 +17,8 @@ from app.shared.localized_strings import clean_translation, looks_leaked
 
 logger = logging.getLogger(__name__)
 
-MAX_SCRIPT_CHARS = 20000
+# The same ceiling as narration itself, so a script that can be fitted can also be voiced.
+MAX_SCRIPT_CHARS = settings.AUDIO_SCRIPT_MAX_CHARS
 # A rewrite is accepted when it lands within these bounds of the target length.
 LOWEST_FIT = 0.85
 HIGHEST_FIT = 1.15

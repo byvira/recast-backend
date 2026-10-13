@@ -65,6 +65,7 @@ async def _build_profile_response(
         created_at=user["created_at"],
         is_master_admin=user.get("is_master_admin", False),
         is_platform_staff=user.get("is_platform_staff", False),
+        prompt_suggestions=user.get("prompt_suggestions", True) is not False,
     )
 
 
@@ -121,6 +122,9 @@ async def update_my_profile(
 
     if body.preferred_platforms is not None:
         update_fields["preferred_platforms"] = body.preferred_platforms
+
+    if body.prompt_suggestions is not None:
+        update_fields["prompt_suggestions"] = body.prompt_suggestions
 
     if body.username is not None:
         new_username = body.username.lower()

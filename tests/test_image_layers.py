@@ -177,9 +177,58 @@ async def test_reset_goes_back_to_the_starting_design(signup_user, stubs, served
     assert res.json()["version_count"] == 3
 
 
-async def test_an_uploaded_picture_has_no_layers_to_edit(signup_user, stubs, served):  # noqa: F811
-    client, _, ws_id, brand_id = await _setup(signup_user)
-    up = await client.post("/api/v1/image-assets/upload", data={"title": "Photo", "brand_id": brand_id}, files={"file": ("p.png", _png(), "image/png")}, headers=_h(ws_id))
+async def _upload(client, ws_id, brand_id, size=(300, 200)):
+    up = await client.post("/api/v1/image-assets/upload", data={"title": "Photo", "brand_id": brand_id}, files={"file": ("p.png", _png(size), "image/png")}, headers=_h(ws_id))
     assert up.status_code == 201, up.text
-    res = await client.put(f"/api/v1/image-assets/{up.json()['id']}/slides/1/layers", json={"layers": []}, headers=_h(ws_id))
-    assert res.status_code == 400 and "uploaded" in res.json()["detail"]
+    return up.json()
+
+
+async def test_an_uploaded_picture_keeps_its_own_shape_and_can_be_edited(signup_user, stubs, served):  # noqa: F811
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _upload(client, ws_id, brand_id)
+    slide = asset["slides"][0]
+    assert (slide["width"], slide["height"]) == (300, 200) and slide["layout"] is None and slide["layers"] == []
+
+    layers = [{"id": "t1", "type": "text", "text": "Hello", "x": 0.1, "y": 0.1, "w": 0.5, "size": 0.08, "color": "#FFFFFF"}]
+    res = await client.put(f"/api/v1/image-assets/{asset['id']}/slides/1/layers", json={"layers": layers}, headers=_h(ws_id))
+    assert res.status_code == 200, res.text
+    edited = res.json()["slides"][0]
+    # the uploaded picture is kept as the backdrop and the finished picture is a new file drawn at the same shape
+    assert edited["background_media_id"] == slide["media_id"] and edited["media_id"] != slide["media_id"]
+    assert [layer["text"] for layer in edited["layers"]] == ["Hello"]
+    assert Image.open(io.BytesIO(stubs["uploads"][-1])).size == (300, 200)
+
+    # saving again draws over the original, never over the finished picture (so nothing is drawn twice)
+    again = await client.put(f"/api/v1/image-assets/{asset['id']}/slides/1/layers", json={"layers": layers}, headers=_h(ws_id))
+    assert again.json()["slides"][0]["background_media_id"] == slide["media_id"]
+
+
+async def test_starting_again_on_an_uploaded_picture_takes_every_edit_off(signup_user, stubs, served):  # noqa: F811
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = await _upload(client, ws_id, brand_id)
+    base = f"/api/v1/image-assets/{asset['id']}/slides/1/layers"
+    assert (await client.post(f"{base}/reset", headers=_h(ws_id))).status_code == 400  # nothing edited yet
+    await client.put(base, json={"layers": [{"id": "t1", "type": "text", "text": "Hi"}]}, headers=_h(ws_id))
+    res = await client.post(f"{base}/reset", headers=_h(ws_id))
+    assert res.status_code == 200, res.text
+    assert res.json()["slides"][0]["layers"] == []
+
+
+async def test_a_picture_made_before_the_editor_is_not_drawn_over_twice(signup_user, stubs, served):  # noqa: F811
+    from app.db.mongo import image_assets
+
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    asset = (await _generate(client, ws_id, brand_id)).json()
+    finished = asset["slides"][0]["media_id"]
+    # make it look like a picture from before the editor: a finished picture only, no clean backdrop, no layers
+    await image_assets.update_one({"id": asset["id"]}, {"$set": {"slides.0.background_media_id": None, "slides.0.layers": []}})
+    base = f"/api/v1/image-assets/{asset['id']}/slides/1/layers"
+    layers = [{"id": "t1", "type": "text", "text": "Added"}]
+
+    first = (await client.put(base, json={"layers": layers}, headers=_h(ws_id))).json()["slides"][0]
+    assert first["background_media_id"] == finished and first["baked_text"] is True and first["media_id"] != finished
+    second = (await client.put(base, json={"layers": layers}, headers=_h(ws_id))).json()["slides"][0]
+    assert second["background_media_id"] == finished, "a second save must draw over the original, not over the first edit"
+
+    reset = await client.post(f"{base}/reset", headers=_h(ws_id))
+    assert reset.status_code == 200 and reset.json()["slides"][0]["layers"] == [], "no second headline stacked on the old words"

@@ -126,3 +126,24 @@ def on_colour(cutout_png: bytes, colour_hex: str) -> bytes:
     out = io.BytesIO()
     Image.alpha_composite(base, subject).convert("RGB").save(out, format="PNG")
     return out.getvalue()
+
+
+def fit_cutout(cutout_png: bytes, original_bytes: bytes) -> Optional[bytes]:
+    """A cutout made elsewhere (the member's browser), as PNG bytes the size of the original picture, or None when it is not a
+    usable picture with a see-through background."""
+    try:
+        with Image.open(io.BytesIO(original_bytes)) as original:
+            size = original.size
+        with Image.open(io.BytesIO(cutout_png)) as cutout:
+            subject = cutout.convert("RGBA")
+        low, high = subject.getchannel("A").getextrema()
+        if low == 255 or high == 0:
+            return None  # nothing was cut out (all visible), or nothing was found (all gone)
+        if subject.size != size:
+            subject = subject.resize(size, Image.LANCZOS)
+        out = io.BytesIO()
+        subject.save(out, format="PNG")
+        return out.getvalue()
+    except Exception as exc:  # noqa: BLE001 - reported to the member, never raised from here
+        logger.warning("A browser cutout could not be used: %s", exc)
+        return None
