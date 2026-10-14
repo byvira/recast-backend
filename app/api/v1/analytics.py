@@ -336,6 +336,57 @@ async def save_self_reported_metrics(
     return {"piece_id": piece_id, "source": "self_reported", "metrics": values, "saved_at": iso_utc(now)}
 
 
+#: The kinds of assets that carry results (video joins when its posts can attach a finished video, see the video plan).
+_ASSET_COLLECTIONS = ("image", "audio")
+_ENGAGEMENT_FIELDS = ("likes", "comments", "shares", "reposts", "saves", "clicks")
+
+
+@router.get("/assets/{asset_type}/top")
+@limiter.limit("30/minute")
+async def top_assets(
+    request: Request,
+    asset_type: str,
+    limit: int = Query(10, ge=1, le=50),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """Which pictures or recordings did best, ranked within their own kind. An asset's results are the results of the posts it
+    went out in; only assets with at least one measured post are ranked, best average engagement rate first, so a library tab can
+    show what worked and a new draft can start from it."""
+    from fastapi import HTTPException
+
+    from app.db.mongo import audio_assets, image_assets
+
+    if asset_type not in _ASSET_COLLECTIONS:
+        raise HTTPException(status_code=404, detail="Results are available for pictures (image) and recordings (audio).")
+    collection = {"image": image_assets, "audio": audio_assets}[asset_type]
+    rows = await collection.find(
+        {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "linked_pieces.0": {"$exists": True}},
+        {"id": 1, "title": 1, "linked_pieces": 1, "media_id": 1},
+    ).limit(500).to_list(length=500)
+    piece_ids = list({l.get("piece_id") for r in rows for l in (r.get("linked_pieces") or [])[:100] if l.get("piece_id")})
+    if not piece_ids:
+        return {"asset_type": asset_type, "measured": 0, "items": []}
+    metrics = {
+        m["post_id"]: m
+        async for m in get_db()["post_metrics"].find({"workspace_id": ctx.workspace_id, "post_id": {"$in": piece_ids}})
+    }
+    ranked: list[dict] = []
+    for r in rows:
+        mine = [metrics[l["piece_id"]] for l in (r.get("linked_pieces") or [])[:100] if l.get("piece_id") in metrics]
+        if not mine:
+            continue
+        rates = [float(m.get("engagement_rate") or 0.0) for m in mine]
+        ranked.append({
+            "asset_id": r["id"], "title": r.get("title") or "", "measured_posts": len(mine),
+            "average_engagement_rate": round(sum(rates) / len(rates), 3),
+            "engagement": sum(int(m.get(f) or 0) for m in mine for f in _ENGAGEMENT_FIELDS),
+            "impressions": sum(int(m.get("impressions") or 0) for m in mine),
+        })
+    ranked.sort(key=lambda x: (x["average_engagement_rate"], x["engagement"]), reverse=True)
+    items = [{**item, "rank": i + 1} for i, item in enumerate(ranked[:limit])]
+    return {"asset_type": asset_type, "measured": len(ranked), "items": items}
+
+
 @router.get("/assets/{asset_type}/{asset_id}")
 @limiter.limit("60/minute")
 async def asset_performance(
@@ -451,6 +502,7 @@ TOP_PERFORMER_CHECKPOINT = "24h"
 @limiter.limit("30/minute")
 async def top_performers(
     request: Request,
+    pipeline: Optional[str] = Query(None, max_length=20),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """The workspace's top 5% of published posts by engagement rate,
@@ -466,9 +518,12 @@ async def top_performers(
     import math
     from app.db.mongo import post_metric_checkpoints
 
+    flt: dict = {"workspace_id": ctx.workspace_id, "checkpoint": TOP_PERFORMER_CHECKPOINT}
+    if pipeline:
+        # ranked within its own medium: the checkpoints carry the pipeline their post came from
+        flt["pipeline_type"] = pipeline
     rows = await post_metric_checkpoints.find(
-        {"workspace_id": ctx.workspace_id, "checkpoint": TOP_PERFORMER_CHECKPOINT},
-        {"piece_id": 1, "metrics.engagement_rate": 1, "platform": 1},
+        flt, {"piece_id": 1, "metrics.engagement_rate": 1, "platform": 1},
     ).to_list(length=5000)
     ranked = sorted(
         rows, key=lambda r: float((r.get("metrics") or {}).get("engagement_rate") or 0.0), reverse=True,
