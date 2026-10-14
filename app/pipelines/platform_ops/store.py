@@ -1,7 +1,9 @@
 """The platform_ops record: one document per registry key.
 
 No document means "derived defaults" (see derived_default), so deploying this module changes nothing for a platform
-nobody has touched: an active or partial platform is live for everyone, a planned one is not started.
+nobody has touched: an active or partial platform is live for everyone, a planned one is not started. A platform whose provider has
+not yet approved Ekavo's app (a review or audit is still pending) starts in setup, so only the Ops workspace and workspaces that
+already use it see it, until Ops opens it.
 Writes carry the version they were based on, so two staff members cannot overwrite each other.
 """
 
@@ -13,6 +15,7 @@ from typing import Any, Optional
 
 from pymongo.errors import DuplicateKeyError
 
+from app.core.config import settings
 from app.db.mongo import platform_ops
 from app.platforms.base import PlatformDefinition
 
@@ -25,12 +28,24 @@ class VersionConflict(Exception):
     """The record changed since the caller read it."""
 
 
+def provider_approved(definition: PlatformDefinition) -> bool:
+    """False while the provider's review of Ekavo's app is still pending (the platform is marked audit_required). YouTube is
+    lifted by its own audit setting; every other platform is opened from Ops."""
+    if not definition.audit_required:
+        return True
+    return definition.key == "youtube" and settings.YOUTUBE_API_AUDIT_PASSED
+
+
 def derived_default(definition: PlatformDefinition) -> dict[str, Any]:
     """The record a platform behaves from when Ops has never touched it."""
     live = definition.status in ("active", "partial")
+    if live and not provider_approved(definition):
+        stage = "in_setup"
+    else:
+        stage = "live" if live else "not_started"
     return {
         "platform_key": definition.key,
-        "ops_stage": "live" if live else "not_started",
+        "ops_stage": stage,
         "rollout": {"scope": "everyone" if live else "ops_only", "workspace_ids": []},
         "auth_test": None,
         "facts_verified": None,

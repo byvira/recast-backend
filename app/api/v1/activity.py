@@ -248,7 +248,28 @@ async def _recent_failures(workspace_id: str) -> list[dict]:
 
     rows = await runs_collection.find(
         {"workspace_id": workspace_id, "status": "failed", "finished_at": {"$gte": since}}, {"_id": 0},
-    ).sort("finished_at", -1).limit(5).to_list(length=5)
+    ).sort("finished_at", -1).limit(30).to_list(length=30)
+    # The same piece of work that failed more than once is one line, and one that was started again and finished is not a failure any more.
+    done_after: dict[tuple[str, str], object] = {}
+    for r in await runs_collection.find(
+        {"workspace_id": workspace_id, "status": "done", "finished_at": {"$gte": since}}, {"kind": 1, "title": 1, "finished_at": 1, "_id": 0},
+    ).to_list(length=200):
+        key = (r["kind"], _tidy_title(r.get("title", "")))
+        done_after[key] = max(done_after.get(key, r["finished_at"]), r["finished_at"])
+    seen: set[tuple[str, str, str]] = set()
+    kept: list[dict] = []
+    for r in rows:
+        title = _tidy_title(r.get("title", ""))
+        finished = done_after.get((r["kind"], title))
+        if finished is not None and finished > r["finished_at"]:
+            continue
+        signature = (r["kind"], title, r.get("error") or "")
+        if signature in seen:
+            continue
+        seen.add(signature)
+        kept.append(r)
+        if len(kept) == 5:
+            break
     return [
         {
             "id": r["id"],
@@ -258,7 +279,7 @@ async def _recent_failures(workspace_id: str) -> list[dict]:
             "finishedAt": _iso(r.get("finished_at")),
             "href": r.get("href") or _RUN_PAGES.get(r["kind"]),
         }
-        for r in rows
+        for r in kept
     ]
 
 

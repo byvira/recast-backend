@@ -90,7 +90,8 @@ def decide(
     if stage == "not_started":
         return Availability(HIDDEN, "not_started")
     if stage == "in_setup":
-        return Availability(capable, "in_setup") if in_ops_workspace else Availability(HIDDEN, "in_setup")
+        # A workspace that already uses the platform keeps it while the rest of the rollout waits for the provider's approval.
+        return Availability(capable, "in_setup") if (in_ops_workspace or connected) else Availability(HIDDEN, "in_setup")
 
     rollout = ops["rollout"]
     scope = rollout["scope"]
@@ -122,7 +123,7 @@ async def platform_availability(platform_key: str, workspace_id: str) -> Availab
     ops = await get_ops(definition)
     in_ops_workspace = workspace_id in await ops_workspace_ids()
     # Only a platform that could be hidden by the rollout needs to know whether the workspace already uses it.
-    connected = await _is_connected(definition, workspace_id) if ops["ops_stage"] in ("live", "paused", "retired") else False
+    connected = await _is_connected(definition, workspace_id) if ops["ops_stage"] in ("in_setup", "live", "paused", "retired") else False
     return decide(capable, ops, workspace_id, in_ops_workspace, connected)
 
 
