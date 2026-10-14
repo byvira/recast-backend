@@ -136,6 +136,8 @@ class Settings(BaseSettings):
     # 7,200 seconds an hour and 28,800 a day; these sit a little under so the product never runs into the wall.
     VIDEO_TRANSCRIBE_HOURLY_SECONDS: int = 6500
     VIDEO_TRANSCRIBE_DAILY_SECONDS: int = 26000
+    # JSON object that moves a creative prompt to another model tier, e.g. {"edit_plan": "POWERFUL"}. Empty uses the default tier.
+    VIDEO_PROMPT_MODEL_SLOTS: str = ""
     # The biggest source video one upload may be, in MB. Shown on screen. The free storage plan caps one file (believed 100 MB,
     # measured with one deliberate large upload); raise this only after that measurement and after moving to a larger store.
     VIDEO_UPLOAD_MAX_MB: int = 100

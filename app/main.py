@@ -389,6 +389,8 @@ from app.api.v1 import video_analysis as video_analysis_router
 app.include_router(video_analysis_router.router, prefix="/api/v1/video-analysis", tags=["Video analysis"])
 from app.api.v1 import video_covers as video_covers_router
 app.include_router(video_covers_router.router, prefix="/api/v1/video-covers", tags=["Video covers"])
+from app.api.v1 import video_create as video_create_router
+app.include_router(video_create_router.router, prefix="/api/v1/video-create", tags=["Video create"])
 app.include_router(video_transcripts_router.router, prefix="/api/v1/video-transcripts", tags=["Video transcripts"])
 app.include_router(video_projects_router.router, prefix="/api/v1/video-projects", tags=["Video projects"])
 app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])
