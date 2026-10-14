@@ -168,17 +168,25 @@ def _deepgram_can_read(text: str, language: Optional[str] = None) -> bool:
     return detected is None or detected in _DEEPGRAM_LANGUAGE_CODES
 
 
-def _resolve_deepgram_model(voice_settings: MemberVoiceSettings) -> str:
-    """Unlike ElevenLabs, a real universal default is safe here (see
-    _DEEPGRAM_DEFAULT_VOICE's own comment) — only used if tts_voice
-    doesn't already look like a real Aura-2 model name (the
-    `aura-2-{name}-{lang}` shape)."""
+# One real Aura-2 voice per language Deepgram reads, each confirmed to exist on the account (2026-10-14). An English voice reading
+# another language is heard as gibberish (measured: French 0.50, German 0.61, Dutch 0.06, Japanese 0.00 of the words came back).
+_DEEPGRAM_VOICE_FOR_LANGUAGE = {
+    "en": _DEEPGRAM_DEFAULT_VOICE, "es": "aura-2-celeste-es", "fr": "aura-2-agathe-fr", "de": "aura-2-viktoria-de",
+    "it": "aura-2-livia-it", "nl": "aura-2-rhea-nl", "ja": "aura-2-izanami-ja",
+}
+
+
+def _resolve_deepgram_model(voice_settings: MemberVoiceSettings, language: Optional[str] = None) -> str:
+    """Unlike ElevenLabs, a real universal default is safe here (see _DEEPGRAM_DEFAULT_VOICE's own comment). The member's own Aura
+    voice is used when it reads the script's language; otherwise the voice made for that language is, never an English voice reading
+    another language."""
     voice_id = (voice_settings.tts_voice or "").strip()
-    if voice_id.lower() in _PLACEHOLDER_VOICE_IDS:
-        return _DEEPGRAM_DEFAULT_VOICE
-    if voice_id.startswith("aura-"):
-        return voice_id
-    return _DEEPGRAM_DEFAULT_VOICE
+    code = (language or "").strip().lower().split("+")[0].split("-")[0]
+    wanted = _DEEPGRAM_VOICE_FOR_LANGUAGE.get(code)
+    own = voice_id if voice_id.lower().startswith("aura-") else None
+    if own and (not wanted or own.lower().endswith(f"-{code}")):
+        return own
+    return wanted or _DEEPGRAM_DEFAULT_VOICE
 
 
 async def sync_pronunciation_dictionary(
@@ -386,12 +394,12 @@ async def _call_elevenlabs_timed_raw(
     return audio, alignment_to_words(data.get("alignment") or {})
 
 
-async def _call_deepgram(*, text: str, voice_settings: MemberVoiceSettings) -> bytes:
-    async with track("deepgram", _resolve_deepgram_model(voice_settings), feature="text_to_speech"):
-        return await _call_deepgram_raw(text=text, voice_settings=voice_settings)
+async def _call_deepgram(*, text: str, voice_settings: MemberVoiceSettings, language: Optional[str] = None) -> bytes:
+    async with track("deepgram", _resolve_deepgram_model(voice_settings, language), feature="text_to_speech"):
+        return await _call_deepgram_raw(text=text, voice_settings=voice_settings, language=language)
 
 
-async def _call_deepgram_raw(*, text: str, voice_settings: MemberVoiceSettings) -> bytes:
+async def _call_deepgram_raw(*, text: str, voice_settings: MemberVoiceSettings, language: Optional[str] = None) -> bytes:
     """Real Deepgram Aura-2 call — REST API confirmed live 2026-09-26
     (own docs fetch + a real synthesis test, not assumed): `Authorization:
     Token <key>` auth, plain JSON body ({"text": ...}), model/encoding as
@@ -402,7 +410,7 @@ async def _call_deepgram_raw(*, text: str, voice_settings: MemberVoiceSettings) 
     this one's specific to Aura's simpler API surface), not silently
     faked with a made-up parameter.
     """
-    model = _resolve_deepgram_model(voice_settings)
+    model = _resolve_deepgram_model(voice_settings, language)
     headers = {"Authorization": f"Token {settings.DEEPGRAM_API_KEY}", "Content-Type": "application/json"}
     params = {"model": model, "encoding": "mp3"}
 
@@ -518,7 +526,7 @@ async def _synthesize_part(
     try:
         with fallback_scope():
             # Deepgram has no pronunciation dictionary, so the member's pronunciations are applied as plain respelling
-            audio = await _call_deepgram(text=respell(text, lexicon), voice_settings=voice_settings)
+            audio = await _call_deepgram(text=respell(text, lexicon), voice_settings=voice_settings, language=language)
         logger.info("ElevenLabs unavailable — served this narration via the Deepgram fallback.")
         return SpeechResult(audio=audio)
     except Exception as exc:  # noqa: BLE001

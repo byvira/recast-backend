@@ -88,11 +88,11 @@ async def _voice_tools(ctx: WorkspaceContext):
             return settings_obj.model_copy(update={"tts_voice": voices[speaker]})
         return settings_obj
 
-    def make_speak(language_name: Optional[str], voices: Optional[dict[str, str]] = None):
+    def make_speak(language_code: Optional[str], voices: Optional[dict[str, str]] = None):
         async def speak(text: str, speaker: Optional[str] = None) -> Optional[bytes]:
             return await synthesize_speech(
                 text=text, voice_settings=speaker_settings(speaker, voices or {}), lexicon=lexicon, workspace_id=ctx.workspace_id,
-                user_id=ctx.user_id, language=language_name,
+                user_id=ctx.user_id, language=language_code,
             )
         return speak
 
@@ -155,7 +155,7 @@ async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Dep
         try:
             result = await N.make_dub(
                 workspace_id=ctx.workspace_id, user_id=ctx.user_id, media=media, words=words, target_code=code, target_name=name,
-                speak=make_speak(name), store=store, forget=forget, register_note=note, glossary=body.glossary, reporter=reporter,
+                speak=make_speak(code), store=store, forget=forget, register_note=note, glossary=body.glossary, reporter=reporter,
                 keep_original_db=body.keep_original_db, tighten=body.tighten, captions=body.captions,
             )
         except service.RenderFailed as exc:
@@ -308,7 +308,7 @@ async def start_narration(request: Request, body: NarrationBody, ctx: WorkspaceC
         reporter = pipeline_runs.StepReporter(row["id"])
         result = await N.make_narration(
             workspace_id=ctx.workspace_id, user_id=ctx.user_id, media=media, script=script, lines=lines or None,
-            speak=make_speak(name, body.voices), store=store, forget=forget, language=code, fit_to_video=body.fit_to_video,
+            speak=make_speak(code, body.voices), store=store, forget=forget, language=code, fit_to_video=body.fit_to_video,
             original_audio_db=body.original_audio_db, music_url=music_url, captions=body.captions, reporter=reporter,
         )
         return {"data": {"media_id": result["media_id"]}, "href": f"/dashboard/pipelines/video?media={result['media_id']}"}

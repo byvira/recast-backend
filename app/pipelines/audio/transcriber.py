@@ -145,7 +145,12 @@ async def transcribe_audio_detailed(
                 fallback_words = strip_punctuation(fallback_words)
             return fallback_words, deepgram_stt.detected_language(result) or language
         words = getattr(response, "words", None) or []
-        made = [TranscriptWord(word=w.word, start_s=w.start, end_s=w.end) for w in words]
+        # the speech SDK gives each word as an object in some versions and as a plain dictionary in others
+        def _field(w, key):
+            return w.get(key) if isinstance(w, dict) else getattr(w, key, None)
+
+        made = [TranscriptWord(word=_field(w, "word") or "", start_s=float(_field(w, "start") or 0), end_s=float(_field(w, "end") or 0))
+                for w in words if _field(w, "word")]
         if punctuate:
             made = restore_punctuation(made, getattr(response, "text", "") or "")
         return made, getattr(response, "language", None) or language
