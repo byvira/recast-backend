@@ -183,6 +183,7 @@ def _public(doc: Optional[dict]) -> Optional[dict]:
     chunks = doc.get("chunks") or []
     done = sum(1 for c in chunks if c["status"] == "done")
     out = {k: doc.get(k) for k in ("id", "media_id", "status", "language", "duration_s", "word_count", "has_speech", "error", "speakers")}
+    out["speaker_share"] = doc.get("speaker_share") or {}
     out["chunks_total"] = len(chunks)
     out["chunks_done"] = done
     out["chunks_failed"] = sum(1 for c in chunks if c["status"] == "failed" and c["attempts"] >= MAX_CHUNK_ATTEMPTS)
@@ -337,7 +338,16 @@ async def _finish(transcript_id: str) -> dict:
     for page, start in enumerate(range(0, len(words), PAGE_WORDS)):
         await _pages().insert_one({"transcript_id": transcript_id, "page": page, "words": words[start:start + PAGE_WORDS]})
     now = _now()
+    share: dict[str, float] = {}
+    spoken = {}
+    for w in words:
+        if w.get("sp") is not None:
+            spoken[w["sp"]] = spoken.get(w["sp"], 0) + max(0, w["e_ms"] - w["s_ms"])
+    total = sum(spoken.values())
+    if total:
+        share = {f"Speaker {int(k) + 1}" if str(k).isdigit() else str(k): round(v / total, 3) for k, v in sorted(spoken.items())}
     fields: dict[str, Any] = {
+        "speaker_share": share,
         "status": "done" if not exhausted else "partial", "word_count": len(words), "has_speech": len(words) >= 3,
         "finished_at": now, "lease_until": None, "waiting_until": None, "updated_at": now,
         "error": None if not exhausted else f"{len(exhausted)} part{'s' if len(exhausted) != 1 else ''} of this video could not be transcribed.",
