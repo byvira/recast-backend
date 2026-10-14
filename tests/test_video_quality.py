@@ -123,3 +123,11 @@ def test_the_script_scores_recorded_answers_and_blocks_a_drop_with_a_nonzero_exi
     baseline.write_text(json.dumps(base))
     dropped = run("--check")
     assert dropped.returncode == 1 and "hook_writer / en / grounding" in dropped.stdout
+
+
+def test_each_metric_has_its_own_pass_line_and_a_miss_says_which_line_it_missed():
+    table = {"hook_writer": {"en": {"grounding": 0.9, "language": 0.9, "length_fit": 0.8, "platform_fit": None, "time_validity": None}}}
+    out = Q.below_pass_line(table)
+    assert out == ["hook_writer / en / grounding: 0.90 (needs 0.95)", "hook_writer / en / length_fit: 0.80 (needs 0.85)"]
+    assert Q.PASS_LINES["grounding"] > Q.PASS_LINES["length_fit"]
+    assert Q.below_pass_line(table, lines={"grounding": 0.5, "length_fit": 0.5, "language": 0.5}) == []

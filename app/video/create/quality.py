@@ -128,13 +128,20 @@ def drops(current: dict, baseline: dict, *, tolerance: float = 0.05) -> list[str
     return out
 
 
-def below_pass_line(table: dict, *, line: float = 0.8) -> list[str]:
-    """The prompt, language and metric combinations that score under the pass line, so they can be listed for the stronger-model
+#: What share of transcripts must pass, per metric. Set by what a miss costs a member: an invented figure is published by mistake, so
+#: grounding is strict; a length miss only shows a "not fully checked" note.
+PASS_LINES: dict[str, float] = {"grounding": 0.95, "time_validity": 0.98, "platform_fit": 0.95, "language": 0.85, "length_fit": 0.85}
+
+
+def below_pass_line(table: dict, *, lines: Optional[dict[str, float]] = None) -> list[str]:
+    """The prompt, language and metric combinations that score under their pass line, so they can be listed for the stronger-model
     comparison."""
+    lines = lines or PASS_LINES
     out = []
     for prompt, langs in table.items():
         for lang, metrics in langs.items():
             for m, v in metrics.items():
+                line = lines.get(m, 0.85)
                 if v is not None and v < line:
-                    out.append(f"{prompt} / {lang} / {m}: {v:.2f}")
+                    out.append(f"{prompt} / {lang} / {m}: {v:.2f} (needs {line:.2f})")
     return out
