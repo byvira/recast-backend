@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class MediaKind(str, Enum):
@@ -54,6 +54,19 @@ class MediaSource(str, Enum):
     # MediaAsset — a real, distinct derivative, same "never mutate the
     # source" convention as EDITED.
     ENHANCED = "enhanced"
+    # A clip or picture taken from a licensed stock source (Pixabay and the like), with its licence kept on the asset.
+    STOCK = "stock"
+
+
+# Where a piece of media came from, as one value every screen can show: the member's own file, something an AI made, a
+# licensed stock item, a brand asset, or a template. "mixed" is only for a finished video that combines kinds.
+ORIGIN_OWN, ORIGIN_AI, ORIGIN_STOCK, ORIGIN_BRAND, ORIGIN_TEMPLATE, ORIGIN_MIXED = "own", "ai", "stock", "brand", "template", "mixed"
+ORIGIN_OF_SOURCE = {
+    MediaSource.UPLOADED: ORIGIN_OWN, MediaSource.EDITED: ORIGIN_OWN, MediaSource.ENHANCED: ORIGIN_OWN, MediaSource.RENDERED: ORIGIN_OWN,
+    MediaSource.BRAND_ASSET: ORIGIN_BRAND, MediaSource.GENERATED_TEMPLATE: ORIGIN_TEMPLATE,
+    MediaSource.AI_GENERATED: ORIGIN_AI, MediaSource.SYNTHESIZED: ORIGIN_AI,
+    MediaSource.LIBRARY: ORIGIN_STOCK, MediaSource.STOCK: ORIGIN_STOCK,
+}
 
 
 class MediaTranscriptWord(BaseModel):
@@ -123,3 +136,19 @@ class MediaAsset(BaseModel):
     poster_url: Optional[str] = None
     # What the file is (video only, filled when a video is uploaded for editing): length, size, frame rate, turn, HDR, sound.
     probe: Optional[dict] = None
+    # Where this came from: own, ai, stock, brand, template, or mixed (a finished video that combines kinds). Filled from
+    # `source` when not set, so every existing item carries it too. `contains_ai` and `contains_stock` stay true for a finished
+    # video that used any such clip, however much of its own footage is in it.
+    origin: Optional[str] = None
+    contains_ai: Optional[bool] = None
+    contains_stock: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def _fill_origin(self) -> "MediaAsset":
+        if self.origin is None:
+            self.origin = ORIGIN_OF_SOURCE.get(self.source, ORIGIN_OWN)
+        if self.contains_ai is None:
+            self.contains_ai = self.origin == ORIGIN_AI
+        if self.contains_stock is None:
+            self.contains_stock = self.origin == ORIGIN_STOCK
+        return self

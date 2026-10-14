@@ -22,7 +22,7 @@ from pymongo.errors import DuplicateKeyError
 from app.core.config import settings
 from app.db.mongo import get_db, media_assets
 from app.models.media import MediaAsset, MediaKind, MediaSource
-from app.video import storage_params
+from app.video import runs, storage_params
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ def public(doc: Optional[dict]) -> Optional[dict]:
         return None
     out = {k: doc.get(k) for k in (
         "id", "workspace_id", "label", "status", "attempts", "duration_s", "media_id", "error", "error_code",
-        "progress", "cancel_requested", "created_at", "claimed_at", "finished_at",
+        "progress", "cancel_requested", "created_at", "claimed_at", "finished_at", "origin", "project_id", "run_id",
     )}
     for field in ("created_at", "claimed_at", "finished_at"):
         value = _aware(out.get(field))
@@ -128,9 +128,11 @@ def _validate_request(inputs: Any, edit: Any) -> float:
 
 async def enqueue(
     *, workspace_id: str, user_id: str, inputs: dict, edit: dict, output: Optional[dict] = None,
-    label: str = "", idem_key: Optional[str] = None,
+    label: str = "", idem_key: Optional[str] = None, origin: Optional[dict] = None, project_id: Optional[str] = None,
+    href: Optional[str] = None, show_in_activity: bool = False,
 ) -> dict:
-    """Queue one render. The same idempotency key in the same workspace returns the job already made."""
+    """Queue one render. The same idempotency key in the same workspace returns the job already made. With
+    `show_in_activity` the render also appears in the activity dock, Control Tower and the Activity Log as a run."""
     seconds = _validate_request(inputs, edit)
     if idem_key:
         existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key})
@@ -142,13 +144,21 @@ async def enqueue(
         "status": "queued", "attempts": 0, "inputs": inputs, "edit": edit,
         "output": {k: v for k, v in (output or {}).items() if k in OUTPUT_KEYS},
         "duration_s": round(seconds, 3), "created_at": now, "lease_token": None, "lease_expires_at": None,
-        "cancel_requested": False, "progress": {},
+        "cancel_requested": False, "progress": {}, "origin": origin or {"origin": "own", "contains_ai": False, "contains_stock": False},
     }
+    if project_id:
+        doc["project_id"] = project_id
     if idem_key:
         doc["idem_key"] = idem_key
+    if show_in_activity:
+        run = await runs.open_run(
+            workspace_id=workspace_id, user_id=user_id, title=label, project_id=project_id, job_id=doc["id"], href=href,
+        )
+        doc["run_id"] = run["id"]
     try:
         await _jobs().insert_one(dict(doc))
     except DuplicateKeyError:
+        await runs.finish_cancelled(doc.get("run_id"))
         return public(await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key}))
     return public(doc)
 
@@ -163,25 +173,50 @@ async def touch_worker(worker_id: str, version: str, capabilities: dict) -> None
     )
 
 
-async def reap_expired() -> None:
-    """Jobs whose worker stopped reporting go back to the queue; ones that are out of attempts, or that the member
-    cancelled, are closed."""
+QUEUE_EXPIRES_AFTER = timedelta(hours=24)
+
+
+async def _close_job(doc: dict, status: str, *, code: Optional[str] = None, message: Optional[str] = None) -> bool:
+    """End a job that is not finished and tell its run. True when this call is the one that closed it."""
     now = _now()
-    expired = {"status": "claimed", "lease_expires_at": {"$lt": now}}
-    closed = {"lease_token": None, "lease_expires_at": None, "finished_at": now}
-    await _jobs().update_many(
-        {**expired, "cancel_requested": True},
-        {"$set": {"status": "cancelled", **closed}},
+    changed = await _jobs().update_one(
+        {"id": doc["id"], "status": {"$in": ["queued", "claimed"]}},
+        {"$set": {"status": status, "error_code": code, "error": message, "finished_at": now, "lease_token": None, "lease_expires_at": None}},
     )
-    await _jobs().update_many(
-        {**expired, "attempts": {"$gte": settings.VIDEO_WORKER_MAX_ATTEMPTS}},
-        {"$set": {"status": "failed", "error_code": "worker_lost",
-                  "error": "The video could not be finished after several tries. Please try again.", **closed}},
-    )
-    await _jobs().update_many(
-        {**expired, "attempts": {"$lt": settings.VIDEO_WORKER_MAX_ATTEMPTS}},
-        {"$set": {"status": "queued", "lease_token": None, "lease_expires_at": None, "progress": {}}},
-    )
+    if not changed.modified_count:
+        return False
+    if status == "cancelled":
+        await runs.finish_cancelled(doc.get("run_id"))
+    else:
+        await runs.finish_failed(doc.get("run_id"), message or "The video could not be made.")
+    return True
+
+
+async def reap_expired() -> None:
+    """The queue's reconciler. A job whose worker stopped reporting goes back in the queue, or is failed when it is out of
+    attempts; one the member cancelled is closed; one waiting for a worker for a day is failed with a plain message; and a
+    queued job whose run was cancelled from the activity dock is cancelled."""
+    now = _now()
+    again = "The worker went quiet, so this is starting again."
+    async for doc in _jobs().find({"status": "claimed", "lease_expires_at": {"$lt": now}}).limit(200):
+        if doc.get("cancel_requested"):
+            await _close_job(doc, "cancelled")
+        elif doc["attempts"] >= settings.VIDEO_WORKER_MAX_ATTEMPTS:
+            await _close_job(doc, "failed", code="worker_lost",
+                             message="The video could not be finished after several tries. Please try again.")
+        else:
+            moved = await _jobs().update_one(
+                {"id": doc["id"], "status": "claimed", "lease_expires_at": {"$lt": now}},
+                {"$set": {"status": "queued", "lease_token": None, "lease_expires_at": None, "progress": {}}},
+            )
+            if moved.modified_count:
+                await runs.waiting(doc.get("run_id"), again)
+    async for doc in _jobs().find({"status": "queued", "created_at": {"$lt": now - QUEUE_EXPIRES_AFTER}}).limit(100):
+        await _close_job(doc, "failed", code="no_worker",
+                         message="No video worker was available for a day, so this was stopped. Please try again.")
+    async for doc in _jobs().find({"status": "queued", "run_id": {"$ne": None}}).limit(200):
+        if await runs.cancel_requested(doc.get("run_id")):
+            await _close_job(doc, "cancelled")
 
 
 def _wire(doc: dict) -> dict:
@@ -210,6 +245,7 @@ async def claim(worker_id: str, version: str, capabilities: dict) -> Optional[di
     for flt in ({**base, "workspace_id": {"$nin": busy}}, base):
         doc = await _jobs().find_one_and_update(flt, update, sort=[("created_at", 1)], return_document=ReturnDocument.AFTER)
         if doc:
+            await runs.started(doc.get("run_id"))
             return _wire(doc)
     return None
 
@@ -242,7 +278,15 @@ async def heartbeat(job_id: str, lease_token: str, progress: Any) -> dict:
     )
     if not doc:
         raise LeaseLost()
-    return {"cancel": bool(doc.get("cancel_requested")), "lease_seconds": lease_seconds()}
+    shown = doc.get("progress") or {}
+    cancel = bool(doc.get("cancel_requested"))
+    if doc.get("run_id"):
+        cancel = await runs.progress(doc["run_id"], shown.get("stage", ""), shown.get("fraction")) or cancel
+    if cancel:
+        # The worker stops without reporting when it is told to cancel, so the job is closed here, at the moment it is told.
+        await _jobs().update_one({"id": job_id}, {"$set": {"cancel_requested": True}})
+        await _close_job(doc, "cancelled")
+    return {"cancel": cancel, "lease_seconds": lease_seconds()}
 
 
 async def upload_params(job_id: str, lease_token: str, purpose: str, filename: str, nbytes: Any) -> dict:
@@ -340,8 +384,9 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
             problem = f"the stored file is {size} bytes, not the {video['bytes']} reported"
     if problem:
         await _forget_files(stored)
-        await _end(doc, "failed", "delivery_mismatch", "The video was made but could not be checked, so it was not saved. Please try again.",
-                   {"problem": problem, "report": report})
+        message = "The video was made but could not be checked, so it was not saved. Please try again."
+        await _end(doc, "failed", "delivery_mismatch", message, {"problem": problem, "report": report})
+        await runs.finish_failed(doc.get("run_id"), message)
         logger.warning("Render %s refused at delivery: %s", job_id, problem)
         return {"ok": False, "accepted": False}
 
@@ -357,6 +402,7 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
             await _forget_files(stored)
             message = exc.detail.get("message") if isinstance(exc.detail, dict) else "This video was held back by the safety check."
             await _end(doc, "blocked", "content_guard", message, {"categories": (exc.detail or {}).get("categories")})
+            await runs.finish_failed(doc.get("run_id"), message)
             return {"ok": True, "accepted": False, "held": True}
     await _forget_files([f["url"] for f in frames if storage_params.is_our_storage_url(f["url"])])
 
@@ -365,6 +411,7 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
         id=str(uuid4()), workspace_id=doc["workspace_id"], kind=MediaKind.VIDEO, url=video["url"], mime_type="video/mp4",
         width=report.get("width"), height=report.get("height"), duration_s=round(float(report["duration_s"]), 2),
         source=MediaSource.ENHANCED, created_by=doc["user_id"], created_at=now, size_bytes=video["bytes"],
+        **{k: (doc.get("origin") or {}).get(k) for k in ("origin", "contains_ai", "contains_stock")},
     )
     await media_assets.insert_one(media.model_dump())
     await _jobs().update_one(
@@ -374,6 +421,10 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
                              "duration_s": report.get("duration_s"), "width": report.get("width"), "height": report.get("height")},
                   "report": report, "progress": {"stage": "Done", "fraction": 1.0}}},
     )
+    await runs.finish_ok(doc.get("run_id"), {
+        "job_id": job_id, "media_id": media.id, "project_id": doc.get("project_id"), "origin": doc.get("origin"),
+        "duration_s": report.get("duration_s"),
+    })
     return {"ok": True, "accepted": True, "media_id": media.id}
 
 
@@ -392,8 +443,10 @@ async def fail(job_id: str, lease_token: str, code: str, message: str, retryable
         if code == "worker_stopped":
             update["$inc"] = {"attempts": -1}
         await _jobs().update_one({"id": job_id, "lease_token": lease_token}, update)
+        await runs.waiting(doc.get("run_id"), "Starting again")
         return {"ok": True, "requeued": True}
     await _end(doc, "failed", code, safe, detail)
+    await runs.finish_failed(doc.get("run_id"), safe)
     return {"ok": True, "requeued": False}
 
 
@@ -418,6 +471,7 @@ async def cancel_job(workspace_id: str, job_id: str) -> dict:
         return_document=ReturnDocument.AFTER,
     )
     if done:
+        await runs.finish_cancelled(done.get("run_id"))
         return public(done)
     running = await _jobs().find_one_and_update(
         {"id": job_id, "workspace_id": workspace_id, "status": "claimed"},

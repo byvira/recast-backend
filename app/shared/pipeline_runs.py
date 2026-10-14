@@ -235,6 +235,9 @@ def _has_no_live_worker(doc: dict) -> bool:
     """True when this server is not running the run and nobody else has been beating for it lately."""
     if doc["id"] in _tasks:
         return False
+    if doc.get("external_worker"):
+        # A render on the video worker is not a task here; its job queue decides whether it is alive.
+        return False
     beat = doc.get("heartbeat_at") or doc.get("created_at")
     if isinstance(beat, datetime) and beat.tzinfo is None:
         beat = beat.replace(tzinfo=timezone.utc)
@@ -425,7 +428,7 @@ async def fail_interrupted() -> int:
     mine = list(_tasks)  # runs this server is working on are never taken for dead
     async for stale in pipeline_runs.find(
         {
-            "id": {"$nin": mine}, "status": {"$in": list(ACTIVE)}, "cancel_requested": True,
+            "id": {"$nin": mine}, "status": {"$in": list(ACTIVE)}, "cancel_requested": True, "external_worker": {"$ne": True},
             "$or": [{"interrupted": True}, {"$and": [
                 {"$or": [{"heartbeat_at": {"$lt": cutoff}}, {"heartbeat_at": {"$exists": False}}, {"heartbeat_at": None}]},
                 {"created_at": {"$lt": cutoff}},
@@ -436,7 +439,7 @@ async def fail_interrupted() -> int:
         await _finish(stale, "cancelled")
     res = await pipeline_runs.update_many(
         {
-            "id": {"$nin": mine}, "status": {"$in": list(ACTIVE)},
+            "id": {"$nin": mine}, "status": {"$in": list(ACTIVE)}, "external_worker": {"$ne": True},
             "$or": [{"interrupted": True}, {"$and": [
                 {"$or": [{"heartbeat_at": {"$lt": cutoff}}, {"heartbeat_at": {"$exists": False}}, {"heartbeat_at": None}]},
                 {"created_at": {"$lt": cutoff}},

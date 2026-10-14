@@ -15,7 +15,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from app.api.v1 import audio, text, video
+from app.api.v1 import audio, text
 from app.api.v1 import auth as auth_router
 from app.api.v1 import brand as brand_router
 from app.api.v1 import onboarding_draft as drafts_router
@@ -379,11 +379,12 @@ app.include_router(repurposes_router.router, prefix="/api/v1/repurposes", tags=[
 app.include_router(thumbnails_router.router, prefix="/api/v1/thumbnails", tags=["Thumbnails"])
 app.include_router(text.router,           prefix="/api/v1/text",       tags=["Text Pipeline"])
 app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Audio"])
-app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
 from app.api.v1 import ops_video as ops_video_router
 from app.api.v1 import worker as worker_router
 from app.api.v1 import video_media as video_media_router
 app.include_router(video_media_router.router, prefix="/api/v1/video-media", tags=["Video media"])
+from app.api.v1 import video_projects as video_projects_router
+app.include_router(video_projects_router.router, prefix="/api/v1/video-projects", tags=["Video projects"])
 app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])
 app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["Ops"])
 # The old app.api.v1.image decoy (every handler was a placeholder — see
