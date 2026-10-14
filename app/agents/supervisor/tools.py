@@ -1,6 +1,6 @@
 """The supervisor's investigative tools.
 
-Seven read-only DB tools. Each is a closure bound to a single ``workspace_id``
+Ten read-only DB tools. Each is a closure bound to a single ``workspace_id``
 that comes from the stream partition / authenticated context — it is NOT a tool
 parameter and the model never sees it, so the model physically cannot query
 another tenant. Every Mongo filter in here begins with ``workspace_id``.
@@ -20,6 +20,7 @@ from app.core.tracing import tool_run
 from app.db.mongo import (
     brand_profiles,
     content_pieces,
+    get_db,
     member_personas,
     personal_signals,
     workspace_events,
@@ -152,6 +153,39 @@ def make_tools(workspace_id: str) -> tuple[list[dict], ToolFn]:
             ],
         }
 
+    async def get_agent_decisions(args: dict) -> dict:
+        hours = max(1, min(int(args.get("hours", 48) or 48), 168))
+        flt: dict[str, Any] = {"workspace_id": workspace_id, "created_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}}
+        if args.get("agent") in ("text", "image", "audio", "video"):
+            flt["agent"] = args["agent"]
+        rows = await get_db()["agent_decisions"].find(flt).sort("created_at", -1).limit(40).to_list(length=40)
+        return {"hours": hours, "count": len(rows), "decisions": [
+            {"agent": r.get("agent"), "step": r.get("step"), "summary": r.get("summary"), "outcome": r.get("outcome"),
+             "at": str(r.get("created_at")), "run_id": r.get("run_id")} for r in rows
+        ]}
+
+    async def get_needs_decision(args: dict) -> dict:
+        limit = max(1, min(int(args.get("limit", 10) or 10), 25))
+        rows = await get_db()["agent_decisions"].find(
+            {"workspace_id": workspace_id, "outcome": "needs_decision", "resolved": {"$ne": True}},
+        ).sort("created_at", -1).limit(limit).to_list(length=limit)
+        return {"count": len(rows), "items": [
+            {"agent": r.get("agent"), "summary": r.get("summary"), "at": str(r.get("created_at")),
+             "subject": (r.get("evidence") or {}).get("audio_asset_id") or (r.get("evidence") or {}).get("project_id")} for r in rows
+        ]}
+
+    async def get_asset_performance(args: dict) -> dict:
+        from types import SimpleNamespace
+
+        from app.api.v1 import analytics
+
+        kind = str(args.get("asset_type", ""))
+        if kind not in ("image", "audio"):
+            return {"error": "asset_type must be image or audio"}
+        limit = max(1, min(int(args.get("limit", 5) or 5), 10))
+        handler = getattr(analytics.top_assets, "__wrapped__", analytics.top_assets)
+        return await handler(request=None, asset_type=kind, limit=limit, ctx=SimpleNamespace(workspace_id=workspace_id))
+
     impls: dict[str, ToolFn] = {
         "get_member_recent_content": get_member_recent_content,
         "get_member_persona_summary": get_member_persona_summary,
@@ -160,6 +194,9 @@ def make_tools(workspace_id: str) -> tuple[list[dict], ToolFn]:
         "get_open_flags": get_open_flags,
         "get_signal_history": get_signal_history,
         "get_brand_voice_versions": get_brand_voice_versions,
+        "get_agent_decisions": get_agent_decisions,
+        "get_needs_decision": get_needs_decision,
+        "get_asset_performance": get_asset_performance,
     }
 
     async def dispatch(name: str, args: dict) -> dict:

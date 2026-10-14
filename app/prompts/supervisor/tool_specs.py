@@ -89,4 +89,44 @@ TOOL_SPECS: list[dict] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_agent_decisions",
+            "description": (
+                "What the automatic agents (text, image, audio, video) did in this workspace in the last N hours, newest "
+                "first: the step, a plain summary, the outcome and the evidence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours": {"type": "integer", "minimum": 1, "maximum": 168},
+                    "agent": {"type": "string", "enum": ["text", "image", "audio", "video"]},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_needs_decision",
+            "description": "Things an agent finished but left for a person to decide (a sign-off, a publish), still open.",
+            "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 25}}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_asset_performance",
+            "description": "Which pictures (image) or recordings (audio) did best, ranked within their own kind by engagement.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "asset_type": {"type": "string", "enum": ["image", "audio"]},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+                },
+                "required": ["asset_type"],
+            },
+        },
+    },
 ]
