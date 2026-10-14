@@ -49,6 +49,10 @@ scripts/*
 !scripts/rotate_fernet_key.py
 !scripts/seed_presets.py
 !scripts/export_prompt_library_mock.py
+!scripts/video_quality_regression.py
+!scripts/voice_check.py
+!scripts/youtube_cover_check.py
+!scripts/meta_cover_check.py
 
 # ── Local launch tracking (personal checklist, not for the repo) ─────────────
 LAUNCH_CHECKLIST.md
