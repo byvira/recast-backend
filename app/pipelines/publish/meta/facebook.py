@@ -100,8 +100,25 @@ class FacebookPublisher(PlatformPublisher):
             if link:
                 params["link"] = link
 
+        is_video = media_result.has_media and media_result.asset.kind.value == "video"
+        cover_note = None
         try:
             async with httpx.AsyncClient() as client:
+                thumb = None
+                if is_video and (request.options or {}).get("cover_media_id"):
+                    from app.db.mongo import media_assets
+
+                    cover = await media_assets.find_one(
+                        {"id": request.options["cover_media_id"], "workspace_id": request.workspace_id, "kind": "image"})
+                    try:
+                        if cover and str(cover.get("url", "")).startswith("https://"):
+                            picture = await client.get(cover["url"], timeout=30.0)
+                            picture.raise_for_status()
+                            thumb = picture.content
+                    except Exception as exc:  # noqa: BLE001 - the video still goes up, with a frame chosen by Facebook
+                        logger.warning("Could not read the cover picture for piece %s: %s", request.piece_id, exc)
+                    if thumb is None:
+                        cover_note = "Your video is up, but the cover picture couldn't be used, so Facebook chose a frame of the video."
                 if several:
                     for index, picture in enumerate(pictures):
                         photo_params = {"url": picture.url, "published": "false", "access_token": access_token}
@@ -114,6 +131,9 @@ class FacebookPublisher(PlatformPublisher):
                         params[f"attached_media[{index}]"] = json.dumps({"media_fbid": saved.json()["id"]})
                     else:
                         response = await client.post(endpoint, params=params)
+                elif thumb is not None:
+                    # the cover goes up with the video as its thumbnail: a form with the fields and the picture as a file
+                    response = await client.post(endpoint, data=params, files={"thumb": ("cover.jpg", thumb, "image/jpeg")})
                 else:
                     response = await client.post(endpoint, params=params)
 
@@ -139,7 +159,7 @@ class FacebookPublisher(PlatformPublisher):
                         piece_id=request.piece_id,
                         platform_post_id=post_id,
                         platform_post_url=post_url,
-                        media_dropped_reason=media_result.dropped_reason,
+                        media_dropped_reason=" ".join(n for n in (media_result.dropped_reason, cover_note) if n) or None,
                     )
 
                 error_data    = response.json()

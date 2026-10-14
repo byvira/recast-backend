@@ -124,8 +124,9 @@ ALLOWED: dict[str, dict[str, Callable[[Any], Any]]] = {
         "location_name": _text("The place name", 120),
         "user_tags": _usernames("People tagged", 20),
         "collaborators": _usernames("Collaborators", 3),
+        "cover_media_id": _text("The cover", 80),
     },
-    "facebook": {"link": _https("The link")},
+    "facebook": {"link": _https("The link"), "cover_media_id": _text("The cover", 80)},
     "linkedin": {"visibility": _one_of("visibility", LINKEDIN_VISIBILITY), "link_card_url": _https("The link card address")},
     "threads": {"reply_control": _one_of("reply control", THREADS_REPLY_CONTROLS), "topic_tag": _topic_tag},
     # Where a Blog or Newsletter post goes, and how the destination should treat it.

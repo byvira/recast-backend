@@ -122,9 +122,19 @@ class InstagramPublisher(PlatformPublisher):
             container_params["location_id"] = options["location_id"]
         if options.get("collaborators"):
             container_params["collaborators"] = json.dumps(options["collaborators"])
+        cover_note = None
         if asset.kind.value == "video":
             container_params["video_url"] = asset.url
             container_params["media_type"] = "REELS"
+            # the chosen cover picture, from this workspace's own library; without one Instagram takes a frame of the video
+            if options.get("cover_media_id"):
+                from app.db.mongo import media_assets
+
+                cover = await media_assets.find_one({"id": options["cover_media_id"], "workspace_id": request.workspace_id, "kind": "image"})
+                if cover and str(cover.get("url", "")).startswith("https://"):
+                    container_params["cover_url"] = jpeg_url(cover["url"])
+                else:
+                    cover_note = "Your Reel is up, but the cover picture couldn't be found, so Instagram chose a frame of the video."
         else:
             # Instagram photo posts take JPEG; our pictures are PNG, so ask for the JPEG version of the same picture.
             container_params["image_url"] = jpeg_url(asset.url)
@@ -258,7 +268,7 @@ class InstagramPublisher(PlatformPublisher):
                         piece_id=request.piece_id,
                         platform_post_id=post_id,
                         platform_post_url=post_url,
-                        media_dropped_reason=comment_note,
+                        media_dropped_reason=" ".join(n for n in (comment_note, cover_note) if n) or None,
                     )
 
                 error_data    = publish_response.json()

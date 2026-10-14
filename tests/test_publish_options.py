@@ -388,3 +388,133 @@ async def test_a_youtube_channel_that_is_not_verified_is_told_how_to_fix_the_thu
     async with _Refuses() as client:
         note = await youtube_module.YouTubePublisher()._set_thumbnail(client, "token", "vid-9", "thumb-403", "w-403")
     assert "verified channel" in note and "youtube.com/verify" in note and "video is up" in note
+
+
+# ── A chosen cover goes with a video ─────────────────────────────────
+
+def _video(media_id: str = "v1"):
+    from datetime import datetime, timezone
+
+    from app.models.media import MediaAsset
+
+    return MediaAsset(
+        id=media_id, workspace_id="w1", kind="video", url=f"https://res.cloudinary.com/demo/video/upload/{media_id}.mp4",
+        mime_type="video/mp4", source="uploaded", created_by="u1", created_at=datetime.now(timezone.utc),
+    )
+
+
+async def _cover_picture(media_id="cover-1", workspace="w1"):
+    from datetime import datetime, timezone
+
+    from app.db.mongo import media_assets
+
+    await media_assets.delete_many({"id": media_id})
+    await media_assets.insert_one({
+        "id": media_id, "workspace_id": workspace, "kind": "image", "url": f"https://res.cloudinary.com/demo/image/upload/{media_id}.png",
+        "mime_type": "image/png", "source": "rendered", "created_by": "u", "created_at": datetime.now(timezone.utc),
+    })
+
+
+async def test_an_instagram_reel_carries_the_chosen_cover_as_a_jpeg_address(monkeypatch):
+    from app.pipelines.publish.meta import instagram as instagram_module
+
+    async def ready(*args, **kwargs):
+        return True, None
+
+    await _cover_picture()
+    _Recorder.calls, _Recorder.status, _Recorder.headers = [], 200, {}
+    monkeypatch.setattr(instagram_module.httpx, "AsyncClient", _Recorder)
+    monkeypatch.setattr(instagram_module, "_wait_until_ready", ready)
+    request = _request("instagram", "Caption", cover_media_id="cover-1")
+    request.media = [_video()]
+    request.ig_user_id = "ig-1"
+    result = await instagram_module.InstagramPublisher().publish(request, "token")
+    assert result.success and result.media_dropped_reason is None
+    container = next(c for c in _Recorder.calls if c[1].endswith("/media"))[2]["params"]
+    assert container["media_type"] == "REELS" and container["video_url"].endswith("v1.mp4")
+    assert container["cover_url"].startswith("https://res.cloudinary.com/") and "cover-1" in container["cover_url"]
+
+
+async def test_an_instagram_reel_whose_cover_is_missing_still_goes_up_and_says_so(monkeypatch):
+    from app.pipelines.publish.meta import instagram as instagram_module
+
+    async def ready(*args, **kwargs):
+        return True, None
+
+    _Recorder.calls, _Recorder.status, _Recorder.headers = [], 200, {}
+    monkeypatch.setattr(instagram_module.httpx, "AsyncClient", _Recorder)
+    monkeypatch.setattr(instagram_module, "_wait_until_ready", ready)
+    request = _request("instagram", "Caption", cover_media_id="not-there")
+    request.media = [_video()]
+    request.ig_user_id = "ig-1"
+    result = await instagram_module.InstagramPublisher().publish(request, "token")
+    assert result.success and "cover picture couldn't be found" in result.media_dropped_reason
+    container = next(c for c in _Recorder.calls if c[1].endswith("/media"))[2]["params"]
+    assert "cover_url" not in container
+
+
+async def test_a_cover_never_changes_an_instagram_picture_post(monkeypatch):
+    from app.pipelines.publish.meta import instagram as instagram_module
+
+    async def ready(*args, **kwargs):
+        return True, None
+
+    await _cover_picture()
+    _Recorder.calls, _Recorder.status, _Recorder.headers = [], 200, {}
+    monkeypatch.setattr(instagram_module.httpx, "AsyncClient", _Recorder)
+    monkeypatch.setattr(instagram_module, "_wait_until_ready", ready)
+    request = _request("instagram", "Caption", cover_media_id="cover-1")
+    request.media = [_image()]
+    request.ig_user_id = "ig-1"
+    result = await instagram_module.InstagramPublisher().publish(request, "token")
+    assert result.success
+    container = next(c for c in _Recorder.calls if c[1].endswith("/media"))[2]["params"]
+    assert "cover_url" not in container and "image_url" in container
+
+
+class _FacebookWithPicture(_Recorder):
+    """Answers the cover picture's download with bytes, and records the video upload."""
+
+    async def get(self, url, **kwargs):
+        _Recorder.calls.append(("get", url, kwargs))
+        if "image/upload" in url:
+            return httpx.Response(200, content=b"\xff\xd8cover", request=httpx.Request("GET", url))
+        return self._reply("GET", url)
+
+    async def post(self, url, **kwargs):
+        _Recorder.calls.append(("post", url, kwargs))
+        return self._reply("POST", url)
+
+
+async def test_a_facebook_video_goes_up_with_the_cover_as_its_thumbnail_file(monkeypatch):
+    await _cover_picture()
+    _Recorder.calls, _Recorder.status, _Recorder.headers = [], 200, {}
+    monkeypatch.setattr(facebook_module.httpx, "AsyncClient", _FacebookWithPicture)
+    request = _request("facebook", "Watch this", cover_media_id="cover-1")
+    request.media = [_video()]
+    result = await facebook_module.FacebookPublisher().publish(request, "token")
+    assert result.success and result.media_dropped_reason is None
+    upload = next(c for c in _Recorder.calls if c[0] == "post" and c[1].endswith("/videos"))[2]
+    assert upload["data"]["file_url"].endswith("v1.mp4") and upload["data"]["description"] == "Watch this"
+    name, content, mime = upload["files"]["thumb"]
+    assert content == b"\xff\xd8cover" and mime == "image/jpeg"
+
+
+async def test_a_facebook_video_without_a_usable_cover_still_goes_up_and_says_so(monkeypatch):
+    _Recorder.calls, _Recorder.status, _Recorder.headers = [], 200, {}
+    monkeypatch.setattr(facebook_module.httpx, "AsyncClient", _FacebookWithPicture)
+    request = _request("facebook", "Watch this", cover_media_id="not-there")
+    request.media = [_video()]
+    result = await facebook_module.FacebookPublisher().publish(request, "token")
+    assert result.success and "cover picture couldn't be used" in result.media_dropped_reason
+    upload = next(c for c in _Recorder.calls if c[0] == "post" and c[1].endswith("/videos"))[2]
+    assert "files" not in upload and "file_url" in upload["params"]
+
+
+async def test_the_cover_is_an_allowed_setting_on_facebook_and_instagram_and_nowhere_else():
+    from app.pipelines.publish import options as publish_options
+
+    for platform in ("facebook", "instagram"):
+        assert "cover_media_id" in publish_options.ALLOWED[platform]
+    for platform in ("linkedin", "threads", "bluesky", "youtube"):
+        assert "cover_media_id" not in publish_options.ALLOWED.get(platform, {})
