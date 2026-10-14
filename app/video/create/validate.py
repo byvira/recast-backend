@@ -107,7 +107,7 @@ def validate_script(
     for i, b in enumerate(beats_in[:40]):
         if not isinstance(b, dict):
             continue
-        narration = clean(b.get("narration"), 600)
+        narration = clean(b.get("narration"), 1200)
         if not narration:
             continue
         extra = numbers_in(narration) - figures
@@ -206,7 +206,7 @@ def validate_caption_polish(raw: Any, original: list[dict[str, Any]], *, max_lin
     changed = 0
     for old, new in zip(original, new_words):
         text = clean(new.get("w") if isinstance(new, dict) else new, 60) or old["w"]
-        if text != old["w"] and _similar(text, old["w"]) < 0.5:
+        if text != old["w"] and _similar(text, old["w"]) < 0.6:
             problems.append(f"“{old['w']}” was replaced by “{text}”, which is a different word.")
             text = old["w"]
         if text != old["w"]:
@@ -271,8 +271,8 @@ def validate_publish_text(raw: Any, platform: str, real_stamps: Iterable[str] = 
     tags: list[str] = []
     total = 0
     for t in raw.get("tags") or []:
-        tag = clean(t, 40).lstrip("#")
-        if not tag or tag.casefold() in {x.casefold() for x in tags}:
+        tag = clean(t, 200).lstrip("#")
+        if not tag or len(tag) > 30 or tag.casefold() in {x.casefold() for x in tags}:
             continue
         if total + len(tag) > lim["tags_total"] or len(tags) >= lim["tags_max"]:
             break
