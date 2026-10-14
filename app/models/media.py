@@ -121,3 +121,5 @@ class MediaAsset(BaseModel):
     chapters: list[MediaChapter] = []
     # Still frame for players that shouldn't load the whole video (video only).
     poster_url: Optional[str] = None
+    # What the file is (video only, filled when a video is uploaded for editing): length, size, frame rate, turn, HDR, sound.
+    probe: Optional[dict] = None

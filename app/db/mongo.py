@@ -305,6 +305,10 @@ async def create_indexes() -> None:
     await pipeline_runs.create_index("active_key", unique=True, partialFilterExpression={"active_key": {"$type": "string"}})
     await pipeline_runs.create_index([("workspace_id", 1), ("status", 1), ("created_at", -1)])
 
+    video_uploads = get_db()["video_uploads"]
+    await video_uploads.create_index("id", unique=True)
+    await video_uploads.create_index([("workspace_id", 1), ("status", 1), ("expires_at", 1)])
+
     # Video render jobs handed to the render worker.
     video_jobs = get_db()["video_jobs"]
     await video_jobs.create_index("id", unique=True)

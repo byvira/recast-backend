@@ -55,6 +55,26 @@ def upload_params(*, workspace_id: str, job_id: str, purpose: str, filename: str
     return out
 
 
+def source_upload_params(*, workspace_id: str, upload_id: str, filename: str, nbytes: int) -> dict:
+    """Signed parameters for a member's own source video, uploaded from the browser in pieces. The folder and name are fixed
+    here, so a browser can only write the one file it was given."""
+    params = upload_params(workspace_id=workspace_id, job_id=upload_id, purpose="video", filename=filename, nbytes=nbytes)
+    _ensure_configured()
+    fields = {
+        "folder": f"recast/video_source/{workspace_id}",
+        "public_id": f"{upload_id}_{_safe_stem(filename)}",
+        "overwrite": "true",
+        "timestamp": int(time.time()),
+        "upload_preset": ContentType.VIDEO.value,
+    }
+    signature = cloudinary.utils.api_sign_request(fields, settings.CLOUDINARY_API_SECRET)
+    params["fields"] = {**{k: str(v) for k, v in fields.items()}, "api_key": settings.CLOUDINARY_API_KEY, "signature": signature}
+    params["chunk_bytes"] = CHUNK_BYTES
+    params["public_id"] = fields["public_id"]
+    params["folder"] = fields["folder"]
+    return params
+
+
 def is_our_storage_url(url: str) -> bool:
     """True only for a file in this account's own storage, so a worker can never point the backend at another address."""
     return bool(url) and url.startswith(f"https://res.cloudinary.com/{settings.CLOUDINARY_CLOUD_NAME}/")

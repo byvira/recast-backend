@@ -132,6 +132,11 @@ class Settings(BaseSettings):
     VIDEO_WORKER_LEASE_SECONDS: int = 90
     # How many times one job is handed out before it is failed for good.
     VIDEO_WORKER_MAX_ATTEMPTS: int = 3
+    # The biggest source video one upload may be, in MB. Shown on screen. The free storage plan caps one file (believed 100 MB,
+    # measured with one deliberate large upload); raise this only after that measurement and after moving to a larger store.
+    VIDEO_UPLOAD_MAX_MB: int = 100
+    # Uploads waiting this long without being completed are treated as abandoned.
+    VIDEO_UPLOAD_EXPIRE_HOURS: int = 24
     # The longest finished video one job may produce, in seconds (the worker host's measured ceiling).
     VIDEO_MAX_OUTPUT_SECONDS: int = 3600
     # The lowest quality-gate version the backend accepts in a worker's report.

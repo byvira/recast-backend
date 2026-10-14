@@ -382,6 +382,8 @@ app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Au
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
 from app.api.v1 import ops_video as ops_video_router
 from app.api.v1 import worker as worker_router
+from app.api.v1 import video_media as video_media_router
+app.include_router(video_media_router.router, prefix="/api/v1/video-media", tags=["Video media"])
 app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])
 app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["Ops"])
 # The old app.api.v1.image decoy (every handler was a placeholder — see
