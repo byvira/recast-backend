@@ -141,6 +141,31 @@ async def _emit_failed_card(
 # SINGLE PLATFORM RUNNER
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _log_text_decision(
+    normalised: NormalisedInput, platform: Platform, piece: GeneratedPiece, *, is_repurpose: bool, batch_mode: bool,
+    session_id: Optional[str],
+) -> None:
+    """One entry in the shared decision log per piece: what was made, whether it passed the quality check, and whether it was
+    held for review. Best effort: it never changes or delays the piece."""
+    from app.agents.runtime import record_decision
+
+    if not piece.content:
+        outcome, summary = "failed", f"No {_platform_str(platform)} post was made."
+    elif piece.flagged_for_review or not piece.quality_passed:
+        outcome, summary = "needs_decision", f"A {_platform_str(platform)} post was written and held for your review."
+    else:
+        outcome, summary = "ok", f"A {_platform_str(platform)} post was written and passed the quality check."
+    await record_decision(
+        workspace_id=normalised.workspace_id, user_id=normalised.user_id, agent="text", step="write_post", summary=summary,
+        outcome=outcome, run_id=session_id,
+        evidence={
+            "platform": _platform_str(platform), "words": piece.word_count, "quality_passed": piece.quality_passed,
+            "flagged_for_review": piece.flagged_for_review, "issues": list(piece.quality_issues or [])[:3],
+            "repurposed": is_repurpose, "batch": batch_mode,
+        },
+    )
+
+
 async def _run_single_platform(
     platform: Platform,
     normalised: NormalisedInput,
@@ -222,7 +247,7 @@ async def _run_single_platform(
         )
         # Always notify frontend — card must leave queued state
         await _emit_failed_card(emitter, platform, str(e))
-        return GeneratedPiece(
+        failed = GeneratedPiece(
             platform=platform,
             content="",
             word_count=0,
@@ -231,12 +256,15 @@ async def _run_single_platform(
             quality_issues=[f"Graph error: {str(e)}"],
             flagged_for_review=True,
         )
+        await _log_text_decision(normalised, platform, failed, is_repurpose=is_repurpose, batch_mode=batch_mode, session_id=session_id)
+        return failed
 
     # ── Extract piece ─────────────────────────────────────────────────────
     pieces = final_state.get("pieces", [])
     if pieces:
         piece = GeneratedPiece(**pieces[-1])
         piece.repurposed = final_state.get("is_repurpose", False)
+        await _log_text_decision(normalised, platform, piece, is_repurpose=is_repurpose, batch_mode=batch_mode, session_id=session_id)
         return piece
 
     # Graph completed without error but returned no pieces — defensive fallback
@@ -245,7 +273,7 @@ async def _run_single_platform(
         platform, session_id,
     )
     await _emit_failed_card(emitter, platform, "Graph returned no output")
-    return GeneratedPiece(
+    empty = GeneratedPiece(
         platform=platform,
         content="",
         word_count=0,
@@ -254,6 +282,8 @@ async def _run_single_platform(
         quality_issues=["Graph returned no output"],
         flagged_for_review=True,
     )
+    await _log_text_decision(normalised, platform, empty, is_repurpose=is_repurpose, batch_mode=batch_mode, session_id=session_id)
+    return empty
 
 
 # ─────────────────────────────────────────────────────────────────────────────
