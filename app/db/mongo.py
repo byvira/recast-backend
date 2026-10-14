@@ -331,6 +331,9 @@ async def create_indexes() -> None:
     await get_db()["video_cover_frames"].create_index([("workspace_id", 1), ("media_id", 1)], unique=True)
     await get_db()["video_stock_cache"].create_index("at", expireAfterSeconds=48 * 3600)
     await get_db()["media_assets"].create_index([("workspace_id", 1), ("stock.provider", 1), ("stock.id", 1)], sparse=True)
+    recipes = get_db()["video_recipes"]
+    await recipes.create_index("id", unique=True)
+    await recipes.create_index([("workspace_id", 1), ("created_at", -1)])
     dubs = get_db()["video_dubs"]
     await dubs.create_index("id", unique=True)
     await dubs.create_index([("workspace_id", 1), ("source_media_id", 1), ("created_at", -1)])

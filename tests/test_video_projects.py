@@ -89,7 +89,7 @@ def test_the_worker_job_names_inputs_and_drops_editor_only_fields():
     assert set(job["inputs"]) == {"m0", "m1"}
     clip = job["edit"]["video"][0]
     assert clip["src"] in job["inputs"] and "media_id" not in clip
-    assert "duck" not in job["edit"]["audio"][0] and job["edit"]["audio"][0]["role"] == "music"
+    assert job["edit"]["audio"][0]["duck"] is True and job["edit"]["audio"][0]["role"] == "music"
     with pytest.raises(edl.EditError):
         edl.to_job(edl.validate(edl.blank()), {})
     with pytest.raises(edl.EditError):

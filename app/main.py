@@ -395,6 +395,8 @@ from app.api.v1 import video_narrate as video_narrate_router
 app.include_router(video_narrate_router.router, prefix="/api/v1/video-narrate", tags=["Video voices"])
 from app.api.v1 import video_stock as video_stock_router
 app.include_router(video_stock_router.router, prefix="/api/v1/video-stock", tags=["Video stock"])
+from app.api.v1 import video_flows as video_flows_router
+app.include_router(video_flows_router.router, prefix="/api/v1/video-flows", tags=["Video flows"])
 app.include_router(video_transcripts_router.router, prefix="/api/v1/video-transcripts", tags=["Video transcripts"])
 app.include_router(video_projects_router.router, prefix="/api/v1/video-projects", tags=["Video projects"])
 app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])

@@ -215,7 +215,7 @@ def to_job(edit: dict[str, Any], media: dict[str, dict[str, Any]], output: Optio
         inputs[keys[mid]] = {"url": found["url"], "kind": found["kind"]}
 
     def clip(c: dict[str, Any]) -> dict[str, Any]:
-        out = {k: v for k, v in c.items() if k not in ("media_id", "duck")}
+        out = {k: v for k, v in c.items() if k != "media_id"}
         out["src"] = keys[c["media_id"]]
         return out
 

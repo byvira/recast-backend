@@ -143,5 +143,45 @@ def from_pictures(
     return edl.validate(edit)
 
 
+def clip_from_video(
+    media: dict[str, Any], *, start_s: float, end_s: float, words: list[dict[str, Any]], size: str = "vertical", title: str = "",
+    accent: str = "#38bdf8", background: str = "#0f172a", fit: str = "cover",
+) -> dict[str, Any]:
+    """One short clip cut out of a longer video: just that stretch, in the chosen shape (the picture fills the frame and the
+    sides are cropped; use fit="blur" to keep the whole picture on a soft backdrop), with captions from its own words and an
+    optional title. `words` are {"w", "s_ms", "e_ms"} in the source video's time."""
+    probe = media.get("probe") or {}
+    video = probe.get("video") or {}
+    fps = edl.fps_from_float(video.get("fps") or video.get("tbr"))
+    total = float(probe.get("duration_s") or media.get("duration_s") or 0)
+    if total <= 0:
+        raise edl.EditError("This video's length is not known yet, so a clip can't be made from it.")
+    start_s = max(0.0, float(start_s))
+    end_s = min(total, float(end_s))
+    if end_s - start_s < 1.0:
+        raise edl.EditError("A clip has to be at least one second long.")
+    width, height = edl.CANVAS_SIZES[size]
+    frames = max(1, edl.seconds_to_frames(end_s - start_s, fps))
+    edit = edl.blank(size, fps)
+    edit["background"] = background if len(background) == 7 and background.startswith("#") else "#0f172a"
+    edit["video"] = [{
+        "id": "v1", "media_id": media["id"], "at_f": 0, "dur_f": frames, "src_in_f": edl.seconds_to_frames(start_s, fps), "speed": 1.0,
+        "fit": fit if fit in edl.FITS else "cover", "fade_in_f": 0, "fade_out_f": 0, "audio": True, "gain_db": 0.0,
+    }]
+    lo, hi = int(start_s * 1000), int(end_s * 1000)
+    shifted = []
+    for w in words:
+        if w["e_ms"] <= lo or w["s_ms"] >= hi:
+            continue
+        shifted.append({"w": str(w["w"]), "s_ms": max(0, w["s_ms"] - lo), "e_ms": min(hi - lo, max(w["s_ms"] - lo, w["e_ms"] - lo))})
+    edit["captions"] = {"enabled": bool(shifted), "accent": accent if len(accent) == 7 else "#38bdf8", "words": shifted}
+    if title.strip():
+        edit["text"] = [{"id": "title", "text": title.strip()[:200], "at_f": 0, "dur_f": min(frames, edl.seconds_to_frames(3.0, fps)),
+                         "x": 0.5, "y": 0.1, "size": 64, "color": "#FFFFFF", "bold": True}]
+    edit["duration_f"] = frames
+    edit["width"], edit["height"] = width, height
+    return edl.validate(edit)
+
+
 def blank_project(size: str = "landscape") -> dict[str, Any]:
     return edl.validate(edl.blank(size))
