@@ -119,6 +119,24 @@ class Settings(BaseSettings):
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
 
+    # Pixabay: the free stock-video source for B-roll (100 requests a minute, results cached 24 hours, credit the author).
+    PIXABAY_API_KEY: str = ""
+
+    # The video render worker (a separate program on its own machine). Off until the owner turns it on: with the switch off,
+    # every worker route answers 503 and nothing is handed out. The token is the worker's only credential and can do nothing
+    # but claim and report render jobs; set a second value in the NEXT slot to rotate it without downtime.
+    VIDEO_WORKER_ENABLED: bool = False
+    VIDEO_WORKER_TOKEN: str = ""
+    VIDEO_WORKER_TOKEN_NEXT: str = ""
+    # A job whose worker stops reporting for this long goes back in the queue.
+    VIDEO_WORKER_LEASE_SECONDS: int = 90
+    # How many times one job is handed out before it is failed for good.
+    VIDEO_WORKER_MAX_ATTEMPTS: int = 3
+    # The longest finished video one job may produce, in seconds (the worker host's measured ceiling).
+    VIDEO_MAX_OUTPUT_SECONDS: int = 3600
+    # The lowest quality-gate version the backend accepts in a worker's report.
+    VIDEO_GATE_VERSION_MIN: int = 2
+
     # Cloudflare Workers AI — image generation provider (Row 11,
     # app.pipelines.media.image_generation). Free tier: 10,000 neurons/day,
     # hard block on exhaustion, no surprise billing. At the 1024x1024/4-step

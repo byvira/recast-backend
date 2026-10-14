@@ -305,6 +305,16 @@ async def create_indexes() -> None:
     await pipeline_runs.create_index("active_key", unique=True, partialFilterExpression={"active_key": {"$type": "string"}})
     await pipeline_runs.create_index([("workspace_id", 1), ("status", 1), ("created_at", -1)])
 
+    # Video render jobs handed to the render worker.
+    video_jobs = get_db()["video_jobs"]
+    await video_jobs.create_index("id", unique=True)
+    await video_jobs.create_index([("status", 1), ("created_at", 1)])
+    await video_jobs.create_index([("status", 1), ("lease_expires_at", 1)])
+    await video_jobs.create_index([("workspace_id", 1), ("created_at", -1)])
+    await video_jobs.create_index(
+        [("workspace_id", 1), ("idem_key", 1)], unique=True, partialFilterExpression={"idem_key": {"$type": "string"}},
+    )
+
     # ── Remy/Odette scaffolding ──────────────────────────────────────────
     await member_voice_settings.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)
     await member_lexicon.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)

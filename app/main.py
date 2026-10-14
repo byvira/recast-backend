@@ -380,6 +380,10 @@ app.include_router(thumbnails_router.router, prefix="/api/v1/thumbnails", tags=[
 app.include_router(text.router,           prefix="/api/v1/text",       tags=["Text Pipeline"])
 app.include_router(audio.router,          prefix="/api/v1/audio",      tags=["Audio"])
 app.include_router(video.router,          prefix="/api/v1/video",      tags=["Video"])
+from app.api.v1 import ops_video as ops_video_router
+from app.api.v1 import worker as worker_router
+app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])
+app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["Ops"])
 # The old app.api.v1.image decoy (every handler was a placeholder — see
 # pow/audio_image_pipeline/00-overview.md Finding #1) was never registered
 # here and its files (app/api/v1/image.py, app/pipelines/image/*,
