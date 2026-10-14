@@ -53,6 +53,7 @@ scripts/*
 !scripts/voice_check.py
 !scripts/youtube_cover_check.py
 !scripts/meta_cover_check.py
+!scripts/video_limits_check.py
 
 # ── Local launch tracking (personal checklist, not for the repo) ─────────────
 LAUNCH_CHECKLIST.md
