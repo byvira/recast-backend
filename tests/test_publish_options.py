@@ -541,6 +541,19 @@ class _LinkedInVideos:
         _LinkedInVideos.calls.append(("get", url, kwargs))
         return self._reply(200, url, content=b"0123456789" if url.endswith(".mp4") else b"\xff\xd8cover")
 
+    def stream(self, method, url, **kwargs):
+        _LinkedInVideos.calls.append(("stream", url, kwargs))
+        response = self._reply(200, url, content=b"0123456789")
+
+        class _Stream:
+            async def __aenter__(self_inner):
+                return response
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _Stream()
+
     async def put(self, url, **kwargs):
         _LinkedInVideos.calls.append(("put", url, kwargs))
         return self._reply(200, url, headers={"etag": '"part-' + url[-1] + '"'})

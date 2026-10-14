@@ -95,24 +95,32 @@ async def upload_image(client: httpx.AsyncClient, access_token: str, owner: str,
 
 async def upload_video(client: httpx.AsyncClient, access_token: str, owner: str, url: str, cover: Optional[bytes]) -> str:
     """Uploads one video with the Videos API (in the parts LinkedIn asks for) and returns its URN. The cover, when given, goes to the
-    thumbnail address LinkedIn hands back. Raises on any failure."""
-    source = await client.get(url, timeout=300.0)
-    source.raise_for_status()
-    data = source.content
-    init = await client.post(
-        f"{LINKEDIN_REST}/videos", params={"action": "initializeUpload"},
-        json={"initializeUploadRequest": {"owner": owner, "fileSizeBytes": len(data), "uploadCaptions": False,
-                                          "uploadThumbnail": cover is not None}},
-        headers=_headers(access_token),
-    )
-    init.raise_for_status()
-    value = init.json()["value"]
-    part_ids: list[str] = []
-    for part in value.get("uploadInstructions", []):
-        chunk = data[int(part["firstByte"]): int(part["lastByte"]) + 1]
-        put = await client.put(part["uploadUrl"], content=chunk, headers={"Content-Type": "application/octet-stream"}, timeout=300.0)
-        put.raise_for_status()
-        part_ids.append(put.headers.get("etag", "").strip('"'))
+    thumbnail address LinkedIn hands back. The video is kept on disk while it goes up, one part at a time in memory, so a large file
+    does not fill the server's memory. Raises on any failure."""
+    import tempfile
+
+    with tempfile.TemporaryFile() as spool:
+        async with client.stream("GET", url, timeout=300.0) as source:
+            source.raise_for_status()
+            async for block in source.aiter_bytes(1024 * 1024):
+                spool.write(block)
+        size = spool.tell()
+        init = await client.post(
+            f"{LINKEDIN_REST}/videos", params={"action": "initializeUpload"},
+            json={"initializeUploadRequest": {"owner": owner, "fileSizeBytes": size, "uploadCaptions": False,
+                                              "uploadThumbnail": cover is not None}},
+            headers=_headers(access_token),
+        )
+        init.raise_for_status()
+        value = init.json()["value"]
+        part_ids: list[str] = []
+        for part in value.get("uploadInstructions", []):
+            first, last = int(part["firstByte"]), int(part["lastByte"])
+            spool.seek(first)
+            chunk = spool.read(last - first + 1)
+            put = await client.put(part["uploadUrl"], content=chunk, headers={"Content-Type": "application/octet-stream"}, timeout=300.0)
+            put.raise_for_status()
+            part_ids.append(put.headers.get("etag", "").strip('"'))
     if cover is not None and value.get("thumbnailUploadUrl"):
         thumb = await client.put(value["thumbnailUploadUrl"], content=cover, headers={"Content-Type": "application/octet-stream"})
         thumb.raise_for_status()
