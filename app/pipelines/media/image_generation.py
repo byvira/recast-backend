@@ -672,10 +672,16 @@ async def generate_image_from_prompt(
         return None
 
     try:
-        polished = await _run_gates(prompt, brand_profile or {}, avoid)
-        if not polished:
-            return None
-        return await _generate_text_free(polished)
+        # The picture is made by the image agent (plan, gates, provider chain), which runs the same checks as `_run_gates`.
+        from app.pipelines.image.orchestrator import run_image_agent
+
+        out = await run_image_agent(
+            mode="prompt", workspace_id=workspace_id, user_id=user_id, brand=brand_profile, prompt=prompt, avoid=avoid,
+        )
+        if out.get("image"):
+            return out["image"]
+        _last_failure.set(out.get("failure"))
+        return None
     except Exception as exc:  # noqa: BLE001
         _last_failure.set("The picture could not be made because of an unexpected error.")
         logger.error(
@@ -745,41 +751,26 @@ async def generate_brand_image(
     steps this function alone is responsible for (generate_image_from_prompt
     only returns bytes, it never uploads/persists).
     """
-    image_bytes = await generate_image_from_prompt(
-        prompt=_build_raw_prompt(topic, brand_profile),
-        workspace_id=workspace_id,
-        user_id=user_id,
-        target_size=IMAGE_SIZE,
-        provider=provider,
-        brand_profile=brand_profile,
-    )
-    if not image_bytes:
+    _last_failure.set(None)
+    if provider == ImageProvider.GEMINI:
+        logger.error("Gemini image provider requested but has no opt-in mechanism yet; refusing rather than silently spending real money.")
+        return None
+    if not _image_provider_configured():
+        logger.warning("No image generation provider configured; skipping AI image generation.")
+        _fail("No image service is set up.")
         return None
 
     try:
-        qa_flagged, qa_reason = await _qa_gate(image_bytes, brand_profile)
+        # The image agent plans the steps, runs the gates and the provider chain, checks the picture against the brand,
+        # stamps the logo, stores it and records the library item (flagged AI generated).
+        from app.pipelines.image.orchestrator import run_image_agent
 
-        logo_bytes = await _fetch_logo(((brand_profile.get("visual_identity") or {}).get("logo_url")) or "")
-        if logo_bytes:
-            image_bytes = await run_heavy(stamp_logo, image_bytes, logo_bytes)
-
-        url = await upload_file(image_bytes, UploadContentType.IMAGE, user_id)
-        asset = MediaAsset(
-            id=str(uuid4()),
-            workspace_id=workspace_id,
-            kind=MediaKind.IMAGE,
-            url=url,
-            mime_type="image/jpeg",
-            width=IMAGE_SIZE[0],
-            height=IMAGE_SIZE[1],
-            source=MediaSource.AI_GENERATED,
-            created_by=user_id,
-            created_at=datetime.now(timezone.utc),
-            qa_flagged=qa_flagged,
-            qa_flag_reason=qa_reason,
+        out = await run_image_agent(
+            mode="topic", workspace_id=workspace_id, user_id=user_id, brand=brand_profile, topic=topic,
         )
-        await media_assets.insert_one(asset.model_dump())
-        return asset
+        if out.get("asset") is None:
+            _last_failure.set(out.get("failure"))
+        return out.get("asset")
     except Exception as exc:  # noqa: BLE001
         logger.error("generate_brand_image failed for workspace %s: %s", workspace_id, exc)
         return None
