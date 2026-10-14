@@ -89,12 +89,16 @@ async def _voice_tools(ctx: WorkspaceContext):
         return settings_obj
 
     def make_speak(language_code: Optional[str], voices: Optional[dict[str, str]] = None):
-        async def speak(text: str, speaker: Optional[str] = None) -> Optional[bytes]:
+        from app.video.narrate.voices import Voice
+
+        async def draft_or_premium(text: str, speaker: Optional[str] = None) -> Optional[bytes]:
             return await synthesize_speech(
                 text=text, voice_settings=speaker_settings(speaker, voices or {}), lexicon=lexicon, workspace_id=ctx.workspace_id,
                 user_id=ctx.user_id, language=language_code,
             )
-        return speak
+
+        return Voice(workspace_id=ctx.workspace_id, user_id=ctx.user_id, language=language_code, fallback=draft_or_premium, voice_settings=settings_obj,
+                     voices=voices, forget=delete_file_by_url)
 
     async def store(data: bytes) -> str:
         return await upload_file(data, UploadContentType.AUDIO, ctx.user_id)
@@ -168,7 +172,7 @@ async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Dep
             raise
         await _dubs().update_one({"id": doc["id"]}, {"$set": {
             "status": "done", "media_id": result["media_id"], "job_id": result["job_id"], "lines": result["lines"], "summary": result["summary"],
-            "translate": result["translate"], "voice_version": voice.get("version"), "updated_at": _now()}})
+            "translate": result["translate"], "voice_version": voice.get("version"), "voice_used": result.get("voice"), "updated_at": _now()}})
         return {"data": {"media_id": result["media_id"], "dub_id": doc["id"]}, "href": f"/dashboard/pipelines/video?media={result['media_id']}"}
 
     pipeline_runs.start(run, work, interrupt_on_cancel=True)
@@ -179,7 +183,7 @@ def _public(d: dict) -> dict:
     return {
         "id": d["id"], "source_media_id": d["source_media_id"], "language": d["language"], "language_name": d.get("language_name"),
         "status": d["status"], "media_id": d.get("media_id"), "summary": d.get("summary"), "lines": d.get("lines") or [],
-        "error": d.get("error"), "translate": d.get("translate"), "created_at": _iso(d.get("created_at")), "updated_at": _iso(d.get("updated_at")),
+        "error": d.get("error"), "translate": d.get("translate"), "voice_used": d.get("voice_used"), "created_at": _iso(d.get("created_at")), "updated_at": _iso(d.get("updated_at")),
     }
 
 

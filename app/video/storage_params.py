@@ -25,6 +25,7 @@ PREVIEW_PURPOSES = {
     "poster": ("image", 20 * 1024 * 1024),
     "strip": ("image", 20 * 1024 * 1024),
     "waveform": ("raw", 8 * 1024 * 1024),
+    "speech": ("video", 20 * 1024 * 1024),          # a spoken line: audio is stored as the video resource type
 }
 
 
@@ -43,7 +44,7 @@ def upload_params(*, workspace_id: str, job_id: str, purpose: str, filename: str
         limit = MAX_VIDEO_BYTES if purpose == "video" else MAX_FRAME_BYTES
         folder = f"recast/{'video' if purpose == 'video' else 'video_frames'}/{workspace_id}"
     else:
-        raise ValueError("purpose must be video, frame, proxy, poster, strip or waveform")
+        raise ValueError("purpose must be video, frame, proxy, poster, strip, waveform or speech")
     if nbytes <= 0 or nbytes > limit:
         raise ValueError(f"A {purpose} file must be between 1 byte and {limit // (1024 * 1024)} MB.")
     _ensure_configured()

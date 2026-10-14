@@ -191,6 +191,27 @@ async def enqueue_preview(*, workspace_id: str, user_id: str, media_id: str, url
 
 
 MAX_COVER_FRAMES = 48
+MAX_SPEECH_LINES = 80
+
+
+async def enqueue_speech(*, workspace_id: str, user_id: str, items: list[dict], language: str, voice: Optional[str] = None, speed: float = 1.0) -> dict:
+    """Queue spoken lines to be made with the natural voice on the worker. `items` are {"id", "text"}; each comes back as a small
+    audio file. Only a worker that reports a voice is given this job."""
+    clean = []
+    for it in items[:MAX_SPEECH_LINES]:
+        text = str(it.get("text") or "").strip()[:1200]
+        if text and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(it.get("id", ""))):
+            clean.append({"id": str(it["id"]), "text": text})
+    if not clean:
+        raise JobError(400, "There is nothing to speak.")
+    now = _now()
+    doc = {
+        "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": "Voice", "kind": "speech", "status": "queued", "attempts": 0,
+        "inputs": {}, "speech": {"language": language.lower()[:8], "items": clean, **({"voice": voice} if voice else {}), "speed": speed},
+        "duration_s": 0, "created_at": now, "lease_token": None, "lease_expires_at": None, "cancel_requested": False, "progress": {},
+    }
+    await _jobs().insert_one(dict(doc))
+    return public(doc)
 
 
 async def enqueue_frames(*, workspace_id: str, user_id: str, media_id: str, url: str, times_s: list[float], width: int = 1280) -> dict:
@@ -279,6 +300,9 @@ async def reap_expired() -> None:
 
 
 def _wire(doc: dict) -> dict:
+    if doc.get("kind") == "speech":
+        return {"id": doc["id"], "kind": "speech", "contract": CONTRACT, "lease_token": doc["lease_token"], "lease_seconds": lease_seconds(),
+                "inputs": {}, "speech": doc.get("speech") or {}, "limits": {}}
     if doc.get("kind") == "frames":
         return {"id": doc["id"], "kind": "frames", "contract": CONTRACT, "lease_token": doc["lease_token"],
                 "lease_seconds": lease_seconds(), "inputs": doc["inputs"], "frames": doc.get("frames") or {}, "limits": {}}
@@ -299,7 +323,9 @@ async def claim(worker_id: str, version: str, capabilities: dict) -> Optional[di
     await reap_expired()
     cap = capabilities.get("max_output_seconds")
     cap = int(cap) if isinstance(cap, (int, float)) and cap > 0 else int(settings.VIDEO_MAX_OUTPUT_SECONDS)
-    base = {"status": "queued", "duration_s": {"$lte": cap}, "cancel_requested": {"$ne": True}}
+    base: dict[str, Any] = {"status": "queued", "duration_s": {"$lte": cap}, "cancel_requested": {"$ne": True}}
+    if not capabilities.get("speech"):
+        base["kind"] = {"$ne": "speech"}                 # a worker without a voice is never handed spoken lines
     busy = await _jobs().distinct("workspace_id", {"status": "claimed"})
     now = _now()
     update = {
@@ -439,6 +465,8 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
         return await _complete_preview(doc, job_id, lease_token, outputs, report)
     if doc.get("kind") == "frames":
         return await _complete_frames(doc, job_id, lease_token, outputs, report)
+    if doc.get("kind") == "speech":
+        return await _complete_speech(doc, job_id, lease_token, outputs, report)
     outputs = outputs if isinstance(outputs, list) else []
     video = next((o for o in outputs if isinstance(o, dict) and o.get("role") == "video"), None)
     frames = [o for o in outputs if isinstance(o, dict) and o.get("role") == "frame" and isinstance(o.get("url"), str)][:MAX_FRAMES]
@@ -560,6 +588,53 @@ async def _complete_preview(doc: dict, job_id: str, lease_token: str, outputs: A
                   "progress": {"stage": "Done", "fraction": 1.0}, "report": report}},
     )
     return {"ok": True, "accepted": True, "media_id": media_id}
+
+
+async def _complete_speech(doc: dict, job_id: str, lease_token: str, outputs: Any, report: Any) -> dict:
+    """Accept spoken lines. Every file must be in our storage at the size reported and every line asked for must be there; a report
+    that does not say so ends the job, and the voice falls back to the draft voice."""
+    items = [o for o in (outputs if isinstance(outputs, list) else []) if isinstance(o, dict) and o.get("role") == "speech"]
+    stored = [o["url"] for o in items if isinstance(o.get("url"), str) and storage_params.is_our_storage_url(o["url"])]
+
+    async def refuse(why: str) -> dict:
+        await _forget_files(stored)
+        message = "The voice could not be made. Please try again."
+        await _end(doc, "failed", "speech_failed", message, {"problem": why})
+        await runs.finish_failed(doc.get("run_id"), message)
+        logger.warning("Speech %s refused: %s", job_id, why)
+        return {"ok": False, "accepted": False}
+
+    if not isinstance(report, dict) or report.get("passed") is not True or report.get("kind") != "speech":
+        return await refuse("the report does not say the speech passed")
+    rows = report.get("items")
+    wanted = {it["id"] for it in (doc.get("speech") or {}).get("items", [])}
+    if not items or not isinstance(rows, list) or len(items) != len(stored):
+        return await refuse("a voice file is missing or not in our storage")
+    by_name = {o.get("name"): o for o in items}
+    made: list[dict[str, Any]] = []
+    for r in rows:
+        o = by_name.get(r.get("file")) if isinstance(r, dict) else None
+        sec = r.get("seconds") if isinstance(r, dict) else None
+        if o is None or r.get("id") not in wanted or not isinstance(o.get("bytes"), int) or o["bytes"] <= 0 \
+                or not isinstance(sec, (int, float)) or isinstance(sec, bool) or not (0 < sec <= 600):
+            return await refuse("a spoken line has no matching file or length")
+        size = await _remote_size(o["url"])
+        if size is None or size != o["bytes"]:
+            return await refuse("a stored voice file is not the size that was reported")
+        made.append({"id": r["id"], "url": o["url"], "bytes": o["bytes"], "seconds": round(float(sec), 2)})
+    if {m["id"] for m in made} != wanted:
+        return await refuse("some lines were not spoken")
+    now = _now()
+    await get_db()["video_speech"].update_one(
+        {"job_id": job_id}, {"$set": {"job_id": job_id, "workspace_id": doc["workspace_id"], "items": made, "language": report.get("language"),
+                                      "created_at": now}}, upsert=True)
+    await _jobs().update_one(
+        {"id": job_id, "lease_token": lease_token},
+        {"$set": {"status": "done", "finished_at": now, "lease_token": None, "lease_expires_at": None,
+                  "progress": {"stage": "Done", "fraction": 1.0}, "report": {k: v for k, v in report.items() if k != "items"}}},
+    )
+    await runs.finish_ok(doc.get("run_id"), {"job_id": job_id, "lines": len(made)})
+    return {"ok": True, "accepted": True}
 
 
 _FRAME_KEYS = ("brightness", "contrast", "sharpness", "top_busy", "bottom_busy", "hash", "rgb", "faces")

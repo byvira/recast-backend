@@ -54,6 +54,10 @@ async def make_dub(
 
     urls: dict[str, str] = {}
     secs: list[Optional[float]] = []
+    prepare = getattr(speak, "prepare", None)
+    if prepare is not None:
+        await _step(reporter, "Making the voices")
+        await prepare([t for t in (text_by_i.get(s["i"]) for s in segments) if t])
     try:
         for n, seg in enumerate(segments):
             await _step(reporter, f"Speaking line {n + 1} of {len(segments)}")
@@ -97,7 +101,7 @@ async def make_dub(
         "media_id": done["media_id"], "job_id": done["job_id"], "origin": origin, "summary": P.summary(placed),
         "lines": [{"i": p["i"], "start_ms": p["start_ms"], "end_ms": p["end_ms"], "source": p["text"], "text": p["text_out"], "flag": p["flag"],
                    "speed": p["speed"], "at_ms": p["at_ms"], "dur_ms": p["dur_ms"], "tightened": p["i"] in rep["tightened"]} for p in placed],
-        "translate": rep, "language": target_code,
+        "translate": rep, "language": target_code, "voice": getattr(speak, "summary", lambda: None)(),
     }
 
 
@@ -126,6 +130,10 @@ async def make_narration(
     if duration <= 0:
         raise service.RenderFailed("This video's length is not known yet.")
     parts = [t for t, _ in spoken]
+    prepare = getattr(speak, "prepare", None)
+    if prepare is not None:
+        await _step(reporter, "Making the voices")
+        await prepare(list(spoken))
     stored: list[str] = []
     audio_parts: list[tuple[bytes, float]] = []
     try:
@@ -176,4 +184,4 @@ async def make_narration(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Could not remove a temporary narration file: %s", exc)
     return {"media_id": done["media_id"], "job_id": done["job_id"], "origin": origin, "narration_seconds": round(total, 1),
-            "video_seconds": round(duration, 1), "parts": len(parts), "language": language}
+            "video_seconds": round(duration, 1), "parts": len(parts), "language": language, "voice": getattr(speak, "summary", lambda: None)()}

@@ -193,10 +193,14 @@ async def _speak_beats(env: Env, beats: list[dict], language: str) -> list[dict]
 
     if env.speak is None or env.store_audio is None:
         raise FlowError("Narration is not available right now.")
+    speak = env.speak.for_language(language) if hasattr(env.speak, "for_language") else env.speak
+    if hasattr(speak, "prepare"):
+        await env.step("Making the voices")
+        await speak.prepare([b["narration"] for b in beats])
     out = []
     for n, b in enumerate(beats, 1):
         await env.step(f"Speaking beat {n} of {len(beats)}")
-        audio = await env.speak(b["narration"], None)
+        audio = await speak(b["narration"], None)
         secs = audio_duration.audio_duration_seconds(audio) if audio else None
         if not audio or not secs:
             raise FlowError("The voice could not read the script. Check the voice settings and try again.")
