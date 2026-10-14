@@ -126,13 +126,18 @@ async def _write_version(doc: dict, kind: str, label: str, user_id: str) -> None
 # ── creating ─────────────────────────────────────────────────────────────────────
 
 class CreateBody(BaseModel):
-    source: Literal["blank", "video", "recording"] = "blank"
+    source: Literal["blank", "video", "recording", "pictures"] = "blank"
     title: str = Field("", max_length=200)
     size: Optional[Literal["square", "vertical", "landscape", "portrait"]] = None
     media_id: Optional[str] = None
     audio_asset_id: Optional[str] = None
     start_s: float = Field(0.0, ge=0)
     end_s: Optional[float] = Field(None, gt=0)
+    # for a slideshow from pictures
+    picture_media_ids: list[str] = Field(default_factory=list, max_length=60)
+    seconds_per_picture: float = Field(3.0, ge=1.0, le=30.0)
+    voice_media_id: Optional[str] = None
+    music_media_id: Optional[str] = None
 
 
 @router.post("", status_code=201)
@@ -152,6 +157,28 @@ async def create_project(request: Request, body: CreateBody, ctx: WorkspaceConte
             edit = builders.from_video(media, size=body.size)
             created_from["media_id"] = body.media_id
             title = title or "Untitled video"
+        elif body.source == "pictures":
+            if not body.picture_media_ids:
+                raise HTTPException(status_code=400, detail="Choose at least one picture.")
+            wanted = set(body.picture_media_ids) | {m for m in (body.voice_media_id, body.music_media_id) if m}
+            found = {r["id"]: r for r in await media_assets.find({"workspace_id": ctx.workspace_id, "id": {"$in": list(wanted)}}).to_list(len(wanted))}
+            missing = wanted - set(found)
+            if missing:
+                raise HTTPException(status_code=404, detail="A picture or sound you chose is not in this workspace's library.")
+            for mid in body.picture_media_ids:
+                kind = found[mid].get("kind")
+                if (kind.value if hasattr(kind, "value") else kind) != "image":
+                    raise HTTPException(status_code=400, detail="Only pictures can go in a slideshow.")
+            voice = found.get(body.voice_media_id) if body.voice_media_id else None
+            if body.voice_media_id and (voice.get("kind").value if hasattr(voice.get("kind"), "value") else voice.get("kind")) != "audio":
+                raise HTTPException(status_code=400, detail="The voice has to be an audio file.")
+            edit = builders.from_pictures(
+                picture_media_ids=body.picture_media_ids, size=body.size or "vertical", seconds_per_picture=body.seconds_per_picture,
+                title=title, voice_media_id=body.voice_media_id, voice_seconds=float(voice.get("duration_s") or 0) if voice else None,
+                music_media_id=body.music_media_id,
+            )
+            created_from.update({"picture_count": len(body.picture_media_ids)})
+            title = title or "Slideshow"
         else:
             if not body.audio_asset_id:
                 raise HTTPException(status_code=400, detail="Choose a recording.")

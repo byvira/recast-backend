@@ -80,7 +80,7 @@ def public(doc: Optional[dict]) -> Optional[dict]:
         return None
     out = {k: doc.get(k) for k in (
         "id", "workspace_id", "label", "status", "attempts", "duration_s", "media_id", "error", "error_code",
-        "progress", "cancel_requested", "created_at", "claimed_at", "finished_at", "origin", "project_id", "run_id",
+        "progress", "cancel_requested", "created_at", "claimed_at", "finished_at", "origin", "project_id", "run_id", "kind",
     )}
     for field in ("created_at", "claimed_at", "finished_at"):
         value = _aware(out.get(field))
@@ -163,6 +163,31 @@ async def enqueue(
     return public(doc)
 
 
+PREVIEW_ROLES = ("proxy", "poster", "strip", "waveform")
+
+
+async def enqueue_preview(*, workspace_id: str, user_id: str, media_id: str, url: str, kind: str, spec: Optional[dict] = None) -> dict:
+    """Queue the preview material for one library item: a small playable copy, a poster, a strip of thumbnails and waveform
+    peaks. One job per item; asking again while it is waiting or after it is done returns the same job."""
+    if not str(url).startswith("https://") or kind not in INPUT_KINDS:
+        raise JobError(400, "That item cannot be previewed.")
+    existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": f"preview:{media_id}"})
+    if existing:
+        return public(existing)
+    now = _now()
+    doc = {
+        "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": "Preview", "kind": "proxy",
+        "status": "queued", "attempts": 0, "inputs": {"src": {"url": url, "kind": kind}}, "proxy": spec or {},
+        "source_media_id": media_id, "duration_s": 0, "created_at": now, "lease_token": None, "lease_expires_at": None,
+        "cancel_requested": False, "progress": {}, "idem_key": f"preview:{media_id}",
+    }
+    try:
+        await _jobs().insert_one(dict(doc))
+    except DuplicateKeyError:
+        return public(await _jobs().find_one({"workspace_id": workspace_id, "idem_key": f"preview:{media_id}"}))
+    return public(doc)
+
+
 # ── the worker's side ────────────────────────────────────────────────────────────
 
 async def touch_worker(worker_id: str, version: str, capabilities: dict) -> None:
@@ -220,6 +245,9 @@ async def reap_expired() -> None:
 
 
 def _wire(doc: dict) -> dict:
+    if doc.get("kind") == "proxy":
+        return {"id": doc["id"], "kind": "proxy", "contract": CONTRACT, "lease_token": doc["lease_token"],
+                "lease_seconds": lease_seconds(), "inputs": doc["inputs"], "proxy": doc.get("proxy") or {}, "limits": {}}
     return {
         "id": doc["id"], "kind": "render", "contract": CONTRACT, "lease_token": doc["lease_token"],
         "lease_seconds": lease_seconds(), "inputs": doc["inputs"], "edit": doc["edit"],
@@ -370,6 +398,8 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
     """Accept a finished render. The video is shown to nobody until the report, the size, the stored file and the sample
     frames all check out; anything missing ends the job with a plain message and keeps the evidence for staff."""
     doc = await _held(job_id, lease_token)
+    if doc.get("kind") == "proxy":
+        return await _complete_preview(doc, job_id, lease_token, outputs, report)
     outputs = outputs if isinstance(outputs, list) else []
     video = next((o for o in outputs if isinstance(o, dict) and o.get("role") == "video"), None)
     frames = [o for o in outputs if isinstance(o, dict) and o.get("role") == "frame" and isinstance(o.get("url"), str)][:MAX_FRAMES]
@@ -428,6 +458,71 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
     return {"ok": True, "accepted": True, "media_id": media.id}
 
 
+async def _complete_preview(doc: dict, job_id: str, lease_token: str, outputs: Any, report: Any) -> dict:
+    """Accept preview material. Every file must be in our storage and be the size reported; the poster goes through the Content
+    Guard like any picture. A refusal ends the job and removes what was uploaded, and leaves the member's original untouched."""
+    from app.agents.content_guard.media import ContentRejected, assert_image_ok
+
+    media_id = doc.get("source_media_id")
+    items = [o for o in (outputs if isinstance(outputs, list) else []) if isinstance(o, dict) and o.get("role") in PREVIEW_ROLES]
+    stored = [o["url"] for o in items if isinstance(o.get("url"), str) and storage_params.is_our_storage_url(o["url"])]
+
+    async def refuse(why: str) -> dict:
+        await _forget_files(stored)
+        message = "The preview could not be made, so this video can't be edited yet. Please try again."
+        await _end(doc, "failed", "preview_failed", message, {"problem": why})
+        await media_assets.update_one({"id": media_id, "workspace_id": doc["workspace_id"]},
+                                      {"$set": {"preview_status": "failed", "preview_error": message}})
+        logger.warning("Preview %s refused: %s", job_id, why)
+        return {"ok": False, "accepted": False}
+
+    if not isinstance(report, dict) or report.get("passed") is not True or report.get("kind") != "proxy":
+        return await refuse("the report does not say the preview passed")
+    if not items or any(not isinstance(o.get("bytes"), int) or o["bytes"] <= 0 for o in items):
+        return await refuse("a preview file is missing or empty")
+    if len(stored) != len(items):
+        return await refuse("a preview file is not in our storage")
+    for o in items:
+        size = await _remote_size(o["url"])
+        if size is None or size != o["bytes"]:
+            return await refuse(f"the stored {o['role']} is not the size that was reported")
+
+    poster = next((o for o in items if o["role"] == "poster"), None)
+    if poster:
+        data = await _fetch_frame(poster["url"])
+        if data:
+            try:
+                await assert_image_ok(data, "image/jpeg", workspace_id=doc["workspace_id"], where="video preview")
+            except ContentRejected as exc:
+                await _forget_files(stored)
+                message = exc.detail.get("message") if isinstance(exc.detail, dict) else "This video was held back by the safety check."
+                await _end(doc, "blocked", "content_guard", message, {"categories": (exc.detail or {}).get("categories")})
+                await media_assets.update_one(
+                    {"id": media_id, "workspace_id": doc["workspace_id"]},
+                    {"$set": {"preview_status": "blocked", "safety_hold": {"message": message, "at": _now()}}},
+                )
+                return {"ok": True, "accepted": False, "held": True}
+
+    by_role = {o["role"]: o for o in items}
+    preview = {
+        **{f"{role}_url": by_role[role]["url"] for role in by_role},
+        **{f"{role}_bytes": by_role[role]["bytes"] for role in by_role},
+        "meta": {k: v for k, v in report.items() if k in ("duration_s", "has_video", "has_audio", "is_image", "width", "height", "fps",
+                                                          "proxy", "strip", "waveform")},
+        "generated_at": _now(),
+    }
+    fields: dict[str, Any] = {"preview": preview, "preview_status": "ready"}
+    if poster:
+        fields["poster_url"] = poster["url"]
+    await media_assets.update_one({"id": media_id, "workspace_id": doc["workspace_id"]}, {"$set": fields})
+    await _jobs().update_one(
+        {"id": job_id, "lease_token": lease_token},
+        {"$set": {"status": "done", "media_id": media_id, "finished_at": _now(), "lease_token": None, "lease_expires_at": None,
+                  "progress": {"stage": "Done", "fraction": 1.0}, "report": report}},
+    )
+    return {"ok": True, "accepted": True, "media_id": media_id}
+
+
 async def fail(job_id: str, lease_token: str, code: str, message: str, retryable: bool, detail: Any = None) -> dict:
     """The worker could not finish. A retryable failure goes back in the queue until the job is out of attempts.
     A worker that was simply restarted (`worker_stopped`) does not use up an attempt."""
@@ -447,6 +542,9 @@ async def fail(job_id: str, lease_token: str, code: str, message: str, retryable
         return {"ok": True, "requeued": True}
     await _end(doc, "failed", code, safe, detail)
     await runs.finish_failed(doc.get("run_id"), safe)
+    if doc.get("kind") == "proxy" and doc.get("source_media_id"):
+        await media_assets.update_one({"id": doc["source_media_id"], "workspace_id": doc["workspace_id"]},
+                                      {"$set": {"preview_status": "failed", "preview_error": safe}})
     return {"ok": True, "requeued": False}
 
 
@@ -480,6 +578,15 @@ async def cancel_job(workspace_id: str, job_id: str) -> dict:
     if running:
         return public(running)
     raise JobError(409, "This video has already finished.")
+
+
+async def worker_ready() -> bool:
+    """True when the render worker is switched on and has asked for work lately, so a render handed to it will be picked up."""
+    if not settings.VIDEO_WORKER_ENABLED or not settings.VIDEO_WORKER_TOKEN:
+        return False
+    state = await _state().find_one({"_id": "render_worker"}) or {}
+    seen = _aware(state.get("last_seen"))
+    return bool(seen and _now() - seen < WORKER_OFFLINE_AFTER)
 
 
 async def worker_status() -> dict:

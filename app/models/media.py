@@ -136,6 +136,12 @@ class MediaAsset(BaseModel):
     poster_url: Optional[str] = None
     # What the file is (video only, filled when a video is uploaded for editing): length, size, frame rate, turn, HDR, sound.
     probe: Optional[dict] = None
+    # The editor's preview material (small playable copy, poster, thumbnail strip, waveform) made in the background after import:
+    # "preparing", "ready", "failed" or "blocked". `preview` holds the stored files; a held item carries the reason in `safety_hold`.
+    preview_status: Optional[str] = None
+    preview_error: Optional[str] = None
+    preview: Optional[dict] = None
+    safety_hold: Optional[dict] = None
     # Where this came from: own, ai, stock, brand, template, or mixed (a finished video that combines kinds). Filled from
     # `source` when not set, so every existing item carries it too. `contains_ai` and `contains_stock` stay true for a finished
     # video that used any such clip, however much of its own footage is in it.

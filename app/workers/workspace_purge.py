@@ -24,9 +24,13 @@ MAX_PER_RUN = 3
 async def purge_workspace(workspace_id: str) -> dict[str, int]:
     """Remove one workspace and everything it owned. Returns how many records were removed per collection."""
     # Stored files first, while the rows that point at them still exist. A file that cannot be removed is logged and left.
-    async for media in media_assets.find({"workspace_id": workspace_id}, {"url": 1}):
+    async for media in media_assets.find({"workspace_id": workspace_id}, {"url": 1, "preview": 1, "poster_url": 1}):
         if media.get("url"):
             await delete_file_by_url(media["url"])
+        # the preview files made from a video (small copy, poster, thumbnail strip, waveform) are stored separately
+        for key, value in (media.get("preview") or {}).items():
+            if key.endswith("_url") and isinstance(value, str):
+                await delete_file_by_url(value)
 
     db = get_db()
     removed: dict[str, int] = {}

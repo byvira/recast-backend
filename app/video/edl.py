@@ -135,6 +135,7 @@ def validate(raw: Any) -> dict[str, Any]:
             "src_in_f": _int(c, "src_in_f", w, default=0), "speed": _num(c, "speed", w, lo=0.5, hi=2.0, default=1.0), "fit": fit,
             "fade_in_f": _int(c, "fade_in_f", w, default=0), "fade_out_f": _int(c, "fade_out_f", w, default=0),
             "audio": bool(c.get("audio", True)), "gain_db": _num(c, "gain_db", w, lo=-60, hi=24, default=0.0),
+            "motion": bool(c.get("motion", False)),
         }
         _need(item["fade_in_f"] + item["fade_out_f"] <= item["dur_f"], f"{w}: the fades are longer than the clip.")
         video.append(item)

@@ -2935,40 +2935,75 @@ async def make_video_from_audio_asset(
             if cover_media:
                 cover_bytes = await _download_media_bytes(cover_media["url"])
 
-    await run.step("Loading the recording")
-    audio_bytes = await _download_media_bytes(voice["url"])
     words = [TranscriptWordLike(word=w["word"], start_s=w["start_s"], end_s=w["end_s"]) for w in _master_transcript(doc)]
 
-    await run.step("Rendering the video")
-    try:
-        video_bytes = await render_video(
-            audio_bytes=audio_bytes, words=words, start_s=body.start_s, end_s=end_s,
-            style=body.style, size=body.size,
-            background_hex=colors.get("secondary") or "", accent_hex=colors.get("accent") or "",
-            cover_bytes=cover_bytes, font_name=(visual_identity.get("fonts") or {}).get("heading") or None,
-            primary_hex=colors.get("primary") or "", title=on_screen_title, logo_bytes=logo_bytes, progress=body.show_progress,
-        )
-    except VideoRenderError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    max_bytes = await _max_bytes_for(MediaKind.VIDEO, ctx.workspace_id)
-    if len(video_bytes) > max_bytes:
-        raise HTTPException(status_code=400, detail=f"The rendered video is larger than the {max_bytes // (1024 * 1024)}MB limit. Try a shorter clip.")
-
-    await run.step("Saving the video")
-    try:
-        url = await upload_file(video_bytes, UploadContentType.VIDEO, ctx.user_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Video render upload failed for %s: %s", audio_asset_id, exc)
-        raise HTTPException(status_code=502, detail="Saving the finished video failed. Try again.")
+    # The render worker makes the video when it is there: no 30 minute cap, no render inside the web process. When it is not
+    # (switched off or offline) the same video is made here, exactly as before.
+    from app.video import audio_video, jobs as video_jobs, service as video_service
+    from app.video.origin import origin_of
 
     now = datetime.now(timezone.utc)
-    media = MediaAsset(
-        id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.VIDEO, url=url,
-        mime_type="video/mp4", source=MediaSource.ENHANCED, created_by=ctx.user_id, created_at=now,
-        size_bytes=len(video_bytes), duration_s=round(end_s - body.start_s, 2),
-    )
-    await media_assets.insert_one(media.model_dump())
+    media = None
+    wanted_s = end_s - body.start_s
+    if await video_jobs.worker_ready() and wanted_s <= float(settings.VIDEO_MAX_OUTPUT_SECONDS):
+        await run.step("Rendering the video")
+        cover_row = None
+        if body.style in ("cover", "cover_wave") and cover_bytes:
+            feed_row = await podcast_feed_settings.find_one({"brand_id": doc["brand_id"], "workspace_id": ctx.workspace_id})
+            cover_row = await media_assets.find_one({"id": (feed_row or {}).get("cover_media_id"), "workspace_id": ctx.workspace_id}) \
+                if (feed_row or {}).get("cover_media_id") else None
+        try:
+            made = await audio_video.render_via_worker(
+                workspace_id=ctx.workspace_id, user_id=ctx.user_id, audio_url=voice["url"], voice_origin=origin_of(voice), words=words,
+                start_s=body.start_s, end_s=end_s, style=body.style, size=body.size,
+                background_hex=colors.get("secondary") or "", accent_hex=colors.get("accent") or "",
+                primary_hex=colors.get("primary") or "", cover_bytes=cover_bytes,
+                cover_origin=origin_of(cover_row) if cover_row else "own",
+                font_name=(visual_identity.get("fonts") or {}).get("heading") or None, title=on_screen_title, logo_bytes=logo_bytes,
+                progress=body.show_progress, reporter=run, label=f"Video from {doc.get('title') or 'a recording'}",
+            )
+        except video_service.RenderFailed as exc:
+            raise HTTPException(status_code=502, detail=str(exc))
+        row = await media_assets.find_one({"id": made["media_id"], "workspace_id": ctx.workspace_id})
+        if row:
+            media = MediaAsset(**{k: v for k, v in row.items() if k != "_id"})
+
+    if media is None:
+        await run.step("Loading the recording")
+        audio_bytes = await _download_media_bytes(voice["url"])
+        words = [TranscriptWordLike(word=w["word"], start_s=w["start_s"], end_s=w["end_s"]) for w in _master_transcript(doc)]
+
+        await run.step("Rendering the video")
+        try:
+            video_bytes = await render_video(
+                audio_bytes=audio_bytes, words=words, start_s=body.start_s, end_s=end_s,
+                style=body.style, size=body.size,
+                background_hex=colors.get("secondary") or "", accent_hex=colors.get("accent") or "",
+                cover_bytes=cover_bytes, font_name=(visual_identity.get("fonts") or {}).get("heading") or None,
+                primary_hex=colors.get("primary") or "", title=on_screen_title, logo_bytes=logo_bytes, progress=body.show_progress,
+            )
+        except VideoRenderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        max_bytes = await _max_bytes_for(MediaKind.VIDEO, ctx.workspace_id)
+        if len(video_bytes) > max_bytes:
+            raise HTTPException(status_code=400, detail=f"The rendered video is larger than the {max_bytes // (1024 * 1024)}MB limit. Try a shorter clip.")
+
+        await run.step("Saving the video")
+        try:
+            url = await upload_file(video_bytes, UploadContentType.VIDEO, ctx.user_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Video render upload failed for %s: %s", audio_asset_id, exc)
+            raise HTTPException(status_code=502, detail="Saving the finished video failed. Try again.")
+
+        now = datetime.now(timezone.utc)
+        media = MediaAsset(
+            id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.VIDEO, url=url,
+            mime_type="video/mp4", source=MediaSource.ENHANCED, created_by=ctx.user_id, created_at=now,
+            size_bytes=len(video_bytes), duration_s=round(end_s - body.start_s, 2),
+        )
+        await media_assets.insert_one(media.model_dump())
+
 
     clip = VideoClip(
         id=uuid4().hex, media_id=media.id, start_s=body.start_s, end_s=end_s,

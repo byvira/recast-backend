@@ -384,6 +384,8 @@ from app.api.v1 import worker as worker_router
 from app.api.v1 import video_media as video_media_router
 app.include_router(video_media_router.router, prefix="/api/v1/video-media", tags=["Video media"])
 from app.api.v1 import video_projects as video_projects_router
+from app.api.v1 import video_transcripts as video_transcripts_router
+app.include_router(video_transcripts_router.router, prefix="/api/v1/video-transcripts", tags=["Video transcripts"])
 app.include_router(video_projects_router.router, prefix="/api/v1/video-projects", tags=["Video projects"])
 app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])
 app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["Ops"])

@@ -104,6 +104,7 @@ async def _fit_for_whisper(audio_bytes: bytes, filename: str) -> tuple[bytes, st
 
 async def transcribe_audio_detailed(
     audio_bytes: bytes, filename: str, language: Optional[str] = None, punctuate: Optional[bool] = None,
+    prefer_turbo: bool = False,
 ) -> tuple[list[TranscriptWord], Optional[str]]:
     """Real Groq Whisper call, word-level timestamps, plus the language
     Whisper detected. `language=None` lets Whisper auto-detect — the old
@@ -117,7 +118,9 @@ async def transcribe_audio_detailed(
             kwargs["language"] = language
         response = None
         failure: Exception | None = None
-        for attempt, whisper in enumerate((GroqModel.WHISPER, GroqModel.WHISPER_TURBO)):
+        # the faster model first for languages it handles well (English); the large model first for the rest
+        order = (GroqModel.WHISPER_TURBO, GroqModel.WHISPER) if prefer_turbo else (GroqModel.WHISPER, GroqModel.WHISPER_TURBO)
+        for attempt, whisper in enumerate(order):
             try:
                 with fallback_scope() if attempt else contextlib.nullcontext():
                     async with track("groq", whisper.value, feature="transcription"):

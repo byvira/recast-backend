@@ -35,6 +35,7 @@ from app.workers.scheduled_posts import process_scheduled_posts
 from app.workers.support_lifecycle import support_lifecycle_tick
 from app.workers.token_refresh import refresh_expiring_tokens
 from app.workers.workspace_purge import purge_deleted_workspaces
+from app.video.retention import continue_video_transcripts, run_video_retention
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,10 @@ JOBS: list[Job] = [
     Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=_every(15, offset=11)),
     # Workspaces deleted more than 30 days ago are removed for good, with everything they owned — daily.
     Job("workspace_purge", _no_ctx(purge_deleted_workspaces), minute=frozenset({23}), hour=frozenset({4})),
+    # Long video transcripts waiting for the free speech allowance carry on by themselves.
+    Job("video_transcripts", _no_ctx(continue_video_transcripts), minute=_every(10, offset=7)),
+    # Unfinished video uploads, orphaned previews and old render records — daily.
+    Job("video_retention", _no_ctx(run_video_retention), minute=frozenset({41}), hour=frozenset({3})),
     # Latest post/account metrics — every 6h.
     Job("analytics_refresh", _no_ctx(refresh_analytics),
         minute=frozenset({17}), hour=frozenset({0, 6, 12, 18})),

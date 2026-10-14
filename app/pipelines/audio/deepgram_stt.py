@@ -25,7 +25,9 @@ def available() -> bool:
     return bool(settings.DEEPGRAM_API_KEY)
 
 
-async def listen(audio_bytes: bytes, filename: str, language: Optional[str], *, utterances: bool = False) -> dict[str, Any]:
+async def listen(
+    audio_bytes: bytes, filename: str, language: Optional[str], *, utterances: bool = False, diarize: bool = False,
+) -> dict[str, Any]:
     """The raw Deepgram result for one recording. `language=None` asks Deepgram to detect it. Raises on any failure."""
     params: dict[str, Any] = {"model": DEEPGRAM_MODEL, "smart_format": "true", "punctuate": "true"}
     if language:
@@ -34,6 +36,8 @@ async def listen(audio_bytes: bytes, filename: str, language: Optional[str], *, 
         params["detect_language"] = "true"
     if utterances:
         params["utterances"] = "true"
+    if diarize:
+        params["diarize"] = "true"
     mime = mimetypes.guess_type(filename)[0] or "audio/mpeg"
     with fallback_scope():
         async with track("deepgram", DEEPGRAM_MODEL, feature="transcription"):
@@ -52,6 +56,17 @@ def words_from(result: dict[str, Any]) -> list[tuple[str, float, float]]:
     alt = ((channels[0].get("alternatives")) or [{}])[0]
     return [
         (w.get("punctuated_word") or w.get("word") or "", float(w.get("start", 0.0)), float(w.get("end", 0.0)))
+        for w in alt.get("words") or []
+        if (w.get("punctuated_word") or w.get("word"))
+    ]
+
+
+def speaker_words_from(result: dict[str, Any]) -> list[tuple[str, float, float, Optional[int]]]:
+    """(word, start_s, end_s, speaker number or None) in order, for a result asked for with diarize."""
+    channels = (result.get("results") or {}).get("channels") or [{}]
+    alt = ((channels[0].get("alternatives")) or [{}])[0]
+    return [
+        (w.get("punctuated_word") or w.get("word") or "", float(w.get("start", 0.0)), float(w.get("end", 0.0)), w.get("speaker"))
         for w in alt.get("words") or []
         if (w.get("punctuated_word") or w.get("word"))
     ]

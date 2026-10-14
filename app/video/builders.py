@@ -82,5 +82,66 @@ def from_recording(
     return edl.validate(edit)
 
 
+MIN_SECONDS_PER_PICTURE = 1.0
+MAX_SECONDS_PER_PICTURE = 30.0
+MAX_PICTURES = 60
+
+
+def from_pictures(
+    *, picture_media_ids: list[str], size: str = "vertical", seconds_per_picture: float = 3.0, title: str = "",
+    voice_media_id: Optional[str] = None, voice_seconds: Optional[float] = None, music_media_id: Optional[str] = None,
+    words: Optional[list[dict[str, Any]]] = None, accent: str = "#38bdf8", background: str = "#0f172a", motion: bool = True,
+) -> dict[str, Any]:
+    """A slideshow: each picture on screen in turn, with a slow zoom so nothing is frozen, optionally over a voice and a music bed.
+    With a voice, the pictures share the voice's length evenly (so the last picture is not cut off and the video ends with the
+    voice); without one, each stays for `seconds_per_picture`. Caption words are the voice's own timing."""
+    if not picture_media_ids:
+        raise edl.EditError("Choose at least one picture.")
+    if len(picture_media_ids) > MAX_PICTURES:
+        raise edl.EditError(f"A slideshow can have at most {MAX_PICTURES} pictures.")
+    fps = {"num": 30, "den": 1}
+    if voice_media_id:
+        if not voice_seconds or voice_seconds <= 0:
+            raise edl.EditError("The voice's length is not known yet, so a slideshow can't be timed to it.")
+        total_f = max(len(picture_media_ids), edl.seconds_to_frames(voice_seconds, fps))
+        base, extra = divmod(total_f, len(picture_media_ids))
+        lengths = [base + (1 if i < extra else 0) for i in range(len(picture_media_ids))]
+    else:
+        if not (MIN_SECONDS_PER_PICTURE <= seconds_per_picture <= MAX_SECONDS_PER_PICTURE):
+            raise edl.EditError(f"Each picture can stay on screen for {MIN_SECONDS_PER_PICTURE:g} to {MAX_SECONDS_PER_PICTURE:g} seconds.")
+        each = edl.seconds_to_frames(seconds_per_picture, fps)
+        lengths = [each] * len(picture_media_ids)
+        total_f = each * len(picture_media_ids)
+
+    edit = edl.blank(size, fps)
+    edit["background"] = background if len(background) == 7 and background.startswith("#") else "#0f172a"
+    at = 0
+    clips = []
+    for i, (mid, dur) in enumerate(zip(picture_media_ids, lengths)):
+        clips.append({
+            "id": f"p{i + 1}", "media_id": mid, "at_f": at, "dur_f": dur, "src_in_f": 0, "speed": 1.0, "fit": "cover",
+            "fade_in_f": min(8, dur // 4) if i else 0, "fade_out_f": 0, "audio": False, "gain_db": 0.0, "motion": bool(motion),
+        })
+        at += dur
+    edit["video"] = clips
+    audio = []
+    if voice_media_id:
+        audio.append({"id": "voice", "media_id": voice_media_id, "at_f": 0, "dur_f": total_f, "src_in_f": 0, "speed": 1.0, "gain_db": 0.0,
+                      "role": "voice", "fade_in_f": 0, "fade_out_f": 0, "duck": False})
+    if music_media_id:
+        audio.append({"id": "music", "media_id": music_media_id, "at_f": 0, "dur_f": total_f, "src_in_f": 0, "speed": 1.0,
+                      "gain_db": -12.0 if voice_media_id else -4.0, "role": "music", "fade_in_f": 15, "fade_out_f": 30,
+                      "duck": bool(voice_media_id)})
+    edit["audio"] = audio
+    if title.strip():
+        edit["text"] = [{"id": "title", "text": title.strip()[:200], "at_f": 0, "dur_f": min(total_f, 90), "x": 0.5, "y": 0.12,
+                         "size": 64, "color": "#FFFFFF", "bold": True}]
+    shifted = [{"w": str(w["word"]), "s_ms": int(round(float(w["start_s"]) * 1000)), "e_ms": int(round(float(w["end_s"]) * 1000))}
+               for w in (words or [])]
+    edit["captions"] = {"enabled": bool(shifted), "accent": accent if len(accent) == 7 else "#38bdf8", "words": shifted}
+    edit["duration_f"] = total_f
+    return edl.validate(edit)
+
+
 def blank_project(size: str = "landscape") -> dict[str, Any]:
     return edl.validate(edl.blank(size))

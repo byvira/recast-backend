@@ -181,7 +181,38 @@ async def complete_upload(
     )
     await media_assets.insert_one(media.model_dump())
     await _uploads().update_one({"id": upload_id}, {"$set": {"status": "done", "media_id": media.id, "url": body.url, "finished_at": now}})
+    # the small playable copy, poster, thumbnails and waveform are made in the background; the editor says so until they are ready
+    try:
+        from app.video.jobs import enqueue_preview
+
+        await enqueue_preview(workspace_id=ctx.workspace_id, user_id=ctx.user_id, media_id=media.id, url=body.url, kind="video")
+        await media_assets.update_one({"id": media.id}, {"$set": {"preview_status": "preparing"}})
+    except Exception as exc:  # noqa: BLE001 - the upload is saved either way
+        logger.warning("Could not queue the preview for %s: %s", media.id, exc)
     return {"upload": _view({**doc, "status": "done", "media_id": media.id}), "media": media.model_dump(mode="json"), "notices": found["notices"]}
+
+
+@router.post("/{media_id}/preview", status_code=202)
+@limiter.limit("30/minute")
+async def request_preview(request: Request, media_id: str, ctx: WorkspaceContext = Depends(require("edit_content"))) -> dict[str, Any]:
+    """Make the preview material for a library item that has none (an older upload). Safe to repeat."""
+    from app.video.jobs import JobError, enqueue_preview
+
+    media = await media_assets.find_one({"id": media_id, "workspace_id": ctx.workspace_id})
+    if not media:
+        raise HTTPException(status_code=404, detail="That item is not in this workspace's library.")
+    kind = media.get("kind")
+    kind = kind.value if hasattr(kind, "value") else kind
+    if kind not in ("video", "audio", "image"):
+        raise HTTPException(status_code=400, detail="Only videos, recordings and pictures have a preview.")
+    if media.get("preview_status") == "ready":
+        return {"media_id": media_id, "preview_status": "ready"}
+    try:
+        job = await enqueue_preview(workspace_id=ctx.workspace_id, user_id=ctx.user_id, media_id=media_id, url=media.get("url", ""), kind=kind)
+    except JobError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message)
+    await media_assets.update_one({"id": media_id}, {"$set": {"preview_status": "preparing"}})
+    return {"media_id": media_id, "preview_status": "preparing", "job_id": job["id"]}
 
 
 @router.post("/uploads/{upload_id}/cancel")

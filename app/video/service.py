@@ -60,11 +60,22 @@ async def render_project_and_wait(
     except jobs.JobError as exc:
         raise RenderFailed(exc.message)
 
+    done = await wait_for_job(workspace_id, job["id"], reporter=reporter, max_wait_s=max_wait_s)
+    await get_db()["video_projects"].update_one(
+        {"id": project_id, "workspace_id": workspace_id},
+        {"$set": {"last_render": {"job_id": job["id"], "media_id": done["media_id"], "preset": preset, "version": project["version"]}}},
+    )
+    return done
+
+
+async def wait_for_job(workspace_id: str, job_id: str, *, reporter: Any = None, max_wait_s: Optional[float] = None) -> dict:
+    """Wait for a render job to end. Each stage the worker reports is passed to `reporter`, so the run that is waiting shows one
+    line of real progress. Raises RenderFailed with the job's own plain message when it does not end in a video."""
     limit = max_wait_s or float(settings.VIDEO_MAX_OUTPUT_SECONDS) * 2 + 600
     began = time.monotonic()
     last_stage = None
     while True:
-        current = await jobs.get_job(workspace_id, job["id"])
+        current = await jobs.get_job(workspace_id, job_id)
         if not current:
             raise RenderFailed("The render could not be found.")
         stage = (current.get("progress") or {}).get("stage")
@@ -72,12 +83,7 @@ async def render_project_and_wait(
             await reporter.step(stage)
             last_stage = stage
         if current["status"] == "done":
-            await get_db()["video_projects"].update_one(
-                {"id": project_id, "workspace_id": workspace_id},
-                {"$set": {"last_render": {"job_id": job["id"], "media_id": current["media_id"], "preset": preset,
-                                          "version": project["version"]}}},
-            )
-            return {"job_id": job["id"], "media_id": current["media_id"], "origin": current.get("origin"),
+            return {"job_id": job_id, "media_id": current["media_id"], "origin": current.get("origin"),
                     "duration_s": current.get("duration_s")}
         if current["status"] in ("failed", "cancelled", "blocked"):
             raise RenderFailed(current.get("error") or "The video was not made.")

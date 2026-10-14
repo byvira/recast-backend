@@ -19,6 +19,13 @@ CHUNK_FROM_BYTES = 20 * 1024 * 1024
 CHUNK_BYTES = 20 * 1024 * 1024
 MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024
 MAX_FRAME_BYTES = 8 * 1024 * 1024
+# What a preview job may upload, where each goes in storage, and how big each may be.
+PREVIEW_PURPOSES = {
+    "proxy": ("video", MAX_VIDEO_BYTES),
+    "poster": ("image", 20 * 1024 * 1024),
+    "strip": ("image", 20 * 1024 * 1024),
+    "waveform": ("raw", 8 * 1024 * 1024),
+}
 
 
 def _safe_stem(filename: str) -> str:
@@ -28,20 +35,25 @@ def _safe_stem(filename: str) -> str:
 
 def upload_params(*, workspace_id: str, job_id: str, purpose: str, filename: str, nbytes: int) -> dict:
     """What the worker needs to upload one file: a signed multipart form, and a piece size when the file is large."""
-    if purpose not in ("video", "frame"):
-        raise ValueError("purpose must be video or frame")
-    limit = MAX_VIDEO_BYTES if purpose == "video" else MAX_FRAME_BYTES
+    if purpose in PREVIEW_PURPOSES:
+        resource, limit = PREVIEW_PURPOSES[purpose]
+        folder = f"recast/video_preview/{workspace_id}"
+    elif purpose in ("video", "frame"):
+        resource = "video" if purpose == "video" else "image"
+        limit = MAX_VIDEO_BYTES if purpose == "video" else MAX_FRAME_BYTES
+        folder = f"recast/{'video' if purpose == 'video' else 'video_frames'}/{workspace_id}"
+    else:
+        raise ValueError("purpose must be video, frame, proxy, poster, strip or waveform")
     if nbytes <= 0 or nbytes > limit:
         raise ValueError(f"A {purpose} file must be between 1 byte and {limit // (1024 * 1024)} MB.")
     _ensure_configured()
-    resource = "video" if purpose == "video" else "image"
     params: dict[str, str | int] = {
-        "folder": f"recast/{'video' if purpose == 'video' else 'video_frames'}/{workspace_id}",
+        "folder": folder,
         "public_id": f"{job_id}_{purpose}_{_safe_stem(filename)}",
         "overwrite": "true",
         "timestamp": int(time.time()),
     }
-    if purpose == "video":
+    if purpose in ("video", "proxy"):
         params["upload_preset"] = ContentType.VIDEO.value
     signature = cloudinary.utils.api_sign_request(params, settings.CLOUDINARY_API_SECRET)
     out: dict = {
