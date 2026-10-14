@@ -365,3 +365,26 @@ async def test_the_platform_list_carries_the_picture_limits_and_whether_youtube_
     assert platforms["facebook"]["max_images"] == 10 and platforms["youtube"]["max_images"] is None
     assert platforms["youtube"]["publish_unlocked"] is False
     assert platforms["linkedin"]["publish_unlocked"] is None
+
+
+async def test_a_youtube_channel_that_is_not_verified_is_told_how_to_fix_the_thumbnail(monkeypatch):
+    from datetime import datetime, timezone
+
+    from app.db.mongo import media_assets
+    from app.pipelines.publish.youtube import publisher as youtube_module
+
+    class _Refuses(_Recorder):
+        async def get(self, url, **kwargs):
+            return httpx.Response(200, content=b"jpegbytes", request=httpx.Request("GET", url))
+
+        async def post(self, url, **kwargs):
+            body = {"error": {"code": 403, "message": "The authenticated user doesn't have permissions to upload and set custom video thumbnails."}}
+            return httpx.Response(403, json=body, request=httpx.Request("POST", url))
+
+    await media_assets.insert_one({
+        "id": "thumb-403", "workspace_id": "w-403", "kind": "image", "url": "https://cdn.example/t.jpg", "mime_type": "image/jpeg",
+        "source": "uploaded", "created_by": "u", "created_at": datetime.now(timezone.utc),
+    })
+    async with _Refuses() as client:
+        note = await youtube_module.YouTubePublisher()._set_thumbnail(client, "token", "vid-9", "thumb-403", "w-403")
+    assert "verified channel" in note and "youtube.com/verify" in note and "video is up" in note

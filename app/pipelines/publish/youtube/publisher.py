@@ -153,6 +153,10 @@ class YouTubePublisher(PlatformPublisher):
             return "Your video is up, but the thumbnail couldn't be added. You can add one in YouTube Studio."
         if not resp.is_success:
             logger.warning("YouTube thumbnail upload returned %s for video %s", resp.status_code, video_id)
+            if resp.status_code == 403 and "thumbnail" in (resp.text or "").lower():
+                # YouTube allows custom thumbnails only on a channel that has been verified (by phone) at youtube.com/verify
+                return ("Your video is up, but YouTube only takes custom thumbnails on a verified channel. "
+                        "Verify your channel at youtube.com/verify, then add the thumbnail in YouTube Studio.")
             return "Your video is up, but YouTube didn't accept the thumbnail. You can add one in YouTube Studio."
         return None
 
