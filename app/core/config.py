@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     CLOUDINARY_API_SECRET: str = ""
 
     # Pixabay: the free stock-video source for B-roll (100 requests a minute, results cached 24 hours, credit the author).
+    PEXELS_API_KEY: str = ""
     PIXABAY_API_KEY: str = ""
 
     # The video render worker (a separate program on its own machine). Off until the owner turns it on: with the switch off,

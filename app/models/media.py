@@ -145,6 +145,8 @@ class MediaAsset(BaseModel):
     # Where this came from: own, ai, stock, brand, template, or mixed (a finished video that combines kinds). Filled from
     # `source` when not set, so every existing item carries it too. `contains_ai` and `contains_stock` stay true for a finished
     # video that used any such clip, however much of its own footage is in it.
+    # For a stock clip: where it came from and the terms it was used under (provider, id, page, author, licence), kept with it.
+    stock: Optional[dict] = None
     origin: Optional[str] = None
     contains_ai: Optional[bool] = None
     contains_stock: Optional[bool] = None
