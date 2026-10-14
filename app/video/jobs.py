@@ -8,6 +8,8 @@ States: queued, claimed, done, failed, cancelled, blocked (the Content Guard hel
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import secrets
@@ -188,6 +190,38 @@ async def enqueue_preview(*, workspace_id: str, user_id: str, media_id: str, url
     return public(doc)
 
 
+MAX_COVER_FRAMES = 48
+
+
+async def enqueue_frames(*, workspace_id: str, user_id: str, media_id: str, url: str, times_s: list[float], width: int = 1280) -> dict:
+    """Queue the candidate cover frames of one video: a picture at each chosen moment with its measurements. The same moments of
+    the same video return the job that exists; a failed or cancelled one is replaced."""
+    if not str(url).startswith("https://"):
+        raise JobError(400, "That video cannot be looked at.")
+    times = sorted({round(float(t), 2) for t in times_s if isinstance(t, (int, float)) and not isinstance(t, bool) and t >= 0})[:MAX_COVER_FRAMES]
+    if not times:
+        raise JobError(400, "There are no moments to take pictures of.")
+    key = f"frames:{media_id}:{hashlib.sha1(json.dumps([times, width]).encode()).hexdigest()[:16]}"
+    existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": key})
+    if existing and existing.get("status") in ("failed", "cancelled", "blocked"):
+        await _jobs().update_one({"id": existing["id"]}, {"$set": {"idem_key": f"{key}:old:{existing['id']}"}})
+        existing = None
+    if existing:
+        return public(existing)
+    now = _now()
+    doc = {
+        "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": "Cover pictures", "kind": "frames",
+        "status": "queued", "attempts": 0, "inputs": {"src": {"url": url, "kind": "video"}}, "frames": {"times_s": times, "width": width},
+        "source_media_id": media_id, "duration_s": 0, "created_at": now, "lease_token": None, "lease_expires_at": None,
+        "cancel_requested": False, "progress": {}, "idem_key": key,
+    }
+    try:
+        await _jobs().insert_one(dict(doc))
+    except DuplicateKeyError:
+        return public(await _jobs().find_one({"workspace_id": workspace_id, "idem_key": key}))
+    return public(doc)
+
+
 # ── the worker's side ────────────────────────────────────────────────────────────
 
 async def touch_worker(worker_id: str, version: str, capabilities: dict) -> None:
@@ -245,6 +279,9 @@ async def reap_expired() -> None:
 
 
 def _wire(doc: dict) -> dict:
+    if doc.get("kind") == "frames":
+        return {"id": doc["id"], "kind": "frames", "contract": CONTRACT, "lease_token": doc["lease_token"],
+                "lease_seconds": lease_seconds(), "inputs": doc["inputs"], "frames": doc.get("frames") or {}, "limits": {}}
     if doc.get("kind") == "proxy":
         return {"id": doc["id"], "kind": "proxy", "contract": CONTRACT, "lease_token": doc["lease_token"],
                 "lease_seconds": lease_seconds(), "inputs": doc["inputs"], "proxy": doc.get("proxy") or {}, "limits": {}}
@@ -400,6 +437,8 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
     doc = await _held(job_id, lease_token)
     if doc.get("kind") == "proxy":
         return await _complete_preview(doc, job_id, lease_token, outputs, report)
+    if doc.get("kind") == "frames":
+        return await _complete_frames(doc, job_id, lease_token, outputs, report)
     outputs = outputs if isinstance(outputs, list) else []
     video = next((o for o in outputs if isinstance(o, dict) and o.get("role") == "video"), None)
     frames = [o for o in outputs if isinstance(o, dict) and o.get("role") == "frame" and isinstance(o.get("url"), str)][:MAX_FRAMES]
@@ -508,7 +547,7 @@ async def _complete_preview(doc: dict, job_id: str, lease_token: str, outputs: A
         **{f"{role}_url": by_role[role]["url"] for role in by_role},
         **{f"{role}_bytes": by_role[role]["bytes"] for role in by_role},
         "meta": {k: v for k, v in report.items() if k in ("duration_s", "has_video", "has_audio", "is_image", "width", "height", "fps",
-                                                          "proxy", "strip", "waveform")},
+                                                          "proxy", "strip", "waveform", "scenes")},
         "generated_at": _now(),
     }
     fields: dict[str, Any] = {"preview": preview, "preview_status": "ready"}
@@ -520,6 +559,83 @@ async def _complete_preview(doc: dict, job_id: str, lease_token: str, outputs: A
         {"$set": {"status": "done", "media_id": media_id, "finished_at": _now(), "lease_token": None, "lease_expires_at": None,
                   "progress": {"stage": "Done", "fraction": 1.0}, "report": report}},
     )
+    return {"ok": True, "accepted": True, "media_id": media_id}
+
+
+_FRAME_KEYS = ("brightness", "contrast", "sharpness", "top_busy", "bottom_busy", "hash", "rgb", "faces")
+
+
+async def _complete_frames(doc: dict, job_id: str, lease_token: str, outputs: Any, report: Any) -> dict:
+    """Accept candidate cover frames. Each picture must be in our storage and the size reported, and every measurement is checked
+    to be a plain number before it is kept. The pictures stay in storage with their measurements until the member's covers are
+    made from them."""
+    media_id = doc.get("source_media_id")
+    items = [o for o in (outputs if isinstance(outputs, list) else []) if isinstance(o, dict) and o.get("role") == "frame"]
+    stored = [o["url"] for o in items if isinstance(o.get("url"), str) and storage_params.is_our_storage_url(o["url"])]
+
+    async def refuse(why: str) -> dict:
+        await _forget_files(stored)
+        message = "The cover pictures could not be made. Please try again."
+        await _end(doc, "failed", "frames_failed", message, {"problem": why})
+        await runs.finish_failed(doc.get("run_id"), message)
+        logger.warning("Frames %s refused: %s", job_id, why)
+        return {"ok": False, "accepted": False}
+
+    if not isinstance(report, dict) or report.get("passed") is not True or report.get("kind") != "frames":
+        return await refuse("the report does not say the frames passed")
+    rows = report.get("frames")
+    if not items or not isinstance(rows, list) or len(items) > MAX_COVER_FRAMES:
+        return await refuse("the pictures are missing")
+    if len(stored) != len(items):
+        return await refuse("a picture is not in our storage")
+    by_name = {o.get("name"): o for o in items}
+    frames: list[dict[str, Any]] = []
+    for r in rows[:MAX_COVER_FRAMES]:
+        o = by_name.get(r.get("file")) if isinstance(r, dict) else None
+        if o is None or not isinstance(o.get("bytes"), int) or o["bytes"] <= 0:
+            return await refuse("a picture has no matching file")
+        size = await _remote_size(o["url"])
+        if size is None or size != o["bytes"]:
+            return await refuse("a stored picture is not the size that was reported")
+        t = r.get("t")
+        if not isinstance(t, (int, float)) or isinstance(t, bool) or t < 0:
+            return await refuse("a picture has no time")
+        item: dict[str, Any] = {"id": f"f{len(frames) + 1}", "t": round(float(t), 2), "url": o["url"], "bytes": o["bytes"]}
+        for k in _FRAME_KEYS:
+            v = r.get(k)
+            if k == "hash":
+                if isinstance(v, str) and len(v) == 16 and all(c in "0123456789abcdef" for c in v):
+                    item[k] = v
+            elif k == "rgb":
+                if isinstance(v, list) and len(v) == 3 and all(isinstance(c, int) and 0 <= c <= 255 for c in v):
+                    item[k] = v
+            elif k == "faces":
+                if isinstance(v, list):
+                    item[k] = [
+                        {a: round(float(f[a]), 4) for a in ("x", "y", "w", "h")} for f in v[:6]
+                        if isinstance(f, dict) and all(isinstance(f.get(a), (int, float)) and 0 <= f[a] <= 1 for a in ("x", "y", "w", "h"))
+                    ]
+                else:
+                    item[k] = None
+            elif isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1:
+                item[k] = round(float(v), 4)
+        if "sharpness" not in item or "brightness" not in item:
+            return await refuse("a picture has no measurements")
+        frames.append(item)
+    now = _now()
+    await get_db()["video_cover_frames"].update_one(
+        {"workspace_id": doc["workspace_id"], "media_id": media_id},
+        {"$set": {"workspace_id": doc["workspace_id"], "media_id": media_id, "job_id": job_id, "frames": frames,
+                  "faces_checked": bool(report.get("faces_checked")), "width": report.get("width"), "height": report.get("height"),
+                  "created_at": now}},
+        upsert=True,
+    )
+    await _jobs().update_one(
+        {"id": job_id, "lease_token": lease_token},
+        {"$set": {"status": "done", "media_id": media_id, "finished_at": now, "lease_token": None, "lease_expires_at": None,
+                  "progress": {"stage": "Done", "fraction": 1.0}, "report": {k: v for k, v in report.items() if k != "frames"}}},
+    )
+    await runs.finish_ok(doc.get("run_id"), {"job_id": job_id, "media_id": media_id, "frames": len(frames)})
     return {"ok": True, "accepted": True, "media_id": media_id}
 
 

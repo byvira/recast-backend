@@ -323,6 +323,13 @@ async def create_indexes() -> None:
     await get_db()["video_transcript_chunks"].create_index([("transcript_id", 1), ("index", 1)], unique=True)
     await get_db()["video_transcript_pages"].create_index([("transcript_id", 1), ("page", 1)], unique=True)
 
+    analyses = get_db()["video_analysis"]
+    await analyses.create_index("id", unique=True)
+    await analyses.create_index([("workspace_id", 1), ("media_id", 1)], unique=True)
+    await get_db()["video_analysis_cache"].create_index("at", expireAfterSeconds=60 * 24 * 3600)
+
+    await get_db()["video_cover_frames"].create_index([("workspace_id", 1), ("media_id", 1)], unique=True)
+
     # Video render jobs handed to the render worker.
     video_jobs = get_db()["video_jobs"]
     await video_jobs.create_index("id", unique=True)
