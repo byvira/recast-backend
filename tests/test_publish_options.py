@@ -511,10 +511,87 @@ async def test_a_facebook_video_without_a_usable_cover_still_goes_up_and_says_so
     assert "files" not in upload and "file_url" in upload["params"]
 
 
-async def test_the_cover_is_an_allowed_setting_on_facebook_and_instagram_and_nowhere_else():
+async def test_the_cover_is_an_allowed_setting_on_facebook_instagram_and_linkedin_only():
     from app.pipelines.publish import options as publish_options
 
-    for platform in ("facebook", "instagram"):
+    for platform in ("facebook", "instagram", "linkedin"):
         assert "cover_media_id" in publish_options.ALLOWED[platform]
-    for platform in ("linkedin", "threads", "bluesky", "youtube"):
+    for platform in ("threads", "bluesky", "youtube"):
         assert "cover_media_id" not in publish_options.ALLOWED.get(platform, {})
+
+
+class _LinkedInVideos:
+    """A LinkedIn that answers the Videos API steps in order and records every call."""
+
+    calls: list = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def _reply(self, status, url, json=None, headers=None, content=b""):
+        return httpx.Response(status, json=json, headers=headers, content=None if json is not None else content, request=httpx.Request("X", url))
+
+    async def get(self, url, **kwargs):
+        _LinkedInVideos.calls.append(("get", url, kwargs))
+        return self._reply(200, url, content=b"0123456789" if url.endswith(".mp4") else b"\xff\xd8cover")
+
+    async def put(self, url, **kwargs):
+        _LinkedInVideos.calls.append(("put", url, kwargs))
+        return self._reply(200, url, headers={"etag": '"part-' + url[-1] + '"'})
+
+    async def post(self, url, **kwargs):
+        _LinkedInVideos.calls.append(("post", url, kwargs))
+        if "/videos" in url and kwargs["params"]["action"] == "initializeUpload":
+            return self._reply(200, url, json={"value": {
+                "video": "urn:li:video:V1", "uploadToken": "tok", "thumbnailUploadUrl": "https://up.example/thumb",
+                "uploadInstructions": [{"firstByte": 0, "lastByte": 4, "uploadUrl": "https://up.example/p1"},
+                                       {"firstByte": 5, "lastByte": 9, "uploadUrl": "https://up.example/p2"}]}})
+        if "/videos" in url:
+            return self._reply(200, url, json={})
+        return self._reply(201, url, json={}, headers={"x-restli-id": "urn:li:share:9"})
+
+
+async def test_a_linkedin_video_with_a_cover_uses_the_videos_api_and_sends_every_part_and_the_cover(monkeypatch):
+    from app.pipelines.publish.linkedin import posts_api
+
+    await _cover_picture()
+    _LinkedInVideos.calls = []
+    monkeypatch.setattr(posts_api.httpx, "AsyncClient", _LinkedInVideos)
+    request = _request("linkedin", "Watch this", cover_media_id="cover-1")
+    request.media = [_video()]
+    assert posts_api.needs_posts_api(request)
+    result = await posts_api.publish_with_posts_api(request, "token")
+    assert result.success and result.media_dropped_reason is None and result.platform_post_id == "urn:li:share:9"
+    puts = [c for c in _LinkedInVideos.calls if c[0] == "put"]
+    assert [c[2]["content"] for c in puts[:2]] == [b"01234", b"56789"]
+    assert puts[2][1] == "https://up.example/thumb" and puts[2][2]["content"] == b"\xff\xd8cover"
+    finalize = next(c for c in _LinkedInVideos.calls if c[0] == "post" and c[2].get("params", {}).get("action") == "finalizeUpload")
+    assert finalize[2]["json"]["finalizeUploadRequest"]["uploadedPartIds"] == ["part-1", "part-2"]
+    post = next(c for c in _LinkedInVideos.calls if c[1].endswith("/posts"))[2]["json"]
+    assert post["content"] == {"media": {"id": "urn:li:video:V1"}}
+
+
+async def test_a_linkedin_video_without_a_usable_cover_still_goes_up_and_says_so(monkeypatch):
+    from app.pipelines.publish.linkedin import posts_api
+
+    _LinkedInVideos.calls = []
+    monkeypatch.setattr(posts_api.httpx, "AsyncClient", _LinkedInVideos)
+    request = _request("linkedin", "Watch this", cover_media_id="not-there")
+    request.media = [_video()]
+    result = await posts_api.publish_with_posts_api(request, "token")
+    assert result.success and "cover picture couldn't be used" in result.media_dropped_reason
+    assert not any(c[1] == "https://up.example/thumb" for c in _LinkedInVideos.calls)
+
+
+def test_a_linkedin_video_with_no_cover_keeps_the_older_path():
+    from app.pipelines.publish.linkedin import posts_api
+
+    request = _request("linkedin", "Watch this")
+    request.media = [_video()]
+    assert not posts_api.needs_posts_api(request)

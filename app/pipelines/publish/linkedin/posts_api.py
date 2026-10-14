@@ -32,9 +32,10 @@ def escape_commentary(text: str) -> str:
 def needs_posts_api(request: PublishRequest) -> bool:
     """Several pictures, a description on a picture, or a link card."""
     pictures = [m for m in request.media if m.kind.value == "image"]
-    if any(m.kind.value == "video" for m in request.media):
-        return False
     options = request.options or {}
+    if any(m.kind.value == "video" for m in request.media):
+        # a video keeps the older path unless it carries a chosen cover, which only the Videos API can take
+        return bool(options.get("cover_media_id"))
     return len(pictures) >= 2 or bool(options.get("link_card_url")) or any(getattr(p, "alt_text", None) for p in pictures)
 
 
@@ -92,9 +93,79 @@ async def upload_image(client: httpx.AsyncClient, access_token: str, owner: str,
     return value["image"]
 
 
+async def upload_video(client: httpx.AsyncClient, access_token: str, owner: str, url: str, cover: Optional[bytes]) -> str:
+    """Uploads one video with the Videos API (in the parts LinkedIn asks for) and returns its URN. The cover, when given, goes to the
+    thumbnail address LinkedIn hands back. Raises on any failure."""
+    source = await client.get(url, timeout=300.0)
+    source.raise_for_status()
+    data = source.content
+    init = await client.post(
+        f"{LINKEDIN_REST}/videos", params={"action": "initializeUpload"},
+        json={"initializeUploadRequest": {"owner": owner, "fileSizeBytes": len(data), "uploadCaptions": False,
+                                          "uploadThumbnail": cover is not None}},
+        headers=_headers(access_token),
+    )
+    init.raise_for_status()
+    value = init.json()["value"]
+    part_ids: list[str] = []
+    for part in value.get("uploadInstructions", []):
+        chunk = data[int(part["firstByte"]): int(part["lastByte"]) + 1]
+        put = await client.put(part["uploadUrl"], content=chunk, headers={"Content-Type": "application/octet-stream"}, timeout=300.0)
+        put.raise_for_status()
+        part_ids.append(put.headers.get("etag", "").strip('"'))
+    if cover is not None and value.get("thumbnailUploadUrl"):
+        thumb = await client.put(value["thumbnailUploadUrl"], content=cover, headers={"Content-Type": "application/octet-stream"})
+        thumb.raise_for_status()
+    finalize = await client.post(
+        f"{LINKEDIN_REST}/videos", params={"action": "finalizeUpload"},
+        json={"finalizeUploadRequest": {"video": value["video"], "uploadToken": value.get("uploadToken", ""), "uploadedPartIds": part_ids}},
+        headers=_headers(access_token),
+    )
+    finalize.raise_for_status()
+    return value["video"]
+
+
+async def _cover_bytes(client: httpx.AsyncClient, request: PublishRequest) -> Optional[bytes]:
+    """The chosen cover picture from this workspace's library, or None when it is missing or cannot be read."""
+    media_id = (request.options or {}).get("cover_media_id")
+    if not media_id:
+        return None
+    from app.db.mongo import media_assets
+
+    cover = await media_assets.find_one({"id": media_id, "workspace_id": request.workspace_id, "kind": "image"})
+    if not cover or not str(cover.get("url", "")).startswith("https://"):
+        return None
+    try:
+        picture = await client.get(cover["url"], timeout=30.0)
+        picture.raise_for_status()
+        return picture.content
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not read the cover picture for piece %s: %s", request.piece_id, exc)
+        return None
+
+
 def author_urn(request: PublishRequest) -> str:
     """Who a LinkedIn post is published as: the Company Page the member chose, or else the connected profile."""
     return request.author_urn or f"urn:li:person:{request.platform_user_id}"
+
+
+def _result(request: PublishRequest, response: httpx.Response, dropped: Optional[str]) -> PublishResult:
+    if response.status_code == 201:
+        post_id = response.headers.get("x-restli-id", "")
+        return PublishResult(
+            success=True, platform="linkedin", piece_id=request.piece_id, platform_post_id=post_id,
+            platform_post_url=f"https://www.linkedin.com/feed/update/{post_id}/", media_dropped_reason=dropped,
+        )
+    try:
+        message = response.json().get("message", response.text)
+    except Exception:  # noqa: BLE001
+        message = response.text
+    logger.error("LinkedIn publish failed: %d %s for piece %s", response.status_code, message, request.piece_id)
+    return PublishResult(
+        success=False, platform="linkedin", piece_id=request.piece_id,
+        error_type=classify_error(response.status_code, message).value, error_code=response.status_code,
+        error_message=message, retry_after=60 if response.status_code == 429 else None,
+    )
 
 
 async def publish_with_posts_api(request: PublishRequest, access_token: str) -> PublishResult:
@@ -102,9 +173,18 @@ async def publish_with_posts_api(request: PublishRequest, access_token: str) -> 
     owner = author_urn(request)
     options = request.options or {}
     pictures = [m for m in request.media if m.kind.value == "image"][:MAX_PICTURES]
+    videos = [m for m in request.media if m.kind.value == "video"]
     dropped: Optional[str] = None
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
+            if videos:
+                cover = await _cover_bytes(client, request)
+                if cover is None:
+                    dropped = "Your video is up, but the cover picture couldn't be used, so LinkedIn chose a frame of the video."
+                video_urn = await upload_video(client, access_token, owner, videos[0].url, cover)
+                post = build_post(owner, request.content, options.get("visibility") or "PUBLIC", {"media": {"id": video_urn}})
+                response = await client.post(f"{LINKEDIN_REST}/posts", json=post, headers=_headers(access_token))
+                return _result(request, response, dropped)
             image_urns: list[tuple[str, Optional[str]]] = []
             for picture in pictures:
                 try:
@@ -132,23 +212,7 @@ async def publish_with_posts_api(request: PublishRequest, access_token: str) -> 
 
             post = build_post(owner, request.content, options.get("visibility") or "PUBLIC", build_content(image_urns, article))
             response = await client.post(f"{LINKEDIN_REST}/posts", json=post, headers=_headers(access_token))
-
-            if response.status_code == 201:
-                post_id = response.headers.get("x-restli-id", "")
-                return PublishResult(
-                    success=True, platform="linkedin", piece_id=request.piece_id, platform_post_id=post_id,
-                    platform_post_url=f"https://www.linkedin.com/feed/update/{post_id}/", media_dropped_reason=dropped,
-                )
-            try:
-                message = response.json().get("message", response.text)
-            except Exception:  # noqa: BLE001
-                message = response.text
-            logger.error("LinkedIn publish failed: %d %s for piece %s", response.status_code, message, request.piece_id)
-            return PublishResult(
-                success=False, platform="linkedin", piece_id=request.piece_id,
-                error_type=classify_error(response.status_code, message).value, error_code=response.status_code,
-                error_message=message, retry_after=60 if response.status_code == 429 else None,
-            )
+            return _result(request, response, dropped)
     except httpx.TimeoutException:
         return PublishResult(
             success=False, platform="linkedin", piece_id=request.piece_id, error_type="TRANSIENT", error_code=408,
