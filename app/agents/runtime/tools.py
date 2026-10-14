@@ -80,4 +80,7 @@ class ToolRegistry:
         except asyncio.TimeoutError:
             return ToolResult(name, False, None, f"{name} took longer than {spec.timeout_s:g} seconds.", time.monotonic() - began)
         except Exception as exc:  # noqa: BLE001 - reported to the graph as a result
-            return ToolResult(name, False, None, f"{type(exc).__name__}: {exc}"[:300], time.monotonic() - began)
+            # A request error from an existing handler already carries a message written for the member: keep it as it is.
+            detail = getattr(exc, "detail", None)
+            message = detail if isinstance(detail, str) and detail else f"{type(exc).__name__}: {exc}"
+            return ToolResult(name, False, None, message[:300], time.monotonic() - began)

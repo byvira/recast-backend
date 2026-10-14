@@ -179,6 +179,26 @@ def _register_audio() -> None:
                   title=lambda p: "Make dialogue", steps_total=3, restartable=False, retries=0,
                   description="Voice a conversation between several speakers.")
 
+    # The audio director: one goal for a recording, run as a validated plan over the handlers above (see app.agents.audio.director).
+    from app.agents.audio.director import DirectorSettings, run_director
+
+    director_payload = create_model(
+        "AudioDirectorPayload",
+        audio_asset_id=(Optional[str], Field(default=None, max_length=64)),
+        settings=(DirectorSettings, Field(default_factory=DirectorSettings)),
+        live_run_id=(Optional[str], None),
+    )
+    register(JobAction(
+        name="audio.director", permission="edit_content", payload_model=director_payload, run=run_director,
+        title=lambda p: {"make_episode": "Make an episode from a script", "publish_ready": "Make this recording ready to publish",
+                         "show_notes": "Write the show notes", "clean_and_check": "Clean up and check the sound",
+                         }.get(p.settings.goal, "Work on this recording"),
+        steps=lambda p: 6, kind="audio", restartable=False, retries=0, gated=True,
+        description="Plan and run several steps for one recording: clean up, transcribe, chapters, soundbites, show notes, sound checks.",
+        shape=lambda out: {"asset_id": out["asset_id"], "steps": out["steps"], "needs_signoff": out["needs_signoff"]},
+        result_href=lambda out: f"/dashboard/pipelines/audio?asset={out['asset_id']}" if out.get("asset_id") else None,
+    ))
+
 
 class PublishPostPayload(BaseModel):
     piece_id: str = Field(min_length=1, max_length=64)

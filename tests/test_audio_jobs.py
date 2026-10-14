@@ -25,7 +25,8 @@ async def test_the_audio_actions_are_registered_and_only_safe_ones_start_again_a
     jobs.ACTIONS.clear()
     job_actions.register_all()
     audio = {name: a for name, a in jobs.ACTIONS.items() if name.startswith("audio.")}
-    assert set(audio) == {"audio.transcribe", "audio.cleanup", "audio.assemble", "audio.video", "audio.regenerate", "audio.import", "audio.dialogue"}
+    assert set(audio) == {"audio.transcribe", "audio.cleanup", "audio.assemble", "audio.video", "audio.regenerate", "audio.import", "audio.dialogue",
+                          "audio.director"}
     # Only transcribing is safe to run again after a restart. Building an episode, rendering a video and importing make new files, so
     # they are reported as interrupted instead of being started a second time.
     assert {n for n, a in audio.items() if a.restartable} == {"audio.transcribe"}
