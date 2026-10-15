@@ -57,8 +57,27 @@ def _iso(value: Any) -> Optional[str]:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def _approval_view(doc: dict) -> dict:
+    """The sign-off on a project: which version was approved and by whom, and whether the project has changed since."""
+    a = doc.get("approval") or {}
+    version = a.get("version")
+    return {"approved_version": version, "approved_at": _iso(a.get("at")), "approved_by": a.get("by_name"),
+            "approval_stale": bool(version) and version != doc.get("version")}
+
+
+def _media_ids(doc: dict) -> list[str]:
+    seen: list[str] = []
+    for key in ("video", "audio"):
+        for c in (doc.get("edit") or {}).get(key, []):
+            m = c.get("media_id")
+            if m and m not in seen:
+                seen.append(m)
+    return seen
+
+
 def _summary(doc: dict) -> dict:
     return {
+        **_approval_view(doc), "media_ids": _media_ids(doc),
         "id": doc["id"], "title": doc.get("title", ""), "version": doc["version"], "status": doc.get("status", "draft"),
         "width": doc["edit"]["width"], "height": doc["edit"]["height"], "duration_f": doc["edit"]["duration_f"],
         "fps": doc["edit"]["fps"], "created_from": doc.get("created_from"), "last_render": doc.get("last_render"),
@@ -166,7 +185,7 @@ async def _write_version(doc: dict, kind: str, label: str, user_id: str) -> None
 class CreateBody(BaseModel):
     source: Literal["blank", "video", "recording", "pictures"] = "blank"
     title: str = Field("", max_length=200)
-    size: Optional[Literal["square", "vertical", "landscape", "portrait"]] = None
+    size: Optional[Literal["square", "vertical", "landscape", "portrait", "vertical_4k", "landscape_4k", "vertical_720", "landscape_720", "square_720", "portrait_720"]] = None
     media_id: Optional[str] = None
     audio_asset_id: Optional[str] = None
     start_s: float = Field(0.0, ge=0)
@@ -360,6 +379,34 @@ async def save_project(
     return await _open(updated)
 
 
+class ApprovalBody(BaseModel):
+    approved: bool
+    #: the version being approved, so approving a page that is out of date is refused instead of signing off something else
+    version: Optional[int] = Field(None, ge=1)
+
+
+@router.put("/{project_id}/approval")
+@limiter.limit("30/minute")
+async def set_approval(
+    request: Request, project_id: str, body: ApprovalBody, ctx: WorkspaceContext = Depends(require("approve_content")),
+) -> dict:
+    """Sign off the project as it is now, or take the sign-off away. Changing the project afterwards makes the sign-off out of date;
+    it does not lock the project."""
+    doc = await _load(ctx.workspace_id, project_id)
+    if body.approved:
+        if body.version is not None and body.version != doc["version"]:
+            raise HTTPException(status_code=409, detail="The project changed since you looked at it. Look again, then approve.")
+        who = await get_db()["users"].find_one({"id": ctx.user_id}, {"name": 1, "full_name": 1, "email": 1})
+        name = (who or {}).get("name") or (who or {}).get("full_name") or (who or {}).get("email") or "A member"
+        update = {"$set": {"approval": {"version": doc["version"], "by": ctx.user_id, "by_name": str(name)[:80], "at": _now()}}}
+    else:
+        update = {"$unset": {"approval": ""}}
+    await _projects().update_one({"id": project_id, "workspace_id": ctx.workspace_id}, update)
+    fresh = await _load(ctx.workspace_id, project_id)
+    await activity.approval_changed(ctx.workspace_id, ctx.user_id, project_id, int(fresh["version"]), body.approved)
+    return _approval_view(fresh)
+
+
 @router.get("/{project_id}/versions")
 @limiter.limit("120/minute")
 async def list_versions(request: Request, project_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
@@ -369,6 +416,57 @@ async def list_versions(request: Request, project_id: str, ctx: WorkspaceContext
         "version": r["version"], "kind": r["kind"], "label": r.get("label", ""), "title": r.get("title", ""),
         "created_at": _iso(r.get("created_at")),
     } for r in rows]}
+
+
+def _aware(v: Any) -> datetime:
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _render_version(job: dict) -> Optional[int]:
+    """The project version a render was made from, read from the job's own key (proj:<id>:v<version>:...)."""
+    parts = str(job.get("idem_key") or "").split(":")
+    if len(parts) >= 3 and parts[0] == "proj" and parts[2].startswith("v") and parts[2][1:].isdigit():
+        return int(parts[2][1:])
+    return None
+
+
+def _history_rows(versions: list[dict], renders: list[dict], decisions: list[dict]) -> list[dict]:
+    """One time-ordered story of a project: saves, going back, renders and what reviewers answered. Autosaves are left out."""
+    rows: list[dict] = []
+    for v in versions:
+        if v.get("kind") == "autosave":
+            continue
+        rows.append({"at": v.get("created_at"), "kind": "version", "title": v.get("label") or "Saved", "detail": "", "version": v.get("version"), "job_id": None})
+    for j in renders:
+        status = j.get("status")
+        if status == "done":
+            title, detail = "Video made", f"From version {_render_version(j)}." if _render_version(j) else ""
+        elif status in ("failed", "cancelled", "blocked"):
+            title = {"failed": "Video could not be made", "cancelled": "Video was cancelled", "blocked": "Video was held back"}[status]
+            detail = (j.get("error") or "")[:200]
+        else:
+            continue
+        rows.append({"at": j.get("finished_at") or j.get("created_at"), "kind": "render", "title": title, "detail": detail, "version": _render_version(j), "job_id": j.get("id")})
+    for d in decisions:
+        approved = d.get("outcome") == "approved"
+        rows.append({"at": d.get("at"), "kind": "review", "title": f"{d.get('name') or 'A reviewer'} {'approved the video' if approved else 'asked for changes'}",
+                     "detail": (d.get("note") or "")[:300], "version": None, "job_id": None})
+    rows.sort(key=lambda r: _aware(r["at"]), reverse=True)
+    return [{**r, "at": _iso(_aware(r["at"])) if r["at"] else None} for r in rows]
+
+
+@router.get("/{project_id}/history")
+@limiter.limit("60/minute")
+async def project_history(request: Request, project_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
+    """The whole story of one project in time order, not just the saved versions."""
+    await _load(ctx.workspace_id, project_id)
+    db = get_db()
+    versions = await _versions().find({"project_id": project_id, "workspace_id": ctx.workspace_id}, {"edit": 0}).sort("created_at", -1).to_list(300)
+    renders = await db["video_jobs"].find({"workspace_id": ctx.workspace_id, "project_id": project_id}).sort("created_at", -1).to_list(60)
+    decisions = await db["video_review_decisions"].find({"workspace_id": ctx.workspace_id, "project_id": project_id}).sort("at", -1).to_list(60)
+    return {"events": _history_rows(versions, renders, decisions)[:150]}
 
 
 async def _replace_edit(ctx: WorkspaceContext, doc: dict, edit: dict, kind: str, label: str) -> dict:

@@ -37,6 +37,7 @@ _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 CANVAS_SIZES: dict[str, tuple[int, int]] = {
     "square": (1080, 1080), "vertical": (1080, 1920), "landscape": (1920, 1080), "portrait": (1080, 1350),
     "vertical_4k": (2160, 3840), "landscape_4k": (3840, 2160),
+    "vertical_720": (720, 1280), "landscape_720": (1280, 720), "square_720": (720, 720), "portrait_720": (720, 900),
 }
 
 # Frame rates that arrive from a camera as a rounded number are put back to their exact broadcast fraction.
@@ -113,6 +114,13 @@ def _crop(c: dict, where: str) -> dict[str, float]:
 
 
 MAX_FOLLOW = 240
+
+
+def _emoji_mode(raw: dict) -> str:
+    """Whether emoji in captions and text are left out (the default) or drawn as single-colour shapes."""
+    mode = raw.get("emoji", "remove")
+    _need(mode in ("remove", "show"), "Captions: emoji must be remove or show.")
+    return mode
 
 
 def _follow(c: dict, where: str) -> list[dict]:
@@ -302,6 +310,8 @@ def validate(raw: Any) -> dict[str, Any]:
         "per_line": _int(cap_raw, "per_line", "Captions", lo=0, hi=10, default=0),
         "upper": bool(cap_raw.get("upper", False)),
         "font": _font_key(cap_raw, "Captions"),
+        "emoji": _emoji_mode(cap_raw),
+        "highlight": bool(cap_raw.get("highlight", True)),
     }
     emphasis_raw = cap_raw.get("emphasis", [])
     _need(isinstance(emphasis_raw, list) and len(emphasis_raw) <= MAX_EMPHASIS, f"Stressed words can have at most {MAX_EMPHASIS} stretches.")

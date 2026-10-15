@@ -47,7 +47,11 @@ def slot_caller(name: str) -> Caller:
     budget = _TOKENS.get(name, 2200)
 
     async def call(prompt: str) -> dict[str, Any]:
-        return await call_llm_structured(prompt, model=model, max_tokens=budget)
+        # what a member said in their own footage never goes to a provider that may keep it
+        from app.shared.llm import member_footage
+
+        async with member_footage():
+            return await call_llm_structured(prompt, model=model, max_tokens=budget)
 
     return call
 

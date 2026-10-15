@@ -60,9 +60,10 @@ class Pacer:
 
 
 async def _default_caller(prompt: str) -> dict[str, Any]:
-    from app.shared.llm import call_llm_structured
+    from app.shared.llm import call_llm_structured, member_footage
 
-    return await call_llm_structured(prompt, max_tokens=1500)
+    async with member_footage():
+        return await call_llm_structured(prompt, max_tokens=1500)
 
 
 async def cached_call(name: str, variables: dict[str, Any], *, caller: Caller, pacer: Optional[Pacer] = None) -> tuple[dict[str, Any], bool]:

@@ -194,6 +194,33 @@ class usage_workspace:
 _private_content: contextvars.ContextVar[bool] = contextvars.ContextVar("_private_content", default=False)
 
 
+# Text taken from a member's own footage (what was said in a video, a script made from it) stays with the main provider and one second
+# host that does not keep or learn from it. No other backup provider is given it, and a call neither can answer fails and the caller
+# falls back to a rule-based result or an honest "not enough to do this".
+_footage_content: contextvars.ContextVar[bool] = contextvars.ContextVar("_footage_content", default=False)
+
+
+class member_footage:
+    """Context manager for text from a member's own footage: the main provider, then the Cloudflare host, and nothing else."""
+
+    def __init__(self) -> None:
+        self._tokens: list[tuple[contextvars.ContextVar, contextvars.Token]] = []
+
+    def __enter__(self) -> None:
+        self._tokens = [(_private_content, _private_content.set(True)), (_footage_content, _footage_content.set(True))]
+
+    def __exit__(self, *exc_info: object) -> None:
+        for var, token in reversed(self._tokens):
+            var.reset(token)
+        self._tokens = []
+
+    async def __aenter__(self) -> None:
+        self.__enter__()
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        self.__exit__(*exc_info)
+
+
 class private_content:
     """Context manager: every LLM call inside the block stays with the main provider and is never sent to a backup provider."""
 
@@ -1281,6 +1308,12 @@ async def call_llm_fallback(
     Not used in normal flow — only when Groq is fully unavailable.
     """
     if _private_content.get():
+        if _footage_content.get():
+            from app.shared.open_fallbacks import cloudflare_text
+
+            text = await cloudflare_text(prompt, system, json_mode)
+            if text is not None:
+                return text
         logger.warning("Backup providers are not used for private content; the call fails instead.")
         raise HTTPException(status_code=503, detail="LLM service unavailable.")
     add_run_metadata(gemini_model=model.value)

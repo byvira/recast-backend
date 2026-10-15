@@ -144,6 +144,24 @@ async def start_upload(request: Request, body: StartBody, ctx: WorkspaceContext 
     return {**_view(doc), "upload": {k: params[k] for k in ("method", "url", "fields", "file_field", "chunk_bytes")}, "unique_upload_id": upload_id}
 
 
+@router.get("/pictures")
+@limiter.limit("60/minute")
+async def library_pictures(
+    request: Request, limit: int = Query(48, ge=1, le=100), ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict[str, Any]:
+    """The workspace's pictures, newest first, for putting one over a video (a logo, a badge, a photo). Each carries where it came from."""
+    from app.video.origin import origin_of
+
+    rows = await media_assets.find(
+        {"workspace_id": ctx.workspace_id, "kind": {"$in": ["image", MediaKind.IMAGE.value]}, "url": {"$type": "string"}},
+        {"id": 1, "url": 1, "width": 1, "height": 1, "origin": 1, "contains_ai": 1, "contains_stock": 1, "source": 1, "created_at": 1, "title": 1},
+    ).sort("created_at", -1).to_list(length=limit)
+    return {"pictures": [{
+        "id": r["id"], "url": r["url"], "width": r.get("width"), "height": r.get("height"), "title": r.get("title") or "",
+        "origin": origin_of(r), "contains_ai": bool(r.get("contains_ai")), "contains_stock": bool(r.get("contains_stock")),
+    } for r in rows]}
+
+
 class LinkBody(BaseModel):
     link: str = Field(..., min_length=10, max_length=1000)
 

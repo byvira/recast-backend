@@ -4,6 +4,7 @@ updates the same row. Never raises: the log is a record, and a failed note must 
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.db.mongo import get_db
@@ -76,6 +77,15 @@ async def version_saved(workspace_id: str, user_id: Optional[str], project_id: s
     """A save the member made on purpose. Autosaves are not noted: there would be one every few seconds."""
     await _note(f"video_save:{project_id}:{version}", workspace_id, user_id, project_id, "content_edited",
                 lambda t: f"Saved {t}", f"Saved as version {version}.")
+
+
+async def approval_changed(workspace_id: str, user_id: Optional[str], project_id: str, version: int, approved: bool) -> None:
+    """A sign-off given or taken away. Each version and answer is its own entry, so the log reads as a sequence."""
+    word = "approved" if approved else "approval removed"
+    await _note(f"video_approval:{project_id}:{version}:{word}:{int(datetime.now(timezone.utc).timestamp())}", workspace_id, user_id, project_id,
+                "content_edited",
+                lambda t: (f"Approved {t}" if approved else f"Took the approval off {t}"),
+                f"Version {version} {'was signed off.' if approved else 'is no longer signed off.'}")
 
 
 async def started_again(workspace_id: str, user_id: Optional[str], project_id: str, version: int) -> None:

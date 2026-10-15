@@ -556,3 +556,43 @@ async def test_uploading_a_font_reads_its_family_and_a_project_can_use_it(signup
     edit["captions"]["font"] = f"custom:{uuid4()}"
     other = await client.put(f"/api/v1/video-projects/{proj['id']}", json={"edit": edit, "base_version": saved.json()["version"]}, headers=headers)
     assert other.status_code == 400
+
+
+# ── the whole story of a project ─────────────────────────────────────────────────────
+
+def test_the_history_joins_saves_renders_and_reviewer_answers_in_time_order_and_leaves_autosaves_out():
+    from datetime import datetime, timedelta, timezone
+
+    from app.api.v1.video_projects import _history_rows
+
+    t0 = datetime(2026, 10, 1, 10, 0, tzinfo=timezone.utc)
+    versions = [
+        {"version": 1, "kind": "autosave", "label": "", "created_at": t0},
+        {"version": 2, "kind": "save", "label": "Saved", "created_at": t0 + timedelta(minutes=5)},
+    ]
+    renders = [
+        {"id": "j1", "status": "done", "idem_key": "proj:p1:v2:standard:-14.0", "created_at": t0 + timedelta(minutes=6), "finished_at": t0 + timedelta(minutes=9)},
+        {"id": "j2", "status": "failed", "error": "The sound was missing.", "idem_key": "proj:p1:v2:high:-14.0", "created_at": t0 + timedelta(minutes=10)},
+        {"id": "j3", "status": "running", "created_at": t0 + timedelta(minutes=11)},
+    ]
+    decisions = [{"outcome": "changes", "name": "Asha", "note": "Shorter intro", "at": t0.replace(tzinfo=None) + timedelta(minutes=20)}]
+    rows = _history_rows(versions, renders, decisions)
+    assert [r["kind"] for r in rows] == ["review", "render", "render", "version"]
+    assert rows[0]["title"] == "Asha asked for changes" and rows[0]["detail"] == "Shorter intro"
+    assert rows[2]["title"] == "Video made" and rows[2]["version"] == 2 and rows[2]["detail"] == "From version 2."
+    assert rows[1]["title"] == "Video could not be made" and rows[1]["detail"] == "The sound was missing."
+
+
+# ── sign-off on a project ────────────────────────────────────────────────────────────
+
+def test_the_approval_view_says_which_version_was_signed_and_when_it_is_out_of_date():
+    from datetime import datetime, timezone
+
+    from app.api.v1.video_projects import _approval_view, _media_ids
+
+    signed = {"version": 4, "approval": {"version": 4, "by_name": "Asha", "at": datetime(2026, 10, 1, tzinfo=timezone.utc)}}
+    assert _approval_view(signed) == {"approved_version": 4, "approved_at": "2026-10-01T00:00:00Z", "approved_by": "Asha", "approval_stale": False}
+    assert _approval_view({**signed, "version": 5})["approval_stale"] is True
+    assert _approval_view({"version": 1}) == {"approved_version": None, "approved_at": None, "approved_by": None, "approval_stale": False}
+    doc = {"edit": {"video": [{"media_id": "a"}, {"media_id": "b"}, {"media_id": "a"}], "audio": [{"media_id": "c"}, {"media_id": None}]}}
+    assert _media_ids(doc) == ["a", "b", "c"]

@@ -49,7 +49,7 @@ def text_providers() -> list[TextProvider]:
 
 
 # providers whose chat endpoint is known to accept a JSON mode (OpenRouter's free models differ by model, so it is left out)
-_JSON_MODE = {"mistral", "nvidia"}
+_JSON_MODE = {"mistral", "nvidia", "cloudflare"}
 
 
 def _count_usage(payload: dict, prompt: str, system: str, text: str) -> None:
@@ -83,6 +83,25 @@ async def _chat(p: TextProvider, prompt: str, system: str, json_mode: bool = Fal
             raise RuntimeError("The provider returned an empty answer.")
         _count_usage(payload, prompt, system, text)
         return text
+
+
+async def cloudflare_text(prompt: str, system: str = "", json_mode: bool = False) -> str | None:
+    """One answer from Workers AI (OpenAI-compatible endpoint), or None when it is not set up or does not answer. This is the only
+    backup that text from a member's own footage may go to."""
+    if not settings.CLOUDFLARE_API_TOKEN or not settings.CLOUDFLARE_ACCOUNT_ID or not settings.CLOUDFLARE_TEXT_MODEL:
+        return None
+    p = TextProvider(
+        "cloudflare", f"https://api.cloudflare.com/client/v4/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions",
+        settings.CLOUDFLARE_API_TOKEN, settings.CLOUDFLARE_TEXT_MODEL,
+    )
+    try:
+        with fallback_scope():
+            text = await _chat(p, prompt, system, json_mode)
+        logger.info("Served this answer via the cloudflare fallback.")
+        return text
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cloudflare text fallback failed: %s", exc)
+        return None
 
 
 async def open_text_fallback(prompt: str, system: str = "", json_mode: bool = False) -> str | None:

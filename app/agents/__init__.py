@@ -6,5 +6,4 @@
 # Import pattern used by orchestrators:
 #   from app.agents.text.graph import build_single_platform_graph
 #
-# audio_agent, image_agent, video_agent — not yet implemented.
-# Add them here when their pipelines are built.
+# The video pipeline's agent is the director (app/agents/video/director.py), run by the shared plan executor.

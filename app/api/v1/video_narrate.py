@@ -267,7 +267,7 @@ async def start_narration(request: Request, body: NarrationBody, ctx: WorkspaceC
     from app.pipelines.media import fit_script as fitter
     from app.pipelines.media.tts_generation import narration_blocker
     from app.pipelines.text.generator import resolve_language_directive_name
-    from app.shared.llm import call_llm, set_usage_workspace
+    from app.shared.llm import call_llm, member_footage, set_usage_workspace
 
     media = await _video(ctx, body.media_id)
     if not body.script.strip() and not body.lines:
@@ -293,7 +293,8 @@ async def start_narration(request: Request, body: NarrationBody, ctx: WorkspaceC
         video_s = float(media.get("duration_s") or 0)
         if video_s > 0:
             async def ask(prompt: str) -> str:
-                return await call_llm(prompt, temperature=0.5, max_tokens=4000)
+                async with member_footage():
+                    return await call_llm(prompt, temperature=0.5, max_tokens=4000)
 
             fitted = await fitter.fit_script(script, video_s, None, resolve_language_directive_name(code), ask)
             script = fitted["script"]
