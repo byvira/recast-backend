@@ -39,6 +39,7 @@ async def _video(ws: str, *, preview: bool = True) -> dict:
 
 def _report(**over):
     base = {"kind": "reframe", "passed": True, "faces_checked": True, "looked": 50, "with_face": 48, "window": {"w": 0.3164, "h": 1.0},
+            "on_camera": {"face_share": 0.96, "centred_share": 0.8},
             "path": [{"t": 0.0, "x": 0.4, "y": 0.5}, {"t": 10.0, "x": 0.7, "y": 0.5}]}
     base.update(over)
     return base
@@ -75,6 +76,7 @@ async def test_the_path_the_worker_reports_is_kept_and_a_bad_one_is_refused():
     assert (await jobs.complete(claimed["id"], claimed["lease_token"], [], _report()))["accepted"] is True
     doc = await get_db()["video_reframe_paths"].find_one({"workspace_id": ws, "media_id": media["id"]})
     assert doc["path"][1] == {"t": 10.0, "x": 0.7, "y": 0.5} and doc["faces_checked"] is True and doc["window"] == {"w": 0.3164, "h": 1.0}
+    assert doc["on_camera"] == {"face_share": 0.96, "centred_share": 0.8}
     bad_reports = [
         _report(path=[{"t": 0, "x": 1.4, "y": 0.5}]), _report(path=[{"t": 5, "x": 0.4, "y": 0.5}, {"t": 5, "x": 0.5, "y": 0.5}]),
         _report(path=[{"t": 0, "x": "0.4", "y": 0.5}]), _report(path="no"), _report(window={"w": 0, "h": 1}), _report(passed=False), _report(kind="frames"),

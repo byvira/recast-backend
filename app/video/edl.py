@@ -36,6 +36,7 @@ _ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 CANVAS_SIZES: dict[str, tuple[int, int]] = {
     "square": (1080, 1080), "vertical": (1080, 1920), "landscape": (1920, 1080), "portrait": (1080, 1350),
+    "vertical_4k": (2160, 3840), "landscape_4k": (3840, 2160),
 }
 
 # Frame rates that arrive from a camera as a rounded number are put back to their exact broadcast fraction.

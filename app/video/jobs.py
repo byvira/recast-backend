@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 CONTRACT = 1
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 INPUT_KINDS = ("video", "audio", "image")
-OUTPUT_KEYS = ("filename", "segment_seconds", "crf", "preset", "audio_bitrate", "lufs", "label")
+OUTPUT_KEYS = ("filename", "segment_seconds", "crf", "preset", "audio_bitrate", "lufs", "label", "codec")
 #: Written into the finished file when AI-made material went into the video.
 AI_FILE_LABEL = "Includes AI-made material"
 # A worker that has not asked for work for this long is reported as offline.
@@ -782,6 +782,19 @@ def _clean_path(raw: Any, length_s: float) -> Optional[list[dict[str, float]]]:
     return out
 
 
+def _clean_camera(raw: Any) -> Optional[dict[str, float]]:
+    """The on-camera estimate, kept only as plain shares between 0 and 1."""
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, float] = {}
+    for k in ("face_share", "centred_share"):
+        v = raw.get(k)
+        if not isinstance(v, (int, float)) or isinstance(v, bool) or not 0 <= v <= 1:
+            return None
+        out[k] = round(float(v), 3)
+    return out
+
+
 async def _complete_reframe(doc: dict, job_id: str, lease_token: str, report: Any) -> dict:
     """Accept a follow-the-speaker result: a path of window positions, or an honest note that no face finder was available."""
     media_id = doc.get("source_media_id")
@@ -806,7 +819,8 @@ async def _complete_reframe(doc: dict, job_id: str, lease_token: str, report: An
         {"workspace_id": doc["workspace_id"], "media_id": media_id, "key": doc["idem_key"]},
         {"$set": {"workspace_id": doc["workspace_id"], "media_id": media_id, "key": doc["idem_key"], "job_id": job_id, "spec": spec, "path": path,
                   "window": {"w": float(window["w"]), "h": float(window["h"])}, "faces_checked": checked,
-                  "looked": int(report.get("looked") or 0), "with_face": int(report.get("with_face") or 0), "created_at": now}},
+                  "looked": int(report.get("looked") or 0), "with_face": int(report.get("with_face") or 0),
+                  "on_camera": _clean_camera(report.get("on_camera")), "created_at": now}},
         upsert=True,
     )
     await _jobs().update_one(

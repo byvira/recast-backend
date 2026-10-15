@@ -58,10 +58,11 @@ async def _state(ctx: WorkspaceContext, media_id: str, aspect: float, start_s: f
         elif doc.get("with_face", 0) == 0:
             note = "No face was found in this part, so the picture stays centred."
         return {"status": "done", "path": doc["path"], "window": doc["window"], "faces_checked": bool(doc.get("faces_checked")),
-                "looked": doc.get("looked", 0), "with_face": doc.get("with_face", 0), "note": note}
+                "looked": doc.get("looked", 0), "with_face": doc.get("with_face", 0), "on_camera": doc.get("on_camera"), "is_estimate": True,
+                "note": note}
     job = await get_db()["video_jobs"].find_one({"workspace_id": ctx.workspace_id, "idem_key": key})
     if job and job.get("status") in ("queued", "claimed"):
-        return {"status": "running" if job["status"] == "claimed" else "queued", "path": [], "window": None, "faces_checked": False, "note": None}
+        return {"status": "running" if job["status"] == "claimed" else "queued", "path": [], "window": None, "faces_checked": False, "on_camera": None, "note": None}
     if job and job.get("status") == "failed":
         return {"status": "failed", "path": [], "window": None, "faces_checked": False, "note": job.get("error") or "The speaker could not be followed."}
     return {"status": "none", "path": [], "window": None, "faces_checked": False, "note": None}

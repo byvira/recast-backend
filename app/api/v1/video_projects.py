@@ -424,6 +424,8 @@ async def delete_project(request: Request, project_id: str, ctx: WorkspaceContex
 class RenderBody(BaseModel):
     preset: Literal["standard", "high", "small"] = "standard"
     lufs: float = -14.0
+    #: h265 makes a smaller file that some older players and editors cannot open
+    codec: Literal["h264", "h265"] = "h264"
 
 
 @router.post("/{project_id}/render", status_code=202)
@@ -436,7 +438,7 @@ async def render_project(
     doc = await _load(ctx.workspace_id, project_id)
     media = await _media_map(ctx.workspace_id, edl.media_ids(doc["edit"]))
     try:
-        compiled = edl.to_job(doc["edit"], media, {**PRESETS[body.preset], "lufs": body.lufs})
+        compiled = edl.to_job(doc["edit"], media, {**PRESETS[body.preset], "lufs": body.lufs, **({"codec": "h265"} if body.codec == "h265" else {})})
     except edl.EditError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     try:
@@ -444,7 +446,7 @@ async def render_project(
             workspace_id=ctx.workspace_id, user_id=ctx.user_id, inputs=compiled["inputs"], edit=compiled["edit"], output=compiled["output"],
             label=f"Rendering {doc.get('title') or 'video'}", project_id=project_id, show_in_activity=True,
             href=f"/dashboard/pipelines/video?project={project_id}", origin=summarise(m["origin"] for m in media.values()),
-            idem_key=f"proj:{project_id}:v{doc['version']}:{body.preset}:{body.lufs}",
+            idem_key=f"proj:{project_id}:v{doc['version']}:{body.preset}:{body.lufs}:{body.codec}",
         )
     except jobs.JobError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message)

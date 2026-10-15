@@ -144,6 +144,106 @@ async def start_upload(request: Request, body: StartBody, ctx: WorkspaceContext 
     return {**_view(doc), "upload": {k: params[k] for k in ("method", "url", "fields", "file_field", "chunk_bytes")}, "unique_upload_id": upload_id}
 
 
+class LinkBody(BaseModel):
+    link: str = Field(..., min_length=10, max_length=1000)
+
+
+@router.post("/link-import", status_code=201)
+@limiter.limit("6/minute")
+async def import_from_link(request: Request, body: LinkBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+    """Brings in a video from a Dropbox or Google Drive link that anyone with the link can open. Storage fetches the file itself."""
+    import httpx
+
+    from app.pipelines.publish.generic.safe_url import UnsafeUrl, assert_safe_url
+    from app.video import governance, limits, link_import
+
+    if not await governance.video_enabled(ctx.workspace_id):
+        raise HTTPException(status_code=403, detail=governance.ACCESS_OFF)
+    try:
+        provider, direct = link_import.direct_address(body.link)
+        await assert_safe_url(direct)
+    except (link_import.LinkError, UnsafeUrl) as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "That link cannot be used.") from exc
+
+    cap = await _limit_bytes(ctx.workspace_id)
+    # read only the headers first: where the link really leads, what it is, and how big
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, max_redirects=5) as client:
+            async with client.stream("GET", direct) as res:
+                final = str(res.url)
+                kind = (res.headers.get("content-type") or "").split(";")[0].strip().lower()
+                declared = int(res.headers.get("content-length") or 0)
+                disposition = res.headers.get("content-disposition")
+                status = res.status_code
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=400, detail="That link could not be reached. Check that anyone with the link can open it.") from exc
+    if status != 200 or not link_import.fetch_host_ok(final):
+        raise HTTPException(status_code=400, detail="That link could not be opened. Check that anyone with the link can view it.")
+    if kind.startswith("text/html"):
+        raise HTTPException(status_code=400, detail="That link opens a page, not the video. Share the file so anyone with the link can view it. A very large Drive file may not hand over directly.")
+    if declared and declared > cap:
+        raise HTTPException(status_code=413, detail=f"This video is {declared / (1024 * 1024):.0f} MB. For now a video can be up to {cap // (1024 * 1024)} MB.")
+    ws_doc = await workspaces.find_one({"id": ctx.workspace_id}, {"tier": 1})
+    room_mb = limits.limits_for(ws_doc)["storage_mb"]
+    used_mb = await limits.storage_bytes_used(ctx.workspace_id) / 1_000_000.0
+    if used_mb + declared / 1_000_000.0 > room_mb:
+        raise HTTPException(status_code=413, detail=f"Your videos take {used_mb:.0f} MB of the {room_mb} MB your plan includes, so this one does not fit. Remove videos you no longer need first.")
+
+    upload_id = str(uuid4())
+    filename = link_import.name_from_headers(disposition, f"{provider}-video.mp4")
+    try:
+        params = storage_params.source_upload_params(workspace_id=ctx.workspace_id, upload_id=upload_id, filename=filename, nbytes=max(declared, 1))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    public_id = f"{params['folder']}/{params['public_id']}"
+    try:
+        import cloudinary.uploader
+
+        from app.shared.storage import _ensure_configured
+
+        _ensure_configured()
+        stored = await asyncio.to_thread(lambda: cloudinary.uploader.upload(
+            direct, resource_type="video", public_id=params["public_id"], folder=params["folder"], overwrite=True, timeout=600))
+    except Exception as exc:  # noqa: BLE001 - the member gets a plain reason; the detail is logged
+        logger.warning("Link import failed for %s: %s", ctx.workspace_id, exc)
+        raise HTTPException(status_code=502, detail="The video could not be fetched from that link. Please try again, or upload the file instead.") from exc
+    url = stored.get("secure_url") or ""
+    size = int(stored.get("bytes") or 0)
+    if not url.startswith(f"https://res.cloudinary.com/{settings.CLOUDINARY_CLOUD_NAME}/video/upload/") or size <= 0:
+        await _destroy(public_id)
+        raise HTTPException(status_code=502, detail="The video could not be fetched from that link. Please try again, or upload the file instead.")
+    if size > cap or used_mb + size / 1_000_000.0 > room_mb:
+        await _destroy(public_id)
+        raise HTTPException(status_code=413, detail=f"This video is {size / (1024 * 1024):.0f} MB, which is more than your account can hold right now.")
+    try:
+        found = await probe_module.probe_source(url)
+    except probe_module.ProbeError as exc:
+        await _destroy(public_id)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    now = _now()
+    video = found["video"]
+    media = MediaAsset(
+        id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.VIDEO, url=url, mime_type=kind if kind.startswith("video/") else "video/mp4",
+        width=video["shown_width"], height=video["shown_height"], duration_s=found["duration_s"], source=MediaSource.UPLOADED,
+        created_by=ctx.user_id, created_at=now, size_bytes=size, probe=found,
+    )
+    await media_assets.insert_one(media.model_dump())
+    await _uploads().insert_one({
+        "id": upload_id, "workspace_id": ctx.workspace_id, "user_id": ctx.user_id, "filename": filename[:200], "content_type": media.mime_type,
+        "bytes": size, "status": "done", "public_id": public_id, "media_id": media.id, "url": url, "source": f"link:{provider}",
+        "created_at": now, "finished_at": now,
+    })
+    try:
+        from app.video.jobs import enqueue_preview
+
+        await enqueue_preview(workspace_id=ctx.workspace_id, user_id=ctx.user_id, media_id=media.id, url=url, kind="video")
+        await media_assets.update_one({"id": media.id}, {"$set": {"preview_status": "preparing"}})
+    except Exception as exc:  # noqa: BLE001 - the video is saved either way
+        logger.warning("Could not queue the preview for %s: %s", media.id, exc)
+    return {"media": media.model_dump(mode="json"), "provider": provider, "notices": found["notices"]}
+
+
 @router.get("/uploads/{upload_id}")
 @limiter.limit("120/minute")
 async def get_upload(request: Request, upload_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict[str, Any]:
