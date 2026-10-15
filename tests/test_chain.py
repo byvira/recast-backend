@@ -143,3 +143,34 @@ async def test_a_lineage_cycle_ends_quietly(world):
     await db["content_pieces"].update_one({"id": world.piece}, {"$set": {"derived_from": [{"kind": "audio", "id": world.audio}]}})
     back = await lineage.ancestors("audio", world.audio, world.ws)
     assert {(a["kind"], a["id"]) for a in back} == {("piece", world.piece), ("audio", world.audio)}
+
+
+# ── the read route ───────────────────────────────────────────────────────────────────────────────────────────────────────
+
+async def test_the_lineage_route_names_each_source_with_its_label_and_stays_in_the_workspace(signup_user):
+    from tests.conftest import create_workspace
+
+    client, _ = await signup_user()
+    ws = await create_workspace(client, "Lineage")
+    piece, audio, video = (str(uuid4()) for _ in range(3))
+    db = get_db()
+    await db["content_pieces"].insert_one({"id": piece, "workspace_id": ws, "content": "Plan the week on Sunday."})
+    await db["audio_assets"].insert_one({"id": audio, "workspace_id": ws, "title": "Weekly plan, voiced", "source": "synthesized",
+                                         "derived_from": [{"kind": "piece", "id": piece}]})
+    await db["media_assets"].insert_one({"id": video, "workspace_id": ws, "kind": "video", "title": "Weekly plan video", "source": "rendered",
+                                         "derived_from": [{"kind": "audio", "id": audio}, {"kind": "piece", "id": piece}]})
+    try:
+        res = await client.get(f"/api/v1/lineage/media/{video}", headers={"X-Workspace-Id": ws})
+        assert res.status_code == 200, res.text
+        body = res.json()["made_from"]
+        by_kind = {i["kind"]: i for i in body}
+        assert set(by_kind) == {"audio", "piece"}
+        assert by_kind["audio"]["title"] == "Weekly plan, voiced" and by_kind["audio"]["origin"] == "ai"
+        assert by_kind["piece"]["title"] == "Plan the week on Sunday."
+        assert (await client.get(f"/api/v1/lineage/spaceship/{video}", headers={"X-Workspace-Id": ws})).status_code == 404
+        other, _ = await signup_user()
+        other_ws = await create_workspace(other, "Elsewhere")
+        assert (await other.get(f"/api/v1/lineage/media/{video}", headers={"X-Workspace-Id": other_ws})).json()["made_from"] == []
+    finally:
+        for c in ("content_pieces", "audio_assets", "media_assets"):
+            await db[c].delete_many({"workspace_id": ws})

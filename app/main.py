@@ -399,6 +399,8 @@ from app.api.v1 import video_flows as video_flows_router
 app.include_router(video_flows_router.router, prefix="/api/v1/video-flows", tags=["Video flows"])
 app.include_router(video_transcripts_router.router, prefix="/api/v1/video-transcripts", tags=["Video transcripts"])
 app.include_router(video_projects_router.router, prefix="/api/v1/video-projects", tags=["Video projects"])
+from app.api.v1 import lineage as lineage_router
+app.include_router(lineage_router.router, prefix="/api/v1/lineage", tags=["Lineage"])
 app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])
 app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["Ops"])
 # The old app.api.v1.image decoy (every handler was a placeholder — see
