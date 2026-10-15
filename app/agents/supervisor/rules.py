@@ -203,6 +203,10 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
                 {"name": "publish_failures", "value": float(count), "limit": float(T.PLATFORM_DELIVERY_FAILURES)},
             ))
 
+    from app.agents.supervisor import video_rules
+
+    flags.extend(await video_rules.evaluate(workspace_id, now, flag))
+
     # Rules that cannot mean anything on this plan are left out (a workspace of one has no team to police).
     return [f for f in flags if f["flag_type"] not in hidden_rules]
 

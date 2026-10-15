@@ -111,6 +111,19 @@ async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en"
         from app.shared.activity.projector import platform_name
         format_ctx = {"platform": platform_name(d.get("platform")), "failures": d.get("failures"),
                       "window_hours": d.get("window_hours")}
+    elif flag_type == "video_renders_failing":
+        format_ctx = {"failures": d.get("failures"), "window_hours": d.get("window_hours", 24)}
+    elif flag_type in ("video_minutes_high", "video_storage_high"):
+        format_ctx = {"used": d.get("used"), "limit": d.get("limit")}
+    elif flag_type == "video_auto_publish_on":
+        format_ctx = {"count": d.get("count"), "noun": d.get("noun", "recipe")}
+    elif flag_type == "video_voice_changed":
+        format_ctx = {"count": d.get("count"), "noun": d.get("noun", "post")}
+    elif flag_type == "video_automation_stopped":
+        format_ctx = {"reason": d.get("reason") or "a check failed"}
+    elif flag_type == "video_connection_expiring":
+        from app.shared.activity.projector import platform_name
+        format_ctx = {"platform": platform_name(d.get("platform")), "count": d.get("count"), "noun": d.get("noun", "post")}
     elif flag_type == "connection_broken":
         format_ctx = {"platform": d.get("platform"), "account": d.get("account"), "failures": d.get("failures")}
     else:

@@ -44,6 +44,7 @@ _REMY_TITLES = {
     "platform_volume_drop": "A channel has gone quiet",
     "topic_shift": "Your topics have shifted",
     "quality_regression": "More drafts than usual flagged for review",
+    "video_check_failed": "A video stopped on a check",
     "performance_pattern": "Something in your posts is working",
 }
 
@@ -59,6 +60,13 @@ _FLAG_TITLES = {
     "campaign_stalled": "A campaign has stopped generating",
     "platform_capability_drift": "A connected platform is no longer fully supported",
     "platform_delivery_failing": "Posts to a platform keep failing",
+    "video_renders_failing": "Video renders keep failing",
+    "video_minutes_high": "Video render minutes are nearly used",
+    "video_storage_high": "Video storage is nearly full",
+    "video_automation_stopped": "An automatic video recipe stopped",
+    "video_connection_expiring": "A connection will expire before a scheduled video",
+    "video_voice_changed": "Your brand voice changed after a video was made",
+    "video_auto_publish_on": "A video recipe publishes without approval",
 }
 
 _REMY_DECIDED = {"acknowledged": "accepted", "dismissed": "dismissed"}
@@ -115,6 +123,7 @@ _REMY_LABELS = {
     "volume_spike": "Volume Spike",
     "topic_shift": "Topic Shift",
     "quality_regression": "Quality Regression",
+    "video_check_failed": "Video Check Failed",
 }
 
 

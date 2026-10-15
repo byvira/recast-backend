@@ -42,6 +42,13 @@ class EventType(str, Enum):
     CONTENT_UPDATED = "content.updated"
     CONTENT_PUBLISHED = "content.published"
     PIPELINE_RUN_COMPLETED = "pipeline.run_completed"
+    # Family A: video (REQUIRE pipeline_type video)
+    VIDEO_ANALYSIS_DONE = "video.analysis_done"
+    VIDEO_SCRIPT_READY = "video.script_ready"
+    VIDEO_RENDER_DONE = "video.render_done"
+    VIDEO_QC_FAILED = "video.qc_failed"
+    VIDEO_COVER_READY = "video.cover_ready"
+    VIDEO_AUTOMATION_PAUSED = "video.automation_paused"
     # Family A — workspace governance (REQUIRE a null pipeline_type)
     MEMBER_ADDED = "member.added"
     MEMBER_REMOVED = "member.removed"
@@ -58,6 +65,12 @@ PIPELINE_SCOPED_EVENTS: frozenset[EventType] = frozenset({
     EventType.CONTENT_UPDATED,
     EventType.CONTENT_PUBLISHED,
     EventType.PIPELINE_RUN_COMPLETED,
+    EventType.VIDEO_ANALYSIS_DONE,
+    EventType.VIDEO_SCRIPT_READY,
+    EventType.VIDEO_RENDER_DONE,
+    EventType.VIDEO_QC_FAILED,
+    EventType.VIDEO_COVER_READY,
+    EventType.VIDEO_AUTOMATION_PAUSED,
 })
 
 #: Events that MUST NOT carry a ``pipeline_type`` (they are workspace-wide).
@@ -79,6 +92,7 @@ class SignalType(str, Enum):
     VOLUME_DROP = "volume_drop"
     TOPIC_SHIFT = "topic_shift"
     QUALITY_REGRESSION = "quality_regression"
+    VIDEO_CHECK_FAILED = "video_check_failed"     # app.agents.personal.video_handlers: a video or recipe stopped on a check
     PERFORMANCE_PATTERN = "performance_pattern"   # app.agents.feedback — engagement coaching
 
 
@@ -146,6 +160,21 @@ class PipelineRunCompletedPayload(BaseModel):
     platforms: list[str] = Field(default_factory=list)
     title: str = ""              # short label of what the run was about
     trigger: str = "manual"      # "manual" | "campaign"
+
+
+class VideoEventPayload(BaseModel):
+    """Payload for every ``video.*`` event. Only the fields that apply are set: a render names its project and job, a script its
+    record, an automatic recipe its recipe and the reason it stopped."""
+
+    project_id: str = ""
+    media_id: str = ""
+    job_id: str = ""
+    record_id: str = ""
+    recipe_id: str = ""
+    title: str = ""
+    detail: str = ""             # the plain reason, for a failed check or a paused recipe
+    duration_s: float = 0.0
+    origin: str = ""             # own | ai | stock, as on the video itself
 
 
 class MemberChangePayload(BaseModel):
@@ -263,6 +292,12 @@ PAYLOAD_MODELS: dict[EventType, type[BaseModel]] = {
     EventType.CONTENT_UPDATED: ContentEventPayload,
     EventType.CONTENT_PUBLISHED: ContentPublishedPayload,
     EventType.PIPELINE_RUN_COMPLETED: PipelineRunCompletedPayload,
+    EventType.VIDEO_ANALYSIS_DONE: VideoEventPayload,
+    EventType.VIDEO_SCRIPT_READY: VideoEventPayload,
+    EventType.VIDEO_RENDER_DONE: VideoEventPayload,
+    EventType.VIDEO_QC_FAILED: VideoEventPayload,
+    EventType.VIDEO_COVER_READY: VideoEventPayload,
+    EventType.VIDEO_AUTOMATION_PAUSED: VideoEventPayload,
     EventType.MEMBER_ADDED: MemberChangePayload,
     EventType.MEMBER_REMOVED: MemberChangePayload,
     EventType.ROLE_CHANGED: RoleChangedPayload,

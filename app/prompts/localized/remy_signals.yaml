@@ -8,4 +8,5 @@ volume_drop: "You haven't posted for the last few days after a steady run. No pr
 platform_volume_drop: "You haven't posted on {platform} for {zero_days} days, though you've kept posting elsewhere. It used to get about {baseline_per_day} a day. Post there again if it's still part of your plan, or ignore this if the pause is on purpose."
 topic_shift: "Your recent posts are about different topics than before. If you're changing direction on purpose, you can ignore this. If not, you may be drifting away from what your audience expects."
 quality_regression: "More of your recent drafts than usual were flagged for review. It may help to slow down a little on your next few posts."
+video_check_failed: "A video did not pass its checks and nothing was published. Open it to see why."
 __fallback__: "Something in your recent content is worth a look."

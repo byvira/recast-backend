@@ -1,6 +1,6 @@
 """Ops view of the video render worker: whether it is on and alive, what is waiting, and a way to start one real render
 from a video already in a workspace's library (used to prove the whole path end to end)."""
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -25,6 +25,109 @@ def _raise(exc: jobs.JobError) -> HTTPException:
 @limiter.limit("60/minute")
 async def status(request: Request, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
     return await jobs.worker_status()
+
+
+@router.get("/usage")
+@limiter.limit("30/minute")
+async def usage_by_workspace(request: Request, limit: int = Query(20, ge=1, le=100), user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """This month's render minutes and failures per workspace, most minutes first, with each plan's limit. Cost drivers at a glance."""
+    from app.db.mongo import get_db
+    from app.video import limits
+
+    db = get_db()
+    rate = float(settings.VIDEO_RENDER_COST_PER_MINUTE or 0.0)
+    since = limits.month_start()
+    rows = await db["video_jobs"].aggregate([
+        {"$match": {"created_at": {"$gte": since}, "kind": {"$in": [None, "render"]}}},
+        {"$group": {
+            "_id": "$workspace_id",
+            "seconds": {"$sum": {"$cond": [{"$in": ["$status", ["queued", "claimed", "done"]]}, "$duration_s", 0]}},
+            "renders": {"$sum": 1},
+            "failed": {"$sum": {"$cond": [{"$in": ["$status", ["failed", "blocked"]]}, 1, 0]}},
+        }},
+        {"$sort": {"seconds": -1}}, {"$limit": limit},
+    ]).to_list(length=limit)
+    tiers = {w["id"]: w.get("tier") for w in await db["workspaces"].find({"id": {"$in": [r["_id"] for r in rows]}}, {"id": 1, "tier": 1}).to_list(length=limit)}
+    out = []
+    for r in rows:
+        cap = limits.limits_for({"tier": tiers.get(r["_id"])})["render_minutes"]
+        minutes = round(r["seconds"] / 60, 1)
+        out.append({"workspace_id": r["_id"], "tier": tiers.get(r["_id"]), "render_minutes": minutes, "limit_minutes": cap,
+                    "renders": r["renders"], "failed": r["failed"], "estimated_cost_usd": round(minutes * rate, 2)})
+    return {"month": since.strftime("%Y-%m"), "workspaces": out, "cost_per_minute_usd": rate,
+            "estimated_cost_usd": round(sum(w["estimated_cost_usd"] for w in out), 2)}
+
+
+class AccessBody(BaseModel):
+    enabled: bool
+    note: str = Field("", max_length=200)
+
+
+@router.put("/workspaces/{workspace_id}/access")
+@limiter.limit("30/minute")
+async def set_workspace_access(request: Request, workspace_id: str, body: AccessBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """Switch video on or off for one workspace: a closed-group rollout, or a workspace that has to be held. On by default."""
+    from app.video import governance
+
+    if not await governance.set_access(workspace_id, body.enabled, str(user.get("id")), body.note):
+        raise HTTPException(status_code=404, detail="That workspace was not found.")
+    return {"workspace_id": workspace_id, "enabled": body.enabled}
+
+
+class TakedownBody(BaseModel):
+    workspace_id: str = Field(..., min_length=1, max_length=80)
+    media_id: str = Field(..., min_length=1, max_length=80)
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+@router.post("/takedown")
+@limiter.limit("20/minute")
+async def takedown(request: Request, body: TakedownBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """Take a video down at once: the file, everything made from it, every review link that shows it. The reason is recorded."""
+    from app.video import deletion
+
+    try:
+        return await deletion.delete_media(body.workspace_id, body.media_id, actor=f"staff:{user.get('id')}", staff_reason=body.reason.strip())
+    except deletion.DeletionBlocked as exc:
+        raise HTTPException(status_code=404, detail=exc.message)
+
+
+@router.get("/takedowns")
+@limiter.limit("60/minute")
+async def list_takedowns(request: Request, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """Reports made from review links, newest first. The link is already switched off when a report arrives."""
+    from app.db.mongo import get_db
+
+    rows = await get_db()["video_takedown_requests"].find({}).sort("at", -1).to_list(length=100)
+    return {"requests": [{"id": r["id"], "workspace_id": r["workspace_id"], "media_id": r["media_id"], "reason": r["reason"], "contact": r.get("contact"),
+                          "status": r["status"], "at": r["at"].isoformat().replace("+00:00", "Z") if r.get("at") else None} for r in rows]}
+
+
+class ResolveBody(BaseModel):
+    action: Literal["remove", "dismiss"]
+    note: str = Field("", max_length=500)
+
+
+@router.post("/takedowns/{request_id}/resolve")
+@limiter.limit("30/minute")
+async def resolve_takedown(request: Request, request_id: str, body: ResolveBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    from app.db.mongo import get_db
+    from app.video import deletion
+
+    row = await get_db()["video_takedown_requests"].find_one({"id": request_id})
+    if not row or row["status"] != "open":
+        raise HTTPException(status_code=404, detail="That report was not found or is already handled.")
+    done: dict[str, Any] = {}
+    if body.action == "remove":
+        try:
+            done = await deletion.delete_media(row["workspace_id"], row["media_id"], actor=f"staff:{user.get('id')}", staff_reason=row["reason"][:200])
+        except deletion.DeletionBlocked:
+            done = {"already_gone": True}
+    await get_db()["video_takedown_requests"].update_one({"id": request_id}, {"$set": {
+        "status": "removed" if body.action == "remove" else "dismissed", "note": body.note.strip(), "handled_by": user.get("id"), "handled_at": datetime.now(timezone.utc)}})
+    return {"status": "removed" if body.action == "remove" else "dismissed", **done}
 
 
 @router.get("/jobs")

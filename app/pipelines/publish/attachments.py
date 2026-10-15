@@ -29,6 +29,12 @@ LOCKED_STATUSES = ("publishing", "published")
 AUDIO_NOTE = "Audio can't be posted on its own. Render it as a video and attach that."
 
 
+AI_NOTE = (
+    "This video includes AI-made material. Platforms ask you to say so: turn on the platform's own setting for AI-made or altered "
+    "content when you publish, and say it in the post if you like."
+)
+
+
 def attach_advice(resolved: dict, piece: dict) -> list[str]:
     """Plain sentences about whether this attachment suits the post's platform, said when it is attached and not found out when
     it is refused. Advice only: nothing here blocks an attachment. Platform limits as the platforms publish them; not checked
@@ -37,6 +43,9 @@ def attach_advice(resolved: dict, piece: dict) -> list[str]:
     from app.pipelines.publish.spine import platform_key
 
     notes: list[str] = []
+    media_doc = resolved.get("media") or {}
+    if media_doc.get("contains_ai") or media_doc.get("origin") == "ai":
+        notes.append(AI_NOTE)
     if resolved["asset_type"] == "video":
         clip = next((c for c in (resolved.get("asset") or {}).get("video_clips") or [] if c.get("id") == resolved.get("clip_id")), None)
         if clip:

@@ -31,7 +31,9 @@ logger = logging.getLogger(__name__)
 CONTRACT = 1
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 INPUT_KINDS = ("video", "audio", "image")
-OUTPUT_KEYS = ("filename", "segment_seconds", "crf", "preset", "audio_bitrate", "lufs")
+OUTPUT_KEYS = ("filename", "segment_seconds", "crf", "preset", "audio_bitrate", "lufs", "label")
+#: Written into the finished file when AI-made material went into the video.
+AI_FILE_LABEL = "Includes AI-made material"
 # A worker that has not asked for work for this long is reported as offline.
 WORKER_OFFLINE_AFTER = timedelta(minutes=5)
 MAX_FRAMES = 12
@@ -159,6 +161,30 @@ def _validate_request(inputs: Any, edit: Any) -> float:
     return seconds
 
 
+MAX_REFRAME_LOOKS = 1500
+MAX_REFRAME_POINTS = 240
+HALT_MESSAGE = "Generation is paused for this workspace. An owner armed the emergency kill switch in Odette."
+#: Jobs that only prepare what a member already uploaded (a small playable copy, sample pictures). They spend nothing, so the
+#: kill switch does not hold them.
+_PREPARE_KINDS = ("proxy", "frames", "reframe")
+
+
+async def _halted(workspace_id: str) -> bool:
+    ws = await get_db()["workspaces"].find_one({"id": workspace_id}, {"generation_halted": 1})
+    return bool(ws and ws.get("generation_halted"))
+
+
+async def _assert_video_on(workspace_id: str) -> None:
+    from app.video import governance
+
+    if not await governance.video_enabled(workspace_id):
+        raise JobError(403, governance.ACCESS_OFF)
+
+
+async def _halted_workspaces() -> list[str]:
+    return [w["id"] async for w in get_db()["workspaces"].find({"generation_halted": True}, {"id": 1})]
+
+
 async def enqueue(
     *, workspace_id: str, user_id: str, inputs: dict, edit: dict, output: Optional[dict] = None,
     label: str = "", idem_key: Optional[str] = None, origin: Optional[dict] = None, project_id: Optional[str] = None,
@@ -167,6 +193,18 @@ async def enqueue(
     """Queue one render. The same idempotency key in the same workspace returns the job already made. With
     `show_in_activity` the render also appears in the activity dock, Control Tower and the Activity Log as a run."""
     seconds = _validate_request(inputs, edit)
+    await _assert_video_on(workspace_id)
+    if await _halted(workspace_id):
+        raise JobError(403, HALT_MESSAGE)
+    if project_id:
+        from app.video import limits
+
+        existing_job = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key}) if idem_key else None
+        if not existing_job:
+            try:
+                await limits.assert_render_room(workspace_id, seconds)
+            except limits.OverLimit as exc:
+                raise JobError(429, exc.message)
     if idem_key:
         existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key})
         if existing:
@@ -175,7 +213,7 @@ async def enqueue(
     doc = {
         "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": (label or "")[:120],
         "status": "queued", "attempts": 0, "inputs": inputs, "edit": edit,
-        "output": {k: v for k, v in (output or {}).items() if k in OUTPUT_KEYS},
+        "output": {**{k: v for k, v in (output or {}).items() if k in OUTPUT_KEYS}, **({"label": AI_FILE_LABEL} if (origin or {}).get("contains_ai") else {})},
         "duration_s": round(seconds, 3), "created_at": now, "lease_token": None, "lease_expires_at": None,
         "cancel_requested": False, "progress": {}, "origin": origin or {"origin": "own", "contains_ai": False, "contains_stock": False},
     }
@@ -237,6 +275,9 @@ async def enqueue_speech(*, workspace_id: str, user_id: str, items: list[dict], 
             clean.append({"id": str(it["id"]), "text": text})
     if not clean:
         raise JobError(400, "There is nothing to speak.")
+    await _assert_video_on(workspace_id)
+    if await _halted(workspace_id):
+        raise JobError(403, HALT_MESSAGE)
     now = _now()
     doc = {
         "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": "Voice", "kind": "speech", "status": "queued", "attempts": 0,
@@ -268,6 +309,34 @@ async def enqueue_frames(*, workspace_id: str, user_id: str, media_id: str, url:
         "status": "queued", "attempts": 0, "inputs": {"src": {"url": url, "kind": "video"}}, "frames": {"times_s": times, "width": width},
         "source_media_id": media_id, "duration_s": 0, "created_at": now, "lease_token": None, "lease_expires_at": None,
         "cancel_requested": False, "progress": {}, "idem_key": key,
+    }
+    try:
+        await _jobs().insert_one(dict(doc))
+    except DuplicateKeyError:
+        return public(await _jobs().find_one({"workspace_id": workspace_id, "idem_key": key}))
+    return public(doc)
+
+
+async def enqueue_reframe(*, workspace_id: str, user_id: str, media_id: str, url: str, aspect: float, start_s: float, end_s: float, step_s: float = 0.4) -> dict:
+    """Queue the follow-the-speaker pass over one part of a video. The same part at the same shape returns the job that exists."""
+    if not str(url).startswith("https://"):
+        raise JobError(400, "That video cannot be looked at.")
+    spec = {"aspect": round(float(aspect), 4), "start_s": round(float(start_s), 2), "end_s": round(float(end_s), 2), "step_s": round(float(step_s), 2)}
+    if not (0.2 <= spec["aspect"] <= 5.0) or spec["end_s"] <= spec["start_s"] or not (0.2 <= spec["step_s"] <= 2.0):
+        raise JobError(400, "That part of the video cannot be looked at.")
+    if (spec["end_s"] - spec["start_s"]) / spec["step_s"] > MAX_REFRAME_LOOKS:
+        raise JobError(400, "That part is too long to follow in one go. Pick a shorter part.")
+    key = f"reframe:{media_id}:{hashlib.sha1(json.dumps(spec, sort_keys=True).encode()).hexdigest()[:16]}"
+    existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": key})
+    if existing and existing.get("status") in ("failed", "cancelled", "blocked"):
+        await _jobs().update_one({"id": existing["id"]}, {"$set": {"idem_key": f"{key}:old:{existing['id']}"}})
+        existing = None
+    if existing:
+        return public(existing)
+    doc = {
+        "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": "Following the speaker", "kind": "reframe",
+        "status": "queued", "attempts": 0, "inputs": {"src": {"url": url, "kind": "video"}}, "reframe": spec, "source_media_id": media_id,
+        "duration_s": 0, "created_at": _now(), "lease_token": None, "lease_expires_at": None, "cancel_requested": False, "progress": {}, "idem_key": key,
     }
     try:
         await _jobs().insert_one(dict(doc))
@@ -340,6 +409,9 @@ def _wire(doc: dict) -> dict:
     if doc.get("kind") == "speech":
         return {"id": doc["id"], "kind": "speech", "contract": CONTRACT, "lease_token": doc["lease_token"], "lease_seconds": lease_seconds(),
                 "inputs": {}, "speech": doc.get("speech") or {}, "limits": {}}
+    if doc.get("kind") == "reframe":
+        return {"id": doc["id"], "kind": "reframe", "contract": CONTRACT, "lease_token": doc["lease_token"],
+                "lease_seconds": lease_seconds(), "inputs": doc["inputs"], "reframe": doc.get("reframe") or {}, "limits": {}}
     if doc.get("kind") == "frames":
         return {"id": doc["id"], "kind": "frames", "contract": CONTRACT, "lease_token": doc["lease_token"],
                 "lease_seconds": lease_seconds(), "inputs": doc["inputs"], "frames": doc.get("frames") or {}, "limits": {}}
@@ -363,6 +435,10 @@ async def claim(worker_id: str, version: str, capabilities: dict) -> Optional[di
     base: dict[str, Any] = {"status": "queued", "duration_s": {"$lte": cap}, "cancel_requested": {"$ne": True}}
     if not capabilities.get("speech"):
         base["kind"] = {"$ne": "speech"}                 # a worker without a voice is never handed spoken lines
+    halted = await _halted_workspaces()
+    if halted:
+        # the owner's kill switch holds queued renders and voices; they run when it is released
+        base["$or"] = [{"workspace_id": {"$nin": halted}}, {"kind": {"$in": list(_PREPARE_KINDS)}}]
     busy = await _jobs().distinct("workspace_id", {"status": "claimed"})
     now = _now()
     update = {
@@ -504,6 +580,8 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
     doc = await _held(job_id, lease_token)
     if doc.get("kind") == "proxy":
         return await _complete_preview(doc, job_id, lease_token, outputs, report)
+    if doc.get("kind") == "reframe":
+        return await _complete_reframe(doc, job_id, lease_token, report)
     if doc.get("kind") == "frames":
         return await _complete_frames(doc, job_id, lease_token, outputs, report)
     if doc.get("kind") == "speech":
@@ -682,6 +760,62 @@ async def _complete_speech(doc: dict, job_id: str, lease_token: str, outputs: An
     )
     await runs.finish_ok(doc.get("run_id"), {"job_id": job_id, "lines": len(made)})
     return {"ok": True, "accepted": True}
+
+
+def _clean_path(raw: Any, length_s: float) -> Optional[list[dict[str, float]]]:
+    """The path a worker reported, kept only if every point is a plain number inside the picture and the times go forward."""
+    if not isinstance(raw, list) or len(raw) > MAX_REFRAME_POINTS:
+        return None
+    out: list[dict[str, float]] = []
+    last = -1.0
+    for p in raw:
+        if not isinstance(p, dict):
+            return None
+        vals = [p.get(k) for k in ("t", "x", "y")]
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+            return None
+        t, x, y = (float(v) for v in vals)
+        if not (0 <= x <= 1 and 0 <= y <= 1 and 0 <= t <= length_s + 1 and t > last):
+            return None
+        last = t
+        out.append({"t": round(t, 3), "x": round(x, 4), "y": round(y, 4)})
+    return out
+
+
+async def _complete_reframe(doc: dict, job_id: str, lease_token: str, report: Any) -> dict:
+    """Accept a follow-the-speaker result: a path of window positions, or an honest note that no face finder was available."""
+    media_id = doc.get("source_media_id")
+    spec = doc.get("reframe") or {}
+
+    async def refuse(why: str) -> dict:
+        message = "The speaker could not be followed. Please try again."
+        await _end(doc, "failed", "reframe_failed", message, {"problem": why})
+        await runs.finish_failed(doc.get("run_id"), message)
+        logger.warning("Reframe %s refused: %s", job_id, why)
+        return {"ok": False, "accepted": False}
+
+    if not isinstance(report, dict) or report.get("passed") is not True or report.get("kind") != "reframe":
+        return await refuse("the report does not say the pass finished")
+    path = _clean_path(report.get("path"), float(spec.get("end_s", 0)) - float(spec.get("start_s", 0)))
+    window = report.get("window") or {}
+    if path is None or not all(isinstance(window.get(k), (int, float)) and 0 < window[k] <= 1 for k in ("w", "h")):
+        return await refuse("the path or the window is not valid")
+    checked = bool(report.get("faces_checked"))
+    now = _now()
+    await get_db()["video_reframe_paths"].update_one(
+        {"workspace_id": doc["workspace_id"], "media_id": media_id, "key": doc["idem_key"]},
+        {"$set": {"workspace_id": doc["workspace_id"], "media_id": media_id, "key": doc["idem_key"], "job_id": job_id, "spec": spec, "path": path,
+                  "window": {"w": float(window["w"]), "h": float(window["h"])}, "faces_checked": checked,
+                  "looked": int(report.get("looked") or 0), "with_face": int(report.get("with_face") or 0), "created_at": now}},
+        upsert=True,
+    )
+    await _jobs().update_one(
+        {"id": job_id, "lease_token": lease_token},
+        {"$set": {"status": "done", "media_id": media_id, "finished_at": now, "lease_token": None, "lease_expires_at": None,
+                  "progress": {"stage": "Done", "fraction": 1.0}, "report": {k: v for k, v in report.items() if k != "path"}}},
+    )
+    await runs.finish_ok(doc.get("run_id"), {"job_id": job_id, "media_id": media_id, "points": len(path)})
+    return {"ok": True, "accepted": True, "media_id": media_id}
 
 
 _FRAME_KEYS = ("brightness", "contrast", "sharpness", "top_busy", "bottom_busy", "hash", "rgb", "faces")

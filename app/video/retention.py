@@ -21,6 +21,10 @@ STALE_UPLOAD_DAYS = 2
 JOB_RECORD_DAYS = 90
 #: Decision-log entries are kept this long.
 DECISION_DAYS = 180
+#: Webhook delivery records are kept this long.
+WEBHOOK_DELIVERY_DAYS = 30
+#: A review link that has expired or been ended is kept this long (with its comments and answers), so the member can still read what the client said.
+REVIEW_LINK_DAYS = 90
 PER_RUN = 200
 
 
@@ -77,8 +81,15 @@ async def trim_records(now: datetime | None = None) -> dict[str, int]:
         "status": {"$in": ["done", "failed", "cancelled", "blocked"]}, "finished_at": {"$lt": moment - timedelta(days=JOB_RECORD_DAYS)},
     })
     decisions = await db["agent_decisions"].delete_many({"created_at": {"$lt": moment - timedelta(days=DECISION_DAYS)}, "outcome": {"$ne": "needs_decision"}})
-    versions = 0
-    return {"job_records": jobs.deleted_count, "decisions": decisions.deleted_count, "versions": versions}
+    deliveries = await db["video_webhook_deliveries"].delete_many({
+        "status": {"$in": ["delivered", "failed"]}, "created_at": {"$lt": moment - timedelta(days=WEBHOOK_DELIVERY_DAYS)}})
+    old_links = [lk["id"] async for lk in db["video_review_links"].find(
+        {"$or": [{"revoked": True, "revoked_at": {"$lt": moment - timedelta(days=REVIEW_LINK_DAYS)}}, {"expires_at": {"$lt": moment - timedelta(days=REVIEW_LINK_DAYS)}}]}, {"id": 1}).limit(PER_RUN)]
+    if old_links:
+        for name in ("video_review_comments", "video_review_decisions"):
+            await db[name].delete_many({"link_id": {"$in": old_links}})
+        await db["video_review_links"].delete_many({"id": {"$in": old_links}})
+    return {"job_records": jobs.deleted_count, "decisions": decisions.deleted_count, "webhook_deliveries": deliveries.deleted_count, "review_links": len(old_links)}
 
 
 @distributed_job_lock("video_transcripts", ttl_seconds=900)
@@ -92,8 +103,10 @@ async def continue_video_transcripts() -> int:
 @distributed_job_lock("video_retention", ttl_seconds=1800)
 async def run_video_retention() -> dict[str, int]:
     """Daily: unfinished uploads, orphaned previews, and old records."""
-    out = {"uploads": 0, "previews": 0}
-    for name, fn in (("uploads", sweep_unfinished_uploads), ("previews", sweep_orphaned_previews)):
+    from app.video import deletion
+
+    out = {"uploads": 0, "previews": 0, "files_retried": 0}
+    for name, fn in (("uploads", sweep_unfinished_uploads), ("previews", sweep_orphaned_previews), ("files_retried", deletion.retry_failed_files)):
         try:
             out[name] = await fn()
         except Exception as exc:  # noqa: BLE001 - one part failing must not stop the others; it is tried again tomorrow

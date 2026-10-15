@@ -28,6 +28,8 @@ from app.agents.feedback.trust import autonomy_trust_refresh
 from app.pipelines.analytics.checkpoints import capture_metric_checkpoints
 from app.pipelines.analytics.scheduler import refresh_analytics
 from app.workers.campaign_scheduler import run_due_campaign_batches
+from app.workers.video_automation import run_due_video_recipes
+from app.workers.webhook_retries import retry_video_webhooks
 from app.shared.invites import lead_digest, sweep_invites
 from app.workers.link_checks import check_old_post_links
 from app.workers.run_reminders import remind_about_paused_runs
@@ -64,6 +66,10 @@ JOBS: list[Job] = [
     # Publishing & campaigns — every minute (each job holds its own lock).
     Job("scheduled_posts", _no_ctx(process_scheduled_posts)),
     Job("campaign_batches", _no_ctx(run_due_campaign_batches)),
+    # Automatic video recipes that are due (each stops on a failed check and waits for a person).
+    Job("video_recipes", _no_ctx(run_due_video_recipes), minute=_every(5, offset=2)),
+    # Webhook deliveries whose wait is over are sent again.
+    Job("video_webhooks", _no_ctx(retry_video_webhooks)),
     # Paused work that was forgotten: a note after 1, 3 and 7 days.
     Job("run_reminders", _no_ctx(remind_about_paused_runs), minute=_every(10, offset=4)),
     # Token renewal — every 15 minutes; it only renews connections that are due. Some sign-ins (YouTube, Bluesky) last an hour or two,

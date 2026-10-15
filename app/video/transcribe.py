@@ -438,7 +438,11 @@ async def continue_waiting() -> int:
         {"id": 1, "workspace_id": 1, "media_id": 1, "user_id": 1},
     ).limit(MAX_PER_TICK).to_list(MAX_PER_TICK)
     resumed = 0
+    from app.video import governance
+
     for row in due:
+        if not await governance.transcription_allowed(row["workspace_id"]):
+            continue                  # the workspace keeps its audio away from outside services: nothing is sent
         try:
             state = await run(row["id"])
         except Exception as exc:  # noqa: BLE001 - one transcript failing must not stop the others

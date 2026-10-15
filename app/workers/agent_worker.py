@@ -72,6 +72,10 @@ async def _handle_entry(r, entry_id: str, fields: dict) -> None:
         event = json.loads(raw) if raw else None
         if event and event.get("event_type") in _HANDLED_TYPES:
             await run_personal_graph(event)
+        elif event and str(event.get("event_type", "")).startswith("video."):
+            from app.agents.personal import video_handlers
+
+            await video_handlers.handle(event)
         await r.xack(EVENTS_STREAM, GROUP, entry_id)
         _delivery_counts.pop(entry_id, None)
     except Exception as exc:  # noqa: BLE001

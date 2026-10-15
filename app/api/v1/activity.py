@@ -602,6 +602,18 @@ async def decide(
                     ctx.workspace_id, source_id,
                     "resolved" if body.decision == "accept" else "muted",
                 )
+    elif kind == "video_decision":
+        from app.video import automation
+
+        outcome = "accepted" if body.decision == "accept" else "dismissed"
+        if body.decision == "snooze":
+            await patch_entry(entry_id, {"snoozed_until": until})
+        else:
+            await automation.apply_decision((doc.get("metadata") or {}).get("recipeId", ""), ctx.workspace_id, body.decision, doc.get("metadata"))
+            await patch_entry(entry_id, {
+                "lane": LANE_PASSIVE, "status": "success", "decision": {"outcome": outcome}, "decided_at": datetime.now(timezone.utc),
+                "metadata": {**(doc.get("metadata") or {}), "decision": outcome.capitalize()},
+            })
     elif kind == "next_step":
         # No underlying agent collection — the row is the record.
         if body.decision == "snooze":

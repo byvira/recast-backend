@@ -146,6 +146,8 @@ class Settings(BaseSettings):
     VIDEO_UPLOAD_EXPIRE_HOURS: int = 24
     # The longest finished video one job may produce, in seconds (the worker host's measured ceiling).
     VIDEO_MAX_OUTPUT_SECONDS: int = 3600
+    # What a render minute costs the platform, in US dollars. 0 while the render host is on the free tier; set it when the host is paid.
+    VIDEO_RENDER_COST_PER_MINUTE: float = 0.0
     # The lowest quality-gate version the backend accepts in a worker's report.
     VIDEO_GATE_VERSION_MIN: int = 2
 

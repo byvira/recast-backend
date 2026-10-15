@@ -10,14 +10,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import get_db, media_assets
+from app.db.mongo import get_db, media_assets, workspaces
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.video import probe as probe_module
 from app.video import storage_params
@@ -102,11 +102,25 @@ async def limits(request: Request, ctx: WorkspaceContext = Depends(get_current_w
 async def start_upload(request: Request, body: StartBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
     if body.content_type not in ALLOWED_MIME_TYPES[MediaKind.VIDEO]:
         raise HTTPException(status_code=400, detail="That kind of file can't be used as a video. Use MP4, MOV, WebM, AVI or FLV.")
+    from app.video import governance
+
+    if not await governance.video_enabled(ctx.workspace_id):
+        raise HTTPException(status_code=403, detail=governance.ACCESS_OFF)
     cap = await _limit_bytes(ctx.workspace_id)
     if body.bytes > cap:
         raise HTTPException(
             status_code=413,
             detail=f"This video is {body.bytes / (1024 * 1024):.0f} MB. For now a video can be up to {cap // (1024 * 1024)} MB.",
+        )
+    from app.video import limits
+
+    ws_doc = await workspaces.find_one({"id": ctx.workspace_id}, {"tier": 1})
+    room_mb = limits.limits_for(ws_doc)["storage_mb"]
+    used_mb = await limits.storage_bytes_used(ctx.workspace_id) / 1_000_000.0
+    if used_mb + body.bytes / 1_000_000.0 > room_mb:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Your videos take {used_mb:.0f} MB of the {room_mb} MB your plan includes, so this one does not fit. Remove videos you no longer need first.",
         )
     await _sweep_abandoned(ctx.workspace_id)
     open_now = await _uploads().count_documents({"workspace_id": ctx.workspace_id, "status": "started"})
@@ -213,6 +227,32 @@ async def request_preview(request: Request, media_id: str, ctx: WorkspaceContext
         raise HTTPException(status_code=exc.status, detail=exc.message)
     await media_assets.update_one({"id": media_id}, {"$set": {"preview_status": "preparing"}})
     return {"media_id": media_id, "preview_status": "preparing", "job_id": job["id"]}
+
+
+@router.get("/{media_id}/usage")
+@limiter.limit("60/minute")
+async def media_usage(request: Request, media_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict[str, Any]:
+    """Where a library video is used: its projects, its posts and its review links. Shown before it is deleted."""
+    from app.video import deletion
+
+    return await deletion.usage(ctx.workspace_id, media_id)
+
+
+@router.delete("/{media_id}")
+@limiter.limit("20/minute")
+async def delete_media_item(
+    request: Request, media_id: str, confirm: bool = Query(False), ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict[str, Any]:
+    """Delete a library video and everything made from it: its previews, sample pictures, transcript, reading, dubs, captions and review
+    links. Clips of it are taken out of the projects that use them. A video used in projects or shared for review needs `confirm`; one
+    still scheduled to go out in a post cannot be deleted until that post is cancelled or sent."""
+    from app.video import deletion
+
+    try:
+        return await deletion.delete_media(ctx.workspace_id, media_id, actor=ctx.user_id, confirm=confirm)
+    except deletion.DeletionBlocked as exc:
+        status = 404 if exc.message.endswith("not found.") else 409
+        raise HTTPException(status_code=status, detail={"message": exc.message, "usage": exc.usage})
 
 
 @router.post("/uploads/{upload_id}/cancel")

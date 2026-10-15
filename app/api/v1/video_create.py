@@ -85,6 +85,10 @@ async def _finish(
                   "problems": len(meta.get("problems", []))},
         outcome="ok" if not meta.get("problems") else "partial",
     )
+    if kind == "script":
+        from app.video import activity
+
+        await activity.emit("script_ready", ctx.workspace_id, ctx.user_id, rec["id"], record_id=rec["id"], media_id=media_id or "")
     return {
         "id": rec["id"], "kind": kind, "result": result,
         "voice": {"version": voice.get("version"), "brand_id": voice.get("brand_id"), "name": voice.get("name"), "known": voice.get("known", False)},
@@ -273,13 +277,61 @@ async def voice_check(request: Request, body: VoiceCheckBody, ctx: WorkspaceCont
         logger.info("voice check: member voice unavailable: %s", exc)
     if member.get("status") == "ok":
         summary_parts.append(f"The member's own writing: {'; '.join(member.get('deltas') or [])[:400]}")
+    from app.agents.personal import recording_voice
+    from app.shared.llm import embed_text
+
+    rec = await recording_voice.compare(ctx.workspace_id, ctx.user_id, "\n".join(lines)[:1800], embed=embed_text)
     await _budget(ctx)
     result, meta = await G.voice_check(lines, "\n".join(p for p in summary_parts if p), language=language)
+    result["recording_voice"] = rec
     result["member_voice"] = {"status": member.get("status"), "in_voice": member.get("in_voice"), "similarity": member.get("similarity"),
                               "message": member.get("remy_message")}
     if member.get("status") == "ok" and member.get("in_voice") is False and result["verdict"] == "in_voice":
         result["verdict"] = "drifts"
+    if rec.get("status") == "ok" and rec.get("in_voice") is False and result["verdict"] == "in_voice":
+        result["verdict"] = "drifts"
     return await _finish(ctx, "voice_check", result, meta, voice, summary=f"Checked {len(lines)} lines against the voice: {result['verdict']}.")
+
+
+class RecordingVoiceBody(BaseModel):
+    enabled: bool
+
+
+@router.get("/recording-voice")
+@limiter.limit("60/minute")
+async def recording_voice_status(request: Request, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict[str, Any]:
+    """Whether Remy is set to learn the member's voice from their own recordings, and how much it has learned so far."""
+    from app.agents.personal import recording_voice
+
+    return await recording_voice.status(ctx.workspace_id, ctx.user_id)
+
+
+@router.put("/recording-voice")
+@limiter.limit("20/minute")
+async def recording_voice_switch(request: Request, body: RecordingVoiceBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+    """Switch learning from the member's own recordings on or off. Off by default."""
+    from app.agents.personal import recording_voice
+
+    return await recording_voice.set_enabled(ctx.workspace_id, ctx.user_id, body.enabled)
+
+
+@router.post("/recording-voice/learn")
+@limiter.limit("6/minute")
+async def recording_voice_learn(request: Request, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+    """Learn from the member's own recordings that have not been used yet. A few embedding calls at most, and once an hour."""
+    from app.agents.personal import recording_voice
+    from app.shared.llm import embed_text
+
+    return await recording_voice.learn(ctx.workspace_id, ctx.user_id, embed=embed_text)
+
+
+@router.delete("/recording-voice")
+@limiter.limit("20/minute")
+async def recording_voice_forget(request: Request, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+    """Forget everything learned from the member's recordings."""
+    from app.agents.personal import recording_voice
+
+    return await recording_voice.forget(ctx.workspace_id, ctx.user_id)
 
 
 @router.get("/records")

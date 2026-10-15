@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from app.core.middleware import limiter
@@ -181,6 +181,10 @@ class CreateBody(BaseModel):
 @router.post("", status_code=201)
 @limiter.limit("30/minute")
 async def create_project(request: Request, body: CreateBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
+    from app.video import governance
+
+    if not await governance.video_enabled(ctx.workspace_id):
+        raise HTTPException(status_code=403, detail=governance.ACCESS_OFF)
     created_from: dict[str, Any] = {"kind": body.source}
     title = body.title.strip()
     try:
@@ -255,6 +259,15 @@ async def create_project(request: Request, body: CreateBody, ctx: WorkspaceConte
     await _projects().insert_one(dict(doc))
     await _write_version(doc, "save", "Start", ctx.user_id)
     return await _open(doc)
+
+
+@router.get("/usage")
+@limiter.limit("60/minute")
+async def video_usage(request: Request, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
+    """The two meters: render minutes this month and storage, each with its limit on this plan."""
+    from app.video import limits
+
+    return await limits.usage(ctx.workspace_id)
 
 
 @router.get("")
@@ -442,6 +455,109 @@ async def render_project(
         {"$set": {"last_render": {"job_id": job["id"], "run_id": job.get("run_id"), "preset": body.preset, "version": doc["version"], "at": _now()}}},
     )
     return job
+
+
+HANDOFF_FORMATS = {
+    "premiere": ("timeline_premiere.xml", "application/xml"),
+    "finalcut": ("timeline_finalcut.fcpxml", "application/xml"),
+    "edl": ("timeline.edl", "text/plain"),
+    "otio": ("timeline.otio", "application/json"),
+    "markers": ("markers.csv", "text/csv"),
+    "srt": ("captions.srt", "application/x-subrip"),
+    "vtt": ("captions.vtt", "text/vtt"),
+    "package": ("handoff.zip", "application/zip"),
+}
+
+
+@router.get("/{project_id}/handoff/{fmt}")
+@limiter.limit("30/minute")
+async def handoff(request: Request, project_id: str, fmt: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> Response:
+    """The project for an editing program: a timeline in Premiere (also Resolve), Final Cut or EDL form, the markers, the captions as
+    SRT or VTT, or all of it in one package. Looks, crops, text and shapes stay in the editor; the package says so."""
+    from app.video.handoff import formats, package
+    from app.video.handoff.timeline import build
+
+    doc = await _load(ctx.workspace_id, project_id) if fmt in HANDOFF_FORMATS else None
+    return await handoff_response(ctx.workspace_id, doc, fmt)
+
+
+async def handoff_response(workspace_id: str, doc: Optional[dict], fmt: str) -> Response:
+    """The file for one hand-off format of a loaded project, or the plain refusal. Used by the member route and the public API."""
+    from app.video.handoff import formats, package
+    from app.video.handoff.timeline import build
+
+    if fmt not in HANDOFF_FORMATS or doc is None:
+        raise HTTPException(status_code=404, detail="That is not a format this project can be sent in.")
+    edit = doc["edit"]
+    tl = build(doc.get("title") or "Untitled video", edit, await _media_map(workspace_id, edl.media_ids(edit)))
+    words = [{"w": w["w"], "s_ms": w["s_ms"], "e_ms": w["e_ms"]} for w in (edit.get("captions") or {}).get("words", [])]
+    if fmt in ("srt", "vtt") and not words:
+        raise HTTPException(status_code=409, detail="This video has no captions yet, so there is no caption file to send.")
+    if not tl.events and fmt != "markers":
+        raise HTTPException(status_code=409, detail="This project has no clips yet, so there is nothing to send.")
+    if fmt == "package":
+        body: bytes | str = package.build_zip(tl, words, " ".join(w["w"] for w in words))
+    else:
+        from app.video.handoff import importer
+
+        body = {"premiere": formats.to_fcp7_xml, "finalcut": formats.to_fcpxml, "edl": formats.to_cmx3600, "markers": formats.to_markers_csv,
+                "otio": importer.to_otio}.get(fmt, lambda t: formats.to_srt(words) if fmt == "srt" else formats.to_vtt(words))(tl)
+    name, mime = HANDOFF_FORMATS[fmt]
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (doc.get("title") or "video"))[:40] or "video"
+    return Response(content=body, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{safe}_{name}"', "Cache-Control": "no-store"})
+
+
+MAX_IMPORT_BYTES = 5 * 1024 * 1024
+
+
+@router.post("/{project_id}/import-timeline")
+@limiter.limit("20/minute")
+async def import_timeline(
+    request: Request, project_id: str, file: UploadFile = File(...), apply: bool = Query(False),
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Read a timeline made in another program (an EDL, Final Cut Pro 7 XML or OpenTimelineIO file) and match its clips to this library by
+    original file name. Without `apply` it only reports what would come in. With it, the project's video clips, audio clips and markers are
+    replaced as one new version the member can go back from; captions, text and shapes stay as they were."""
+    from app.video.handoff import importer
+    from app.video.handoff.timeline import timecode
+
+    doc = await _load(ctx.workspace_id, project_id)
+    data = await file.read(MAX_IMPORT_BYTES + 1)
+    if len(data) > MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail="This file is too large to read as a timeline (the limit is 5 MB).")
+    try:
+        text = data.decode("utf-8-sig", errors="strict")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="This file is not a text timeline. Export an EDL, Final Cut Pro 7 XML or OpenTimelineIO file.")
+    fps = doc["edit"].get("fps") or {"num": 30, "den": 1}
+    try:
+        tl = importer.parse(file.filename or "", text, max(1, int(round(fps["num"] / fps["den"]))))
+    except importer.ImportError_ as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    rows = await media_assets.find({"workspace_id": ctx.workspace_id, "kind": {"$in": ["video", "audio"]}}, {"id": 1, "url": 1}).to_list(length=2000)
+    library = {r["id"]: {"id": r["id"], "url": r.get("url")} for r in rows}
+    matched, missing = importer.match_clips(tl, library)
+    summary = {
+        "title": tl.title, "clips": len(tl.events), "matched": len(matched), "unmatched": missing, "markers": len(tl.markers),
+        "length": timecode(tl.duration_f, tl.timebase), "applied": False,
+    }
+    if tl.timebase != max(1, int(round(fps["num"] / fps["den"]))):
+        summary["note"] = f"This timeline runs at {tl.timebase} frames a second and the project at {round(fps['num'] / fps['den'])}. Times are kept as frame counts."
+    if not apply:
+        return summary
+    parts = importer.to_edit_parts(tl, matched)
+    if not parts["video"] and not parts["audio"]:
+        raise HTTPException(status_code=409, detail="None of the clips in this file match a file in your library by name, so nothing was changed. Upload the originals first.")
+    edit = {**doc["edit"], "video": parts["video"], "audio": parts["audio"], "markers": parts["markers"] or doc["edit"].get("markers", []),
+            "duration_f": max(parts["duration_f"], 1)}
+    try:
+        validated = edl.validate(edit)
+        await _check_media(ctx.workspace_id, validated)
+    except edl.EditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    opened = await _replace_edit(ctx, doc, validated, "import", "Imported a timeline")
+    return {**summary, "applied": True, "version": opened.get("version")}
 
 
 @router.get("/{project_id}/renders")

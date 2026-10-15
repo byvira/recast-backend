@@ -80,6 +80,12 @@ class StartBody(BaseModel):
 async def start(
     request: Request, media_id: str, body: StartBody = StartBody(), ctx: WorkspaceContext = Depends(require("edit_content")),
 ) -> dict[str, Any]:
+    from app.video import governance
+
+    if not await governance.video_enabled(ctx.workspace_id):
+        raise HTTPException(status_code=403, detail=governance.ACCESS_OFF)
+    if not await governance.transcription_allowed(ctx.workspace_id):
+        raise HTTPException(status_code=409, detail=governance.PRIVACY_OFF)
     media = await _media(ctx, media_id)
     duration = _duration(media)
     if duration <= 0:

@@ -12,6 +12,8 @@ from typing import Any, Iterable, Optional
 
 SCHEMA_VERSION = 1
 FITS = ("cover", "contain", "blur")
+#: How a clip arrives over the clip beneath it (the two overlap on the timeline).
+TRANSITIONS = ("none", "dissolve", "slide_left", "slide_right", "slide_up", "slide_down", "wipe_left", "wipe_right", "wipe_up", "wipe_down")
 TRACKS = ("video", "audio", "text", "shapes")
 ANIMATIONS = ("none", "fade", "pop", "slide")
 MAX_SHAPES = 200
@@ -109,6 +111,49 @@ def _crop(c: dict, where: str) -> dict[str, float]:
     return out
 
 
+MAX_FOLLOW = 240
+
+
+def _follow(c: dict, where: str) -> list[dict]:
+    """Where the middle of a clip's crop window sits over time, so it can follow a speaker: points (frame in the clip, x, y), going forward."""
+    raw = c.get("follow") or []
+    _need(isinstance(raw, list) and len(raw) <= MAX_FOLLOW, f"{where}: the follow path can have at most {MAX_FOLLOW} points.")
+    out, last = [], -1
+    for i, p in enumerate(raw):
+        _need(isinstance(p, dict), f"{where}: follow point {i + 1} must be an object.")
+        t = _int(p, "t_f", f"{where} follow point {i + 1}", default=0)
+        _need(t > last, f"{where}: follow points must go forward in time.")
+        last = t
+        out.append({"t_f": t, "x": _num(p, "x", f"{where} follow point {i + 1}", lo=0.0, hi=1.0), "y": _num(p, "y", f"{where} follow point {i + 1}", lo=0.0, hi=1.0)})
+    return out
+
+
+def _box(c: dict, where: str) -> dict[str, float]:
+    """Where a clip sits on the picture: the whole picture, or a box (picture-in-picture, split screen)."""
+    raw = c.get("box") or {}
+    _need(isinstance(raw, dict), f"{where}: the box must be an object.")
+    out = {
+        "x": _num(raw, "x", f"{where} box", lo=0.0, hi=1.0, default=0.0),
+        "y": _num(raw, "y", f"{where} box", lo=0.0, hi=1.0, default=0.0),
+        "w": _num(raw, "w", f"{where} box", lo=0.05, hi=1.0, default=1.0),
+        "h": _num(raw, "h", f"{where} box", lo=0.05, hi=1.0, default=1.0),
+    }
+    _need(out["x"] + out["w"] <= 1.0001 and out["y"] + out["h"] <= 1.0001, f"{where}: the box is outside the picture.")
+    return out
+
+
+def _transition(c: dict, dur_f: int, where: str) -> dict[str, Any]:
+    raw = c.get("transition_in") or {}
+    _need(isinstance(raw, dict), f"{where}: the transition must be an object.")
+    kind = raw.get("kind", "none")
+    _need(kind in TRANSITIONS, f"{where}: a transition must be one of {', '.join(TRANSITIONS)}.")
+    if kind == "none":
+        return {"kind": "none", "dur_f": 0}
+    length = _int(raw, "dur_f", f"{where} transition", lo=1)
+    _need(length <= dur_f, f"{where}: the transition is longer than the clip.")
+    return {"kind": kind, "dur_f": length}
+
+
 def fps_from_float(value: Optional[float]) -> dict[str, int]:
     """A frame rate as an exact fraction. Camera rates such as 29.97 become 30000/1001; anything else is rounded to whole."""
     if not value or value <= 0:
@@ -195,8 +240,9 @@ def validate(raw: Any) -> dict[str, Any]:
             "fade_in_f": _int(c, "fade_in_f", w, default=0), "fade_out_f": _int(c, "fade_out_f", w, default=0),
             "audio": bool(c.get("audio", True)), "gain_db": _num(c, "gain_db", w, lo=-60, hi=24, default=0.0),
             "motion": bool(c.get("motion", False)), "freeze": bool(c.get("freeze", False)),
-            "look": _look(c, w), "crop": _crop(c, w),
+            "look": _look(c, w), "crop": _crop(c, w), "follow": _follow(c, w), "box": _box(c, w), "radius": _num(c, "radius", w, lo=0.0, hi=0.5, default=0.0),
         }
+        item["transition_in"] = _transition(c, item["dur_f"], w)
         _need(item["fade_in_f"] + item["fade_out_f"] <= item["dur_f"], f"{w}: the fades are longer than the clip.")
         video.append(item)
 

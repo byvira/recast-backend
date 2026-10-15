@@ -127,6 +127,9 @@ async def start(
             await _analyses().update_one({"id": doc["id"]}, {"$set": {
                 "status": "failed", "error": "The video could not be read right now. Please try again.", "updated_at": _now()}})
             raise
+        from app.video import activity
+
+        await activity.emit("analysis_done", ctx.workspace_id, ctx.user_id, doc["id"], media_id=media_id)
         return {"data": {"media_id": media_id}, "href": f"/dashboard/pipelines/video?media={media_id}"}
 
     pipeline_runs.start(run, work, interrupt_on_cancel=True)

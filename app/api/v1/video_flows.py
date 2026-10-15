@@ -143,8 +143,18 @@ class RecipeBody(BaseModel):
     steps: list[RecipeStep] = Field(..., min_length=1, max_length=RUN.MAX_STEPS)
 
 
+def _auto(a: Any) -> Any:
+    if not a:
+        return None
+    out = {k: a.get(k) for k in ("enabled", "frequency", "autonomy", "paused", "paused_reason", "publish")}
+    for k in ("next_run_at", "last_run_at"):
+        v = a.get(k)
+        out[k] = v.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z") if v else None
+    return out
+
+
 def _public(r: dict) -> dict:
-    return {"id": r["id"], "name": r["name"], "steps": r["steps"], "runs": r.get("runs", 0), "created_at": r["created_at"].replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")}
+    return {"id": r["id"], "name": r["name"], "steps": r["steps"], "runs": r.get("runs", 0), "automation": _auto(r.get("automation")), "created_at": r["created_at"].replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")}
 
 
 @router.post("/recipes", status_code=201)
@@ -175,6 +185,32 @@ async def delete_recipe(request: Request, recipe_id: str, ctx: WorkspaceContext 
     if not res.deleted_count:
         raise HTTPException(status_code=404, detail="That recipe was not found.")
     return Response(status_code=204)
+
+
+class AutomationBody(BaseModel):
+    enabled: bool
+    frequency: Literal["daily", "weekly"] = "weekly"
+    autonomy: str = "draft_and_wait"
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    publish: Optional[dict[str, Any]] = None
+
+
+@router.put("/recipes/{recipe_id}/automation")
+@limiter.limit("20/minute")
+async def set_recipe_automation(
+    request: Request, recipe_id: str, body: AutomationBody, ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict[str, Any]:
+    """Make a recipe run by itself, daily or weekly. It builds the videos and waits for a person; it never publishes, and a level that
+    would is refused."""
+    from app.video import automation
+
+    try:
+        return await automation.configure(
+            recipe_id, ctx.workspace_id, ctx.user_id, enabled=body.enabled, frequency=body.frequency, autonomy=body.autonomy, inputs=body.inputs,
+            role=ctx.role, publish=body.publish,
+        )
+    except automation.AutomationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 class RecipeRunBody(BaseModel):

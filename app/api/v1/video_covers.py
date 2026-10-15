@@ -5,7 +5,7 @@ measurements, so a different platform or brand colour re-ranks instantly with no
 project: the Image editor opens it.
 """
 import logging
-from datetime import timezone
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -218,6 +218,9 @@ async def make_covers(
                        "words_by_model": by_model})
     if not covers:
         raise HTTPException(status_code=502, detail="The chosen pictures could not be read just now. Please try again.")
+    from app.video import activity
+
+    await activity.emit("cover_ready", ctx.workspace_id, ctx.user_id, f"{media_id}:{platform_id}:{datetime.now(timezone.utc).timestamp()}", media_id=media_id, title=platform_id)
     return {"covers": covers, "platform": platform_id}
 
 

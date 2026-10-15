@@ -258,3 +258,36 @@ async def test_a_delivery_that_fails_a_check_is_never_saved_or_shown(api_client,
     shown = await jobs.get_job(job["workspace_id"], job["id"])
     assert shown["status"] == "failed" and shown["error_code"] == "delivery_mismatch" and shown["media_id"] is None
     assert await media_assets.count_documents({"workspace_id": job["workspace_id"], "kind": "video"}) == 0
+
+
+# ── the owner's kill switch ──────────────────────────────────────────────────────
+
+async def _halt(ws: str, on: bool = True) -> None:
+    await get_db()["workspaces"].update_one({"id": ws}, {"$set": {"generation_halted": on}}, upsert=True)
+
+
+async def test_a_paused_workspace_cannot_queue_a_render_or_a_voice(api_client):
+    ws = f"ws-{uuid4()}"
+    await _halt(ws)
+    try:
+        with pytest.raises(jobs.JobError) as err:
+            await _make(ws)
+        assert err.value.status == 403 and "kill switch" in err.value.message
+        with pytest.raises(jobs.JobError):
+            await jobs.enqueue_speech(workspace_id=ws, user_id="u1", items=[{"id": "a", "text": "Hello"}], language="en")
+    finally:
+        await get_db()["workspaces"].delete_one({"id": ws})
+
+
+async def test_a_render_queued_before_the_pause_is_held_not_lost_and_other_workspaces_carry_on(api_client):
+    paused, other = f"ws-{uuid4()}", f"ws-{uuid4()}"
+    held = await _make(paused)
+    await _halt(paused)
+    try:
+        assert await _claim(api_client) is None                       # only the paused workspace has work
+        mine = await _make(other)
+        assert (await _claim(api_client))["id"] == mine["id"]         # another workspace is served
+        await _halt(paused, False)
+        assert (await _claim(api_client))["id"] == held["id"]         # released: the held render runs
+    finally:
+        await get_db()["workspaces"].delete_one({"id": paused})

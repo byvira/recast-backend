@@ -25,12 +25,10 @@ class RenderFailed(Exception):
     """The render ended without a video. The message is plain and safe to show."""
 
 
-async def render_project_and_wait(
-    *, workspace_id: str, user_id: str, project_id: str, preset: str = "standard", lufs: float = -14.0,
-    reporter: Any = None, max_wait_s: Optional[float] = None, show_in_activity: bool = False,
-) -> dict:
-    """Queue a render of the project's current edit and wait for the finished video. Progress is passed to `reporter` as the
-    worker reports it, so a director running this inside its own run shows one line of progress, not two."""
+async def start_project_render(
+    *, workspace_id: str, user_id: str, project_id: str, preset: str = "standard", lufs: float = -14.0, show_in_activity: bool = False,
+) -> tuple[dict, dict]:
+    """Queue a render of the project's current edit and return (job, project) without waiting. Raises RenderFailed with a plain message."""
     if preset not in PRESETS:
         raise RenderFailed("Preset must be standard, high or small.")
     project = await get_db()["video_projects"].find_one({"id": project_id, "workspace_id": workspace_id, "deleted": {"$ne": True}})
@@ -59,7 +57,18 @@ async def render_project_and_wait(
         raise RenderFailed(str(exc))
     except jobs.JobError as exc:
         raise RenderFailed(exc.message)
+    return job, project
 
+
+async def render_project_and_wait(
+    *, workspace_id: str, user_id: str, project_id: str, preset: str = "standard", lufs: float = -14.0,
+    reporter: Any = None, max_wait_s: Optional[float] = None, show_in_activity: bool = False,
+) -> dict:
+    """Queue a render of the project's current edit and wait for the finished video. Progress is passed to `reporter` as the
+    worker reports it, so a director running this inside its own run shows one line of progress, not two."""
+    job, project = await start_project_render(
+        workspace_id=workspace_id, user_id=user_id, project_id=project_id, preset=preset, lufs=lufs, show_in_activity=show_in_activity,
+    )
     done = await wait_for_job(workspace_id, job["id"], reporter=reporter, max_wait_s=max_wait_s)
     await get_db()["video_projects"].update_one(
         {"id": project_id, "workspace_id": workspace_id},

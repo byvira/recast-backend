@@ -213,7 +213,14 @@ async def process_scheduled_posts() -> None:
     await reap_stuck_publishing()
 
     now = datetime.now(timezone.utc)
-    due = await content_pieces.find(_due_filter(now), {"piece_id": 1}).to_list(length=50)
+    flt = _due_filter(now)
+    # The owner's kill switch holds a workspace's scheduled posts that carry a video. They stay scheduled and go out once it is released.
+    from app.db.mongo import workspaces
+
+    halted = [w["id"] async for w in workspaces.find({"generation_halted": True}, {"id": 1})]
+    if halted:
+        flt = {"$and": [flt, {"$nor": [{"workspace_id": {"$in": halted}, "attachments.asset_type": {"$in": ["project", "video"]}}]}]}
+    due = await content_pieces.find(flt, {"piece_id": 1}).to_list(length=50)
 
     if not due:
         return

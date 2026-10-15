@@ -1,0 +1,172 @@
+{
+  "effects": [
+    {
+      "id": "whoosh_soft",
+      "title": "Soft whoosh",
+      "category": "whoosh",
+      "duration_s": 0.8,
+      "bytes": 13835,
+      "sha256": "47bc7cff4eafa47f002acf86950e553dc45b1145f91c614b463ddb19dcd5a286",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "whoosh_fast",
+      "title": "Fast whoosh",
+      "category": "whoosh",
+      "duration_s": 0.45,
+      "bytes": 8402,
+      "sha256": "3d82fb17579cf301b556dd452a56b68adedec2cf56cd0375f95e4e79929ad07f",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "whoosh_down",
+      "title": "Falling whoosh",
+      "category": "whoosh",
+      "duration_s": 0.7,
+      "bytes": 12163,
+      "sha256": "41d6135290edc202b99ed3a60c7629aa252879f7695090cfc81f5d2141fd34ae",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "swish",
+      "title": "Swish",
+      "category": "whoosh",
+      "duration_s": 0.3,
+      "bytes": 5894,
+      "sha256": "277b4ae20648b9ecbb85c7b569448c0753cd58283358f36f4e5991125161bb0f",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "pop",
+      "title": "Pop",
+      "category": "hit",
+      "duration_s": 0.16,
+      "bytes": 3804,
+      "sha256": "473bdbe359deec8517d252896bd846ed976a61ec10dbaedde99352035abb0894",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "click",
+      "title": "Click",
+      "category": "hit",
+      "duration_s": 0.05,
+      "bytes": 1714,
+      "sha256": "c8699eb6375a6a74dc7b6187858b08b1f3fdff12b08ab6d300d900812762393f",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "tick",
+      "title": "Tick",
+      "category": "hit",
+      "duration_s": 0.04,
+      "bytes": 1714,
+      "sha256": "8651e6d1240b33691195b4f766c14a34175eee22276b9c668ac4e5b0f6047017",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "hit",
+      "title": "Punch",
+      "category": "hit",
+      "duration_s": 0.45,
+      "bytes": 8402,
+      "sha256": "79892800da4a1fe13b112037261a9743992cba9d221ce4215bcace6f39f9b93f",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "boom",
+      "title": "Deep boom",
+      "category": "hit",
+      "duration_s": 1.1,
+      "bytes": 18851,
+      "sha256": "9a6bcef76d79a64b13ee1b506bebabddd4ba4a46ac4fec0cb65ab1aa141f58ce",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "riser",
+      "title": "Riser",
+      "category": "build",
+      "duration_s": 1.6,
+      "bytes": 26792,
+      "sha256": "841c81552443cbd7c447fc10a84d2de97542149408daa11ba638429475a0c702",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "ding",
+      "title": "Ding",
+      "category": "tone",
+      "duration_s": 1.0,
+      "bytes": 17179,
+      "sha256": "88d60acf949a8b6fb158f050ff44225613acab64e26753bc6d21925968bf1ab2",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    },
+    {
+      "id": "sparkle",
+      "title": "Sparkle",
+      "category": "tone",
+      "duration_s": 0.6,
+      "bytes": 10492,
+      "sha256": "9df4c601361e35b4d00944b2b5e2000e030234edc74b84f0988ef820949ff0a9",
+      "licence": {
+        "name": "CC0 1.0 Universal (public domain dedication)",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "author": "Ekavo",
+        "origin": "Synthesised by app/video/sfx/generate.py from tones and noise. No recording or third-party sample is used."
+      }
+    }
+  ]
+}

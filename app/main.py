@@ -383,12 +383,25 @@ from app.api.v1 import ops_video as ops_video_router
 from app.api.v1 import worker as worker_router
 from app.api.v1 import video_media as video_media_router
 app.include_router(video_media_router.router, prefix="/api/v1/video-media", tags=["Video media"])
+from app.api.v1 import video_review as video_review_router
+app.include_router(video_review_router.member_router, prefix="/api/v1/video-review", tags=["Video review"])
+app.include_router(video_review_router.public_router, prefix="/api/v1/video-review-public", tags=["Video review (public)"])
+from app.api.v1 import video_sfx as video_sfx_router
+app.include_router(video_sfx_router.router, prefix="/api/v1/video-sfx", tags=["Video sound effects"])
+from app.api.v1 import video_governance as video_governance_router
+app.include_router(video_governance_router.router, prefix="/api/v1/video-governance", tags=["Video governance"])
+from app.api.v1 import developer as developer_router
+app.include_router(developer_router.router, prefix="/api/v1/developer", tags=["Developer"])
+from app.api.v1 import public_video as public_video_router
+app.include_router(public_video_router.router, prefix="/api/v1/public/video", tags=["Public video API"])
 from app.api.v1 import video_projects as video_projects_router
 from app.api.v1 import video_transcripts as video_transcripts_router
 from app.api.v1 import video_analysis as video_analysis_router
 app.include_router(video_analysis_router.router, prefix="/api/v1/video-analysis", tags=["Video analysis"])
 from app.api.v1 import video_covers as video_covers_router
 app.include_router(video_covers_router.router, prefix="/api/v1/video-covers", tags=["Video covers"])
+from app.api.v1 import video_reframe as video_reframe_router
+app.include_router(video_reframe_router.router, prefix="/api/v1/video-reframe", tags=["Video reframe"])
 from app.api.v1 import video_create as video_create_router
 app.include_router(video_create_router.router, prefix="/api/v1/video-create", tags=["Video create"])
 from app.api.v1 import video_narrate as video_narrate_router
