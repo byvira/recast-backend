@@ -1,0 +1,2 @@
+# Development and test tools; not installed on the server.
+fakeredis>=2.26

@@ -34,14 +34,20 @@ def model_slot(name: str) -> str:
     return str(slots.get(name) or "BALANCED").upper()
 
 
+# Prompts whose answers are lists need more room than the default, or a long recording's answer is cut off mid-way and cannot be read.
+_TOKENS = {"edit_plan": 3600, "moments": 3200, "outline": 3200}
+
+
 def slot_caller(name: str) -> Caller:
     from app.shared.llm import GroqModel, call_llm_structured
 
     tier = model_slot(name)
     model = GroqModel[tier] if tier in GroqModel.__members__ else GroqModel.BALANCED
 
+    budget = _TOKENS.get(name, 2200)
+
     async def call(prompt: str) -> dict[str, Any]:
-        return await call_llm_structured(prompt, model=model, max_tokens=2200)
+        return await call_llm_structured(prompt, model=model, max_tokens=budget)
 
     return call
 

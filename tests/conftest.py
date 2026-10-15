@@ -1,7 +1,8 @@
 """Shared fixtures for the integration test suite.
 
 Runs against a real, isolated MongoDB database (never the dev/prod one) and
-the real Redis instance configured in .env. The test database name is
+an in-memory Redis (or the one configured in .env when
+EKAVO_TEST_REAL_REDIS=1). The test database name is
 derived from MONGODB_URL with a `_test` suffix, dropped before the session
 starts and dropped again once it finishes.
 
@@ -70,6 +71,23 @@ for _name in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
 os.environ["GEMINI_IMAGE_FALLBACK_DAILY_CAP"] = "0"
 
 import httpx  # noqa: E402
+
+# Tests use an in-memory Redis, so they never spend the live Redis plan's request allowance (the free plan has a monthly cap that a
+# full run can use up, and the same cap would then stop real sign-ins). Set EKAVO_TEST_REAL_REDIS=1 to use the instance in .env.
+if os.environ.get("EKAVO_TEST_REAL_REDIS") != "1":
+    try:
+        import types
+
+        import fakeredis.aioredis as _fake_redis
+
+        import app.db.redis as _redis_module
+
+        _redis_module.aioredis = types.SimpleNamespace(
+            Redis=_redis_module.aioredis.Redis,
+            from_url=lambda *args, **kwargs: _fake_redis.FakeRedis(decode_responses=True),
+        )
+    except ImportError:  # the stand-in is a development tool; without it the tests use the configured Redis
+        pass
 
 from app.core.middleware import limiter  # noqa: E402
 from app.db.mongo import create_indexes, get_client  # noqa: E402

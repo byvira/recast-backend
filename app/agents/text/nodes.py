@@ -581,6 +581,18 @@ async def quality_check_node(state: TextAgentState) -> dict:
     }
 
 
+async def _decide(state: TextAgentState, step: str, summary: str, evidence: dict, outcome: str = "ok") -> None:
+    """One line in the shared decision log, in the format the image, audio and video agents write, so Remy and Odette read the same
+    thing for every type. Never raises."""
+    from app.agents.runtime import record_decision
+
+    await record_decision(
+        workspace_id=state.get("workspace_id") or "", user_id=state.get("user_id"), agent="text", step=step, summary=summary,
+        evidence={**evidence, "platform": str(getattr(state.get("current_platform"), "value", state.get("current_platform")))},
+        outcome=outcome,
+    )
+
+
 async def rewrite_node(state: TextAgentState) -> dict:
     """
     Builds specific rewrite feedback from quality_issues.
@@ -597,6 +609,11 @@ async def rewrite_node(state: TextAgentState) -> dict:
         issue for issue in state["quality_issues"]
         if not issue.startswith("Advisory:")
     ]
+
+    await _decide(
+        state, "rewrite", "Rewrote the draft to fix: " + (hard_issues[0] if hard_issues else "the quality check"),
+        {"issues": hard_issues[:5], "retry": state.get("retry_count", 0) + 1},
+    )
 
     # ── Build enforcement context for retry ───────────────────────────────
     banned_words = state["extras"].get("banned_words", [])
@@ -698,6 +715,10 @@ async def flag_node(state: TextAgentState) -> dict:
         await emitter.emit_log(msg.platform_failed(platform=platform_str, reason=reason))
         await emitter.emit_log(f"⚠ {platform_str} flagged for human review — content saved as draft")
 
+    await _decide(
+        state, "flag", "Held for a person to review: the draft did not pass the quality check after a retry",
+        {"issues": [i for i in state["quality_issues"] if not i.startswith("Advisory:")][:5]}, outcome="needs_decision",
+    )
     return {"flagged_for_review": True}
 
 

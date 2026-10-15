@@ -22,8 +22,10 @@ logger = logging.getLogger(__name__)
 AGENT = "audio"
 Goal = Literal["make_episode", "publish_ready", "show_notes", "clean_and_check"]
 GOALS: dict[str, str] = {
-    "make_episode": "Voice a script, then find chapters and soundbites, write show notes, check the sound, then ask for sign-off",
-    "publish_ready": "Clean up if asked, transcribe, find chapters and soundbites, write show notes, check the sound, then ask for sign-off",
+    "make_episode": "Fit the script to a length if asked, voice it, then find chapters and soundbites, write show notes, check the sound, "
+                    "make other languages and an export if asked, then ask for sign-off",
+    "publish_ready": "Clean up if asked, transcribe, find chapters and soundbites, write show notes, check the sound, make other languages "
+                     "and an export if asked, then ask for sign-off",
     "show_notes": "Transcribe if needed, find chapters, write show notes",
     "clean_and_check": "Clean up the recording and check the sound",
 }
@@ -39,6 +41,11 @@ class DirectorSettings(BaseModel):
     outputs: list[Literal["show_notes", "captions", "summary"]] = Field(default_factory=lambda: ["show_notes"])
     language: Optional[str] = Field(default=None, max_length=12)
     soundbites: bool = True
+    # Optional extras. Each one only runs when asked for, and a failed extra never stops the rest.
+    fit_seconds: Optional[int] = Field(default=None, ge=1, le=36000)       # rewrite the script to about this length before voicing it
+    localize: list[str] = Field(default_factory=list, max_length=4)        # full language names, for example "Tamil"
+    clip_suggestions: bool = False
+    export_format: Optional[Literal["mp3", "wav"]] = None
 
 
 class _Reporter:
@@ -130,8 +137,50 @@ async def _tool_assemble(*, state: dict, plan: dict) -> Any:
     return {"assemblies": len(getattr(out, "assemblies", []) or [])}
 
 
+async def _tool_fit_script(*, state: dict, request: dict, target_seconds: int) -> Any:
+    """Rewrite the script to about the chosen length. The narration request is changed in place, so the next step voices the fitted
+    script; when the script cannot be fitted the original is kept."""
+    from app.core.rbac import assert_permission
+
+    assert_permission(state["ctx"].member, "create_content")
+    script = (request.get("script") or "").strip()
+    if not script:
+        return {"status": "no_script"}
+    audio = _audio()
+    out = await _inner("fit_script")(
+        request=None, body=audio.FitScriptRequest(script=script, target_seconds=target_seconds, words_per_minute=request.get("words_per_minute")),
+        ctx=state["ctx"],
+    )
+    if out.get("script") and out.get("status") in ("fitted", "ok", "adjusted", "trimmed", "expanded"):
+        request["script"] = out["script"]
+    return {"status": out.get("status"), "estimated_seconds": out.get("estimated_seconds")}
+
+
+async def _tool_localize(*, state: dict, language: str) -> Any:
+    out = await _inner("localize_audio_asset")(
+        request=None, audio_asset_id=state["asset_id"], body=_audio().LocalizeAudioAssetRequest(target_language=language), ctx=state["ctx"],
+    )
+    return {"asset_id": getattr(out, "id", None), "language": language}
+
+
+async def _tool_clip_suggestions(*, state: dict) -> Any:
+    out = await _inner("suggest_clips_for_audio_asset")(request=None, audio_asset_id=state["asset_id"], ctx=state["ctx"])
+    return {"suggestions": len(getattr(out, "suggestions", []) or [])}
+
+
+async def _tool_export(*, state: dict, export_format: str) -> Any:
+    out = await _inner("export_audio_asset")(
+        request=None, audio_asset_id=state["asset_id"], body=_audio().ExportAudioAssetRequest(export_format=export_format), ctx=state["ctx"],
+    )
+    return {"media_id": getattr(out, "id", None), "format": export_format}
+
+
 REGISTRY = ToolRegistry(AGENT)
 for _spec, _fn in (
+    (ToolSpec("fit_script", "Rewrite the script to run about the chosen length", cost="llm", timeout_s=180), _tool_fit_script),
+    (ToolSpec("localize", "Translate the recording into another language and voice it", cost="provider", timeout_s=900), _tool_localize),
+    (ToolSpec("clip_suggestions", "Suggest short clips to review", cost="llm", timeout_s=180), _tool_clip_suggestions),
+    (ToolSpec("export", "Export the recording as mp3 or wav", cost="free", timeout_s=300), _tool_export),
     (ToolSpec("narrate", "Voice a script into a new recording", cost="provider", timeout_s=900), _tool_narrate),
     (ToolSpec("cleanup", "Clean up the recording as a new version", cost="free", timeout_s=900), _tool_cleanup),
     (ToolSpec("transcribe", "Write out what was said with word timing", cost="llm", timeout_s=900), _tool_transcribe),
@@ -176,7 +225,11 @@ def build_plan(settings: DirectorSettings) -> list[Step]:
     """The steps for a goal, in order. Rules, not a model: the same recording and goal always give the same plan."""
     steps: list[Step] = []
     if settings.goal == "make_episode":
-        steps.append(Step("narrate", "Voicing the script", {"request": settings.narration or {}}))
+        narration = settings.narration if settings.narration is not None else {}
+        if settings.fit_seconds and narration.get("script"):
+            steps.append(Step("fit_script", "Fitting the script to the length", {"request": narration, "target_seconds": settings.fit_seconds},
+                              required=False))
+        steps.append(Step("narrate", "Voicing the script", {"request": narration}))
     if settings.goal in ("make_episode", "publish_ready", "clean_and_check") and settings.cleanup:
         steps.append(Step("cleanup", "Cleaning up the recording", {"settings": settings.cleanup}))
     if settings.goal in ("make_episode", "publish_ready", "show_notes"):
@@ -192,6 +245,13 @@ def build_plan(settings: DirectorSettings) -> list[Step]:
         steps.append(Step("sound_checks", "Checking the sound", required=False))
     if settings.goal in ("make_episode", "publish_ready") and settings.assemble:
         steps.append(Step("assemble", "Building the episode", {"plan": settings.assemble}, required=False))
+    if settings.goal in ("make_episode", "publish_ready"):
+        for language in settings.localize:
+            steps.append(Step("localize", f"Making the {language} version", {"language": language}, required=False))
+        if settings.clip_suggestions:
+            steps.append(Step("clip_suggestions", "Suggesting short clips", required=False, skip_if=_no_transcript))
+        if settings.export_format:
+            steps.append(Step("export", f"Exporting as {settings.export_format}", {"export_format": settings.export_format}, required=False))
     return steps
 
 
@@ -216,7 +276,8 @@ async def run_director(ctx: Any, payload: Any, reporter: Any) -> dict:
         await reporter.step(label)
 
     executor = PlanExecutor(
-        REGISTRY, workspace_id=ctx.workspace_id, user_id=ctx.user_id, budget=Budget(llm_calls=10, provider_calls=2, worker_jobs=0),
+        REGISTRY, workspace_id=ctx.workspace_id, user_id=ctx.user_id, budget=Budget(llm_calls=10 + (2 if settings.fit_seconds else 0) + (1 if settings.clip_suggestions else 0),
+                      provider_calls=2 + len(settings.localize), worker_jobs=0),
         before_step=before, subject={"audio_asset_id": payload.audio_asset_id, "goal": settings.goal},
     )
     outcomes: list[Outcome] = await executor.run(steps, state)

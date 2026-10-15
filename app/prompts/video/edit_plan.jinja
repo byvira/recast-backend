@@ -9,7 +9,7 @@ You may only propose these edits:
 - "zoom": a slow push in on a key line, at most 8 seconds.
 - "emphasis": make one key phrase stand out in the captions.
 
-Rules: every edit has "kind", "start_ms", "end_ms" and a short "reason". Times must be inside the video and come from the transcript's own times or the listed silences. Do not cut mid-sentence. Prefer fewer, clearly justified edits.
+Rules: every edit has "kind", "start_ms", "end_ms" and a short "reason". Times must be inside the video and come from the transcript's own times or the listed silences. Do not cut mid-sentence. Prefer fewer, clearly justified edits: give at most 12 edits in all, and keep each reason under 12 words.
 
 Return only JSON: {"edits": [{"kind": "tighten_pause", "start_ms": 0, "end_ms": 0, "reason": "..."}]}
 
