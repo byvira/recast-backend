@@ -212,6 +212,21 @@ def _register_audio() -> None:
         result_href=lambda out: f"/dashboard/pipelines/video?project={out['project_id']}" if out.get("project_id") else None,
     ))
 
+    # The video director: a goal for footage, a recording, a post or a carousel, run as a validated plan (see app.agents.video.director).
+    from app.agents.video.director import DirectorSettings as VideoDirectorSettings, run_director as run_video_director
+
+    video_director_payload = create_model("VideoDirectorPayload", settings=(VideoDirectorSettings, ...))
+    register(JobAction(
+        name="video.director", permission="create_content", payload_model=video_director_payload, run=run_video_director,
+        title=lambda p: {"video_to_clips": "Make clips from a video", "recording_to_shorts": "Make shorts from a recording",
+                         "post_to_video": "Make a narrated video from a post", "carousel_to_slideshow": "Make a slideshow from a carousel",
+                         }.get(p.settings.flow, "Make videos"),
+        steps=lambda p: 2 + int(p.settings.voice_check) + int(p.settings.render), kind="video", restartable=False, retries=0, gated=True,
+        description="Check the source, build editable projects, check their titles against the voice and render them.",
+        shape=lambda out: {"flow": out["flow"], "ok": out["ok"], "projects": [p["project_id"] for p in out["projects"]]},
+        result_href=lambda out: f"/dashboard/pipelines/video?project={out['projects'][0]['project_id']}" if out.get("projects") else None,
+    ))
+
 
 class PublishPostPayload(BaseModel):
     piece_id: str = Field(min_length=1, max_length=64)
