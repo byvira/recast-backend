@@ -199,6 +199,19 @@ def _register_audio() -> None:
         result_href=lambda out: f"/dashboard/pipelines/audio?asset={out['asset_id']}" if out.get("asset_id") else None,
     ))
 
+    # A topic made into a narrated video across text, audio, image and video (see app.agents.chain.topic_to_video).
+    from app.agents.chain.topic_to_video import ChainSettings, run_chain
+
+    chain_payload = create_model("VideoChainPayload", settings=(ChainSettings, ...))
+    register(JobAction(
+        name="video.chain", permission="create_content", payload_model=chain_payload, run=run_chain,
+        title=lambda p: f"Video from a topic: {run_label(p.settings.topic)}", steps=lambda p: 3 + int(p.settings.cover) + int(p.settings.render),
+        kind="video", restartable=False, retries=0, gated=True,
+        description="Write a post for a topic, voice it, make a cover picture, build a video from them and render it.",
+        shape=lambda out: {"chain_id": out["chain_id"], "ok": out["ok"], "project_id": out.get("project_id"), "video_media_id": out.get("video_media_id")},
+        result_href=lambda out: f"/dashboard/pipelines/video?project={out['project_id']}" if out.get("project_id") else None,
+    ))
+
 
 class PublishPostPayload(BaseModel):
     piece_id: str = Field(min_length=1, max_length=64)
