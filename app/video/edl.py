@@ -12,6 +12,9 @@ from typing import Any, Iterable, Optional
 
 SCHEMA_VERSION = 1
 FITS = ("cover", "contain", "blur")
+TRACKS = ("video", "audio", "text")
+DEFAULT_LOOK = {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
+DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 ROLES = ("voice", "music", "effect")
 MAX_CLIPS = 5000
 MAX_WORDS = 400_000
@@ -56,6 +59,29 @@ def _color(d: dict, key: str, where: str, default: str) -> str:
     value = d.get(key, default)
     _need(isinstance(value, str) and bool(_COLOR.match(value)), f"{where}: {key} must look like #RRGGBB.")
     return value
+
+
+def _look(c: dict, where: str) -> dict[str, float]:
+    raw = c.get("look") or {}
+    _need(isinstance(raw, dict), f"{where}: the look must be an object.")
+    return {
+        "brightness": _num(raw, "brightness", f"{where} look", lo=-1.0, hi=1.0, default=0.0),
+        "contrast": _num(raw, "contrast", f"{where} look", lo=0.0, hi=2.0, default=1.0),
+        "saturation": _num(raw, "saturation", f"{where} look", lo=0.0, hi=3.0, default=1.0),
+    }
+
+
+def _crop(c: dict, where: str) -> dict[str, float]:
+    raw = c.get("crop") or {}
+    _need(isinstance(raw, dict), f"{where}: the crop must be an object.")
+    out = {
+        "x": _num(raw, "x", f"{where} crop", lo=0.0, hi=1.0, default=0.0),
+        "y": _num(raw, "y", f"{where} crop", lo=0.0, hi=1.0, default=0.0),
+        "w": _num(raw, "w", f"{where} crop", lo=0.05, hi=1.0, default=1.0),
+        "h": _num(raw, "h", f"{where} crop", lo=0.05, hi=1.0, default=1.0),
+    }
+    _need(out["x"] + out["w"] <= 1.0001 and out["y"] + out["h"] <= 1.0001, f"{where}: the crop is outside the picture.")
+    return out
 
 
 def fps_from_float(value: Optional[float]) -> dict[str, int]:
@@ -135,7 +161,8 @@ def validate(raw: Any) -> dict[str, Any]:
             "src_in_f": _int(c, "src_in_f", w, default=0), "speed": _num(c, "speed", w, lo=0.5, hi=2.0, default=1.0), "fit": fit,
             "fade_in_f": _int(c, "fade_in_f", w, default=0), "fade_out_f": _int(c, "fade_out_f", w, default=0),
             "audio": bool(c.get("audio", True)), "gain_db": _num(c, "gain_db", w, lo=-60, hi=24, default=0.0),
-            "motion": bool(c.get("motion", False)),
+            "motion": bool(c.get("motion", False)), "freeze": bool(c.get("freeze", False)),
+            "look": _look(c, w), "crop": _crop(c, w),
         }
         _need(item["fade_in_f"] + item["fade_out_f"] <= item["dur_f"], f"{w}: the fades are longer than the clip.")
         video.append(item)
@@ -192,10 +219,18 @@ def validate(raw: Any) -> dict[str, Any]:
         markers.append({"id": uid(m.get("id"), "marker"), "at_f": _int(m, "at_f", "Marker"), "label": label})
     _need(len(markers) <= MAX_MARKERS, f"A project can hold at most {MAX_MARKERS} markers.")
 
+    tracks_raw = raw.get("tracks") or {}
+    _need(isinstance(tracks_raw, dict), "Tracks must be an object.")
+    tracks: dict[str, dict[str, bool]] = {}
+    for name in TRACKS:
+        state = tracks_raw.get(name) or {}
+        _need(isinstance(state, dict), f"Track {name} must be an object.")
+        tracks[name] = {"locked": bool(state.get("locked", False)), "hidden": bool(state.get("hidden", False))}
+
     out = {
         "schema_version": SCHEMA_VERSION, "fps": fps, "width": width, "height": height,
         "background": _color(raw, "background", "Canvas", "#000000"),
-        "video": video, "audio": audio, "text": text, "captions": captions, "markers": markers,
+        "video": video, "audio": audio, "text": text, "captions": captions, "markers": markers, "tracks": tracks,
     }
     given = _int(raw, "duration_f", "Project", default=0)
     out["duration_f"] = max(given, end_frame(out))
@@ -205,6 +240,9 @@ def validate(raw: Any) -> dict[str, Any]:
 def to_job(edit: dict[str, Any], media: dict[str, dict[str, Any]], output: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """The worker's job for an edit list. `media` maps each media_id to {"url", "kind"}; clips become input keys m0, m1...
     Raises EditError when a clip names an item that was not resolved, or when there is nothing to draw."""
+    # a hidden track is not drawn, and not heard
+    hidden = {name for name, state in (edit.get("tracks") or {}).items() if state.get("hidden")}
+    edit = {**edit, **{name: [] for name in hidden if name in TRACKS}}
     _need(edit["video"] or edit["audio"], "There is nothing in this project to render yet.")
     keys: dict[str, str] = {}
     inputs: dict[str, dict[str, Any]] = {}

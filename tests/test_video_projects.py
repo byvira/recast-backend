@@ -315,3 +315,57 @@ async def test_an_ai_clip_marks_the_render_and_the_job_carries_it():
     assert saved["origin"]["origin"] == "mixed" and saved["origin"]["contains_ai"] is True
     job = await _call(api.render_project, None, proj["id"], api.RenderBody(), ctx)
     assert job["origin"] == {"origin": "mixed", "contains_ai": True, "contains_stock": False}
+
+
+# ── clip properties: freeze, looks, crop, track lock and hide ─────────────────────────────────────────────────────────────
+
+def test_a_clip_gets_default_looks_crop_and_freeze_and_validating_again_changes_nothing():
+    out = edl.validate(_edit())
+    clip = out["video"][0]
+    assert clip["freeze"] is False
+    assert clip["look"] == {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
+    assert clip["crop"] == {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+    assert out["tracks"] == {name: {"locked": False, "hidden": False} for name in ("video", "audio", "text")}
+    assert edl.validate(out) == out
+
+
+def test_looks_and_crop_are_kept_and_checked():
+    e = _edit()
+    e["video"][0].update(freeze=True, look={"brightness": 0.2, "saturation": 0.0}, crop={"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.5})
+    clip = edl.validate(e)["video"][0]
+    assert clip["freeze"] is True and clip["look"]["brightness"] == 0.2 and clip["look"]["contrast"] == 1.0
+    assert clip["crop"] == {"x": 0.25, "y": 0.1, "w": 0.5, "h": 0.5}
+    for bad, words in (
+        ({"look": {"brightness": 2}}, "brightness"),
+        ({"look": {"contrast": -1}}, "contrast"),
+        ({"look": {"saturation": 9}}, "saturation"),
+        ({"crop": {"x": 0.8, "w": 0.5}}, "outside the picture"),
+        ({"crop": {"w": 0.0}}, "between"),
+        ({"look": "bright"}, "object"),
+    ):
+        e = _edit()
+        e["video"][0].update(bad)
+        with pytest.raises(edl.EditError, match=words):
+            edl.validate(e)
+
+
+def test_a_hidden_track_is_not_rendered_and_a_locked_one_still_is():
+    e = _edit()
+    e["audio"] = [{"id": "a1", "media_id": "m2", "at_f": 0, "dur_f": 300, "role": "music"}]
+    e["text"] = [{"id": "t1", "text": "Hello", "at_f": 0, "dur_f": 60}]
+    e["tracks"] = {"audio": {"hidden": True}, "text": {"locked": True}}
+    clean = edl.validate(e)
+    assert clean["tracks"]["audio"] == {"locked": False, "hidden": True} and clean["tracks"]["text"] == {"locked": True, "hidden": False}
+    media = {"m1": {"url": "https://x/v.mp4", "kind": "video"}, "m2": {"url": "https://x/a.mp3", "kind": "audio"}}
+    job = edl.to_job(clean, media)
+    assert job["edit"]["audio"] == []                      # hidden: not heard
+    assert len(job["edit"]["text"]) == 1                   # locked only stops editing; it still shows
+    assert "m1" in {c["src"] for c in job["edit"]["video"]} or job["edit"]["video"][0]["src"].startswith("m")
+    assert job["edit"]["video"][0]["freeze"] is False and job["edit"]["video"][0]["look"]["contrast"] == 1.0
+
+
+def test_everything_hidden_leaves_nothing_to_render_and_says_so():
+    e = _edit()
+    e["tracks"] = {"video": {"hidden": True}}
+    with pytest.raises(edl.EditError, match="nothing in this project"):
+        edl.to_job(edl.validate(e), {"m1": {"url": "https://x/v.mp4", "kind": "video"}})
