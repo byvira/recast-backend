@@ -467,3 +467,18 @@ async def test_only_a_library_picture_can_go_over_the_video():
     with pytest.raises(HTTPException) as other:
         await _call(api.save_project, None, proj["id"], api.SaveBody(edit=edit, base_version=2), ctx)
     assert other.value.status_code == 400
+
+
+async def test_a_project_names_who_speaks_and_when_each_person_is_first_heard():
+    ctx = _ctx()
+    mid = await _media(ctx.workspace_id)
+    tid = f"tr-{uuid4()}"
+    await get_db()["video_transcripts"].insert_one({"id": tid, "workspace_id": ctx.workspace_id, "media_id": mid, "status": "done"})
+    await get_db()["video_transcript_pages"].insert_one({"transcript_id": tid, "page": 0, "words": [
+        {"w": "Hello", "s_ms": 800, "e_ms": 1000, "sp": "0"}, {"w": "Hi", "s_ms": 4200, "e_ms": 4400, "sp": "1"},
+        {"w": "again", "s_ms": 5000, "e_ms": 5200, "sp": "0"}]})
+    out = await _call(api.create_project, None, api.CreateBody(source="video", media_id=mid), ctx)
+    assert out["speakers"] == [{"label": "Speaker 1", "first_ms": 800}, {"label": "Speaker 2", "first_ms": 4200}]
+    other = await _media(ctx.workspace_id)
+    plain = await _call(api.create_project, None, api.CreateBody(source="video", media_id=other), ctx)
+    assert plain["speakers"] == []                                                            # no transcript, no names

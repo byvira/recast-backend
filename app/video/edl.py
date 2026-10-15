@@ -15,6 +15,8 @@ FITS = ("cover", "contain", "blur")
 TRACKS = ("video", "audio", "text", "shapes")
 ANIMATIONS = ("none", "fade", "pop", "slide")
 MAX_SHAPES = 200
+#: The families a caption or text can be set in. The worker bundles the same files (scripts.CHOOSABLE_FAMILIES).
+FONT_KEYS = ("inter", "lora", "open sans", "oswald", "playfair display", "poppins", "roboto", "work sans")
 MAX_BLEEPS = 500
 DEFAULT_LOOK = {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
 DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
@@ -62,6 +64,12 @@ def _color(d: dict, key: str, where: str, default: str) -> str:
     value = d.get(key, default)
     _need(isinstance(value, str) and bool(_COLOR.match(value)), f"{where}: {key} must look like #RRGGBB.")
     return value
+
+
+def _font_key(c: dict, where: str) -> str:
+    value = c.get("font", "") or ""
+    _need(isinstance(value, str) and (value == "" or value.lower() in FONT_KEYS), f"{where}: font must be one of {', '.join(FONT_KEYS)}.")
+    return value.lower()
 
 
 def _anim(c: dict, key: str, where: str) -> str:
@@ -204,7 +212,7 @@ def validate(raw: Any) -> dict[str, Any]:
             "id": uid(c.get("id"), "text"), "text": body, "at_f": _int(c, "at_f", w), "dur_f": _int(c, "dur_f", w, lo=1),
             "x": _num(c, "x", w, lo=0, hi=1, default=0.5), "y": _num(c, "y", w, lo=0, hi=1, default=0.5),
             "size": _int(c, "size", w, lo=8, hi=400, default=64), "color": _color(c, "color", w, "#FFFFFF"), "bold": bool(c.get("bold", True)),
-            "anim_in": _anim(c, "anim_in", w), "anim_out": _anim(c, "anim_out", w),
+            "anim_in": _anim(c, "anim_in", w), "anim_out": _anim(c, "anim_out", w), "font": _font_key(c, w),
         })
 
     cap_raw = raw.get("captions") or {}
@@ -229,6 +237,7 @@ def validate(raw: Any) -> dict[str, Any]:
         "y": None if cy is None else _num(cap_raw, "y", "Captions", lo=0.02, hi=0.98),
         "per_line": _int(cap_raw, "per_line", "Captions", lo=0, hi=10, default=0),
         "upper": bool(cap_raw.get("upper", False)),
+        "font": _font_key(cap_raw, "Captions"),
     }
 
     markers: list[dict] = []
@@ -251,6 +260,7 @@ def validate(raw: Any) -> dict[str, Any]:
             "x": _num(s, "x", w, lo=0, hi=1, default=0.0), "y": _num(s, "y", w, lo=0, hi=1, default=0.0),
             "w": _num(s, "w", w, lo=0.01, hi=1, default=0.5), "h": _num(s, "h", w, lo=0.01, hi=1, default=0.1),
             "color": _color(s, "color", w, "#000000"), "opacity": _num(s, "opacity", w, lo=0.0, hi=1.0, default=0.6),
+            "radius": _num(s, "radius", w, lo=0.0, hi=0.5, default=0.0),
         }
         picture = s.get("media_id")
         if picture is not None:

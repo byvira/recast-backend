@@ -372,6 +372,24 @@ async def words_page(transcript_id: str, page: int) -> list[dict]:
     return (row or {}).get("words", [])
 
 
+async def speaker_starts(workspace_id: str, media_id: str, *, max_pages: int = 60) -> list[dict]:
+    """Who speaks in a recording and when each person is first heard: [{"label": "Speaker 1", "first_ms": 1200}], in the order they
+    first speak. Empty when the recording has no finished transcript or the speakers were not told apart."""
+    doc = await _transcripts().find_one({"workspace_id": workspace_id, "media_id": media_id, "status": {"$in": ["done", "partial"]}})
+    if not doc:
+        return []
+    first: dict[str, int] = {}
+    async for row in _pages().find({"transcript_id": doc["id"]}).sort("page", 1).limit(max_pages):
+        for w in row.get("words", []):
+            sp = w.get("sp")
+            if sp is not None and str(sp) not in first:
+                first[str(sp)] = int(w["s_ms"])
+        if len(first) >= 12:
+            break
+    ordered = sorted(first.items(), key=lambda kv: kv[1])
+    return [{"label": f"Speaker {int(k) + 1}" if k.isdigit() else k, "first_ms": ms} for k, ms in ordered]
+
+
 async def all_words(transcript_id: str, limit: int = 400_000) -> list[dict]:
     out: list[dict] = []
     async for row in _pages().find({"transcript_id": transcript_id}).sort("page", 1):

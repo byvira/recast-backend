@@ -111,7 +111,18 @@ async def _load(workspace_id: str, project_id: str) -> dict:
 async def _open(doc: dict) -> dict:
     media = await _media_map(doc["workspace_id"], edl.media_ids(doc["edit"]))
     origin = summarise(m["origin"] for m in media.values())
-    return {**_summary(doc), "edit": doc["edit"], "media": media, "origin": {**origin, "label": LABELS.get(origin["origin"], "")}}
+    # who speaks in the first video of the project, so a name card can be placed where each person first appears
+    speakers: list[dict] = []
+    first_video = next((c["media_id"] for c in doc["edit"].get("video", []) if (media.get(c["media_id"]) or {}).get("kind") == "video"), None)
+    if first_video:
+        try:
+            from app.video import transcribe
+
+            speakers = await transcribe.speaker_starts(doc["workspace_id"], first_video)
+        except Exception:  # noqa: BLE001 - the names are a convenience; the project opens without them
+            speakers = []
+    return {**_summary(doc), "edit": doc["edit"], "media": media, "origin": {**origin, "label": LABELS.get(origin["origin"], "")},
+            "speakers": speakers}
 
 
 def _check(edit_raw: Any) -> dict:
