@@ -126,6 +126,15 @@ async def generate_campaign_batch(
                 raise  # a cancel stops the run here; the day's text is already saved
             except Exception as e:  # noqa: BLE001
                 logger.error("Campaign %s day %d media failed: %s", campaign["id"], day_index + 1, e)
+        if piece_ids and (campaign.get("source_ref") or {}).get("type") == "video":
+            try:
+                await campaign_media.attach_source_cut(
+                    campaign, piece_ids, day_index, days, workspace_id=workspace_id, user_id=user_id,
+                )
+            except pipeline_runs.RunCancelled:
+                raise
+            except Exception as e:  # noqa: BLE001 - the day's text stays; the cut can be made again
+                logger.error("Campaign %s day %d video cut failed: %s", campaign["id"], day_index + 1, e)
         # Autonomous run — attributed to the campaign scheduler in the
         # Activity Log, with the member who owns the campaign as the subject.
         await emit_run_completed(

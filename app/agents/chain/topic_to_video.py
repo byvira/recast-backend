@@ -95,43 +95,56 @@ async def _seconds_of(workspace_id: str, media_id: Optional[str]) -> float:
     return float((row or {}).get("duration_s") or 0.0)
 
 
-async def _assemble(*, state: dict, settings: dict) -> Any:
-    """The edit list: the cover (or the brand colour) held for the length of the narration, the voice on the audio track, and the
-    words as captions. Made into a project the member can open and change."""
+async def build_narrated_project(
+    ctx: Any, *, title: str, text: str, voice_media_id: str, cover_media_id: Optional[str], brand_id: Optional[str], size: str,
+    created_from: dict, parents: list, reporter: Any = None,
+) -> tuple[str, float]:
+    """An editable project from a narration: the cover (or the brand colour) held for the length of the voice, the voice on the audio
+    track, and the words as captions. Used by the topic-to-video chain and by campaign video. Returns (project id, seconds)."""
     from app.video import edl
     from app.video.flows import registry as R
     from app.video.flows import runner
     from app.video.narrate import plan as P
 
-    ctx = state["ctx"]
-    seconds = await _seconds_of(ctx.workspace_id, state.get("voice_media_id"))
+    seconds = await _seconds_of(ctx.workspace_id, voice_media_id)
     if seconds <= 0:
         raise RuntimeError("The narration has no length, so a video cannot be built from it.")
-    env = R.Env(workspace_id=ctx.workspace_id, user_id=ctx.user_id, reporter=state.get("reporter"))
-    brand = await R._brand(env, settings["brand_id"])
+    env = R.Env(workspace_id=ctx.workspace_id, user_id=ctx.user_id, reporter=reporter)
+    brand = await R._brand(env, brand_id)
     accent, background = R._colors(brand)
     fps = {"num": 30, "den": 1}
     dur = max(1, edl.seconds_to_frames(seconds, fps))
-    edit = edl.blank(settings["size"], fps)
+    edit = edl.blank(size, fps)
     edit["background"] = background
-    cover = state.get("cover_media_id")
-    edit["video"] = [{"id": "c1", "media_id": cover, "at_f": 0, "dur_f": dur, "src_in_f": 0, "speed": 1.0, "fit": "cover", "fade_in_f": 0,
-                      "fade_out_f": 0, "audio": False, "gain_db": 0.0, "motion": True}] if cover else []
-    edit["audio"] = [{"id": "v1", "media_id": state["voice_media_id"], "at_f": 0, "dur_f": dur, "src_in_f": 0, "speed": 1.0, "gain_db": 0.0,
+    edit["video"] = [{"id": "c1", "media_id": cover_media_id, "at_f": 0, "dur_f": dur, "src_in_f": 0, "speed": 1.0, "fit": "cover", "fade_in_f": 0,
+                      "fade_out_f": 0, "audio": False, "gain_db": 0.0, "motion": True}] if cover_media_id else []
+    edit["audio"] = [{"id": "v1", "media_id": voice_media_id, "at_f": 0, "dur_f": dur, "src_in_f": 0, "speed": 1.0, "gain_db": 0.0,
                       "role": "voice", "fade_in_f": 0, "fade_out_f": 0, "duck": False}]
-    words = P.caption_words(state["text"], 0, int(seconds * 1000))
+    words = P.caption_words(text, 0, int(seconds * 1000))
     edit["captions"] = {"enabled": bool(words), "accent": accent, "words": words}
     edit["duration_f"] = dur
     edit = edl.validate(edit)
-    parents = [lineage.ref("piece", state["piece_id"]), lineage.ref("audio", state["audio_id"]), lineage.ref("image", cover)]
     spec = {
-        "title": settings["topic"][:80], "edit": edit, "notes": [] if cover else ["No cover picture was made, so the brand colour is shown."],
-        "created_from": {"kind": "chain", "chain": CHAIN, "chain_id": state["chain_id"], "derived_from": [p for p in parents if p]},
+        "title": title[:80], "edit": edit, "notes": [] if cover_media_id else ["No cover picture was made, so the brand colour is shown."],
+        "created_from": {**created_from, "derived_from": [p for p in parents if p]},
     }
     made = await runner.create_projects(env, [spec])
-    state["project_id"] = made[0]["project_id"]
-    await lineage.link("project", state["project_id"], ctx.workspace_id, parents)
-    return {"project_id": state["project_id"], "seconds": round(seconds, 1)}
+    project_id = made[0]["project_id"]
+    await lineage.link("project", project_id, ctx.workspace_id, parents)
+    return project_id, seconds
+
+
+async def _assemble(*, state: dict, settings: dict) -> Any:
+    """The chain's own step: the project from the narration and the cover this run made."""
+    cover = state.get("cover_media_id")
+    parents = [lineage.ref("piece", state["piece_id"]), lineage.ref("audio", state["audio_id"]), lineage.ref("image", cover)]
+    project_id, seconds = await build_narrated_project(
+        state["ctx"], title=settings["topic"], text=state["text"], voice_media_id=state["voice_media_id"], cover_media_id=cover,
+        brand_id=settings["brand_id"], size=settings["size"], parents=parents, reporter=state.get("reporter"),
+        created_from={"kind": "chain", "chain": CHAIN, "chain_id": state["chain_id"]},
+    )
+    state["project_id"] = project_id
+    return {"project_id": project_id, "seconds": round(seconds, 1)}
 
 
 async def _render(*, state: dict, settings: dict) -> Any:

@@ -23,10 +23,10 @@ def test_kinds_are_cleaned_and_unknown_kinds_rejected():
         CampaignMediaPlan(enabled=True, kinds=["hologram"])
 
 
-def test_video_is_kept_in_the_plan_but_not_generated():
+def test_video_is_part_of_the_plan_and_is_generated():
     plan = CampaignMediaPlan(enabled=True, kinds=["video", "image"]).model_dump()
-    assert media.wanted_kinds(plan) == ["image"]
-    assert _content_types(plan) == ["text", "image"]
+    assert media.wanted_kinds(plan) == ["image", "video"]
+    assert _content_types(plan) == ["text", "image", "video"]
     assert plan["video"]["duration_seconds"] == 30
 
 
@@ -42,5 +42,5 @@ def test_type_options_are_validated():
 
 def test_estimate_counts_what_a_run_will_make():
     plan = CampaignMediaPlan(enabled=True, kinds=["image", "audio"], count_per_post=3).model_dump()
-    assert media.estimate(plan, 7) == {"images": 21, "audio": 7}
-    assert media.estimate(CampaignMediaPlan().model_dump(), 7) == {"images": 0, "audio": 0}
+    assert media.estimate(plan, 7) == {"images": 21, "audio": 7, "videos": 0}
+    assert media.estimate(CampaignMediaPlan().model_dump(), 7) == {"images": 0, "audio": 0, "videos": 0}

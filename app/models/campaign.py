@@ -42,6 +42,8 @@ class CampaignSourceType(str, Enum):
     YOUTUBE = "youtube"
     AUDIO_UPLOAD = "audio_upload"
     PODCAST_RSS = "podcast_rss"
+    # A video already in the library: its transcript is the topic and each day gets its own part of it, cut and attached to the posts.
+    VIDEO_UPLOAD = "video_upload"
 
 
 # A recording (AUDIO_UPLOAD) is a source: its topic_cluster is the id of a recording in the workspace. A YouTube or podcast link

@@ -340,6 +340,10 @@ async def save_project(
             "current_version": (current or {}).get("version"),
         })
     await _write_version(updated, "autosave" if body.autosave else "save", "Autosave" if body.autosave else "Saved", ctx.user_id)
+    if not body.autosave:
+        from app.video import activity
+
+        await activity.version_saved(ctx.workspace_id, ctx.user_id, project_id, int(updated["version"]))
     return await _open(updated)
 
 
@@ -376,14 +380,22 @@ async def restore_version(
     old = await _versions().find_one({"project_id": project_id, "workspace_id": ctx.workspace_id, "version": version})
     if not old:
         raise HTTPException(status_code=404, detail="That version was not found.")
-    return await _replace_edit(ctx, doc, edl.validate(old["edit"]), "restore", "Restored")
+    opened = await _replace_edit(ctx, doc, edl.validate(old["edit"]), "restore", "Restored")
+    from app.video import activity
+
+    await activity.version_restored(ctx.workspace_id, ctx.user_id, project_id, version, int(opened.get("version") or version))
+    return opened
 
 
 @router.post("/{project_id}/reset")
 @limiter.limit("30/minute")
 async def reset_project(request: Request, project_id: str, ctx: WorkspaceContext = Depends(require("edit_content"))) -> dict:
     doc = await _load(ctx.workspace_id, project_id)
-    return await _replace_edit(ctx, doc, edl.validate(doc.get("initial_edit") or doc["edit"]), "reset", "Started again")
+    opened = await _replace_edit(ctx, doc, edl.validate(doc.get("initial_edit") or doc["edit"]), "reset", "Started again")
+    from app.video import activity
+
+    await activity.started_again(ctx.workspace_id, ctx.user_id, project_id, int(opened.get("version") or 0))
+    return opened
 
 
 @router.delete("/{project_id}", status_code=204)

@@ -576,6 +576,40 @@ def _stage_query(stage: str) -> dict:
     return {}
 
 
+MEDIA_PREVIEW_PER_POST = 3
+
+
+async def attach_media_previews(pieces: list[dict]) -> None:
+    """Gives each post that carries media a small ``media_preview``: for up to three attachments, what kind of file it is and a
+    picture to show for it (the poster of a video, or the picture itself). One lookup for the whole page."""
+    from app.db.mongo import media_assets
+
+    wanted: dict[str, set[str]] = {}
+    for p in pieces:
+        for att in (p.get("attachments") or [])[:MEDIA_PREVIEW_PER_POST]:
+            if att.get("media_id"):
+                wanted.setdefault(p["workspace_id"], set()).add(att["media_id"])
+    found: dict[str, dict] = {}
+    for ws, ids in wanted.items():
+        docs = await media_assets.find(
+            {"workspace_id": ws, "id": {"$in": list(ids)}}, {"id": 1, "kind": 1, "url": 1, "poster_url": 1},
+        ).to_list(length=len(ids))
+        found.update({d["id"]: d for d in docs})
+    for p in pieces:
+        previews = []
+        for att in (p.get("attachments") or [])[:MEDIA_PREVIEW_PER_POST]:
+            media = found.get(att.get("media_id")) or {}
+            kind = media.get("kind") or att.get("asset_type")
+            previews.append({
+                "asset_type": att.get("asset_type"), "kind": kind, "url": media.get("url"), "poster_url": media.get("poster_url"),
+                "thumbnail_url": media.get("poster_url") or (media.get("url") if kind == "image" else None),
+            })
+        if previews:
+            p["media_preview"] = previews
+        if p.get("attachments"):
+            p["attachment_count"] = len(p["attachments"])
+
+
 async def _attach_display_names(pieces: list[dict]) -> None:
     """Batch-resolve author (user) and brand display names onto each piece
     dict in place. Two bulk lookups regardless of list size, not N+1."""
@@ -640,6 +674,7 @@ async def get_workspace_pieces(
         normalize_piece_dates(p)
 
     await _attach_display_names(pieces)
+    await attach_media_previews(pieces)
 
     return {
         "items": pieces,

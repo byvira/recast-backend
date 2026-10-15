@@ -61,3 +61,38 @@ async def topic_from_recording(asset_id: str, workspace_id: str) -> tuple[str, d
     if not text:
         raise SourceError("This recording's transcript is empty.")
     return condense(text), {"type": "audio_asset", "id": doc["id"], "title": doc.get("title"), "minutes": round(seconds / 60, 1)}
+
+
+#: The longest part of a source video that goes onto one day's posts.
+MAX_CUT_SECONDS = 60.0
+
+
+async def topic_from_video(media_id: str, workspace_id: str) -> tuple[str, dict[str, Any]]:
+    """The topic text and a small reference for a video in this library, or a SourceError saying what is wrong. The video must
+    have a finished transcript: its words are what the posts are written from."""
+    from app.db.mongo import get_db, media_assets
+    from app.video import transcribe
+
+    media = await media_assets.find_one({"id": (media_id or "").strip(), "workspace_id": workspace_id, "kind": "video"})
+    if not media:
+        raise SourceError("That video was not found in this workspace.")
+    doc = await get_db()["video_transcripts"].find_one({"workspace_id": workspace_id, "media_id": media["id"], "status": {"$in": ["done", "partial"]}})
+    if not doc:
+        raise SourceError("This video has no transcript yet. Open it in the Video pipeline and use Transcribe first.")
+    words = await transcribe.all_words(doc["id"])
+    text = " ".join(str(w.get("w") or "") for w in words).strip()
+    if not text:
+        raise SourceError("This video has no speech to write from.")
+    seconds = float(media.get("duration_s") or doc.get("duration_s") or 0)
+    if seconds > MAX_SOURCE_SECONDS:
+        raise SourceError(f"This video is about {int(round(seconds / 60))} minutes long. A campaign can take a source of up to 60 minutes for now.")
+    return condense(text), {"type": "video", "id": media["id"], "title": media.get("title") or media.get("filename"),
+                            "minutes": round(seconds / 60, 1), "duration_s": round(seconds, 2)}
+
+
+def window_for_day(duration_s: float, day_index: int, days: int, longest: float = MAX_CUT_SECONDS) -> tuple[float, float]:
+    """(start, length) in seconds of the part of a source video that belongs to day `day_index`: the video is shared evenly across
+    the days, and a long share is cut to its first `longest` seconds."""
+    days = max(1, days)
+    share = max(0.0, duration_s) / days
+    return round(day_index * share, 3), round(min(share, longest), 3)

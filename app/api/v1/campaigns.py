@@ -72,7 +72,7 @@ def _content_types(media_plan: dict) -> list[str]:
     """Text always, plus each media kind that is switched on and can be generated today. Video is
     kept in the media plan (set up, inactive) but is not generated yet, so it is not listed here."""
     kinds = media_plan.get("kinds") or [] if media_plan.get("enabled") else []
-    return ["text"] + [k for k in ("audio", "image") if k in kinds]
+    return ["text"] + [k for k in ("audio", "image", "video") if k in kinds]
 
 
 def _doc_to_campaign(doc: dict) -> Campaign:
@@ -129,6 +129,39 @@ async def _campaign_progress_bulk(
         progress[cid]["total"] += 1
 
     return progress
+
+
+@router.get("/video-sources")
+@limiter.limit("60/minute")
+async def video_sources(request: Request, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
+    """The videos in this library a campaign can start from: each with its length and whether it can be used now (it needs a finished
+    transcript, and a campaign takes up to an hour of source). Most recent first."""
+    from app.db.mongo import get_db, media_assets
+    from app.pipelines.campaigns.sources import MAX_SOURCE_SECONDS
+
+    videos = await media_assets.find(
+        {"workspace_id": ctx.workspace_id, "kind": "video"},
+        {"id": 1, "title": 1, "filename": 1, "duration_s": 1, "poster_url": 1, "created_at": 1},
+    ).sort("created_at", -1).limit(60).to_list(length=60)
+    done = {
+        d["media_id"]
+        for d in await get_db()["video_transcripts"].find(
+            {"workspace_id": ctx.workspace_id, "media_id": {"$in": [v["id"] for v in videos]}, "status": {"$in": ["done", "partial"]}},
+            {"media_id": 1},
+        ).to_list(length=60)
+    }
+    items = []
+    for v in videos:
+        seconds = float(v.get("duration_s") or 0)
+        if v["id"] not in done:
+            usable, why = False, "Transcribe it first in the Video pipeline."
+        elif seconds > MAX_SOURCE_SECONDS:
+            usable, why = False, "Longer than an hour."
+        else:
+            usable, why = True, None
+        items.append({"id": v["id"], "title": v.get("title") or v.get("filename") or "Untitled video", "duration_s": round(seconds, 1),
+                      "poster_url": v.get("poster_url"), "usable": usable, "reason": why})
+    return {"items": items}
 
 
 @router.post("/source-file")
@@ -192,6 +225,14 @@ async def create_campaign(
 
         try:
             topic_cluster, source_ref = await topic_from_recording(body.topic_cluster, ctx.workspace_id)
+        except SourceError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    if body.source_type == CampaignSourceType.VIDEO_UPLOAD:
+        from app.pipelines.campaigns.sources import SourceError, topic_from_video
+
+        try:
+            topic_cluster, source_ref = await topic_from_video(body.topic_cluster, ctx.workspace_id)
         except SourceError as e:
             raise HTTPException(status_code=400, detail=str(e))
 

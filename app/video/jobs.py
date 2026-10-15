@@ -302,6 +302,10 @@ async def _close_job(doc: dict, status: str, *, code: Optional[str] = None, mess
         await runs.finish_cancelled(doc.get("run_id"))
     else:
         await runs.finish_failed(doc.get("run_id"), message or "The video could not be made.")
+    if doc.get("kind") in (None, "render"):
+        from app.video import activity
+
+        await activity.render_ended(doc["workspace_id"], doc.get("user_id"), doc.get("project_id"), doc["id"], status, message or "")
     return True
 
 
@@ -488,6 +492,10 @@ async def _end(doc: dict, status: str, code: str, message: str, detail: Any = No
         {"$set": {"status": status, "error_code": code, "error": message, "error_detail": detail, "finished_at": _now(),
                   "lease_token": None, "lease_expires_at": None}},
     )
+    if doc.get("kind") in (None, "render"):
+        from app.video import activity
+
+        await activity.render_ended(doc["workspace_id"], doc.get("user_id"), doc.get("project_id"), doc["id"], status, message)
 
 
 async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> dict:
@@ -555,6 +563,12 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
         "job_id": job_id, "media_id": media.id, "project_id": doc.get("project_id"), "origin": doc.get("origin"),
         "duration_s": report.get("duration_s"),
     })
+    from app.video import activity
+
+    await activity.video_made(
+        doc["workspace_id"], doc.get("user_id"), doc.get("project_id"), job_id, duration_s=report.get("duration_s"),
+        origin=(doc.get("origin") or {}).get("origin"),
+    )
     return {"ok": True, "accepted": True, "media_id": media.id}
 
 

@@ -5,11 +5,13 @@ failed narration or image is logged and counted, and the text and every other po
 Each asset carries `source_piece_id`, which is how a post is tied to its media.
 
 Audio is one narration per post (the same script voiced again would be an identical file);
-`count_per_post` is how many images each post gets. Video is stored in the plan but is not made yet.
+`count_per_post` is how many images each post gets. Video is the post voiced over its own picture: an editable project is built
+from the narration and the picture, rendered, and the finished video goes onto the post.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Optional
 
@@ -20,8 +22,14 @@ from app.pipelines.publish.attachments import attach_generated_image
 
 logger = logging.getLogger(__name__)
 
-GENERATED_KINDS = ("image", "audio")  # video is wired in the plan, not generated yet
-MAX_POSTS_WITH_MEDIA_PER_RUN = 30
+GENERATED_KINDS = ("image", "audio", "video")
+#: How many posts one run makes media for, and how many are worked on at the same time. Each post's pictures, narration and
+#: video wait on other services, so a few at once make a run much shorter without hitting a service's rate limit.
+MAX_POSTS_WITH_MEDIA_PER_RUN = 60
+POSTS_AT_ONCE = 3
+#: How long a campaign waits for one video to be drawn before it is marked failed (it can be tried again).
+VIDEO_WAIT_SECONDS = 20 * 60
+_ASPECT_TO_SIZE = {"9:16": "vertical", "16:9": "landscape", "1:1": "square"}
 
 
 class _NoRun:
@@ -44,6 +52,7 @@ def estimate(media_plan: dict | None, posts: int) -> dict[str, int]:
     return {
         "images": posts * int(plan.get("count_per_post", 1)) if "image" in kinds else 0,
         "audio": posts if "audio" in kinds else 0,
+        "videos": posts if "video" in kinds else 0,
     }
 
 
@@ -104,58 +113,111 @@ def _kinds_this_platform_takes(piece: dict, kinds: list[str]) -> tuple[list[str]
     return usable, {k: "skipped" for k in kinds if k not in usable}
 
 
+async def _narration(
+    campaign: dict[str, Any], piece: dict, ctx: WorkspaceContext, title: str, content: str,
+) -> Optional[str]:
+    """The recording of this post's words, made once: a re-run for the same post and the same words reuses the recording already
+    made instead of voicing it again (which spends provider quota and leaves a second identical recording). Returns its file id."""
+    from app.api.v1.audio_assets import GenerateAudioAssetRequest, create_audio_from_script
+
+    audio_opts = (campaign.get("media_plan") or {}).get("audio") or {}
+    wpm = audio_opts.get("words_per_minute")
+    script = content
+    if audio_opts.get("max_seconds"):
+        script = duration.trim_to_seconds(content, audio_opts["max_seconds"], wpm)
+    already = await audio_assets.find_one(
+        {"workspace_id": ctx.workspace_id, "campaign_id": campaign["id"], "source_piece_id": piece["piece_id"], "script": script},
+        {"id": 1, "media_id": 1},
+    )
+    if already:
+        return already.get("media_id")
+    made = await create_audio_from_script(
+        GenerateAudioAssetRequest(
+            title=title, brand_id=campaign["brand_id"], source_piece_id=piece["piece_id"],
+            script=script, words_per_minute=wpm, language=piece.get("language"),
+            delivery_style=audio_opts.get("delivery_style"), mastering=audio_opts.get("mastering"),
+        ),
+        ctx,
+        _NoRun(),
+    )
+    await audio_assets.update_one({"id": made.id, "workspace_id": ctx.workspace_id}, {"$set": {"campaign_id": campaign["id"]}})
+    return getattr(made, "media_id", None)
+
+
+async def _make_video(
+    campaign: dict[str, Any], piece: dict, ctx: WorkspaceContext, title: str, content: str,
+    voice_media_id: Optional[str], picture_media_id: Optional[str],
+) -> str:
+    """The post voiced over its picture: an editable project, rendered, and attached to the post. Returns the project id."""
+    from app.agents.chain.topic_to_video import build_narrated_project
+    from app.db.mongo import get_db
+    from app.pipelines.publish import attachments
+    from app.video import service
+
+    if not voice_media_id:
+        voice_media_id = await _narration(campaign, piece, ctx, title, content)
+    if not voice_media_id:
+        raise RuntimeError("There is no narration to build a video from.")
+    options = (campaign.get("media_plan") or {}).get("video") or {}
+    size = _ASPECT_TO_SIZE.get(options.get("aspect", "9:16"), "vertical")
+    project_id, _ = await build_narrated_project(
+        ctx, title=title, text=content, voice_media_id=voice_media_id, cover_media_id=picture_media_id, brand_id=campaign.get("brand_id"),
+        size=size, parents=[{"kind": "piece", "id": piece["piece_id"]}],
+        created_from={"kind": "campaign", "campaign_id": campaign["id"], "piece_id": piece["piece_id"]},
+    )
+    await get_db()["video_projects"].update_one({"id": project_id, "workspace_id": ctx.workspace_id}, {"$set": {"campaign_id": campaign["id"]}})
+    await service.render_project_and_wait(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, project_id=project_id, preset="standard", max_wait_s=VIDEO_WAIT_SECONDS,
+    )
+    fresh = await content_pieces.find_one({"piece_id": piece["piece_id"], "workspace_id": ctx.workspace_id})
+    if fresh:
+        resolved = await attachments.resolve_asset(ctx.workspace_id, "project", asset_id=project_id)
+        await attachments.attach(fresh, ctx.workspace_id, ctx.user_id, resolved)
+    return project_id
+
+
 async def _make_for_piece(
     campaign: dict[str, Any], piece: dict, kinds: list[str], ctx: WorkspaceContext,
 ) -> dict[str, str]:
     """Make the planned media for one post. Returns {kind: "ready" | "failed"} for each kind tried."""
     # imported here: these modules import the whole API layer
-    from app.api.v1.audio_assets import GenerateAudioAssetRequest, create_audio_from_script
-    from app.api.v1.image_assets import GenerateImageAssetRequest, create_image_asset
+    from app.api.v1.image_assets import create_image_asset
 
-    plan = campaign.get("media_plan") or {}
-    count = int(plan.get("count_per_post", 1))
-    audio_opts = plan.get("audio") or {}
-    layout = (plan.get("image") or {}).get("layout") or "quote_1_1"
     content = (piece.get("content") or "").strip()
     title = _headline(content)
     kinds, states = _kinds_this_platform_takes(piece, kinds)
-    if "image" in kinds:
+    picture_media_id: Optional[str] = None
+    if "image" in kinds or "video" in kinds:
+        # a video is built over the post's picture, so the picture is made first (and is a result of its own when it was asked for)
         try:
             made = await create_image_asset(await _image_request(campaign, piece), ctx)
-            states["image"] = "ready"
+            if "image" in kinds:
+                states["image"] = "ready"
+            slides = getattr(made, "slides", None) or []
+            picture_media_id = next((getattr(s, "media_id", None) for s in slides if getattr(s, "media_id", None)), None)
             await image_assets.update_one({"id": getattr(made, "id", ""), "workspace_id": ctx.workspace_id}, {"$set": {"campaign_id": campaign["id"]}})
-            # The picture goes onto its post, so it is what gets published.
-            await attach_generated_image(piece["piece_id"], ctx.workspace_id, ctx.user_id, getattr(made, "id", ""))
+            if "image" in kinds:
+                # The picture goes onto its post, so it is what gets published.
+                await attach_generated_image(piece["piece_id"], ctx.workspace_id, ctx.user_id, getattr(made, "id", ""))
         except Exception as exc:  # noqa: BLE001 - media must never fail the text
-            states["image"] = "failed"
+            if "image" in kinds:
+                states["image"] = "failed"
             logger.warning("Campaign %s: image for piece %s failed: %s", campaign["id"], piece["piece_id"], exc)
+    voice_media_id: Optional[str] = None
     if "audio" in kinds:
         try:
-            wpm = audio_opts.get("words_per_minute")
-            script = content
-            if audio_opts.get("max_seconds"):
-                script = duration.trim_to_seconds(content, audio_opts["max_seconds"], wpm)
-            # A re-run for the same post and the same words reuses the recording already made, instead of voicing it again
-            # (which spends provider quota and leaves a second identical recording).
-            already = await audio_assets.find_one(
-                {"workspace_id": ctx.workspace_id, "campaign_id": campaign["id"], "source_piece_id": piece["piece_id"], "script": script},
-                {"id": 1},
-            )
-            if not already:
-                made_audio = await create_audio_from_script(
-                    GenerateAudioAssetRequest(
-                        title=title, brand_id=campaign["brand_id"], source_piece_id=piece["piece_id"],
-                        script=script, words_per_minute=wpm, language=piece.get("language"),
-                        delivery_style=audio_opts.get("delivery_style"), mastering=audio_opts.get("mastering"),
-                    ),
-                    ctx,
-                    _NoRun(),
-                )
-                await audio_assets.update_one({"id": made_audio.id, "workspace_id": ctx.workspace_id}, {"$set": {"campaign_id": campaign["id"]}})
+            voice_media_id = await _narration(campaign, piece, ctx, title, content)
             states["audio"] = "ready"
         except Exception as exc:  # noqa: BLE001
             states["audio"] = "failed"
             logger.warning("Campaign %s: audio for piece %s failed: %s", campaign["id"], piece["piece_id"], exc)
+    if "video" in kinds:
+        try:
+            await _make_video(campaign, piece, ctx, title, content, voice_media_id, picture_media_id)
+            states["video"] = "ready"
+        except Exception as exc:  # noqa: BLE001 - the text, the picture and the narration are kept
+            states["video"] = "failed"
+            logger.warning("Campaign %s: video for piece %s failed: %s", campaign["id"], piece["piece_id"], exc)
     return states
 
 
@@ -172,9 +234,10 @@ async def _record_status(workspace_id: str, piece_id: str, states: dict[str, str
 async def generate_media_for_pieces(
     campaign: dict[str, Any], piece_ids: list[str], *, workspace_id: str, user_id: str, run_id: Optional[str] = None,
 ) -> dict[str, int]:
-    """Make the planned media for each of `piece_ids`. Returns counts of what was made and what failed."""
+    """Make the planned media for each of `piece_ids`, a few posts at a time. Returns counts of what was made and what failed.
+    A post that fails does not stop the others, and a pause or cancel is honoured between posts."""
     kinds = wanted_kinds(campaign.get("media_plan"))
-    outcome = {"images": 0, "audio": 0, "failed": 0}
+    outcome = {"images": 0, "audio": 0, "videos": 0, "failed": 0}
     if not kinds or not piece_ids:
         return outcome
 
@@ -185,23 +248,96 @@ async def generate_media_for_pieces(
     ).to_list(length=None)
 
     batch = [p for p in pieces[:MAX_POSTS_WITH_MEDIA_PER_RUN] if (p.get("content") or "").strip()]
-    for number, piece in enumerate(batch, start=1):
-        if run_id:
-            # A pause or a cancel is honoured between posts, not only between days (a day can mean thirty posts of pictures and audio).
-            from app.shared import pipeline_runs
+    gate = asyncio.Semaphore(POSTS_AT_ONCE)
+    started = 0
+    finished = 0
 
-            await pipeline_runs.checkpoint(run_id)
-            # Real counts, so the batch's picture and audio steps show the work that exists instead of sitting at nothing.
-            what = " and ".join(w for w, k in (("pictures", "image"), ("audio", "audio")) if k in kinds) or "media"
-            await pipeline_runs.set_stage(
-                run_id, f"Making {what}: post {number} of {len(batch)}", media_done=number - 1, media_total=len(batch),
-            )
-        states = await _make_for_piece(campaign, piece, kinds, ctx)
-        await _record_status(workspace_id, piece["piece_id"], states)
-        outcome["images"] += count if states.get("image") == "ready" else 0
-        outcome["audio"] += 1 if states.get("audio") == "ready" else 0
-        outcome["failed"] += sum(1 for v in states.values() if v == "failed")
+    async def one(piece: dict) -> None:
+        nonlocal started, finished
+        async with gate:
+            if run_id:
+                from app.shared import pipeline_runs
+
+                await pipeline_runs.checkpoint(run_id)
+                started += 1
+                what = " and ".join(w for w, k in (("pictures", "image"), ("audio", "audio"), ("videos", "video")) if k in kinds) or "media"
+                await pipeline_runs.set_stage(
+                    run_id, f"Making {what}: post {started} of {len(batch)}", media_done=finished, media_total=len(batch),
+                )
+            states = await _make_for_piece(campaign, piece, kinds, ctx)
+            await _record_status(workspace_id, piece["piece_id"], states)
+            outcome["images"] += count if states.get("image") == "ready" else 0
+            outcome["audio"] += 1 if states.get("audio") == "ready" else 0
+            outcome["videos"] += 1 if states.get("video") == "ready" else 0
+            outcome["failed"] += sum(1 for v in states.values() if v == "failed")
+            finished += 1
+
+    results = await asyncio.gather(*[one(p) for p in batch], return_exceptions=True)
+    for r in results:
+        if isinstance(r, BaseException):
+            # a pause or a cancel ends the run where it stands; anything else is one post's failure and is counted
+            if type(r).__name__ in ("RunCancelled", "RunPaused", "CancelledError"):
+                raise r
+            outcome["failed"] += 1
+            logger.warning("Campaign %s: media for a post stopped: %s", campaign["id"], r)
     return outcome
+
+
+async def attach_source_cut(
+    campaign: dict[str, Any], piece_ids: list[str], day_index: int, days: int, *, workspace_id: str, user_id: str,
+) -> Optional[str]:
+    """For a campaign that starts from a video the member already has: this day's part of the video, cut as an editable project
+    with its own words as captions, rendered, and attached to each of the day's posts that can carry a video. Nothing is generated.
+    Returns the project id, or None when the day has nothing to cut."""
+    from app.db.mongo import get_db, media_assets
+    from app.pipelines.campaigns import sources
+    from app.pipelines.publish import attachments
+    from app.video import edl, service, transcribe
+    from app.video.flows import registry as R
+    from app.video.flows import runner
+
+    ref = campaign.get("source_ref") or {}
+    media = await media_assets.find_one({"id": ref.get("id"), "workspace_id": workspace_id, "kind": "video"})
+    if not media:
+        return None
+    start_s, length_s = sources.window_for_day(float(media.get("duration_s") or ref.get("duration_s") or 0), day_index, days)
+    if length_s < 1:
+        return None
+    options = (campaign.get("media_plan") or {}).get("video") or {}
+    size = _ASPECT_TO_SIZE.get(options.get("aspect", "9:16"), "vertical")
+    fps = {"num": 30, "den": 1}
+    dur = max(1, edl.seconds_to_frames(length_s, fps))
+    edit = edl.blank(size, fps)
+    edit["video"] = [{"id": "c1", "media_id": media["id"], "at_f": 0, "dur_f": dur, "src_in_f": edl.seconds_to_frames(start_s, fps), "speed": 1.0,
+                      "fit": "cover", "fade_in_f": 0, "fade_out_f": 0, "audio": True, "gain_db": 0.0, "motion": False}]
+    transcript = await get_db()["video_transcripts"].find_one({"workspace_id": workspace_id, "media_id": media["id"]})
+    words: list[dict[str, Any]] = []
+    if transcript:
+        lo, hi = int(start_s * 1000), int((start_s + length_s) * 1000)
+        words = [{"w": w["w"], "s_ms": w["s_ms"] - lo, "e_ms": min(w["e_ms"], hi) - lo}
+                 for w in await transcribe.all_words(transcript["id"]) if lo <= w["s_ms"] < hi]
+    edit["captions"] = {**edit["captions"], "enabled": bool(words), "words": words}
+    edit["duration_f"] = dur
+    edit = edl.validate(edit)
+    env = R.Env(workspace_id=workspace_id, user_id=user_id, reporter=None)
+    title = f"{campaign.get('name') or ref.get('title') or 'Video'}, day {day_index + 1}"
+    made = await runner.create_projects(env, [{
+        "title": title, "edit": edit, "notes": [],
+        "created_from": {"kind": "campaign", "campaign_id": campaign["id"], "source_media_id": media["id"], "day": day_index + 1,
+                         "derived_from": [{"kind": "video", "id": media["id"]}]},
+    }])
+    project_id = made[0]["project_id"]
+    await get_db()["video_projects"].update_one({"id": project_id, "workspace_id": workspace_id}, {"$set": {"campaign_id": campaign["id"]}})
+    await service.render_project_and_wait(workspace_id=workspace_id, user_id=user_id, project_id=project_id, preset="standard",
+                                          max_wait_s=VIDEO_WAIT_SECONDS)
+    pieces = await content_pieces.find({"workspace_id": workspace_id, "piece_id": {"$in": piece_ids}}).to_list(length=None)
+    for piece in pieces:
+        usable, _ = _kinds_this_platform_takes(piece, ["video"])
+        if not usable:
+            continue
+        resolved = await attachments.resolve_asset(workspace_id, "project", asset_id=project_id)
+        await attachments.attach(piece, workspace_id, user_id, resolved)
+    return project_id
 
 
 async def regenerate_image_for_piece(
