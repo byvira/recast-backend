@@ -12,14 +12,15 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-AttachmentAssetType = Literal["image", "audio", "video", "upload"]
+AttachmentAssetType = Literal["image", "audio", "video", "upload", "project"]
 
 
 class PieceAttachment(BaseModel):
     id: str
     asset_type: AttachmentAssetType
     # image_assets.id for "image", audio_assets.id for "audio" and "video" (a
-    # video is a clip rendered from a recording), None for a plain upload.
+    # video is a clip rendered from a recording), video_projects.id for "project"
+    # (the project's latest finished render), None for a plain upload.
     asset_id: Optional[str] = None
     # The asset's version_count when it was attached. None for uploads and videos.
     asset_version: Optional[int] = None

@@ -97,6 +97,7 @@ async def _media_map(workspace_id: str, ids: set[str]) -> dict[str, dict]:
             "contains_ai": bool(r.get("contains_ai")) or origin == "ai", "poster_url": r.get("poster_url"),
             "has_audio": (r.get("probe") or {}).get("audio") is not None if r.get("probe") else None,
             **_preview_fields(r),
+            "font_family": r.get("font_family"),
         }
     return out
 
@@ -137,6 +138,11 @@ async def _check_media(workspace_id: str, edit: dict) -> None:
     have = set((await _media_map(workspace_id, wanted)).keys())
     if wanted - have:
         raise HTTPException(status_code=400, detail="A clip uses a file that is not in this workspace's library.")
+    fonts = edl.font_ids(edit)
+    if fonts:
+        found_fonts = await _media_map(workspace_id, fonts)
+        if any(not found_fonts.get(i, {}).get("font_family") for i in fonts):
+            raise HTTPException(status_code=400, detail="A font used in this project is not one of this workspace's fonts.")
     pictures = {s["media_id"] for s in edit.get("shapes", []) if s.get("media_id")}
     if pictures:
         found = await _media_map(workspace_id, pictures)
@@ -255,7 +261,28 @@ async def create_project(request: Request, body: CreateBody, ctx: WorkspaceConte
 @limiter.limit("120/minute")
 async def list_projects(request: Request, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
     rows = await _projects().find({"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}).sort("updated_at", -1).to_list(length=100)
-    return {"projects": [_summary(r) for r in rows]}
+    # a picture for each: the poster of its finished video, or of the first clip it uses
+    wanted: set[str] = set()
+    for r in rows:
+        last = (r.get("last_render") or {}).get("media_id")
+        first = next((c.get("media_id") for c in r.get("edit", {}).get("video", []) if c.get("media_id")), None)
+        wanted.update(m for m in (last, first) if m)
+    media = {}
+    if wanted:
+        for m in await media_assets.find({"workspace_id": ctx.workspace_id, "id": {"$in": list(wanted)}}, {"id": 1, "poster_url": 1, "url": 1, "kind": 1}).to_list(length=len(wanted)):
+            media[m["id"]] = m
+    out = []
+    for r in rows:
+        item = _summary(r)
+        last_id = (r.get("last_render") or {}).get("media_id")
+        first_id = next((c.get("media_id") for c in r.get("edit", {}).get("video", []) if c.get("media_id")), None)
+        pick = media.get(last_id) or media.get(first_id) or {}
+        item["thumbnail_url"] = pick.get("poster_url") or (pick.get("url") if pick.get("kind") == "image" else None)
+        item["made"] = bool(last_id)
+        item["made_current"] = bool(last_id) and (r.get("last_render") or {}).get("version") == r.get("version")
+        item["linked_posts"] = len(r.get("linked_pieces") or [])
+        out.append(item)
+    return {"projects": out}
 
 
 @router.get("/jobs/{job_id}")

@@ -76,6 +76,33 @@ def lease_seconds() -> int:
 
 # ── what a member or staff sees ──────────────────────────────────────────────────
 
+def quality_summary(report: Any, target_lufs: Optional[float] = None) -> Optional[dict]:
+    """What was measured on a finished video, for the member: the numbers that mean something, and plain notes for what is worth a look.
+    The worker's own warnings are for staff and are not passed on as they are."""
+    if not isinstance(report, dict):
+        return None
+
+    def num(key: str) -> Optional[float]:
+        v = report.get(key)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    black, frozen, loud = num("black_seconds"), num("frozen_seconds"), num("loudness_lufs")
+    notes: list[str] = []
+    if black is not None and black >= 0.5:
+        notes.append(f"About {black:.1f} seconds of the picture are black.")
+    if frozen is not None and frozen >= 3:
+        notes.append(f"About {frozen:.1f} seconds of the picture do not move.")
+    if any("silent" in str(w).lower() for w in report.get("warnings") or []):
+        notes.append("The sound track is silent.")
+    if loud is not None and target_lufs is not None and abs(loud - target_lufs) > 2.5:
+        notes.append(f"The loudness came out at {loud:.1f}, a little away from the {target_lufs:g} you chose.")
+    return {
+        "passed": report.get("passed") is True, "duration_s": num("duration_s"), "width": report.get("width"), "height": report.get("height"),
+        "fps": num("fps"), "loudness_lufs": loud, "true_peak_dbfs": num("true_peak_dbfs"), "black_seconds": black, "frozen_seconds": frozen,
+        "notes": notes,
+    }
+
+
 def public(doc: Optional[dict]) -> Optional[dict]:
     """The job as the API returns it: no lease secret, no source addresses, no edit list."""
     if not doc:
@@ -89,6 +116,10 @@ def public(doc: Optional[dict]) -> Optional[dict]:
         out[field] = value.isoformat().replace("+00:00", "Z") if value else None
     if doc.get("output"):
         out["output"] = {k: doc["output"].get(k) for k in ("url", "bytes", "duration_s", "width", "height")}
+    if doc.get("status") == "done" and doc.get("report"):
+        out["quality"] = quality_summary(doc.get("report"), doc.get("target_lufs"))
+    if doc.get("target_lufs") is not None:
+        out["target_lufs"] = doc["target_lufs"]
     return out
 
 
@@ -150,6 +181,8 @@ async def enqueue(
     }
     if project_id:
         doc["project_id"] = project_id
+    if (output or {}).get("lufs") is not None:
+        doc["target_lufs"] = output["lufs"]
     if idem_key:
         doc["idem_key"] = idem_key
     if show_in_activity:

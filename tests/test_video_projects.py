@@ -482,3 +482,77 @@ async def test_a_project_names_who_speaks_and_when_each_person_is_first_heard():
     other = await _media(ctx.workspace_id)
     plain = await _call(api.create_project, None, api.CreateBody(source="video", media_id=other), ctx)
     assert plain["speakers"] == []                                                            # no transcript, no names
+
+
+# ── emphasis, duck amount, rounded pictures and uploaded fonts ────────────────────────────────────────────────────────────
+
+def test_emphasis_and_the_duck_amount_are_kept_and_checked():
+    e = _edit()
+    e["audio"] = [{"id": "a1", "media_id": "m2", "at_f": 0, "dur_f": 300, "role": "music", "duck_amount": "strong"},
+                  {"id": "a2", "media_id": "m3", "at_f": 0, "dur_f": 300, "role": "voice"}]
+    e["captions"] = {"enabled": True, "words": [], "emphasis": [{"s_ms": 2000, "e_ms": 2500}, {"s_ms": 100, "e_ms": 400}]}
+    out = edl.validate(e)
+    assert [a["duck_amount"] for a in out["audio"]] == ["strong", "medium"]
+    assert out["captions"]["emphasis"] == [{"s_ms": 100, "e_ms": 400}, {"s_ms": 2000, "e_ms": 2500}]      # in time order
+    assert edl.validate(out) == out
+    bad = _edit()
+    bad["audio"] = [{"id": "a1", "media_id": "m2", "at_f": 0, "dur_f": 30, "duck_amount": "max"}]
+    with pytest.raises(edl.EditError, match="duck_amount"):
+        edl.validate(bad)
+    bad = _edit()
+    bad["captions"] = {"enabled": True, "words": [], "emphasis": [{"s_ms": 500, "e_ms": 400}]}
+    with pytest.raises(edl.EditError, match="stressed"):
+        edl.validate(bad)
+
+
+def test_a_rounded_picture_and_an_uploaded_font_reach_the_worker():
+    e = _edit()
+    e["shapes"] = [{"id": "p1", "at_f": 0, "dur_f": 60, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2, "media_id": "logo", "radius": 0.5}]
+    e["captions"] = {"enabled": True, "words": [], "font": "custom:font-1"}
+    e["text"] = [{"id": "t1", "text": "Hi", "at_f": 0, "dur_f": 30, "font": "custom:font-1"}]
+    out = edl.validate(e)
+    assert edl.media_ids(out) == {"m1", "logo", "font-1"}
+    media = {"m1": {"url": "https://x/v.mp4", "kind": "video"}, "logo": {"url": "https://x/l.png", "kind": "image"},
+             "font-1": {"url": "https://x/f.ttf", "kind": "document", "font_family": "Brand Sans"}}
+    job = edl.to_job(out, media)
+    font_input = next(k for k, v in job["inputs"].items() if v["kind"] == "font")
+    assert job["edit"]["fonts"] == [{"src": font_input, "family": "Brand Sans"}]
+    assert job["edit"]["captions"]["font"] == f"custom:{font_input}" and job["edit"]["text"][0]["font"] == f"custom:{font_input}"
+    assert job["edit"]["pictures"][0]["radius"] == 0.5
+    media["font-1"]["font_family"] = None
+    with pytest.raises(edl.EditError, match="no longer in the library"):
+        edl.to_job(out, media)
+
+
+async def test_uploading_a_font_reads_its_family_and_a_project_can_use_it(signup_user, monkeypatch):
+    from pathlib import Path
+
+    from app.api.v1 import video_fonts
+    from tests.conftest import create_workspace
+
+    async def fake_upload(data, content_type, user_id, filename=None):
+        return f"https://res.cloudinary.com/democloud/raw/upload/v1/{filename}"
+
+    monkeypatch.setattr(video_fonts, "upload_file", fake_upload)
+    client, _ = await signup_user()
+    ws = await create_workspace(client, "Fonts")
+    headers = {"X-Workspace-Id": ws}
+    font = Path(video_fonts.__file__).resolve().parents[2] / "pipelines" / "media" / "fonts" / "Lora.ttf"
+    res = await client.post("/api/v1/video-fonts", files={"file": ("Lora.ttf", font.read_bytes(), "font/ttf")}, headers=headers)
+    assert res.status_code == 201, res.text
+    assert res.json()["family"] == "Lora"
+    font_id = res.json()["id"]
+    refused = await client.post("/api/v1/video-fonts", files={"file": ("notes.ttf", b"this is not a font", "font/ttf")}, headers=headers)
+    assert refused.status_code == 400 and "not a TrueType or OpenType" in refused.json()["detail"]
+    # a project saves with the font, and refuses one that is not this workspace's
+    created = await client.post("/api/v1/video-projects", json={"source": "blank"}, headers=headers)
+    assert created.status_code in (200, 201), created.text
+    proj = created.json()
+    edit = proj["edit"]
+    edit["captions"] = {**edit["captions"], "font": f"custom:{font_id}"}
+    saved = await client.put(f"/api/v1/video-projects/{proj['id']}", json={"edit": edit, "base_version": proj["version"]}, headers=headers)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["media"][font_id]["font_family"] == "Lora"
+    edit["captions"]["font"] = f"custom:{uuid4()}"
+    other = await client.put(f"/api/v1/video-projects/{proj['id']}", json={"edit": edit, "base_version": saved.json()["version"]}, headers=headers)
+    assert other.status_code == 400

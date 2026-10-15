@@ -402,9 +402,10 @@ async def asset_performance(
 
     from app.db.mongo import audio_assets, content_pieces, image_assets
 
-    collection = {"image": image_assets, "audio": audio_assets}.get(asset_type)
+    # a video made in the editor is measured through the posts its render went out in, like a picture or a recording
+    collection = {"image": image_assets, "audio": audio_assets, "project": get_db()["video_projects"]}.get(asset_type)
     if collection is None:
-        raise HTTPException(status_code=404, detail="Results are available for pictures (image) and recordings (audio).")
+        raise HTTPException(status_code=404, detail="Results are available for pictures (image), recordings (audio) and videos (project).")
     doc = await collection.find_one({"id": asset_id, "workspace_id": ctx.workspace_id}, {"linked_pieces": 1})
     if not doc:
         raise HTTPException(status_code=404, detail="That asset wasn't found.")

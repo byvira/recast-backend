@@ -18,6 +18,9 @@ MAX_SHAPES = 200
 #: The families a caption or text can be set in. The worker bundles the same files (scripts.CHOOSABLE_FAMILIES).
 FONT_KEYS = ("inter", "lora", "open sans", "oswald", "playfair display", "poppins", "roboto", "work sans")
 MAX_BLEEPS = 500
+MAX_EMPHASIS = 2000
+DUCK_AMOUNTS = ("gentle", "medium", "strong")
+CUSTOM_FONT = "custom:"
 DEFAULT_LOOK = {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
 DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 ROLES = ("voice", "music", "effect")
@@ -68,7 +71,12 @@ def _color(d: dict, key: str, where: str, default: str) -> str:
 
 def _font_key(c: dict, where: str) -> str:
     value = c.get("font", "") or ""
-    _need(isinstance(value, str) and (value == "" or value.lower() in FONT_KEYS), f"{where}: font must be one of {', '.join(FONT_KEYS)}.")
+    _need(isinstance(value, str), f"{where}: font must be text.")
+    if value.startswith(CUSTOM_FONT):
+        # a font the member uploaded: the library item it is stored as
+        _need(bool(_ID.match(value[len(CUSTOM_FONT):])), f"{where}: that uploaded font is not valid.")
+        return value
+    _need(value == "" or value.lower() in FONT_KEYS, f"{where}: font must be one of {', '.join(FONT_KEYS)}.")
     return value.lower()
 
 
@@ -135,7 +143,14 @@ def end_frame(edit: dict[str, Any]) -> int:
 
 def media_ids(edit: dict[str, Any]) -> set[str]:
     # a shape that carries a library item is a picture over the video, so its item is one of the project's files
-    return {c["media_id"] for key in ("video", "audio", "shapes") for c in edit.get(key, []) if c.get("media_id")}
+    found = {c["media_id"] for key in ("video", "audio", "shapes") for c in edit.get(key, []) if c.get("media_id")}
+    return found | font_ids(edit)
+
+
+def font_ids(edit: dict[str, Any]) -> set[str]:
+    """The library items used as fonts: the captions' font and each text item's font when it is an uploaded one."""
+    fonts = [edit.get("captions", {}).get("font", "")] + [t.get("font", "") for t in edit.get("text", [])]
+    return {f[len(CUSTOM_FONT):] for f in fonts if isinstance(f, str) and f.startswith(CUSTOM_FONT)}
 
 
 def validate(raw: Any) -> dict[str, Any]:
@@ -198,7 +213,9 @@ def validate(raw: Any) -> dict[str, Any]:
             "gain_db": _num(c, "gain_db", w, lo=-60, hi=24, default=0.0), "role": role,
             "fade_in_f": _int(c, "fade_in_f", w, default=0), "fade_out_f": _int(c, "fade_out_f", w, default=0),
             "duck": bool(c.get("duck", role == "music")),
+            "duck_amount": c.get("duck_amount", "medium"),
         }
+        _need(item["duck_amount"] in DUCK_AMOUNTS, f"{w}: duck_amount must be one of {', '.join(DUCK_AMOUNTS)}.")
         _need(item["fade_in_f"] + item["fade_out_f"] <= item["dur_f"], f"{w}: the fades are longer than the clip.")
         audio.append(item)
 
@@ -239,6 +256,14 @@ def validate(raw: Any) -> dict[str, Any]:
         "upper": bool(cap_raw.get("upper", False)),
         "font": _font_key(cap_raw, "Captions"),
     }
+    emphasis_raw = cap_raw.get("emphasis", [])
+    _need(isinstance(emphasis_raw, list) and len(emphasis_raw) <= MAX_EMPHASIS, f"Stressed words can have at most {MAX_EMPHASIS} stretches.")
+    emphasis: list[dict[str, int]] = []
+    for em in emphasis_raw:
+        _need(isinstance(em, dict) and isinstance(em.get("s_ms"), int) and isinstance(em.get("e_ms"), int)
+              and 0 <= em["s_ms"] < em["e_ms"], "A stressed stretch needs a start and an end in milliseconds, with the start first.")
+        emphasis.append({"s_ms": em["s_ms"], "e_ms": em["e_ms"]})
+    captions["emphasis"] = sorted(emphasis, key=lambda x: x["s_ms"])
 
     markers: list[dict] = []
     for m in raw.get("markers", []):
@@ -318,11 +343,22 @@ def to_job(edit: dict[str, Any], media: dict[str, dict[str, Any]], output: Optio
     _need(edit["video"] or edit["audio"], "There is nothing in this project to render yet.")
     keys: dict[str, str] = {}
     inputs: dict[str, dict[str, Any]] = {}
+    fonts_used = font_ids(edit)
+    families: dict[str, str] = {}
     for mid in sorted(media_ids(edit)):
         found = media.get(mid)
         _need(found is not None, "A clip uses a file that is no longer in the library.")
         keys[mid] = f"m{len(keys)}"
-        inputs[keys[mid]] = {"url": found["url"], "kind": found["kind"]}
+        if mid in fonts_used:
+            _need(bool(found.get("font_family")), "A font used in this project is no longer in the library.")
+            inputs[keys[mid]] = {"url": found["url"], "kind": "font"}
+            families[keys[mid]] = found["font_family"]
+        else:
+            inputs[keys[mid]] = {"url": found["url"], "kind": found["kind"]}
+
+    def font_ref(value: str) -> str:
+        # the render names an uploaded font by the input it comes from, not by the library id
+        return f"{CUSTOM_FONT}{keys[value[len(CUSTOM_FONT):]]}" if value.startswith(CUSTOM_FONT) else value
 
     def clip(c: dict[str, Any]) -> dict[str, Any]:
         out = {k: v for k, v in c.items() if k != "media_id"}
@@ -332,13 +368,16 @@ def to_job(edit: dict[str, Any], media: dict[str, dict[str, Any]], output: Optio
     worker_edit = {
         "version": 1, "fps": edit["fps"], "width": edit["width"], "height": edit["height"], "duration_f": edit["duration_f"],
         "background": edit["background"], "video": [clip(c) for c in edit["video"]], "audio": [clip(c) for c in edit["audio"]],
-        "text": edit["text"], "captions": edit["captions"], "effects": edit.get("effects", {}),
+        "text": [{**t, "font": font_ref(t.get("font", ""))} for t in edit["text"]],
+        "captions": {**edit["captions"], "font": font_ref(edit["captions"].get("font", ""))},
+        "fonts": [{"src": src, "family": family} for src, family in sorted(families.items())],
+        "effects": edit.get("effects", {}),
         "bleeps": edit.get("bleeps", []),
         # a plain coloured box is a shape; one that carries a library item is a picture over the video
         "shapes": [s for s in edit.get("shapes", []) if not s.get("media_id")],
         "pictures": [
             {"id": s["id"], "src": keys[s["media_id"]], "at_f": s["at_f"], "dur_f": s["dur_f"], "x": s["x"], "y": s["y"], "w": s["w"],
-             "opacity": s["opacity"]}
+             "opacity": s["opacity"], "radius": s.get("radius", 0.0)}
             for s in edit.get("shapes", []) if s.get("media_id")
         ],
     }

@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from app.db.mongo import audio_assets, content_pieces, image_assets, media_assets
+from app.db.mongo import audio_assets, content_pieces, get_db, image_assets, media_assets
 from app.models.media import MediaAsset
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,23 @@ async def resolve_asset(
             "qa_flagged": bool(media.get("qa_flagged")), "media": media, "asset": doc,
         }
 
+    if asset_type == "project":
+        # a video made in the editor: what goes out is its latest finished render
+        if not asset_id:
+            raise AttachmentError(422, "Choose a video to attach.")
+        doc = await get_db()["video_projects"].find_one({"id": asset_id, "workspace_id": workspace_id, "deleted": {"$ne": True}})
+        if not doc:
+            raise AttachmentError(404, "Video not found.")
+        last = doc.get("last_render") or {}
+        if not last.get("media_id"):
+            raise AttachmentError(422, "This video has not been made yet. Open it in the editor and make the video first.")
+        media = await _media_or_error(last["media_id"], workspace_id, "video")
+        return {
+            "asset_type": "project", "asset_id": asset_id, "asset_version": last.get("version", doc.get("version")),
+            "media_id": last["media_id"], "slide_number": None, "clip_id": None,
+            "qa_flagged": bool(media.get("qa_flagged")), "media": media, "asset": doc,
+        }
+
     if asset_type == "upload":
         if not media_id:
             raise AttachmentError(422, "Choose a file to attach.")
@@ -193,6 +210,8 @@ def _locked(piece: dict) -> bool:
 
 
 def _backlink_collection(asset_type: str):
+    if asset_type == "project":
+        return get_db()["video_projects"]
     return image_assets if asset_type == "image" else audio_assets if asset_type in ("audio", "video") else None
 
 
@@ -386,6 +405,12 @@ def _stale(att: dict, asset: Optional[dict], piece: dict) -> tuple[bool, Optiona
     elif kind == "video":
         clip = next((c for c in asset.get("video_clips") or [] if c.get("id") == att.get("clip_id")), None)
         changed = clip is None or clip.get("media_id") != att.get("media_id")
+    elif kind == "project":
+        # a newer render exists, or the project was changed after the render that is attached
+        last = asset.get("last_render") or {}
+        changed = last.get("media_id") != att.get("media_id") or (
+            att.get("asset_version") is not None and asset.get("version", 1) > att.get("asset_version")
+        )
     version = att.get("asset_version")
     if kind in ("image", "audio") and version is not None and asset.get("version_count", 1) > version:
         changed = True
@@ -411,6 +436,11 @@ async def list_with_status(piece: dict, workspace_id: str) -> list[dict]:
         return []
     image_ids = {a["asset_id"] for a in atts if a.get("asset_type") == "image" and a.get("asset_id")}
     audio_ids = {a["asset_id"] for a in atts if a.get("asset_type") in ("audio", "video") and a.get("asset_id")}
+    project_ids = {a["asset_id"] for a in atts if a.get("asset_type") == "project" and a.get("asset_id")}
+    projects = (
+        {d["id"]: d for d in await get_db()["video_projects"].find({"id": {"$in": list(project_ids)}, "workspace_id": workspace_id}).to_list(length=None)}
+        if project_ids else {}
+    )
     images = {d["id"]: d for d in await image_assets.find({"id": {"$in": list(image_ids)}, "workspace_id": workspace_id}).to_list(length=None)} if image_ids else {}
     audios = {d["id"]: d for d in await audio_assets.find({"id": {"$in": list(audio_ids)}, "workspace_id": workspace_id}).to_list(length=None)} if audio_ids else {}
     media_ids = [a["media_id"] for a in atts if a.get("media_id")]
@@ -422,6 +452,8 @@ async def list_with_status(piece: dict, workspace_id: str) -> list[dict]:
             asset = images.get(att.get("asset_id"))
         elif att.get("asset_type") in ("audio", "video"):
             asset = audios.get(att.get("asset_id"))
+        elif att.get("asset_type") == "project":
+            asset = projects.get(att.get("asset_id"))
         else:
             asset = None
         stale, reason = _stale(att, asset, piece)
@@ -458,6 +490,9 @@ async def _describe_media(workspace_id: str, media_id: str) -> tuple[str, dict]:
     if doc:
         slide = next(s for s in doc["slides"] if s.get("media_id") == media_id)
         return "image", {"asset_id": doc["id"], "slide_number": slide.get("slide_number")}
+    project = await get_db()["video_projects"].find_one({"workspace_id": workspace_id, "last_render.media_id": media_id, "deleted": {"$ne": True}})
+    if project:
+        return "project", {"asset_id": project["id"]}
     return "upload", {"media_id": media_id}
 
 

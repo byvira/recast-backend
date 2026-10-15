@@ -43,7 +43,7 @@ async def render_project_and_wait(
     for r in rows:
         kind = r.get("kind")
         kind = kind.value if hasattr(kind, "value") else kind
-        media[r["id"]] = {"url": r.get("url"), "kind": kind}
+        media[r["id"]] = {"url": r.get("url"), "kind": kind, "font_family": r.get("font_family")}
         from app.video.origin import origin_of
 
         origins.append(origin_of(r))
