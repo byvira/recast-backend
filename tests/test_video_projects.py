@@ -325,7 +325,7 @@ def test_a_clip_gets_default_looks_crop_and_freeze_and_validating_again_changes_
     assert clip["freeze"] is False
     assert clip["look"] == {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
     assert clip["crop"] == {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
-    assert out["tracks"] == {name: {"locked": False, "hidden": False} for name in ("video", "audio", "text")}
+    assert out["tracks"] == {name: {"locked": False, "hidden": False} for name in ("video", "audio", "text", "shapes")}
     assert edl.validate(out) == out
 
 
@@ -369,3 +369,47 @@ def test_everything_hidden_leaves_nothing_to_render_and_says_so():
     e["tracks"] = {"video": {"hidden": True}}
     with pytest.raises(edl.EditError, match="nothing in this project"):
         edl.to_job(edl.validate(e), {"m1": {"url": "https://x/v.mp4", "kind": "video"}})
+
+
+# ── caption style, text animation, shapes and the progress bar ───────────────────────────────────────────────────────────
+
+def test_caption_style_defaults_are_the_look_captions_always_had_and_survive_a_second_validation():
+    out = edl.validate(_edit())
+    cap = out["captions"]
+    assert (cap["size"], cap["color"], cap["outline"], cap["shadow"], cap["box"], cap["y"], cap["per_line"], cap["upper"]) ==            (1.0, "#FFFFFF", 4.0, 2.0, False, None, 0, False)
+    assert out["shapes"] == [] and out["effects"]["progress_bar"]["enabled"] is False
+    assert edl.validate(out) == out
+
+
+def test_caption_style_text_animation_and_shapes_are_kept_and_checked():
+    e = _edit()
+    e["captions"] = {"enabled": True, "accent": "#112233", "words": [{"w": "hi", "s_ms": 0, "e_ms": 300}],
+                     "size": 1.4, "color": "#FFEE00", "box": True, "y": 0.2, "per_line": 3, "upper": True}
+    e["text"] = [{"id": "t1", "text": "Hello", "at_f": 0, "dur_f": 60, "anim_in": "pop", "anim_out": "fade"}]
+    e["shapes"] = [{"id": "s1", "at_f": 30, "dur_f": 90, "x": 0.1, "y": 0.8, "w": 0.8, "h": 0.1, "color": "#000000", "opacity": 0.5}]
+    e["effects"] = {"progress_bar": {"enabled": True, "color": "#ff0000", "height_px": 8}}
+    out = edl.validate(e)
+    assert out["captions"]["y"] == 0.2 and out["captions"]["upper"] is True and out["text"][0]["anim_in"] == "pop"
+    assert out["shapes"][0]["opacity"] == 0.5 and out["duration_f"] == 300           # the video clip is the longest
+    assert out["effects"]["progress_bar"] == {"enabled": True, "color": "#ff0000", "height_px": 8}
+    job = edl.to_job(out, {"m1": {"url": "https://x/v.mp4", "kind": "video"}})
+    assert job["edit"]["shapes"][0]["id"] == "s1" and job["edit"]["effects"]["progress_bar"]["enabled"] is True
+    assert job["edit"]["captions"]["size"] == 1.4
+
+
+@pytest.mark.parametrize("change,words", [
+    (lambda e: e["captions"].update(size=4), "size"),
+    (lambda e: e["captions"].update(y=1.5), "between"),
+    (lambda e: e["captions"].update(per_line=99), "per_line"),
+    (lambda e: e["captions"].update(color="red"), "#RRGGBB"),
+    (lambda e: e.update(text=[{"id": "t", "text": "x", "at_f": 0, "dur_f": 5, "anim_in": "spin"}]), "anim_in"),
+    (lambda e: e.update(shapes=[{"id": "s", "at_f": 0, "dur_f": 5, "x": 0.9, "w": 0.5}]), "outside the picture"),
+    (lambda e: e.update(shapes=[{"id": "s", "at_f": 0, "dur_f": 5, "opacity": 2}]), "opacity"),
+    (lambda e: e.update(effects={"progress_bar": {"color": "pink"}}), "#RRGGBB"),
+])
+def test_bad_caption_style_shapes_and_effects_are_refused(change, words):
+    e = _edit()
+    e["captions"] = {"enabled": True, "words": []}
+    change(e)
+    with pytest.raises(edl.EditError, match=words):
+        edl.validate(e)

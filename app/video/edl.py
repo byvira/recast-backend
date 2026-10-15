@@ -12,7 +12,9 @@ from typing import Any, Iterable, Optional
 
 SCHEMA_VERSION = 1
 FITS = ("cover", "contain", "blur")
-TRACKS = ("video", "audio", "text")
+TRACKS = ("video", "audio", "text", "shapes")
+ANIMATIONS = ("none", "fade", "pop", "slide")
+MAX_SHAPES = 200
 DEFAULT_LOOK = {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
 DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 ROLES = ("voice", "music", "effect")
@@ -58,6 +60,12 @@ def _num(d: dict, key: str, where: str, *, lo: float, hi: float, default: Option
 def _color(d: dict, key: str, where: str, default: str) -> str:
     value = d.get(key, default)
     _need(isinstance(value, str) and bool(_COLOR.match(value)), f"{where}: {key} must look like #RRGGBB.")
+    return value
+
+
+def _anim(c: dict, key: str, where: str) -> str:
+    value = c.get(key, "none")
+    _need(value in ANIMATIONS, f"{where}: {key} must be one of {', '.join(ANIMATIONS)}.")
     return value
 
 
@@ -112,7 +120,7 @@ def blank(size: str = "landscape", fps: Optional[dict[str, int]] = None) -> dict
 
 
 def end_frame(edit: dict[str, Any]) -> int:
-    ends = [c["at_f"] + c["dur_f"] for key in ("video", "audio", "text") for c in edit.get(key, [])]
+    ends = [c["at_f"] + c["dur_f"] for key in ("video", "audio", "text", "shapes") for c in edit.get(key, [])]
     return max(ends) if ends else 0
 
 
@@ -194,6 +202,7 @@ def validate(raw: Any) -> dict[str, Any]:
             "id": uid(c.get("id"), "text"), "text": body, "at_f": _int(c, "at_f", w), "dur_f": _int(c, "dur_f", w, lo=1),
             "x": _num(c, "x", w, lo=0, hi=1, default=0.5), "y": _num(c, "y", w, lo=0, hi=1, default=0.5),
             "size": _int(c, "size", w, lo=8, hi=400, default=64), "color": _color(c, "color", w, "#FFFFFF"), "bold": bool(c.get("bold", True)),
+            "anim_in": _anim(c, "anim_in", w), "anim_out": _anim(c, "anim_out", w),
         })
 
     cap_raw = raw.get("captions") or {}
@@ -206,9 +215,18 @@ def validate(raw: Any) -> dict[str, Any]:
               "Every caption word needs a start and an end, with the start first.")
         words.append({"w": word["w"], "s_ms": s, "e_ms": e})
     _need(len(words) <= MAX_WORDS, "There are too many caption words.")
+    cy = cap_raw.get("y")
     captions = {
         "enabled": bool(cap_raw.get("enabled", bool(words))),
         "accent": _color(cap_raw, "accent", "Captions", "#38bdf8"), "words": words,
+        "size": _num(cap_raw, "size", "Captions", lo=0.5, hi=2.0, default=1.0),
+        "color": _color(cap_raw, "color", "Captions", "#FFFFFF"),
+        "outline": _num(cap_raw, "outline", "Captions", lo=0.0, hi=10.0, default=4.0),
+        "shadow": _num(cap_raw, "shadow", "Captions", lo=0.0, hi=8.0, default=2.0),
+        "box": bool(cap_raw.get("box", False)),
+        "y": None if cy is None else _num(cap_raw, "y", "Captions", lo=0.02, hi=0.98),
+        "per_line": _int(cap_raw, "per_line", "Captions", lo=0, hi=10, default=0),
+        "upper": bool(cap_raw.get("upper", False)),
     }
 
     markers: list[dict] = []
@@ -218,6 +236,31 @@ def validate(raw: Any) -> dict[str, Any]:
         _need(isinstance(label, str) and len(label) <= 120, "A marker label can be up to 120 characters.")
         markers.append({"id": uid(m.get("id"), "marker"), "at_f": _int(m, "at_f", "Marker"), "label": label})
     _need(len(markers) <= MAX_MARKERS, f"A project can hold at most {MAX_MARKERS} markers.")
+
+    shapes_raw = raw.get("shapes", [])
+    _need(isinstance(shapes_raw, list), "shapes must be a list.")
+    _need(len(shapes_raw) <= MAX_SHAPES, f"A project can hold at most {MAX_SHAPES} shapes.")
+    shapes: list[dict] = []
+    for s in shapes_raw:
+        _need(isinstance(s, dict), "A shape must be an object.")
+        w = f"Shape {s.get('id')}"
+        item = {
+            "id": uid(s.get("id"), "shape"), "at_f": _int(s, "at_f", w), "dur_f": _int(s, "dur_f", w, lo=1),
+            "x": _num(s, "x", w, lo=0, hi=1, default=0.0), "y": _num(s, "y", w, lo=0, hi=1, default=0.0),
+            "w": _num(s, "w", w, lo=0.01, hi=1, default=0.5), "h": _num(s, "h", w, lo=0.01, hi=1, default=0.1),
+            "color": _color(s, "color", w, "#000000"), "opacity": _num(s, "opacity", w, lo=0.0, hi=1.0, default=0.6),
+        }
+        _need(item["x"] + item["w"] <= 1.0001 and item["y"] + item["h"] <= 1.0001, f"{w}: it is outside the picture.")
+        shapes.append(item)
+
+    fx_raw = raw.get("effects") or {}
+    _need(isinstance(fx_raw, dict), "Effects must be an object.")
+    bar_raw = fx_raw.get("progress_bar") or {}
+    _need(isinstance(bar_raw, dict), "The progress bar must be an object.")
+    effects = {"progress_bar": {
+        "enabled": bool(bar_raw.get("enabled", False)), "color": _color(bar_raw, "color", "Progress bar", "#38bdf8"),
+        "height_px": _int(bar_raw, "height_px", "Progress bar", lo=0, hi=64, default=0),
+    }}
 
     tracks_raw = raw.get("tracks") or {}
     _need(isinstance(tracks_raw, dict), "Tracks must be an object.")
@@ -231,6 +274,7 @@ def validate(raw: Any) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION, "fps": fps, "width": width, "height": height,
         "background": _color(raw, "background", "Canvas", "#000000"),
         "video": video, "audio": audio, "text": text, "captions": captions, "markers": markers, "tracks": tracks,
+        "shapes": shapes, "effects": effects,
     }
     given = _int(raw, "duration_f", "Project", default=0)
     out["duration_f"] = max(given, end_frame(out))
@@ -260,7 +304,7 @@ def to_job(edit: dict[str, Any], media: dict[str, dict[str, Any]], output: Optio
     worker_edit = {
         "version": 1, "fps": edit["fps"], "width": edit["width"], "height": edit["height"], "duration_f": edit["duration_f"],
         "background": edit["background"], "video": [clip(c) for c in edit["video"]], "audio": [clip(c) for c in edit["audio"]],
-        "text": edit["text"], "captions": edit["captions"],
+        "text": edit["text"], "captions": edit["captions"], "shapes": edit.get("shapes", []), "effects": edit.get("effects", {}),
     }
     return {"inputs": inputs, "edit": worker_edit, "output": output or {}}
 
