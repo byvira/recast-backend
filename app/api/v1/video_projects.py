@@ -66,6 +66,21 @@ def _summary(doc: dict) -> dict:
     }
 
 
+def _preview_fields(row: dict) -> dict:
+    """What the editor plays and draws for one item: the small playable copy, the thumbnail strip with its layout, and the waveform
+    file. Only what exists is given; an item with no preview yet says so and the editor shows "Preparing preview"."""
+    preview = row.get("preview") or {}
+    meta = preview.get("meta") or {}
+    return {
+        "preview_status": row.get("preview_status"),
+        "proxy_url": preview.get("proxy_url"),
+        "strip_url": preview.get("strip_url"),
+        "strip": meta.get("strip") if preview.get("strip_url") else None,
+        "waveform_url": preview.get("waveform_url"),
+        "waveform": meta.get("waveform") if preview.get("waveform_url") else None,
+    }
+
+
 async def _media_map(workspace_id: str, ids: set[str]) -> dict[str, dict]:
     """The library items a project uses, as the editor and the renderer need them. Anything not in this workspace is absent."""
     if not ids:
@@ -81,6 +96,7 @@ async def _media_map(workspace_id: str, ids: set[str]) -> dict[str, dict]:
             "height": r.get("height"), "origin": origin, "origin_label": LABELS.get(origin, ""),
             "contains_ai": bool(r.get("contains_ai")) or origin == "ai", "poster_url": r.get("poster_url"),
             "has_audio": (r.get("probe") or {}).get("audio") is not None if r.get("probe") else None,
+            **_preview_fields(r),
         }
     return out
 

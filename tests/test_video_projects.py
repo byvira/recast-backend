@@ -131,6 +131,25 @@ async def test_a_project_from_a_video_opens_with_the_clip_the_canvas_and_the_fla
     assert out["origin"]["label"] == "Your own"
 
 
+async def test_a_project_hands_the_editor_the_preview_files_that_exist_and_nothing_for_an_item_without_one():
+    ctx = _ctx()
+    ready = await _media(ctx.workspace_id)
+    await media_assets.update_one({"id": ready}, {"$set": {
+        "preview_status": "ready", "poster_url": "https://res.cloudinary.com/x/p.jpg",
+        "preview": {"proxy_url": "https://res.cloudinary.com/x/proxy.mp4", "strip_url": "https://res.cloudinary.com/x/strip.jpg",
+                    "waveform_url": "https://res.cloudinary.com/x/wave.json",
+                    "meta": {"strip": {"count": 5, "columns": 5, "rows": 1, "thumb_width": 160, "thumb_height": 90, "interval_s": 2.0},
+                             "waveform": {"points": 80, "per_second": 8}}}}})
+    plain = await _media(ctx.workspace_id)
+    first = await _call(api.create_project, None, api.CreateBody(source="video", media_id=ready), ctx)
+    m = first["media"][ready]
+    assert m["preview_status"] == "ready" and m["proxy_url"].endswith("proxy.mp4")
+    assert m["strip"]["columns"] == 5 and m["waveform"]["per_second"] == 8 and m["waveform_url"].endswith("wave.json")
+    second = await _call(api.create_project, None, api.CreateBody(source="video", media_id=plain), ctx)
+    n = second["media"][plain]
+    assert n["proxy_url"] is None and n["strip"] is None and n["waveform_url"] is None and n["preview_status"] is None
+
+
 async def test_a_vertical_canvas_over_a_landscape_video_fills_the_sides_with_blur():
     ctx = _ctx()
     mid = await _media(ctx.workspace_id)
