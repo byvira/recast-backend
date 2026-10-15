@@ -15,6 +15,7 @@ FITS = ("cover", "contain", "blur")
 TRACKS = ("video", "audio", "text", "shapes")
 ANIMATIONS = ("none", "fade", "pop", "slide")
 MAX_SHAPES = 200
+MAX_BLEEPS = 500
 DEFAULT_LOOK = {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
 DEFAULT_CROP = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
 ROLES = ("voice", "music", "effect")
@@ -125,7 +126,8 @@ def end_frame(edit: dict[str, Any]) -> int:
 
 
 def media_ids(edit: dict[str, Any]) -> set[str]:
-    return {c["media_id"] for key in ("video", "audio") for c in edit.get(key, []) if c.get("media_id")}
+    # a shape that carries a library item is a picture over the video, so its item is one of the project's files
+    return {c["media_id"] for key in ("video", "audio", "shapes") for c in edit.get(key, []) if c.get("media_id")}
 
 
 def validate(raw: Any) -> dict[str, Any]:
@@ -250,7 +252,11 @@ def validate(raw: Any) -> dict[str, Any]:
             "w": _num(s, "w", w, lo=0.01, hi=1, default=0.5), "h": _num(s, "h", w, lo=0.01, hi=1, default=0.1),
             "color": _color(s, "color", w, "#000000"), "opacity": _num(s, "opacity", w, lo=0.0, hi=1.0, default=0.6),
         }
-        _need(item["x"] + item["w"] <= 1.0001 and item["y"] + item["h"] <= 1.0001, f"{w}: it is outside the picture.")
+        picture = s.get("media_id")
+        if picture is not None:
+            _need(isinstance(picture, str) and bool(picture), f"{w}: the picture must name a library item.")
+            item["media_id"] = picture
+        _need(item["x"] + item["w"] <= 1.0001 and (picture is not None or item["y"] + item["h"] <= 1.0001), f"{w}: it is outside the picture.")
         shapes.append(item)
 
     fx_raw = raw.get("effects") or {}
@@ -261,6 +267,18 @@ def validate(raw: Any) -> dict[str, Any]:
         "enabled": bool(bar_raw.get("enabled", False)), "color": _color(bar_raw, "color", "Progress bar", "#38bdf8"),
         "height_px": _int(bar_raw, "height_px", "Progress bar", lo=0, hi=64, default=0),
     }}
+
+    bleeps_raw = raw.get("bleeps", [])
+    _need(isinstance(bleeps_raw, list), "bleeps must be a list.")
+    _need(len(bleeps_raw) <= MAX_BLEEPS, f"A project can hold at most {MAX_BLEEPS} bleeps.")
+    bleeps: list[dict[str, int]] = []
+    for b in bleeps_raw:
+        _need(isinstance(b, dict), "A bleep must be an object.")
+        s_ms, e_ms = b.get("s_ms"), b.get("e_ms")
+        _need(isinstance(s_ms, int) and isinstance(e_ms, int) and not isinstance(s_ms, bool) and not isinstance(e_ms, bool)
+              and 0 <= s_ms < e_ms, "A bleep needs a start and an end in milliseconds, with the start first.")
+        bleeps.append({"s_ms": s_ms, "e_ms": e_ms})
+    bleeps.sort(key=lambda x: (x["s_ms"], x["e_ms"]))
 
     tracks_raw = raw.get("tracks") or {}
     _need(isinstance(tracks_raw, dict), "Tracks must be an object.")
@@ -274,7 +292,7 @@ def validate(raw: Any) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION, "fps": fps, "width": width, "height": height,
         "background": _color(raw, "background", "Canvas", "#000000"),
         "video": video, "audio": audio, "text": text, "captions": captions, "markers": markers, "tracks": tracks,
-        "shapes": shapes, "effects": effects,
+        "shapes": shapes, "effects": effects, "bleeps": bleeps,
     }
     given = _int(raw, "duration_f", "Project", default=0)
     out["duration_f"] = max(given, end_frame(out))
@@ -304,7 +322,15 @@ def to_job(edit: dict[str, Any], media: dict[str, dict[str, Any]], output: Optio
     worker_edit = {
         "version": 1, "fps": edit["fps"], "width": edit["width"], "height": edit["height"], "duration_f": edit["duration_f"],
         "background": edit["background"], "video": [clip(c) for c in edit["video"]], "audio": [clip(c) for c in edit["audio"]],
-        "text": edit["text"], "captions": edit["captions"], "shapes": edit.get("shapes", []), "effects": edit.get("effects", {}),
+        "text": edit["text"], "captions": edit["captions"], "effects": edit.get("effects", {}),
+        "bleeps": edit.get("bleeps", []),
+        # a plain coloured box is a shape; one that carries a library item is a picture over the video
+        "shapes": [s for s in edit.get("shapes", []) if not s.get("media_id")],
+        "pictures": [
+            {"id": s["id"], "src": keys[s["media_id"]], "at_f": s["at_f"], "dur_f": s["dur_f"], "x": s["x"], "y": s["y"], "w": s["w"],
+             "opacity": s["opacity"]}
+            for s in edit.get("shapes", []) if s.get("media_id")
+        ],
     }
     return {"inputs": inputs, "edit": worker_edit, "output": output or {}}
 

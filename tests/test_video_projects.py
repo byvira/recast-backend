@@ -413,3 +413,57 @@ def test_bad_caption_style_shapes_and_effects_are_refused(change, words):
     change(e)
     with pytest.raises(edl.EditError, match=words):
         edl.validate(e)
+
+
+# ── pictures over the video and bleeps ────────────────────────────────────────────────────────────────────────────────────
+
+def test_bleeps_are_kept_in_time_order_and_checked():
+    e = _edit()
+    e["bleeps"] = [{"s_ms": 5000, "e_ms": 5400}, {"s_ms": 1000, "e_ms": 1300}]
+    out = edl.validate(e)
+    assert [b["s_ms"] for b in out["bleeps"]] == [1000, 5000]
+    assert edl.validate(out) == out
+    for bad in ([{"s_ms": 500, "e_ms": 400}], [{"s_ms": -1, "e_ms": 10}], [{"s_ms": "a", "e_ms": 10}], ["x"]):
+        e = _edit()
+        e["bleeps"] = bad
+        with pytest.raises(edl.EditError):
+            edl.validate(e)
+    e = _edit()
+    e["bleeps"] = [{"s_ms": i * 10, "e_ms": i * 10 + 5} for i in range(501)]
+    with pytest.raises(edl.EditError, match="at most"):
+        edl.validate(e)
+
+
+def test_a_shape_with_a_library_item_is_a_picture_and_goes_to_the_worker_as_one():
+    e = _edit()
+    e["shapes"] = [
+        {"id": "s1", "at_f": 0, "dur_f": 60, "x": 0.0, "y": 0.8, "w": 1.0, "h": 0.1},
+        {"id": "p1", "at_f": 30, "dur_f": 90, "x": 0.7, "y": 0.05, "w": 0.25, "h": 0.25, "media_id": "logo", "opacity": 0.9},
+    ]
+    out = edl.validate(e)
+    assert edl.media_ids(out) == {"m1", "logo"}
+    job = edl.to_job(out, {"m1": {"url": "https://x/v.mp4", "kind": "video"}, "logo": {"url": "https://x/logo.png", "kind": "image"}})
+    assert [s["id"] for s in job["edit"]["shapes"]] == ["s1"]
+    pic = job["edit"]["pictures"][0]
+    assert pic["id"] == "p1" and pic["w"] == 0.25 and pic["opacity"] == 0.9
+    assert job["inputs"][pic["src"]]["kind"] == "image"
+
+
+async def test_only_a_library_picture_can_go_over_the_video():
+    ctx = _ctx()
+    mid = await _media(ctx.workspace_id)
+    logo = await _media(ctx.workspace_id, kind="image")
+    sound = await _media(ctx.workspace_id, kind="audio")
+    proj = await _call(api.create_project, None, api.CreateBody(source="video", media_id=mid), ctx)
+    edit = copy.deepcopy(proj["edit"])
+    edit["shapes"] = [{"id": "p1", "at_f": 0, "dur_f": 60, "x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2, "media_id": logo}]
+    saved = await _call(api.save_project, None, proj["id"], api.SaveBody(edit=edit, base_version=1), ctx)
+    assert saved["version"] == 2 and saved["media"][logo]["kind"] == "image"
+    edit["shapes"][0]["media_id"] = sound
+    with pytest.raises(HTTPException) as caught:
+        await _call(api.save_project, None, proj["id"], api.SaveBody(edit=edit, base_version=2), ctx)
+    assert caught.value.status_code == 400 and "must be a picture" in caught.value.detail
+    edit["shapes"][0]["media_id"] = f"someone-elses-{uuid4()}"
+    with pytest.raises(HTTPException) as other:
+        await _call(api.save_project, None, proj["id"], api.SaveBody(edit=edit, base_version=2), ctx)
+    assert other.value.status_code == 400

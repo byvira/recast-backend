@@ -126,6 +126,11 @@ async def _check_media(workspace_id: str, edit: dict) -> None:
     have = set((await _media_map(workspace_id, wanted)).keys())
     if wanted - have:
         raise HTTPException(status_code=400, detail="A clip uses a file that is not in this workspace's library.")
+    pictures = {s["media_id"] for s in edit.get("shapes", []) if s.get("media_id")}
+    if pictures:
+        found = await _media_map(workspace_id, pictures)
+        if any(found.get(i, {}).get("kind") != "image" for i in pictures):
+            raise HTTPException(status_code=400, detail="A picture over the video must be a picture from the library.")
 
 
 async def _write_version(doc: dict, kind: str, label: str, user_id: str) -> None:
