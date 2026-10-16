@@ -824,7 +824,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
                     publish_scheduled_at=latest_piece.get("publish_scheduled_at"),
                     publish_target=latest_piece.get("publish_target"),
                     intended_publish_at=latest_piece.get("intended_publish_at"),
-                    extra_fields={"language": state.get("language") or None},
+                    extra_fields={"language": state.get("language") or None, "origin": "ai", "contains_ai": True},
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(

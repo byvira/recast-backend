@@ -878,6 +878,7 @@ async def _run_single_repurpose(
             # get_calendar never matches.
             publish_status="pending",
             intended_publish_at=to_utc_datetime(scheduled_at) if schedule_mode == "scheduled" else None,
+            extra_fields={"origin": "ai", "contains_ai": True},
         )
     except Exception as exc:
         logger.error(
