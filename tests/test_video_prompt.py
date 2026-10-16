@@ -189,7 +189,9 @@ async def test_making_the_video_saves_the_clips_speaks_each_scene_and_opens_a_pr
     ], "size": "vertical", "title": "Weekly plan", "prompt": "A calm way to plan your week"}
     started = await client.post("/api/v1/video-prompt/make", json=body, headers=_h(ws))
     assert started.status_code == 202, started.text
-    run = await _wait(client, ws, started.json()["run"]["id"])
+    # the app's job waiter reads the run itself from the answer, so it must not be wrapped
+    assert started.json()["status"] in ("queued", "running") and started.json()["kind"] == "video"
+    run = await _wait(client, ws, started.json()["id"])
     assert run["status"] == "done", run
     project_id = run["result"]["data"]["project_id"] if "result" in run else run["data"]["project_id"]
     assert calls["download"] == 1 and len(h.spoken) == 2
@@ -224,7 +226,7 @@ async def test_a_failed_voice_removes_what_the_run_had_saved(signup_user, fakes,
     started = await client.post("/api/v1/video-prompt/make", json={"scenes": [
         {"narration": "Plan your week.", "clip": None}, {"narration": "Start with one thing.", "clip": None}]}, headers=_h(ws))
     assert started.status_code == 202
-    run = await _wait(client, ws, started.json()["run"]["id"])
+    run = await _wait(client, ws, started.json()["id"])
     assert run["status"] in ("failed", "error"), run
     assert await media_assets.count_documents({"workspace_id": ws, "kind": "audio"}) == before
     assert len(h.forgotten) == 1

@@ -121,7 +121,7 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
             steps_total=len(body.scenes) * 2 + 2, href="/dashboard/pipelines/video", active_key=f"video-prompt:{ctx.workspace_id}",
         )
     except pipeline_runs.RunAlreadyActive as exc:
-        return {"run": pipeline_runs.public(exc.existing)}
+        return pipeline_runs.public(exc.existing)
 
     async def work(row: dict) -> dict:
         from app.api.v1.video_projects import insert_project
@@ -196,4 +196,4 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
         return {"data": {"project_id": project["id"], "missing_footage": missing_footage}, "href": f"/dashboard/editor/video/{project['id']}"}
 
     pipeline_runs.start(run, work, interrupt_on_cancel=True)
-    return {"run": pipeline_runs.public(run)}
+    return pipeline_runs.public(run)
