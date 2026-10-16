@@ -58,8 +58,9 @@ async def test_another_workspace_cannot_see_or_change_notes(signup_user):
 
 
 async def test_a_video_project_can_have_notes_but_only_inside_its_own_workspace(signup_user):
-    from app.db.mongo import video_projects
+    from app.db.mongo import get_db
 
+    video_projects = get_db()["video_projects"]
     client, ws, _ = await _piece(signup_user)
     head = {"X-Workspace-Id": ws}
     vid = uuid4().hex
@@ -73,3 +74,10 @@ async def test_a_video_project_can_have_notes_but_only_inside_its_own_workspace(
     await video_projects.update_one({"id": vid}, {"$set": {"deleted": True}})
     assert (await client.post("/api/v1/editor-comments", json={"target_type": "video", "target_id": vid, "text": "x"}, headers=head)).status_code == 404
     assert (await client.post("/api/v1/editor-comments", json={"target_type": "video", "target_id": uuid4().hex, "text": "x"}, headers=head)).status_code == 404
+
+
+async def test_a_post_written_in_the_editor_is_marked_as_the_members_own(signup_user):
+    client, ws, pid = await _piece(signup_user)
+    got = await client.get(f"/api/v1/content/pieces/{pid}", headers={"X-Workspace-Id": ws})
+    assert got.status_code == 200
+    assert got.json()["origin"] == "own" and got.json()["contains_ai"] is False

@@ -955,6 +955,7 @@ async def create_manual_piece(
         session_id=session_id, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
         brand_id=body.brand_id, platform=platform_enum.value,
         content=content, word_count=len(content.split()), char_count=len(content),
+        extra_fields={"origin": "own", "contains_ai": False},
     )
     return RegenerateResponse(platform=body.platform, content=content, piece_id=piece_id)
 

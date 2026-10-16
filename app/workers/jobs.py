@@ -36,6 +36,7 @@ from app.workers.run_reminders import remind_about_paused_runs
 from app.workers.scheduled_posts import process_scheduled_posts
 from app.workers.support_lifecycle import support_lifecycle_tick
 from app.workers.token_refresh import refresh_expiring_tokens
+from app.workers.editor_notes_purge import purge_orphan_notes_job
 from app.workers.workspace_purge import purge_deleted_workspaces
 from app.video.retention import continue_video_transcripts, run_video_retention
 
@@ -77,6 +78,8 @@ JOBS: list[Job] = [
     Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=_every(15, offset=11)),
     # Workspaces deleted more than 30 days ago are removed for good, with everything they owned — daily.
     Job("workspace_purge", _no_ctx(purge_deleted_workspaces), minute=frozenset({23}), hour=frozenset({4})),
+    # Notes on posts, recordings, pictures and videos that are gone are removed — daily.
+    Job("editor_notes_purge", _no_ctx(purge_orphan_notes_job), minute=frozenset({41}), hour=frozenset({4})),
     # Long video transcripts waiting for the free speech allowance carry on by themselves.
     Job("video_transcripts", _no_ctx(continue_video_transcripts), minute=_every(10, offset=7)),
     # Unfinished video uploads, orphaned previews and old render records — daily.

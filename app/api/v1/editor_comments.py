@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from app.core.middleware import limiter
 from app.core.rbac import assert_permission
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import audio_assets, content_pieces, get_db, image_assets, video_projects
+from app.db.mongo import audio_assets, content_pieces, get_db, image_assets
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -43,12 +43,12 @@ def _iso(v: Any) -> Optional[str]:
 
 async def _target_exists(target_type: str, target_id: str, workspace_id: str) -> bool:
     if target_type == "piece":
-        return bool(await content_pieces.find_one({"piece_id": target_id, "workspace_id": workspace_id}, {"_id": 1}))
+        return bool(await content_pieces.find_one({"piece_id": target_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}, {"_id": 1}))
     if target_type == "audio":
-        return bool(await audio_assets.find_one({"id": target_id, "workspace_id": workspace_id}, {"_id": 1}))
+        return bool(await audio_assets.find_one({"id": target_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}, {"_id": 1}))
     if target_type == "video":
-        return bool(await video_projects.find_one({"id": target_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}, {"_id": 1}))
-    return bool(await image_assets.find_one({"id": target_id, "workspace_id": workspace_id}, {"_id": 1}))
+        return bool(await get_db()["video_projects"].find_one({"id": target_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}, {"_id": 1}))
+    return bool(await image_assets.find_one({"id": target_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}, {"_id": 1}))
 
 
 def _view(c: dict) -> dict[str, Any]:
