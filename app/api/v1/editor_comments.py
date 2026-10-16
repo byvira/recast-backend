@@ -1,6 +1,6 @@
-"""Comments on a piece of work inside the workspace: a post, a recording or a picture. One small model for all three editors, so a
-note, a reply and "mark as done" behave the same everywhere. (A finished video has its own review links for people outside the
-workspace; this is for the team.)
+"""Comments on a piece of work inside the workspace: a post, a recording, a picture or a video project. One small model for all four editors,
+so a note, a reply and "mark as done" behave the same everywhere. (A video also has review links for people outside the workspace;
+this is for the team.)
 
 Anyone in the workspace may read and write comments, because a reviewer who cannot edit is exactly who comments. Marking a comment
 done and deleting one are for members who can edit content, and a person may always delete their own."""
@@ -16,12 +16,12 @@ from pydantic import BaseModel, Field
 from app.core.middleware import limiter
 from app.core.rbac import assert_permission
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import audio_assets, content_pieces, get_db, image_assets
+from app.db.mongo import audio_assets, content_pieces, get_db, image_assets, video_projects
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-TargetType = Literal["piece", "audio", "image"]
+TargetType = Literal["piece", "audio", "image", "video"]
 MAX_PER_TARGET = 300
 MAX_REPLIES = 100
 
@@ -46,6 +46,8 @@ async def _target_exists(target_type: str, target_id: str, workspace_id: str) ->
         return bool(await content_pieces.find_one({"piece_id": target_id, "workspace_id": workspace_id}, {"_id": 1}))
     if target_type == "audio":
         return bool(await audio_assets.find_one({"id": target_id, "workspace_id": workspace_id}, {"_id": 1}))
+    if target_type == "video":
+        return bool(await video_projects.find_one({"id": target_id, "workspace_id": workspace_id, "deleted": {"$ne": True}}, {"_id": 1}))
     return bool(await image_assets.find_one({"id": target_id, "workspace_id": workspace_id}, {"_id": 1}))
 
 

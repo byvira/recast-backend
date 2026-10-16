@@ -55,3 +55,21 @@ async def test_another_workspace_cannot_see_or_change_notes(signup_user):
     assert (await other.get("/api/v1/editor-comments", params={"target_type": "piece", "target_id": pid}, headers=head)).status_code == 404
     assert (await other.put(f"/api/v1/editor-comments/{note['id']}/resolved", json={"resolved": True}, headers=head)).status_code == 404
     assert (await other.delete(f"/api/v1/editor-comments/{note['id']}", headers=head)).status_code == 404
+
+
+async def test_a_video_project_can_have_notes_but_only_inside_its_own_workspace(signup_user):
+    from app.db.mongo import video_projects
+
+    client, ws, _ = await _piece(signup_user)
+    head = {"X-Workspace-Id": ws}
+    vid = uuid4().hex
+    await video_projects.insert_one({"id": vid, "workspace_id": ws, "title": "Launch", "deleted": False})
+    made = await client.post("/api/v1/editor-comments", json={"target_type": "video", "target_id": vid, "text": "Cut the intro", "anchor": {"time_ms": 4200}}, headers=head)
+    assert made.status_code == 201, made.text
+    assert made.json()["anchor"] == {"time_ms": 4200}
+    listed = (await client.get("/api/v1/editor-comments", params={"target_type": "video", "target_id": vid}, headers=head)).json()
+    assert listed["open"] == 1
+
+    await video_projects.update_one({"id": vid}, {"$set": {"deleted": True}})
+    assert (await client.post("/api/v1/editor-comments", json={"target_type": "video", "target_id": vid, "text": "x"}, headers=head)).status_code == 404
+    assert (await client.post("/api/v1/editor-comments", json={"target_type": "video", "target_id": uuid4().hex, "text": "x"}, headers=head)).status_code == 404
