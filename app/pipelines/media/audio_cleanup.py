@@ -24,7 +24,7 @@ import pyloudnorm as pyln
 import soundfile as sf
 
 from app.pipelines.media.audio_budget import check_fits
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from scipy.signal import butter, sosfilt, sosfiltfilt
 
 MAX_SECONDS = 30 * 60
@@ -47,20 +47,31 @@ class CleanupSettings(BaseModel):
     room_tone_fill: bool = False                                                  # needs a real cut to fill
     remove_echo: bool = False                                                     # real external call, see module docstring
     gain_db: Optional[float] = Field(default=None, ge=-12.0, le=12.0)             # plain volume change, after everything else
+    cut_ranges: list[tuple[float, float]] = Field(default_factory=list, max_length=200)  # sections the member chose to remove, in seconds
+    fade_in_s: Optional[float] = Field(default=None, ge=0.05, le=10.0)            # volume rises from silence at the start
+    fade_out_s: Optional[float] = Field(default=None, ge=0.05, le=10.0)           # volume falls to silence at the end
+
+    @field_validator("cut_ranges")
+    @classmethod
+    def _sane_ranges(cls, ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        for start, end in ranges:
+            if start < 0 or end <= start or end - start > 14400:
+                raise ValueError("Each section to cut needs a start before its end, in seconds.")
+        return ranges
 
     def is_empty_without_echo(self) -> bool:
         """True when echo reduction is the only thing chosen, so skipping it would leave nothing to do."""
         return not any((
             self.noise_reduction, self.target_lufs, self.highpass_hz, self.lowpass_hz,
             self.compressor, self.de_esser, self.silence_trim_s, self.remove_fillers,
-            self.mouth_click_removal, self.room_tone_fill, self.gain_db,
+            self.mouth_click_removal, self.room_tone_fill, self.gain_db, self.cut_ranges, self.fade_in_s, self.fade_out_s,
         ))
 
     def is_empty(self) -> bool:
         return not any((
             self.noise_reduction, self.target_lufs, self.highpass_hz, self.lowpass_hz,
             self.compressor, self.de_esser, self.silence_trim_s, self.remove_fillers,
-            self.mouth_click_removal, self.room_tone_fill, self.remove_echo, self.gain_db,
+            self.mouth_click_removal, self.room_tone_fill, self.remove_echo, self.gain_db, self.cut_ranges, self.fade_in_s, self.fade_out_s,
         ))
 
 
@@ -344,7 +355,16 @@ def apply_cleanup(
         applied["silence_trim_s"] = settings.silence_trim_s
         applied["gaps_shortened"] = len(found)
         cuts += found
+    if settings.cut_ranges:
+        total = data.shape[0] / sr
+        chosen = [(max(0.0, a), min(total, b)) for a, b in settings.cut_ranges if a < total]
+        if not chosen:
+            raise CleanupError("The sections to cut are past the end of this recording.")
+        applied["sections_cut"] = len(chosen)
+        cuts += chosen
     cuts = _merge(cuts)
+    if cuts and sum(e - s for s, e in cuts) >= data.shape[0] / sr - 0.05:
+        raise CleanupError("That would remove the whole recording. Keep at least a little of it.")
     if cuts:
         applied["crossfade_ms"] = settings.crossfade_ms
         seconds_removed = sum(e - s for s, e in cuts)
@@ -379,6 +399,18 @@ def apply_cleanup(
     for key in ("highpass_hz", "lowpass_hz", "noise_reduction", "de_esser", "compressor", "mouth_click_removal"):
         if getattr(settings, key):
             applied[key] = getattr(settings, key)
+
+    # fades shape the start and end of what is kept, before loudness is measured
+    for key, edge in (("fade_in_s", "in"), ("fade_out_s", "out")):
+        seconds = getattr(settings, key)
+        if not seconds:
+            continue
+        n = min(out.shape[0], int(sr * seconds))
+        ramp = np.linspace(0.0, 1.0, n, dtype="float32") if edge == "in" else np.linspace(1.0, 0.0, n, dtype="float32")
+        sl = slice(0, n) if edge == "in" else slice(out.shape[0] - n, out.shape[0])
+        out = out.copy()
+        out[sl] = out[sl] * ramp[:, None]
+        applied[key] = seconds
 
     # 3. Loudness last, so nothing before it undoes it.
     if settings.target_lufs is not None:
