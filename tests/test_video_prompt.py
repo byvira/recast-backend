@@ -151,7 +151,7 @@ async def test_without_a_stock_library_the_draft_says_so_and_still_has_the_words
     res = await client.post("/api/v1/video-prompt/draft", json={"prompt": "A calm way to plan your week"}, headers=_h(ws))
     assert res.status_code == 200
     body = res.json()
-    assert body["connected"] is False and "No stock library" in body["note"] and all(s["options"] == [] for s in body["scenes"])
+    assert body["connected"] is False and "No stock footage library" in body["note"] and all(s["options"] == [] for s in body["scenes"])
 
 
 async def test_a_script_with_no_scenes_is_an_honest_error(signup_user, fakes, monkeypatch):

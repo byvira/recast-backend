@@ -73,7 +73,7 @@ async def draft(request: Request, body: DraftBody, ctx: WorkspaceContext = Depen
     return {
         "id": saved["id"], "scenes": out, "total_seconds": result.get("total_seconds"), "connected": bool(connected), "size": body.size,
         "complete": saved["complete"], "problems": (saved["meta"].get("problems") or [])[:4],
-        "note": None if connected else "No stock library is connected yet, so scenes will show the background colour. Your own words and voice still work.",
+        "note": None if connected else "No stock footage library is connected on this server yet, so no footage can be suggested.",
     }
 
 
