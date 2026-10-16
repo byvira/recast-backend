@@ -85,6 +85,8 @@ async def test_repurposed_piece_is_real_and_fetchable(signup_user, mock_llm):
     assert piece["platform"] == "Instagram"
     assert piece["approval_status"] == "pending"
     assert piece["stage"] == "drafting"
+    # a repurposed post is made by AI, and says so
+    assert piece["origin"] == "ai" and piece["contains_ai"] is True
 
 
 async def test_repurposed_piece_appears_on_the_calendar(signup_user, mock_llm):
