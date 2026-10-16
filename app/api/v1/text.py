@@ -13,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from app.core.middleware import limiter
 from app.shared.activity.runs import brand_label, run_label, tracked_run
@@ -657,6 +658,42 @@ async def _timestamps_from_recording(body: ApplyChipRequest, ctx: WorkspaceConte
         "char_count": len(refined),
         "changed": refined != body.content,
     }
+
+
+class ReaderReviewRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=20000)
+    platform: str = Field(..., min_length=1, max_length=60)
+    brand_id: str = Field(..., min_length=1, max_length=80)
+
+
+@router.post("/reader-review")
+@limiter.limit("10/minute")
+async def reader_review(
+    request: Request,
+    body: ReaderReviewRequest,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict:
+    """What a reader from the brand's audience would make of this post, as advice: what they took away, whether it works, what helped, what to
+    change and what they still wonder. It is asked for by the writer (never run by itself), nothing is saved, and the post is not rewritten."""
+    from app.agents.supervisor.service import assert_ai_budget_available
+    from app.pipelines.text import reader_review as reader
+    from app.pipelines.text.generator import build_language_instruction
+    from app.shared.llm import set_usage_workspace
+
+    text = body.content.strip()
+    if len(text.split()) < reader.MIN_WORDS:
+        raise HTTPException(status_code=400, detail="Write a little more first. A reader needs a few words to react to.")
+    brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
+    brand_context = build_brand_context(brand_profile)
+    language = await _resolve_request_language(None, ctx, content_for_detection=text, brand_id=body.brand_id)
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+    result = await reader.review(
+        content=text, platform_label=body.platform, brand_context=brand_context, language_line=build_language_instruction(language),
+    )
+    if result is None:
+        raise HTTPException(status_code=502, detail="Couldn't get a reader's reaction right now. Try again.")
+    return result
 
 
 @router.post("/refine", response_model=ApplyChipResponse)
