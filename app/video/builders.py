@@ -185,3 +185,67 @@ def clip_from_video(
 
 def blank_project(size: str = "landscape") -> dict[str, Any]:
     return edl.validate(edl.blank(size))
+
+
+MAX_BEATS = 12
+BEAT_GAP_S = 0.35
+MAX_REPEATS = 8
+
+
+def from_beats(
+    *, beats: list[dict[str, Any]], size: str = "vertical", accent: str = "#38bdf8", background: str = "#0f172a", captions: bool = True,
+) -> dict[str, Any]:
+    """A short video made from a script: one scene for each beat. A beat is {"text", "on_screen", "voice": [{"media_id", "seconds"}],
+    "clip": {"media_id", "seconds"} or None}. A scene lasts as long as its spoken parts (plus a short breath), its footage plays from
+    the start and repeats when it is shorter than the scene, and a scene with no footage shows the background colour. Captions follow
+    the voice."""
+    from app.video.narrate import plan as narrate_plan
+
+    if not beats:
+        raise edl.EditError("There are no scenes to make a video from.")
+    if len(beats) > MAX_BEATS:
+        raise edl.EditError(f"A video made from a script can have at most {MAX_BEATS} scenes.")
+    fps = {"num": 30, "den": 1}
+    edit = edl.blank(size, fps)
+    edit["background"] = background if len(background) == 7 and background.startswith("#") else "#0f172a"
+    video: list[dict[str, Any]] = []
+    audio: list[dict[str, Any]] = []
+    text: list[dict[str, Any]] = []
+    words: list[dict[str, Any]] = []
+    at = 0
+    for n, beat in enumerate(beats):
+        parts = beat.get("voice") or []
+        spoken_s = sum(float(p["seconds"]) for p in parts)
+        if spoken_s <= 0:
+            raise edl.EditError(f"Scene {n + 1} has no spoken part.")
+        scene_f = max(1, edl.seconds_to_frames(spoken_s + BEAT_GAP_S, fps))
+        cursor = at
+        for k, part in enumerate(parts):
+            part_f = max(1, edl.seconds_to_frames(float(part["seconds"]), fps))
+            audio.append({
+                "id": f"v{n + 1}_{k + 1}", "media_id": part["media_id"], "at_f": cursor, "dur_f": part_f, "src_in_f": 0, "speed": 1.0,
+                "gain_db": 0.0, "role": "voice", "fade_in_f": 0, "fade_out_f": 0, "duck": False,
+            })
+            cursor += part_f
+        clip = beat.get("clip")
+        if clip and float(clip.get("seconds") or 0) > 0:
+            own_f = max(1, edl.seconds_to_frames(float(clip["seconds"]), fps))
+            pos, tries = 0, 0
+            while pos < scene_f and tries < MAX_REPEATS:
+                seg = min(own_f, scene_f - pos)
+                video.append({
+                    "id": f"c{n + 1}_{tries + 1}", "media_id": clip["media_id"], "at_f": at + pos, "dur_f": seg, "src_in_f": 0, "speed": 1.0,
+                    "fit": "cover", "fade_in_f": min(6, seg // 4) if (n or tries) else 0, "fade_out_f": 0, "audio": False, "gain_db": 0.0,
+                })
+                pos += seg
+                tries += 1
+        label = str(beat.get("on_screen") or "").strip()
+        if label:
+            text.append({"id": f"t{n + 1}", "text": label[:80], "at_f": at, "dur_f": scene_f, "x": 0.5, "y": 0.14, "size": 56, "color": "#FFFFFF", "bold": True})
+        if captions:
+            words.extend(narrate_plan.caption_words(str(beat.get("text") or ""), int(at / 30 * 1000), int(spoken_s * 1000)))
+        at += scene_f
+    edit["video"], edit["audio"], edit["text"] = video, audio, text
+    edit["captions"] = {"enabled": bool(words), "accent": accent if len(accent) == 7 else "#38bdf8", "words": words}
+    edit["duration_f"] = at
+    return edl.validate(edit)

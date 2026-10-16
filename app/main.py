@@ -406,6 +406,8 @@ from app.api.v1 import editor_comments as editor_comments_router
 app.include_router(editor_comments_router.router, prefix="/api/v1/editor-comments", tags=["Editor comments"])
 from app.api.v1 import video_create as video_create_router
 app.include_router(video_create_router.router, prefix="/api/v1/video-create", tags=["Video create"])
+from app.api.v1 import video_prompt as video_prompt_router
+app.include_router(video_prompt_router.router, prefix="/api/v1/video-prompt", tags=["Video from a description"])
 from app.api.v1 import video_narrate as video_narrate_router
 app.include_router(video_narrate_router.router, prefix="/api/v1/video-narrate", tags=["Video voices"])
 from app.api.v1 import video_stock as video_stock_router

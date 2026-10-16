@@ -269,14 +269,19 @@ async def create_project(request: Request, body: CreateBody, ctx: WorkspaceConte
     except edl.EditError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    return await insert_project(ctx.workspace_id, ctx.user_id, title, edit, created_from)
+
+
+async def insert_project(workspace_id: str, user_id: str, title: str, edit: dict, created_from: dict) -> dict:
+    """Saves a new project that starts from `edit` and returns it as the editor opens it."""
     now = _now()
     doc = {
-        "id": str(uuid4()), "workspace_id": ctx.workspace_id, "title": title or "Untitled video", "edit": edit, "initial_edit": edit,
-        "version": 1, "status": "draft", "created_from": created_from, "created_by": ctx.user_id, "created_at": now, "updated_at": now,
+        "id": str(uuid4()), "workspace_id": workspace_id, "title": title or "Untitled video", "edit": edit, "initial_edit": edit,
+        "version": 1, "status": "draft", "created_from": created_from, "created_by": user_id, "created_at": now, "updated_at": now,
         "last_render": None,
     }
     await _projects().insert_one(dict(doc))
-    await _write_version(doc, "save", "Start", ctx.user_id)
+    await _write_version(doc, "save", "Start", user_id)
     return await _open(doc)
 
 
