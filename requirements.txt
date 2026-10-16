@@ -31,6 +31,7 @@ redis[asyncio]==5.2.0
 # HTTP
 # ─────────────────────────────────────────
 httpx==0.27.2
+huggingface_hub==1.33.0  # AI-made video clips through Hugging Face Inference Providers
 
 # ─────────────────────────────────────────
 # LLM — Groq primary, Gemini fallback

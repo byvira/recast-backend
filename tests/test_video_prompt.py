@@ -230,3 +230,117 @@ async def test_a_failed_voice_removes_what_the_run_had_saved(signup_user, fakes,
     assert run["status"] in ("failed", "error"), run
     assert await media_assets.count_documents({"workspace_id": ws, "kind": "audio"}) == before
     assert len(h.forgotten) == 1
+
+
+# ── AI clips ─────────────────────────────────────────────────────────────────────
+
+from app.video import clipgen  # noqa: E402
+
+
+@pytest.fixture
+def ai_on(monkeypatch):
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_API_TOKEN", "t", raising=False)
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B", raising=False)
+
+
+async def _fake_clip(*, workspace_id, user_id, prompt):
+    media = MediaAsset(
+        id=str(uuid4()), workspace_id=workspace_id, kind=MediaKind.VIDEO, url=f"https://res.cloudinary.com/democloud/video/upload/v1/{uuid4().hex}.mp4",
+        mime_type="video/mp4", duration_s=5.0, source=MediaSource.AI_GENERATED, created_by=user_id, created_at=datetime.now(timezone.utc),
+    )
+    await media_assets.insert_one(media.model_dump())
+    return media
+
+
+def test_ai_clips_are_off_until_a_model_is_set(monkeypatch):
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_API_TOKEN", "t", raising=False)
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_VIDEO_MODEL", "", raising=False)
+    assert clipgen.enabled() is False and clipgen.summary()["available"] is False
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B", raising=False)
+    assert clipgen.enabled() is True and clipgen.summary()["model"] == "Wan-AI/Wan2.2-TI2V-5B"
+
+
+async def test_generating_a_clip_returns_its_bytes_and_every_failure_is_one_plain_message(ai_on, monkeypatch):
+    monkeypatch.setattr(clipgen, "_call", lambda prompt: b"x" * 5000)
+    assert len(await clipgen.generate("a person writing a plan at a desk")) == 5000
+    with pytest.raises(clipgen.ClipGenError):
+        await clipgen.generate("  ")
+
+    class Boom(Exception):
+        def __init__(self, status):
+            self.response = type("R", (), {"status_code": status})()
+
+    def fail(status):
+        def inner(prompt):
+            raise Boom(status)
+        return inner
+
+    for status, words in ((402, "run out of credit"), (403, "did not accept"), (429, "busy"), (500, "could not be made")):
+        monkeypatch.setattr(clipgen, "_call", fail(status))
+        with pytest.raises(clipgen.ClipGenError) as err:
+            await clipgen.generate("a sunrise over a desk")
+        assert words in str(err.value)
+    monkeypatch.setattr(clipgen, "_call", lambda prompt: b"tiny")
+    with pytest.raises(clipgen.ClipGenError):
+        await clipgen.generate("a sunrise over a desk")
+
+
+async def test_a_made_clip_is_saved_to_the_library_as_ai_generated(ai_on):
+    async def upload(data, kind, user_id, filename=""):
+        return {"url": "https://res.cloudinary.com/democloud/video/upload/v1/clip.mp4", "width": 480, "height": 270, "duration_s": 5.2, "bytes": len(data)}
+
+    media = await clipgen.save(workspace_id="ws-ai", user_id="u1", data=b"x" * 3000, prompt="a sunrise", upload=upload)
+    row = await media_assets.find_one({"id": media.id})
+    assert row["origin"] == "ai" and row["contains_ai"] is True and row["duration_s"] == 5.2
+
+
+async def test_the_draft_says_whether_ai_clips_are_available(signup_user, fakes, monkeypatch):
+    client, ws = await _setup(signup_user)
+    off = (await client.post("/api/v1/video-prompt/draft", json={"prompt": "A calm way to plan your week"}, headers=_h(ws))).json()
+    assert off["ai"]["available"] is False
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_API_TOKEN", "t", raising=False)
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B", raising=False)
+    on = (await client.post("/api/v1/video-prompt/draft", json={"prompt": "A calm way to plan your week"}, headers=_h(ws))).json()
+    assert on["ai"]["available"] is True and on["ai"]["seconds_each"] == 5.0
+
+
+async def test_an_ai_scene_becomes_footage_and_a_failed_one_goes_without(signup_user, fakes, ai_on, monkeypatch):
+    calls, h = fakes
+    client, ws = await _setup(signup_user)
+    made = []
+
+    async def make_clip(*, workspace_id, user_id, prompt):
+        made.append(prompt)
+        if "fail" in prompt:
+            raise clipgen.ClipGenError("The video service is busy. Try again in a few minutes.")
+        return await _fake_clip(workspace_id=workspace_id, user_id=user_id, prompt=prompt)
+
+    monkeypatch.setattr(clipgen, "make_clip", make_clip)
+    started = await client.post("/api/v1/video-prompt/make", json={"scenes": [
+        {"narration": "Plan your week in ten minutes.", "ai_prompt": "a person writing a plan at a desk"},
+        {"narration": "Start with the one thing that matters.", "ai_prompt": "this one will fail"},
+        {"narration": "Then share it with your team.", "clip": None},
+    ]}, headers=_h(ws))
+    assert started.status_code == 202, started.text
+    run = await _wait(client, ws, started.json()["id"])
+    assert run["status"] == "done", run
+    data = run["result"]["data"]
+    assert made == ["a person writing a plan at a desk", "this one will fail"]
+    assert data["missing_footage"] == 1 and "busy" in data["footage_note"]
+    proj = (await client.get(f"/api/v1/video-projects/{data['project_id']}", headers=_h(ws))).json()
+    assert len(proj["edit"]["video"]) >= 1 and len(proj["edit"]["audio"]) == 3
+
+
+async def test_ai_scenes_are_refused_before_anything_is_spent_when_unavailable_or_too_many_or_doubled_up(signup_user, fakes, monkeypatch):
+    calls, h = fakes
+    client, ws = await _setup(signup_user)
+    scene = {"narration": "Plan your week.", "ai_prompt": "a desk at sunrise"}
+    off = await client.post("/api/v1/video-prompt/make", json={"scenes": [scene]}, headers=_h(ws))
+    assert off.status_code == 409 and "not set up" in off.json()["detail"]
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_API_TOKEN", "t", raising=False)
+    monkeypatch.setattr(clipgen.settings, "HUGGINGFACE_VIDEO_MODEL", "Wan-AI/Wan2.2-TI2V-5B", raising=False)
+    many = await client.post("/api/v1/video-prompt/make", json={"scenes": [scene] * (prompt_api.MAX_AI_CLIPS + 1)}, headers=_h(ws))
+    assert many.status_code == 400 and "at most" in many.json()["detail"]
+    both = await client.post("/api/v1/video-prompt/make", json={"scenes": [{**scene, "clip": {"provider": "pixabay", "id": "1"}}]}, headers=_h(ws))
+    assert both.status_code == 422
+    assert h.spoken == [] and calls["download"] == 0

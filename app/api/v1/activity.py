@@ -215,7 +215,7 @@ def _completed_card(doc: dict) -> dict:
 
 
 @router.get("/control-tower")
-@limiter.limit("120/minute")
+@limiter.limit("300/minute")
 async def control_tower(
     request: Request,
     ctx: WorkspaceContext = Depends(get_current_workspace),

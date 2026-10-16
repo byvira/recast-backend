@@ -8,7 +8,7 @@ from typing import Any, Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.v1.video_create import _Base, _budget, _finish, _language
 from app.core.middleware import limiter
@@ -16,7 +16,7 @@ from app.core.workspace import WorkspaceContext, require
 from app.db.mongo import brand_profiles, media_assets
 from app.models.media import ORIGIN_AI, MediaAsset, MediaKind, MediaSource
 from app.shared import pipeline_runs
-from app.video import builders, edl, service
+from app.video import builders, clipgen, edl, service
 from app.video.create import generate as G
 from app.video.create import voice as voice_mod
 from app.video.stock import providers, rank
@@ -72,7 +72,7 @@ async def draft(request: Request, body: DraftBody, ctx: WorkspaceContext = Depen
                           summary="Wrote a script in scenes for a video made from a description.")
     return {
         "id": saved["id"], "scenes": out, "total_seconds": result.get("total_seconds"), "connected": bool(connected), "size": body.size,
-        "complete": saved["complete"], "problems": (saved["meta"].get("problems") or [])[:4],
+        "complete": saved["complete"], "problems": (saved["meta"].get("problems") or [])[:4], "ai": clipgen.summary(),
         "note": None if connected else "No stock footage library is connected on this server yet, so no footage can be suggested.",
     }
 
@@ -86,6 +86,20 @@ class SceneBody(BaseModel):
     narration: str = Field(..., min_length=1, max_length=1200)
     on_screen: str = Field("", max_length=80)
     clip: Optional[ClipRef] = None
+    #: A description of the footage to make with AI. A scene has stock footage, an AI clip or neither, never both.
+    ai_prompt: Optional[str] = Field(None, max_length=clipgen.MAX_PROMPT)
+
+    @model_validator(mode="after")
+    def _one_kind_of_footage(self) -> "SceneBody":
+        if self.ai_prompt is not None and not self.ai_prompt.strip():
+            self.ai_prompt = None
+        if self.clip and self.ai_prompt:
+            raise ValueError("A scene can have stock footage or an AI clip, not both.")
+        return self
+
+
+#: Each AI clip is one paid request that takes a minute or more, so a video can have only a few.
+MAX_AI_CLIPS = 6
 
 
 class MakeBody(_Base):
@@ -107,6 +121,11 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
 
     if not await governance.video_enabled(ctx.workspace_id):
         raise HTTPException(status_code=403, detail=governance.ACCESS_OFF)
+    ai_scenes = sum(1 for sc in body.scenes if sc.ai_prompt)
+    if ai_scenes > MAX_AI_CLIPS:
+        raise HTTPException(status_code=400, detail=f"A video can have at most {MAX_AI_CLIPS} AI clips. Use stock footage or no footage for the rest.")
+    if ai_scenes and not clipgen.enabled():
+        raise HTTPException(status_code=409, detail="AI clips are not set up on this server yet. Choose stock footage or no footage.")
     make_speak, store, forget, voice_settings = await _voice_tools(ctx)
     code, name = resolve_language(body.language) if body.language else ("en", "English")
     blocker = narration_blocker(name, voice_settings)
@@ -137,6 +156,7 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
             await prepare([(piece, None) for sc in body.scenes for piece in split_for_speech(sc.narration)])
         beats: list[dict[str, Any]] = []
         missing_footage = 0
+        footage_notes: list[str] = []
         stored: list[str] = []
         voice_ids: list[str] = []
         try:
@@ -154,6 +174,15 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
                     except HTTPException as exc:
                         logger.warning("Stock clip %s/%s could not be used: %s", sc.clip.provider, sc.clip.id, exc.detail)
                         missing_footage += 1
+                if sc.ai_prompt:
+                    await reporter.step(f"Making an AI clip for scene {n + 1} of {len(body.scenes)}. This takes a minute or two")
+                    try:
+                        generated = await clipgen.make_clip(workspace_id=ctx.workspace_id, user_id=ctx.user_id, prompt=sc.ai_prompt)
+                        clip_info = {"media_id": generated.id, "seconds": float(generated.duration_s or clipgen.DEFAULT_SECONDS)}
+                    except clipgen.ClipGenError as exc:
+                        logger.warning("AI clip for scene %s failed: %s", n + 1, exc)
+                        missing_footage += 1
+                        footage_notes.append(str(exc))
                 await reporter.step(f"Speaking scene {n + 1} of {len(body.scenes)}")
                 parts: list[dict[str, Any]] = []
                 for piece in split_for_speech(sc.narration):
@@ -193,7 +222,7 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
                     await forget(url)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Could not remove a temporary voice file: %s", exc)
-        return {"data": {"project_id": project["id"], "missing_footage": missing_footage}, "href": f"/dashboard/editor/video/{project['id']}"}
+        return {"data": {"project_id": project["id"], "missing_footage": missing_footage, "footage_note": footage_notes[0] if footage_notes else None}, "href": f"/dashboard/editor/video/{project['id']}"}
 
     pipeline_runs.start(run, work, interrupt_on_cancel=True)
     return pipeline_runs.public(run)

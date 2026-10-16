@@ -14,7 +14,7 @@ router = APIRouter()
 
 
 @router.get("")
-@limiter.limit("120/minute")
+@limiter.limit("300/minute")
 async def list_runs(
     request: Request,
     kind: Optional[Literal["campaign", "text", "audio", "image", "video", "odette"]] = None,
@@ -27,8 +27,10 @@ async def list_runs(
     return {"runs": [pipeline_runs.public(r) for r in rows]}
 
 
+# A progress check is a cheap read of one saved row, and a screen asks for it every few seconds for as long as the work runs, so this
+# limit is far above what one person can reach and only stops a script.
 @router.get("/{run_id}")
-@limiter.limit("240/minute")
+@limiter.limit("600/minute")
 async def get_run(request: Request, run_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict[str, Any]:
     doc = await pipeline_runs.get_run(run_id, ctx.workspace_id)
     if not doc:

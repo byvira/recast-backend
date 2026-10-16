@@ -190,6 +190,10 @@ class Settings(BaseSettings):
     HUGGINGFACE_IMAGE_MODEL: str = "black-forest-labs/FLUX.1-schnell"
     # The old hf-inference route is gone (410). Pictures go through a provider Hugging Face routes to; nscale was checked live.
     HUGGINGFACE_IMAGE_PROVIDER: str = "nscale"
+    # AI-made video clips for a scene. Off while the model is empty. Set it to a text-to-video model Hugging Face serves, for example
+    # Wan-AI/Wan2.2-TI2V-5B. "auto" lets Hugging Face pick a provider from the account's provider order; each clip is billed to the account.
+    HUGGINGFACE_VIDEO_MODEL: str = ""
+    HUGGINGFACE_VIDEO_PROVIDER: str = "auto"
     # Pollinations needs no key. Turn it off here if you would rather show "no picture" than a free-service picture.
     POLLINATIONS_ENABLED: bool = True
     # Read each connected account's picture, display name and follower count from its platform (in the background, at most once a day).
