@@ -399,6 +399,15 @@ def _srt_time(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{milli:03d}"
 
 
+@router.get("/captions-ready")
+@limiter.limit("60/minute")
+async def captions_ready(request: Request, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict[str, Any]:
+    """How many of this workspace's videos already have a transcript, which is what a whole-library caption translation works on (the
+    newest 50). The Localize card reads it to say what it will do, and to stay out of the way when there is nothing to translate."""
+    ids = await transcribe._transcripts().distinct("media_id", {"workspace_id": ctx.workspace_id, "status": {"$in": ["done", "partial"]}})
+    return {"videos": min(len(ids), 50), "total": len(ids), "limit": 50}
+
+
 @router.get("/captions/{media_id}")
 @limiter.limit("120/minute")
 async def caption_languages(request: Request, media_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict[str, Any]:

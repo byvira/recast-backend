@@ -101,6 +101,8 @@ class PieceDocRequest(BaseModel):
     doc: dict
     # The version of the text this started from, so a save never silently replaces a newer text (same rule as a plain edit).
     base_version: Optional[int] = None
+    # True when words from an AI suggestion were accepted since the last save, so a post written by hand is no longer labelled as only the member's own.
+    ai_assisted: bool = False
 
 
 class UpdatePieceMediaRequest(BaseModel):
@@ -349,6 +351,11 @@ async def put_piece_doc(
         raise HTTPException(status_code=409, detail="This post is already published or being published, so its text can't change.")
     if body.base_version is not None and body.base_version != piece.get("version_count", 1):
         raise HTTPException(status_code=409, detail="This post was changed somewhere else while you were editing. Reload it to see the latest text.")
+    if body.ai_assisted:
+        await content_pieces.update_one(
+            {"piece_id": piece_id, "workspace_id": ctx.workspace_id, "origin": {"$ne": "ai"}},
+            {"$set": {"origin": "mixed", "contains_ai": True}},
+        )
     if plain.strip() == (piece.get("content") or "").strip():
         # the words did not change (only the structure or formatting): keep the blocks without making a new version
         await content_pieces.update_one(

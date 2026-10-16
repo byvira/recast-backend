@@ -517,3 +517,15 @@ async def test_another_workspace_cannot_dub_or_read_the_tracks(signup_user, voic
     other_ws = await create_workspace(other, "Elsewhere")
     assert (await other.post("/api/v1/video-narrate/dub", json={"media_id": media["id"], "language": "es"}, headers=_h(other_ws))).status_code == 404
     assert (await other.get(f"/api/v1/video-narrate/tracks/{media['id']}", headers=_h(other_ws))).status_code == 404
+
+
+async def test_the_library_says_how_many_videos_can_have_their_captions_translated(signup_user, voices):
+    client, ws = await _setup(signup_user)
+    assert (await client.get("/api/v1/video-narrate/captions-ready", headers=_h(ws))).json() == {"videos": 0, "total": 0, "limit": 50}
+    await _with_transcript(ws, language="en")
+    await _with_transcript(ws, language="en")
+    await _video(ws)  # a video with no transcript is not counted
+    assert (await client.get("/api/v1/video-narrate/captions-ready", headers=_h(ws))).json() == {"videos": 2, "total": 2, "limit": 50}
+    other, _ = await signup_user()
+    other_ws = await create_workspace(other, "Elsewhere")
+    assert (await other.get("/api/v1/video-narrate/captions-ready", headers=_h(other_ws))).json()["videos"] == 0

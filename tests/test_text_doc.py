@@ -114,3 +114,22 @@ async def test_bad_blocks_an_old_version_and_a_published_post_are_refused(signup
     assert (await client.put(f"/api/v1/content/pieces/{pid}/doc", json={"doc": ok, "base_version": 99}, headers=head)).status_code == 409
     await content_pieces.update_one({"piece_id": pid}, {"$set": {"publish_status": "published"}})
     assert (await client.put(f"/api/v1/content/pieces/{pid}/doc", json={"doc": ok}, headers=head)).status_code == 409
+
+
+async def test_accepting_an_ai_suggestion_marks_a_hand_written_post_as_a_mix_and_a_plain_save_does_not(signup_user):
+    client, ws, pid = await _piece(signup_user, "Written by hand.")
+    head = {"X-Workspace-Id": ws}
+    before = (await client.get(f"/api/v1/content/pieces/{pid}", headers=head)).json()
+    assert before["origin"] == "own" and before["contains_ai"] is False
+
+    opened = (await client.get(f"/api/v1/content/pieces/{pid}/doc", headers=head)).json()
+    doc = {"version": 1, "blocks": [{"id": "b1", "type": "paragraph", "text": "Written by hand, tightened."}]}
+    plain = await client.put(f"/api/v1/content/pieces/{pid}/doc", json={"doc": doc, "base_version": opened["version"]}, headers=head)
+    assert plain.status_code == 200, plain.text
+    assert (await client.get(f"/api/v1/content/pieces/{pid}", headers=head)).json()["origin"] == "own"
+
+    doc2 = {"version": 1, "blocks": [{"id": "b1", "type": "paragraph", "text": "Written by hand, with AI help."}]}
+    assisted = await client.put(f"/api/v1/content/pieces/{pid}/doc", json={"doc": doc2, "base_version": plain.json()["version"], "ai_assisted": True}, headers=head)
+    assert assisted.status_code == 200, assisted.text
+    after = (await client.get(f"/api/v1/content/pieces/{pid}", headers=head)).json()
+    assert after["origin"] == "mixed" and after["contains_ai"] is True
