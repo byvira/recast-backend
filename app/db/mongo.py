@@ -330,6 +330,8 @@ async def create_indexes() -> None:
 
     await get_db()["video_cover_frames"].create_index([("workspace_id", 1), ("media_id", 1)], unique=True)
     await get_db()["video_reframe_paths"].create_index([("workspace_id", 1), ("media_id", 1), ("key", 1)], unique=True)
+    await get_db()["editor_comments"].create_index([("workspace_id", 1), ("target_type", 1), ("target_id", 1), ("created_at", 1)])
+    await get_db()["editor_comments"].create_index("id", unique=True)
     await get_db()["video_reframe_paths"].create_index("created_at", expireAfterSeconds=90 * 24 * 3600)
     await get_db()["video_stock_cache"].create_index("at", expireAfterSeconds=48 * 3600)
     await get_db()["media_assets"].create_index([("workspace_id", 1), ("stock.provider", 1), ("stock.id", 1)], sparse=True)

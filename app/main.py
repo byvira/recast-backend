@@ -402,6 +402,8 @@ from app.api.v1 import video_covers as video_covers_router
 app.include_router(video_covers_router.router, prefix="/api/v1/video-covers", tags=["Video covers"])
 from app.api.v1 import video_reframe as video_reframe_router
 app.include_router(video_reframe_router.router, prefix="/api/v1/video-reframe", tags=["Video reframe"])
+from app.api.v1 import editor_comments as editor_comments_router
+app.include_router(editor_comments_router.router, prefix="/api/v1/editor-comments", tags=["Editor comments"])
 from app.api.v1 import video_create as video_create_router
 app.include_router(video_create_router.router, prefix="/api/v1/video-create", tags=["Video create"])
 from app.api.v1 import video_narrate as video_narrate_router

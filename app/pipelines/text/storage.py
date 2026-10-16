@@ -822,8 +822,9 @@ async def update_piece_content(
                 "updated_at": now,
             },
             "$inc": {"version_count": 1},
-            # The member's new text is what goes out: a trimmed copy kept from an earlier failed send must not outrank it.
-            "$unset": {"publish_content_override": ""},
+            # The member's new text is what goes out: a trimmed copy kept from an earlier failed send must not outrank it. The block
+            # form of the post (`content_doc`) belonged to the old text, so it goes too; the rich editor saves it again after this.
+            "$unset": {"publish_content_override": "", "content_doc": ""},
         },
         projection={"version_count": 1},
         return_document=ReturnDocument.AFTER,

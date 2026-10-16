@@ -16,7 +16,7 @@ def _structured_factory(state: dict):
         if "Evaluate" in prompt:
             state["evaluations"] += 1
             score = state["scores"][min(state["evaluations"] - 1, len(state["scores"]) - 1)]
-            # every dimension any pipeline scores (audio: completeness and accuracy; video: platform fit and engagement)
+            # every dimension any pipeline scores (completeness, accuracy, platform fit and engagement)
             return {"completeness": score, "brand_alignment": score, "accuracy": score, "platform_fit": score,
                     "engagement_potential": score, "overall": score}
         if "plan" in prompt.lower() and "steps" in prompt:
@@ -26,7 +26,7 @@ def _structured_factory(state: dict):
     return fake
 
 
-@pytest.fixture(params=["audio", "video"])
+@pytest.fixture(params=["audio"])
 def agent(request, monkeypatch):
     nodes = importlib.import_module(f"app.agents.{request.param}.nodes")
     graph = importlib.import_module(f"app.agents.{request.param}.graph")

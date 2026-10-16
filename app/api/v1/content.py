@@ -96,6 +96,13 @@ class EditPieceRequest(BaseModel):
     base_version: Optional[int] = None
 
 
+class PieceDocRequest(BaseModel):
+    """The block form of a post, as the rich editor saves it."""
+    doc: dict
+    # The version of the text this started from, so a save never silently replaces a newer text (same rule as a plain edit).
+    base_version: Optional[int] = None
+
+
 class UpdatePieceMediaRequest(BaseModel):
     # Empty = remove media (Row 8's "remove" control). One id = swap to that
     # already-uploaded asset (Row 8's "swap" control, after a POST
@@ -298,6 +305,75 @@ async def get_piece_detail(
     if not piece:
         raise HTTPException(status_code=404, detail="Piece not found.")
     return piece
+
+
+@router.get("/pieces/{piece_id}/doc")
+@limiter.limit("120/minute")
+async def get_piece_doc(request: Request, piece_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
+    """The block form of a post for the rich editor. A post never opened there is built from its plain text and marked `derived`;
+    nothing changes until it is saved."""
+    from app.pipelines.text import doc as text_doc
+
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    stored = piece.get("content_doc")
+    if isinstance(stored, dict) and stored.get("blocks"):
+        try:
+            return {"doc": text_doc.validate(stored), "derived": False, "version": piece.get("version_count", 1)}
+        except text_doc.DocError:
+            pass
+    return {"doc": text_doc.from_plain(piece.get("content", "")), "derived": True, "version": piece.get("version_count", 1)}
+
+
+@router.put("/pieces/{piece_id}/doc")
+@limiter.limit("60/minute")
+async def put_piece_doc(
+    request: Request, piece_id: str, body: PieceDocRequest, ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Save a post from the rich editor: the blocks are checked, the plain text is made from them and saved as a new version exactly
+    like a plain edit (so publishing, checks and history work as they always did), and the blocks are kept beside it."""
+    from app.pipelines.text import doc as text_doc
+
+    try:
+        clean = text_doc.validate(body.doc)
+    except text_doc.DocError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    plain = text_doc.to_plain(clean)
+    if not plain.strip():
+        raise HTTPException(status_code=400, detail="Content cannot be empty.")
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    if piece.get("publish_status") in ("published", "publishing"):
+        raise HTTPException(status_code=409, detail="This post is already published or being published, so its text can't change.")
+    if body.base_version is not None and body.base_version != piece.get("version_count", 1):
+        raise HTTPException(status_code=409, detail="This post was changed somewhere else while you were editing. Reload it to see the latest text.")
+    if plain.strip() == (piece.get("content") or "").strip():
+        # the words did not change (only the structure or formatting): keep the blocks without making a new version
+        await content_pieces.update_one(
+            {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+            {"$set": {"content_doc": clean, "updated_at": datetime.now(timezone.utc)}},
+        )
+        fresh = await get_piece(piece_id, ctx.workspace_id) or piece
+        return {"doc": clean, "version": fresh.get("version_count", 1), "piece": fresh}
+    updated = await update_piece_content(
+        piece_id=piece_id, workspace_id=ctx.workspace_id, new_content=plain.strip(),
+        action="manual_edit", instruction="User edited content in the rich editor", actor_user_id=ctx.user_id,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    await content_pieces.update_one(
+        {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"content_doc": clean}},
+    )
+    if piece.get("approval_status") == "approved":
+        await content_pieces.update_one(
+            {"piece_id": piece_id, "workspace_id": ctx.workspace_id},
+            {"$set": {"approval_status": "pending", "updated_at": datetime.now(timezone.utc)}},
+        )
+    fresh = await get_piece(piece_id, ctx.workspace_id) or updated
+    return {"doc": clean, "version": fresh.get("version_count", 1), "piece": fresh}
 
 
 @router.patch("/pieces/{piece_id}")
