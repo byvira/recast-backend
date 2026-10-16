@@ -133,3 +133,41 @@ async def test_accepting_an_ai_suggestion_marks_a_hand_written_post_as_a_mix_and
     assert assisted.status_code == 200, assisted.text
     after = (await client.get(f"/api/v1/content/pieces/{pid}", headers=head)).json()
     assert after["origin"] == "mixed" and after["contains_ai"] is True
+
+
+# ── long-form: tables and block attributes ───────────────────────────────────────
+
+def _long(*blocks):
+    return {"version": 1, "long_form": True, "blocks": list(blocks)}
+
+
+def test_a_table_is_kept_written_as_lines_and_as_html():
+    doc = D.validate(_long({"id": "t1", "type": "table", "header": True, "rows": [["Plan", "Price"], ["Free", "**0**"]]}))
+    assert doc["long_form"] is True and doc["blocks"][0]["rows"][1] == ["Free", "**0**"]
+    assert D.to_plain(doc) == "Plan | Price\nFree | 0"
+    html = D.to_html(doc)
+    assert "<th>Plan</th>" in html and "<td><strong>0</strong></td>" in html
+
+
+def test_tables_need_long_form_mode_and_even_rows():
+    table = {"id": "t1", "type": "table", "rows": [["a", "b"]]}
+    with pytest.raises(D.DocError):
+        D.validate({"version": 1, "blocks": [table]})
+    with pytest.raises(D.DocError):
+        D.validate(_long({"id": "t1", "type": "table", "rows": [["a", "b"], ["c"]]}))
+
+
+def test_class_and_anchor_are_written_and_unsafe_ones_are_refused():
+    doc = D.validate(_long({"id": "b1", "type": "heading", "level": 2, "text": "Pricing", "attrs": {"class": "lead big", "anchor": "pricing"}}))
+    assert D.to_html(doc) == '<h2 id="pricing" class="lead big">Pricing</h2>'
+    for bad in ({"class": 'x" onclick="y'}, {"anchor": "1bad"}, {"anchor": "a b"}, {"class": "<script>"}):
+        with pytest.raises(D.DocError):
+            D.validate(_long({"id": "b1", "type": "paragraph", "text": "x", "attrs": bad}))
+
+
+def test_an_anchor_can_be_used_once():
+    with pytest.raises(D.DocError):
+        D.validate(_long(
+            {"id": "b1", "type": "paragraph", "text": "x", "attrs": {"anchor": "top"}},
+            {"id": "b2", "type": "paragraph", "text": "y", "attrs": {"anchor": "top"}},
+        ))

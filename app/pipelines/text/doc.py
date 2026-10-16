@@ -5,6 +5,9 @@ form is stored beside it (`content_doc`) so a member can write with structure an
 from it with `to_plain`. A post that was never opened in the rich editor has no block form: `from_plain` builds one from its text,
 and nothing about the post changes until it is saved there.
 
+A long-form post (an article or a newsletter) may also hold tables, and any block may carry a CSS class and an anchor id for the page it is
+published on. Both are checked to plain letters, digits, dashes and underscores, so nothing that could carry script is ever stored.
+
 Inline markup in a block's text: `**bold**`, `_italic_` and `[label](https://address)`. Nothing else is interpreted, and no HTML is
 ever stored: `to_html` escapes everything and writes only the tags below.
 """
@@ -16,13 +19,20 @@ import re
 from typing import Any
 
 VERSION = 1
-TYPES = ("paragraph", "heading", "bullets", "numbers", "quote", "divider")
+TYPES = ("paragraph", "heading", "bullets", "numbers", "quote", "divider", "table")
 MAX_BLOCKS = 500
 MAX_TEXT = 20_000
 MAX_ITEMS = 200
 MAX_TOTAL = 100_000
+MAX_ROWS = 60
+MAX_COLS = 12
+MAX_CELL = 1_000
+MAX_CLASS = 120
+MAX_ANCHOR = 60
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+_CLASS = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*(?: [A-Za-z_][A-Za-z0-9_-]*)*$")
+_ANCHOR = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 _LINK = re.compile(r"\[([^\]\n]{1,200})\]\((https?://[^\s)]{1,2000})\)")
 _BOLD = re.compile(r"\*\*(.+?)\*\*", re.S)
 _ITALIC = re.compile(r"(?<![\w_])_(?!_)(.+?)(?<!_)_(?![\w_])", re.S)
@@ -73,9 +83,44 @@ def validate(raw: Any) -> dict[str, Any]:
                 clean_items.append(item)
                 total += len(item)
             block["items"] = clean_items
+        elif kind == "table":
+            rows = b.get("rows")
+            _need(isinstance(rows, list) and 1 <= len(rows) <= MAX_ROWS, f"{where} needs 1 to {MAX_ROWS} rows.")
+            width = len(rows[0]) if isinstance(rows[0], list) else 0
+            _need(1 <= width <= MAX_COLS, f"{where} needs 1 to {MAX_COLS} columns.")
+            clean_rows: list[list[str]] = []
+            for row in rows:
+                _need(isinstance(row, list) and len(row) == width, f"{where} must have the same number of cells in every row.")
+                for cell in row:
+                    _need(isinstance(cell, str) and len(cell) <= MAX_CELL, f"{where} cells must be text of at most {MAX_CELL} characters.")
+                    total += len(cell)
+                clean_rows.append(list(row))
+            block["rows"] = clean_rows
+            block["header"] = bool(b.get("header", True))
+        attrs = b.get("attrs")
+        if attrs is not None:
+            _need(isinstance(attrs, dict), f"{where} attributes must be an object.")
+            clean_attrs: dict[str, str] = {}
+            css = attrs.get("class")
+            if css not in (None, ""):
+                _need(isinstance(css, str) and len(css) <= MAX_CLASS and bool(_CLASS.match(css)), f"{where} class may use letters, digits, dashes and underscores only.")
+                clean_attrs["class"] = css
+            anchor = attrs.get("anchor")
+            if anchor not in (None, ""):
+                _need(isinstance(anchor, str) and len(anchor) <= MAX_ANCHOR and bool(_ANCHOR.match(anchor)), f"{where} anchor must start with a letter and use letters, digits, dashes and underscores only.")
+                clean_attrs["anchor"] = anchor
+            if clean_attrs:
+                block["attrs"] = clean_attrs
         blocks.append(block)
     _need(total <= MAX_TOTAL, f"A document can hold at most {MAX_TOTAL} characters.")
-    return {"version": VERSION, "blocks": blocks}
+    anchors = [b["attrs"]["anchor"] for b in blocks if "anchor" in b.get("attrs", {})]
+    _need(len(anchors) == len(set(anchors)), "Two blocks use the same anchor. Each anchor can be used once.")
+    result: dict[str, Any] = {"version": VERSION, "blocks": blocks}
+    if raw.get("long_form") is True:
+        result["long_form"] = True
+    else:
+        _need(not any(b["type"] == "table" for b in blocks), "Tables are part of long-form posts. Turn on long-form mode first.")
+    return result
 
 
 # ── inline markup ────────────────────────────────────────────────────────────────
@@ -116,7 +161,22 @@ def to_plain(doc: dict[str, Any]) -> str:
             parts.append("\n".join(f"{n}. {strip_inline(i).strip()}" for n, i in enumerate((i for i in b.get("items", []) if i.strip()), 1)))
         elif kind == "divider":
             parts.append("———")
+        elif kind == "table":
+            lines = [" | ".join(strip_inline(c).strip() for c in row) for row in b.get("rows", [])]
+            if any(l.replace("|", "").strip() for l in lines):
+                parts.append("\n".join(lines))
     return "\n\n".join(p for p in parts if p).strip()
+
+
+def _open(tag: str, b: dict[str, Any]) -> str:
+    """An opening tag carrying the block's class and anchor, both already checked to plain characters."""
+    attrs = b.get("attrs") or {}
+    extra = ""
+    if attrs.get("anchor"):
+        extra += f' id="{html.escape(attrs["anchor"], quote=True)}"'
+    if attrs.get("class"):
+        extra += f' class="{html.escape(attrs["class"], quote=True)}"'
+    return f"<{tag}{extra}>"
 
 
 def to_html(doc: dict[str, Any]) -> str:
@@ -125,17 +185,25 @@ def to_html(doc: dict[str, Any]) -> str:
     for b in doc.get("blocks", []):
         kind = b["type"]
         if kind == "paragraph":
-            out.append(f"<p>{inline_html(b.get('text', ''))}</p>")
+            out.append(f"{_open('p', b)}{inline_html(b.get('text', ''))}</p>")
         elif kind == "heading":
             level = int(b.get("level", 2))
-            out.append(f"<h{level}>{inline_html(b.get('text', ''))}</h{level}>")
+            out.append(f"{_open(f'h{level}', b)}{inline_html(b.get('text', ''))}</h{level}>")
         elif kind == "quote":
-            out.append(f"<blockquote>{inline_html(b.get('text', ''))}</blockquote>")
+            out.append(f"{_open('blockquote', b)}{inline_html(b.get('text', ''))}</blockquote>")
         elif kind in ("bullets", "numbers"):
             tag = "ul" if kind == "bullets" else "ol"
-            out.append(f"<{tag}>" + "".join(f"<li>{inline_html(i)}</li>" for i in b.get("items", [])) + f"</{tag}>")
+            out.append(_open(tag, b) + "".join(f"<li>{inline_html(i)}</li>" for i in b.get("items", [])) + f"</{tag}>")
         elif kind == "divider":
-            out.append("<hr>")
+            out.append(_open("hr", b))
+        elif kind == "table":
+            rows = b.get("rows", [])
+            head = bool(b.get("header", True)) and len(rows) > 1
+            body = "".join(
+                "<tr>" + "".join(f"<{'th' if head and n == 0 else 'td'}>{inline_html(c)}</{'th' if head and n == 0 else 'td'}>" for c in row) + "</tr>"
+                for n, row in enumerate(rows)
+            )
+            out.append(f"{_open('table', b)}{body}</table>")
     return "\n".join(out)
 
 
