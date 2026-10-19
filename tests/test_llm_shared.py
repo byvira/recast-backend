@@ -158,9 +158,15 @@ async def test_groq_create_reraises_unrelated_exceptions():
 # Concurrency semaphore
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_semaphore_configured_with_expected_limit():
+async def test_semaphore_configured_with_expected_limit():
     assert _GROQ_CONCURRENCY_LIMIT >= 1
-    assert _groq_semaphore._value == _GROQ_CONCURRENCY_LIMIT  # not yet acquired by anything
+    # A call left running by an earlier test can still hold a permit for a moment. Wait up to three seconds for it to finish;
+    # a permit that never comes back is the real failure.
+    for _ in range(60):
+        if _groq_semaphore._value == _GROQ_CONCURRENCY_LIMIT:
+            break
+        await asyncio.sleep(0.05)
+    assert _groq_semaphore._value == _GROQ_CONCURRENCY_LIMIT  # not held by anything
 
 
 async def test_groq_create_actually_bounds_concurrency_via_its_own_semaphore():
