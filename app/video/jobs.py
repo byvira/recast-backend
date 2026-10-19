@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 CONTRACT = 1
 KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 INPUT_KINDS = ("video", "audio", "image")
+#: A render may also carry fonts a member uploaded; nothing else (previews, frames, reframing) takes one.
+RENDER_INPUT_KINDS = INPUT_KINDS + ("font",)
+DEAD_STATUSES = ("failed", "cancelled", "blocked")
 OUTPUT_KEYS = ("filename", "segment_seconds", "crf", "preset", "audio_bitrate", "lufs", "label", "codec")
 #: Written into the finished file when AI-made material went into the video.
 AI_FILE_LABEL = "Includes AI-made material"
@@ -136,8 +139,8 @@ def _validate_request(inputs: Any, edit: Any) -> float:
             raise JobError(400, "A source name may only use letters, numbers, - and _.")
         if not isinstance(item, dict) or not str(item.get("url", "")).startswith("https://"):
             raise JobError(400, "Every source needs a secure (https) address.")
-        if item.get("kind", "video") not in INPUT_KINDS:
-            raise JobError(400, "A source must be a video, an audio file or a picture.")
+        if item.get("kind", "video") not in RENDER_INPUT_KINDS:
+            raise JobError(400, "A source must be a video, an audio file, a picture or a font.")
     if not isinstance(edit, dict):
         raise JobError(400, "The edit is missing.")
     fps = edit.get("fps") or {}
@@ -158,6 +161,9 @@ def _validate_request(inputs: Any, edit: Any) -> float:
     for clip in (edit.get("video") or []) + (edit.get("audio") or []):
         if not isinstance(clip, dict) or clip.get("src") not in inputs:
             raise JobError(400, "A clip points at a source that is not part of this render.")
+    for item in (edit.get("pictures") or []) + (edit.get("fonts") or []):
+        if not isinstance(item, dict) or item.get("src") not in inputs:
+            raise JobError(400, "A picture or font points at a source that is not part of this render.")
     return seconds
 
 
@@ -185,6 +191,18 @@ async def _halted_workspaces() -> list[str]:
     return [w["id"] async for w in get_db()["workspaces"].find({"generation_halted": True}, {"id": 1})]
 
 
+async def _live_job_for_key(workspace_id: str, idem_key: Optional[str]) -> Optional[dict]:
+    """The job already made for this key, unless it ended without a video. A failed, cancelled or held-back job is set aside
+    (its key is renamed) so asking again makes a new job, as it does for frames and reframing."""
+    if not idem_key:
+        return None
+    existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key})
+    if existing and existing.get("status") in DEAD_STATUSES:
+        await _jobs().update_one({"id": existing["id"]}, {"$set": {"idem_key": f"{idem_key}:old:{existing['id']}"}})
+        return None
+    return existing
+
+
 async def enqueue(
     *, workspace_id: str, user_id: str, inputs: dict, edit: dict, output: Optional[dict] = None,
     label: str = "", idem_key: Optional[str] = None, origin: Optional[dict] = None, project_id: Optional[str] = None,
@@ -196,19 +214,17 @@ async def enqueue(
     await _assert_video_on(workspace_id)
     if await _halted(workspace_id):
         raise JobError(403, HALT_MESSAGE)
-    if project_id:
-        from app.video import limits
+    existing_job = await _live_job_for_key(workspace_id, idem_key)
+    from app.video import limits
 
-        existing_job = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key}) if idem_key else None
-        if not existing_job:
-            try:
-                await limits.assert_render_room(workspace_id, seconds)
-            except limits.OverLimit as exc:
-                raise JobError(429, exc.message)
-    if idem_key:
-        existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key})
-        if existing:
-            return public(existing)
+    # every render counts against the month's minutes, not only those made from a project (dubs, narration and the rest too)
+    if not existing_job:
+        try:
+            await limits.assert_render_room(workspace_id, seconds)
+        except limits.OverLimit as exc:
+            raise JobError(429, exc.message)
+    if existing_job:
+        return public(existing_job)
     now = _now()
     doc = {
         "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": (label or "")[:120],
@@ -233,6 +249,17 @@ async def enqueue(
     except DuplicateKeyError:
         await runs.finish_cancelled(doc.get("run_id"))
         return public(await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key}))
+    except BaseException:
+        # the run holds the project's one active slot, so a job that was never saved must not leave it open
+        await runs.finish_failed(doc.get("run_id"), "The video could not be queued. Please try again.")
+        raise
+    # requests that arrived together can each have passed the check above; the count is looked at again now that this job is in it
+    try:
+        await limits.assert_render_room(workspace_id, 0)
+    except limits.OverLimit as exc:
+        await _jobs().delete_one({"id": doc["id"]})
+        await runs.finish_cancelled(doc.get("run_id"))
+        raise JobError(429, exc.message)
     return public(doc)
 
 
@@ -244,7 +271,7 @@ async def enqueue_preview(*, workspace_id: str, user_id: str, media_id: str, url
     peaks. One job per item; asking again while it is waiting or after it is done returns the same job."""
     if not str(url).startswith("https://") or kind not in INPUT_KINDS:
         raise JobError(400, "That item cannot be previewed.")
-    existing = await _jobs().find_one({"workspace_id": workspace_id, "idem_key": f"preview:{media_id}"})
+    existing = await _live_job_for_key(workspace_id, f"preview:{media_id}")
     if existing:
         return public(existing)
     now = _now()
@@ -371,6 +398,10 @@ async def _close_job(doc: dict, status: str, *, code: Optional[str] = None, mess
         await runs.finish_cancelled(doc.get("run_id"))
     else:
         await runs.finish_failed(doc.get("run_id"), message or "The video could not be made.")
+    if doc.get("kind") == "proxy" and doc.get("source_media_id"):
+        # a preview that will never come must not leave the library item "preparing" for good
+        await media_assets.update_one({"id": doc["source_media_id"], "workspace_id": doc["workspace_id"], "preview_status": "preparing"},
+                                      {"$set": {"preview_status": "failed", "preview_error": message or "The preview could not be made."}})
     if doc.get("kind") in (None, "render"):
         from app.video import activity
 
@@ -378,7 +409,23 @@ async def _close_job(doc: dict, status: str, *, code: Optional[str] = None, mess
     return True
 
 
-async def reap_expired() -> None:
+_last_reap = 0.0
+REAP_EVERY_SECONDS = 10.0
+
+
+async def reap_if_due(force: bool = False) -> None:
+    """Run the reconciler, but not more often than every few seconds however many workers are polling."""
+    global _last_reap
+    import time
+
+    now = time.monotonic()
+    if not force and now - _last_reap < REAP_EVERY_SECONDS:
+        return
+    _last_reap = now
+    await reap_expired()
+
+
+async def reap_expired(queue_checks: bool = True) -> None:
     """The queue's reconciler. A job whose worker stopped reporting goes back in the queue, or is failed when it is out of
     attempts; one the member cancelled is closed; one waiting for a worker for a day is failed with a plain message; and a
     queued job whose run was cancelled from the activity dock is cancelled."""
@@ -397,12 +444,16 @@ async def reap_expired() -> None:
             )
             if moved.modified_count:
                 await runs.waiting(doc.get("run_id"), again)
+    if not queue_checks:
+        return
     async for doc in _jobs().find({"status": "queued", "created_at": {"$lt": now - QUEUE_EXPIRES_AFTER}}).limit(100):
         await _close_job(doc, "failed", code="no_worker",
                          message="No video worker was available for a day, so this was stopped. Please try again.")
     async for doc in _jobs().find({"status": "queued", "run_id": {"$ne": None}}).limit(200):
         if await runs.cancel_requested(doc.get("run_id")):
             await _close_job(doc, "cancelled")
+    async for doc in _jobs().find({"status": "queued", "cancel_requested": True}).limit(100):
+        await _close_job(doc, "cancelled")
 
 
 def _wire(doc: dict) -> dict:
@@ -429,7 +480,14 @@ async def claim(worker_id: str, version: str, capabilities: dict) -> Optional[di
     """Hand the oldest suitable job to this worker, atomically. A workspace that has no render going is served before one that
     already has one, so a single member cannot hold the queue."""
     await touch_worker(worker_id, version, capabilities)
-    await reap_expired()
+    # a lost lease is always looked for, so a job is never handed over late; the heavier queue checks run at most every few seconds
+    import time
+
+    global _last_reap
+    due = time.monotonic() - _last_reap >= REAP_EVERY_SECONDS
+    if due:
+        _last_reap = time.monotonic()
+    await reap_expired(queue_checks=due)
     cap = capabilities.get("max_output_seconds")
     cap = int(cap) if isinstance(cap, (int, float)) and cap > 0 else int(settings.VIDEO_MAX_OUTPUT_SECONDS)
     base: dict[str, Any] = {"status": "queued", "duration_s": {"$lte": cap}, "cancel_requested": {"$ne": True}}
@@ -452,6 +510,11 @@ async def claim(worker_id: str, version: str, capabilities: dict) -> Optional[di
             await runs.started(doc.get("run_id"))
             return _wire(doc)
     return None
+
+
+def _count(value: Any) -> int:
+    """A count from a worker's report; anything that is not a whole non-negative number is zero rather than an error."""
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def _progress(raw: Any) -> dict:
@@ -513,10 +576,13 @@ async def _remote_size(url: str) -> Optional[int]:
                 head = await client.head(url)
                 if head.status_code < 400 and head.headers.get("content-length", "").isdigit():
                     return int(head.headers["content-length"])
-                probe = await client.get(url, headers={"Range": "bytes=0-0"})
-                total = probe.headers.get("content-range", "").rpartition("/")[2]
-                if probe.status_code in (200, 206) and total.isdigit():
-                    return int(total)
+                # streamed, so a storage service that ignores the range never has the whole file read into memory
+                async with client.stream("GET", url, headers={"Range": "bytes=0-0"}) as probe:
+                    total = probe.headers.get("content-range", "").rpartition("/")[2]
+                    if probe.status_code == 206 and total.isdigit():
+                        return int(total)
+                    if probe.status_code == 200 and probe.headers.get("content-length", "").isdigit():
+                        return int(probe.headers["content-length"])
             except httpx.HTTPError as exc:
                 logger.warning("Could not read the size of %s: %s", url, exc)
     return None
@@ -553,7 +619,8 @@ def _delivery_problem(doc: dict, video: Optional[dict], report: Any) -> Optional
         return "the finished file has no size"
     edit = doc["edit"]
     fps = edit["fps"]
-    tolerance = max(0.1, 2 * fps.get("den", 1) / fps["num"])
+    # the worker's own check allows a quarter of a second, so a video it passed is not refused here for a smaller difference
+    tolerance = max(0.25, 2 * fps.get("den", 1) / fps["num"])
     length = report.get("duration_s")
     if not isinstance(length, (int, float)) or abs(float(length) - float(doc["duration_s"])) > tolerance:
         return "the finished video is not the length that was asked for"
@@ -578,6 +645,9 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
     """Accept a finished render. The video is shown to nobody until the report, the size, the stored file and the sample
     frames all check out; anything missing ends the job with a plain message and keeps the evidence for staff."""
     doc = await _held(job_id, lease_token)
+    # the checks below read files back over the network and can take a while, so the worker's hold is renewed first
+    await _jobs().update_one({"id": job_id, "lease_token": lease_token},
+                             {"$set": {"lease_expires_at": _now() + timedelta(seconds=lease_seconds() * 3)}})
     if doc.get("kind") == "proxy":
         return await _complete_preview(doc, job_id, lease_token, outputs, report)
     if doc.get("kind") == "reframe":
@@ -608,18 +678,28 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
 
     from app.agents.content_guard.media import ContentRejected, assert_image_ok
 
+    checked = 0
     for frame in frames:
         data = await _fetch_frame(frame["url"]) if storage_params.is_our_storage_url(frame["url"]) else None
         if not data:
             continue
         try:
             await assert_image_ok(data, "image/jpeg", workspace_id=doc["workspace_id"], where="video render")
+            checked += 1
         except ContentRejected as exc:
             await _forget_files(stored)
             message = exc.detail.get("message") if isinstance(exc.detail, dict) else "This video was held back by the safety check."
             await _end(doc, "blocked", "content_guard", message, {"categories": (exc.detail or {}).get("categories")})
             await runs.finish_failed(doc.get("run_id"), message)
             return {"ok": True, "accepted": False, "held": True}
+    if frames and checked == 0:
+        # sample pictures were sent but none could be read back, so the video is not let through unchecked
+        await _forget_files(stored)
+        message = "The video was made but could not be checked, so it was not saved. Please try again."
+        await _end(doc, "failed", "delivery_mismatch", message, {"problem": "no sample picture could be checked", "report": report})
+        await runs.finish_failed(doc.get("run_id"), message)
+        logger.warning("Render %s refused at delivery: no sample picture could be checked", job_id)
+        return {"ok": False, "accepted": False}
     await _forget_files([f["url"] for f in frames if storage_params.is_our_storage_url(f["url"])])
 
     now = _now()
@@ -630,13 +710,23 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
         **{k: (doc.get("origin") or {}).get(k) for k in ("origin", "contains_ai", "contains_stock")},
     )
     await media_assets.insert_one(media.model_dump())
-    await _jobs().update_one(
-        {"id": job_id, "lease_token": lease_token},
+    finished = await _jobs().update_one(
+        {"id": job_id, "lease_token": lease_token, "status": "claimed"},
         {"$set": {"status": "done", "media_id": media.id, "finished_at": now, "lease_token": None, "lease_expires_at": None,
                   "output": {"url": video["url"], "bytes": video["bytes"], "sha256": video.get("sha256"),
                              "duration_s": report.get("duration_s"), "width": report.get("width"), "height": report.get("height")},
                   "report": report, "progress": {"stage": "Done", "fraction": 1.0}}},
     )
+    if not finished.modified_count:
+        # the job was taken from this worker while the checks ran (cancelled, or handed on), so no library row is kept for it
+        await media_assets.delete_one({"id": media.id, "workspace_id": doc["workspace_id"]})
+        raise LeaseLost()
+    if doc.get("project_id"):
+        # the project's own record of its latest video, so it can be attached to a post and shows as made
+        await get_db()["video_projects"].update_one(
+            {"id": doc["project_id"], "workspace_id": doc["workspace_id"], "last_render.job_id": job_id},
+            {"$set": {"last_render.media_id": media.id}},
+        )
     await runs.finish_ok(doc.get("run_id"), {
         "job_id": job_id, "media_id": media.id, "project_id": doc.get("project_id"), "origin": doc.get("origin"),
         "duration_s": report.get("duration_s"),
@@ -710,7 +800,9 @@ async def _complete_preview(doc: dict, job_id: str, lease_token: str, outputs: A
     await _jobs().update_one(
         {"id": job_id, "lease_token": lease_token},
         {"$set": {"status": "done", "media_id": media_id, "finished_at": _now(), "lease_token": None, "lease_expires_at": None,
-                  "progress": {"stage": "Done", "fraction": 1.0}, "report": report}},
+                  "progress": {"stage": "Done", "fraction": 1.0}, "report": report,
+                  # kept so the files can be found again if the library item is deleted while this was still being made
+                  "outputs": [{"role": o["role"], "url": o["url"]} for o in items]}},
     )
     return {"ok": True, "accepted": True, "media_id": media_id}
 
@@ -819,7 +911,7 @@ async def _complete_reframe(doc: dict, job_id: str, lease_token: str, report: An
         {"workspace_id": doc["workspace_id"], "media_id": media_id, "key": doc["idem_key"]},
         {"$set": {"workspace_id": doc["workspace_id"], "media_id": media_id, "key": doc["idem_key"], "job_id": job_id, "spec": spec, "path": path,
                   "window": {"w": float(window["w"]), "h": float(window["h"])}, "faces_checked": checked,
-                  "looked": int(report.get("looked") or 0), "with_face": int(report.get("with_face") or 0),
+                  "looked": _count(report.get("looked")), "with_face": _count(report.get("with_face")),
                   "on_camera": _clean_camera(report.get("on_camera")), "created_at": now}},
         upsert=True,
     )
@@ -909,12 +1001,23 @@ async def _complete_frames(doc: dict, job_id: str, lease_token: str, outputs: An
     return {"ok": True, "accepted": True, "media_id": media_id}
 
 
-async def fail(job_id: str, lease_token: str, code: str, message: str, retryable: bool, detail: Any = None) -> dict:
+async def fail(job_id: str, lease_token: str, code: str, message: str, retryable: bool, detail: Any = None, uploaded: Optional[list] = None) -> dict:
     """The worker could not finish. A retryable failure goes back in the queue until the job is out of attempts.
     A worker that was simply restarted (`worker_stopped`) does not use up an attempt."""
     doc = await _held(job_id, lease_token)
     code = (code or "internal")[:40]
     safe = (message or "The video could not be made. Please try again.")[:300]
+    leftovers = [u for u in (uploaded or [])[:20] if isinstance(u, str) and storage_params.is_our_storage_url(u)]
+    if leftovers:
+        # what a failed attempt stored is of no use to anyone, and the next attempt stores its own
+        try:
+            await _forget_files(leftovers)
+        except Exception as exc:  # noqa: BLE001 - clearing up must not stop the failure being recorded
+            logger.warning("Could not remove files left by a failed render: %s", exc)
+    if doc.get("cancel_requested"):
+        # the member already asked to stop, so a failure is not put back in the queue where nothing would ever take it
+        await _close_job(doc, "cancelled")
+        return {"ok": True, "requeued": False}
     again = bool(retryable) and code not in NEVER_RETRY and doc["attempts"] < settings.VIDEO_WORKER_MAX_ATTEMPTS
     if code == "worker_stopped":
         again = True

@@ -4,6 +4,7 @@ A project keeps a list of edits that refer to the member's library by id. Saving
 Render, and a render is a job on the worker that also shows in the activity dock and the Activity Log like any other long
 work. Every response is sent fresh (never cached), so a screen always shows the state as it is now.
 """
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -169,6 +170,10 @@ async def _check_media(workspace_id: str, edit: dict) -> None:
             raise HTTPException(status_code=400, detail="A picture over the video must be a picture from the library.")
 
 
+#: Saved versions kept for each project, besides the autosaves and the starting point.
+SAVES_KEPT = 300
+
+
 async def _write_version(doc: dict, kind: str, label: str, user_id: str) -> None:
     await _versions().insert_one({
         "id": str(uuid4()), "project_id": doc["id"], "workspace_id": doc["workspace_id"], "version": doc["version"],
@@ -178,6 +183,13 @@ async def _write_version(doc: dict, kind: str, label: str, user_id: str) -> None
         old = await _versions().find({"project_id": doc["id"], "kind": "autosave"}, {"id": 1}).sort("version", -1).skip(AUTOSAVES_KEPT).to_list(200)
         if old:
             await _versions().delete_many({"id": {"$in": [o["id"] for o in old]}})
+    else:
+        # saves the member made are kept for good up to a generous number; past it the oldest go, but never the starting point
+        over = await _versions().find(
+            {"project_id": doc["id"], "kind": {"$ne": "autosave"}, "label": {"$ne": "Start"}}, {"id": 1},
+        ).sort("version", -1).skip(SAVES_KEPT).to_list(200)
+        if over:
+            await _versions().delete_many({"id": {"$in": [o["id"] for o in over]}})
 
 
 # ── creating ─────────────────────────────────────────────────────────────────────
@@ -296,8 +308,14 @@ async def video_usage(request: Request, ctx: WorkspaceContext = Depends(get_curr
 
 @router.get("")
 @limiter.limit("120/minute")
-async def list_projects(request: Request, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
-    rows = await _projects().find({"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}).sort("updated_at", -1).to_list(length=100)
+async def list_projects(
+    request: Request, limit: int = Query(100, ge=1, le=200), skip: int = Query(0, ge=0, le=5000),
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    # the list needs sizes, clips and the last render, not the caption words or the first version of every project
+    rows = await _projects().find(
+        {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"initial_edit": 0, "edit.captions.words": 0},
+    ).sort("updated_at", -1).skip(skip).limit(limit).to_list(length=limit)
     # a picture for each: the poster of its finished video, or of the first clip it uses
     wanted: set[str] = set()
     for r in rows:
@@ -408,6 +426,8 @@ async def set_approval(
         update = {"$unset": {"approval": ""}}
     await _projects().update_one({"id": project_id, "workspace_id": ctx.workspace_id}, update)
     fresh = await _load(ctx.workspace_id, project_id)
+    from app.video import activity
+
     await activity.approval_changed(ctx.workspace_id, ctx.user_id, project_id, int(fresh["version"]), body.approved)
     return _approval_view(fresh)
 
@@ -496,7 +516,11 @@ async def restore_version(
     old = await _versions().find_one({"project_id": project_id, "workspace_id": ctx.workspace_id, "version": version})
     if not old:
         raise HTTPException(status_code=404, detail="That version was not found.")
-    opened = await _replace_edit(ctx, doc, edl.validate(old["edit"]), "restore", "Restored")
+    try:
+        checked = edl.validate(old["edit"])
+    except edl.EditError as exc:
+        raise HTTPException(status_code=409, detail=f"That version can no longer be opened: {exc}")
+    opened = await _replace_edit(ctx, doc, checked, "restore", "Restored")
     from app.video import activity
 
     await activity.version_restored(ctx.workspace_id, ctx.user_id, project_id, version, int(opened.get("version") or version))
@@ -507,7 +531,11 @@ async def restore_version(
 @limiter.limit("30/minute")
 async def reset_project(request: Request, project_id: str, ctx: WorkspaceContext = Depends(require("edit_content"))) -> dict:
     doc = await _load(ctx.workspace_id, project_id)
-    opened = await _replace_edit(ctx, doc, edl.validate(doc.get("initial_edit") or doc["edit"]), "reset", "Started again")
+    try:
+        checked = edl.validate(doc.get("initial_edit") or doc["edit"])
+    except edl.EditError as exc:
+        raise HTTPException(status_code=409, detail=f"This project can no longer be started again: {exc}")
+    opened = await _replace_edit(ctx, doc, checked, "reset", "Started again")
     from app.video import activity
 
     await activity.started_again(ctx.workspace_id, ctx.user_id, project_id, int(opened.get("version") or 0))
@@ -519,6 +547,16 @@ async def reset_project(request: Request, project_id: str, ctx: WorkspaceContext
 async def delete_project(request: Request, project_id: str, ctx: WorkspaceContext = Depends(require("edit_content"))) -> Response:
     await _load(ctx.workspace_id, project_id)
     await _projects().update_one({"id": project_id, "workspace_id": ctx.workspace_id}, {"$set": {"deleted": True, "updated_at": _now()}})
+    # a deleted project must not keep rendering, nor stay open to the people it was shared with
+    db = get_db()
+    async for job in db["video_jobs"].find({"workspace_id": ctx.workspace_id, "project_id": project_id, "status": {"$in": ["queued", "claimed"]}}, {"id": 1}):
+        try:
+            await jobs.cancel_job(ctx.workspace_id, job["id"])
+        except jobs.JobError:
+            pass
+    await db["video_review_links"].update_many(
+        {"workspace_id": ctx.workspace_id, "project_id": project_id, "revoked": {"$ne": True}}, {"$set": {"revoked": True, "revoked_at": _now()}},
+    )
     return Response(status_code=204)
 
 
@@ -557,7 +595,8 @@ async def render_project(
         raise HTTPException(status_code=409, detail="This video is already being rendered. It will show in your videos when it is ready.")
     await _projects().update_one(
         {"id": project_id, "workspace_id": ctx.workspace_id},
-        {"$set": {"last_render": {"job_id": job["id"], "run_id": job.get("run_id"), "preset": body.preset, "version": doc["version"], "at": _now()}}},
+        {"$set": {"last_render": {"job_id": job["id"], "run_id": job.get("run_id"), "preset": body.preset, "version": doc["version"], "at": _now(),
+                                  **({"media_id": job["media_id"]} if job.get("media_id") else {})}}},
     )
     return job
 
@@ -601,7 +640,7 @@ async def handoff_response(workspace_id: str, doc: Optional[dict], fmt: str) -> 
     if not tl.events and fmt != "markers":
         raise HTTPException(status_code=409, detail="This project has no clips yet, so there is nothing to send.")
     if fmt == "package":
-        body: bytes | str = package.build_zip(tl, words, " ".join(w["w"] for w in words))
+        body: bytes | str = await asyncio.to_thread(package.build_zip, tl, words, " ".join(w["w"] for w in words))
     else:
         from app.video.handoff import importer
 

@@ -61,9 +61,13 @@ async def sweep_orphaned_previews() -> int:
     """Preview files whose library item no longer exists. A preview job that finished after its item was deleted leaves these."""
     db = get_db()
     removed = 0
-    async for job in db["video_jobs"].find({"kind": "proxy", "status": "done"}, {"source_media_id": 1, "workspace_id": 1, "report": 1, "id": 1}).limit(PER_RUN):
+    recheck_before = _now() - timedelta(days=7)
+    # each job is looked at once a week, so the sweep moves on through all of them and not only the first few
+    due = {"kind": "proxy", "status": "done", "outputs": {"$exists": True}, "$or": [{"orphan_checked_at": {"$exists": False}}, {"orphan_checked_at": {"$lt": recheck_before}}]}
+    async for job in db["video_jobs"].find(due, {"source_media_id": 1, "workspace_id": 1, "outputs": 1, "id": 1}).limit(PER_RUN):
         media_id = job.get("source_media_id")
         if media_id and await media_assets.find_one({"id": media_id}, {"id": 1}):
+            await db["video_jobs"].update_one({"id": job["id"]}, {"$set": {"orphan_checked_at": _now()}})
             continue
         # the library item is gone: its preview material goes with it, and the job record is no longer needed
         for out in (job.get("outputs") or []):

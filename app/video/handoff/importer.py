@@ -83,6 +83,9 @@ def parse_edl(text: str, timebase: int) -> Timeline:
 # ── Final Cut Pro 7 XML ──────────────────────────────────────────────────────────
 
 def parse_fcp7(text: str) -> Timeline:
+    if re.search(r"<!ENTITY|<!DOCTYPE[^>]*\[", text):
+        # a file that defines its own entities can be made to grow without limit when it is read, and a timeline never needs one
+        raise ImportError_("This file uses features that a timeline file does not need, so it was not read.")
     try:
         root = ET.fromstring(re.sub(r"<!DOCTYPE[^>]*>", "", text, count=1))
     except ET.ParseError as exc:

@@ -7,9 +7,10 @@ seconds, so callers ask for it only when the member has chosen it, and a failure
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from app.core.config import settings
@@ -97,7 +98,25 @@ async def save(*, workspace_id: str, user_id: str, data: bytes, prompt: str, upl
     return media
 
 
+#: A clip made from the same description in the same workspace this recently is handed back instead of being paid for again. A video
+#: that failed after its clips were made, and is started again, then does not buy them a second time.
+REUSE_WITHIN = timedelta(hours=24)
+
+
+def _prompt_key(prompt: str) -> str:
+    return hashlib.sha1(" ".join((prompt or "").lower().split())[:MAX_PROMPT].encode("utf-8")).hexdigest()
+
+
 async def make_clip(*, workspace_id: str, user_id: str, prompt: str) -> MediaAsset:
-    """Generate and keep one clip."""
+    """Generate and keep one clip, or hand back the one already made from this description in the last day."""
+    key = _prompt_key(prompt)
+    recent = await media_assets.find_one(
+        {"workspace_id": workspace_id, "ai_prompt_key": key, "created_at": {"$gte": datetime.now(timezone.utc) - REUSE_WITHIN}},
+        sort=[("created_at", -1)],
+    )
+    if recent:
+        return MediaAsset(**recent)
     data = await generate(prompt)
-    return await save(workspace_id=workspace_id, user_id=user_id, data=data, prompt=prompt)
+    media = await save(workspace_id=workspace_id, user_id=user_id, data=data, prompt=prompt)
+    await media_assets.update_one({"id": media.id, "workspace_id": workspace_id}, {"$set": {"ai_prompt_key": key}})
+    return media

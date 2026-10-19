@@ -448,9 +448,17 @@ async def generate_audio_asset_in_background(
     from app.shared import pipeline_runs
 
     await pipeline_runs.assert_capacity(ctx.workspace_id)
-    doc = await pipeline_runs.create_run(
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="audio", title=f"Narration \"{body.title}\"", steps_total=2,
-    )
+    # the same narration asked for again while it is being made (a double tap, a second tab) is the same run, not a second paid one
+    import hashlib
+
+    start_key = hashlib.sha1(f"{ctx.workspace_id}:{ctx.user_id}:{body.model_dump_json()}".encode()).hexdigest()
+    try:
+        doc = await pipeline_runs.create_run(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind="audio", title=f"Narration \"{body.title}\"", steps_total=2,
+            active_key=f"audio-narration:{start_key}",
+        )
+    except pipeline_runs.RunAlreadyActive as exc:
+        return pipeline_runs.public(exc.existing)
 
     async def work(run: dict) -> dict:
         asset = await create_audio_from_script(body, ctx, pipeline_runs.StepReporter(run["id"]))

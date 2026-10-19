@@ -388,7 +388,8 @@ def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]], *, inter
             # Every run is watched for a time limit; a run that honours a cancel at once (interrupt_on_cancel) is also stopped on request.
             work_task = asyncio.ensure_future(work(doc))
             cancelled_by_member: list = []
-            limit = MAX_SECONDS_BY_KIND.get(doc.get("kind", "")) if interrupt_on_cancel else MAX_SECONDS_DEFAULT
+            # a kind with no limit of its own (video, text, odette) still has the general one, so no run can hold a slot for ever
+            limit = (MAX_SECONDS_BY_KIND.get(doc.get("kind", "")) or MAX_SECONDS_DEFAULT) if interrupt_on_cancel else MAX_SECONDS_DEFAULT
             watcher = asyncio.create_task(_watch_cancel(doc["id"], work_task, cancelled_by_member, limit, honour_cancel=interrupt_on_cancel))
             try:
                 result = await work_task

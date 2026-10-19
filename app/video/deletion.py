@@ -91,22 +91,33 @@ async def _remove_clips(workspace_id: str, media_id: str, actor: str) -> int:
 
     db = get_db()
     changed = 0
-    async for p in db["video_projects"].find({"workspace_id": workspace_id, "deleted": {"$ne": True}}):
-        edit = p.get("edit") or {}
-        keep = {k: [c for c in (edit.get(k) or []) if c.get("media_id") != media_id] for k in ("video", "audio", "shapes")}
-        if all(len(keep[k]) == len(edit.get(k) or []) for k in keep):
-            continue
-        new_edit = {**edit, **keep}
-        ends = [c["at_f"] + c["dur_f"] for k in ("video", "audio") for c in keep[k]]
-        new_edit["duration_f"] = max(ends + [1])
-        try:
-            new_edit = edl.validate(new_edit)
-        except edl.EditError:
-            continue
-        version = int(p.get("version", 1)) + 1
-        await db["video_projects"].update_one({"id": p["id"], "workspace_id": workspace_id}, {"$set": {"edit": new_edit, "version": version, "updated_at": _now()}})
-        await _write_version({**p, "edit": new_edit, "version": version}, "delete", "A video was deleted", actor)
-        changed += 1
+    async for found in db["video_projects"].find({"workspace_id": workspace_id, "deleted": {"$ne": True}}):
+        p = found
+        for _ in range(4):
+            edit = p.get("edit") or {}
+            keep = {k: [c for c in (edit.get(k) or []) if c.get("media_id") != media_id] for k in ("video", "audio", "shapes")}
+            if all(len(keep[k]) == len(edit.get(k) or []) for k in keep):
+                break
+            new_edit = {**edit, **keep}
+            ends = [c["at_f"] + c["dur_f"] for k in ("video", "audio") for c in keep[k]]
+            new_edit["duration_f"] = max(ends + [1])
+            try:
+                new_edit = edl.validate(new_edit)
+            except edl.EditError:
+                break
+            version = int(p.get("version", 1)) + 1
+            # written only if the project is still at the version that was read, so a save the member made at the same moment is not overwritten
+            res = await db["video_projects"].update_one(
+                {"id": p["id"], "workspace_id": workspace_id, "version": p.get("version", 1)},
+                {"$set": {"edit": new_edit, "version": version, "updated_at": _now()}},
+            )
+            if res.modified_count:
+                await _write_version({**p, "edit": new_edit, "version": version}, "delete", "A video was deleted", actor)
+                changed += 1
+                break
+            p = await db["video_projects"].find_one({"id": p["id"], "workspace_id": workspace_id, "deleted": {"$ne": True}})
+            if not p:
+                break
     return changed
 
 

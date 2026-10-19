@@ -68,6 +68,8 @@ class FailBody(_Body):
     message: str = ""
     retryable: bool = False
     detail: Optional[Any] = None
+    #: Files the worker had already stored when it failed. They belong to no finished video, so they are removed.
+    uploaded: list[str] = []
 
 
 def _lost() -> HTTPException:
@@ -114,6 +116,6 @@ async def complete(request: Request, job_id: str, body: CompleteBody) -> dict:
 @limiter.limit("300/minute")
 async def fail(request: Request, job_id: str, body: FailBody) -> dict:
     try:
-        return await jobs.fail(job_id, body.lease_token, body.code, body.message, body.retryable, body.detail)
+        return await jobs.fail(job_id, body.lease_token, body.code, body.message, body.retryable, body.detail, body.uploaded)
     except jobs.LeaseLost:
         raise _lost()

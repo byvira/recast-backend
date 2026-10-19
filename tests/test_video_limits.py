@@ -68,11 +68,12 @@ async def test_the_same_render_asked_again_is_not_counted_twice_or_refused():
     assert again["id"] == first["id"]
 
 
-async def test_a_render_not_tied_to_a_project_is_not_held_to_the_monthly_limit():
+async def test_a_render_not_tied_to_a_project_is_held_to_the_monthly_limit_too():
     ws = await _workspace("single")
     await _job(ws, 200 * 60, "done")
-    job = await jobs.enqueue(workspace_id=ws, user_id="u1", inputs=INPUTS, edit=_edit(seconds=10))
-    assert job["status"] == "queued"
+    with pytest.raises(jobs.JobError) as refused:
+        await jobs.enqueue(workspace_id=ws, user_id="u1", inputs=INPUTS, edit=_edit(seconds=10))
+    assert refused.value.status == 429
 
 
 async def test_an_upload_that_does_not_fit_the_storage_allowance_is_refused_before_it_starts(signup_user):

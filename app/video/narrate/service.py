@@ -92,6 +92,13 @@ async def make_dub(
             raise service.RenderFailed(exc.message)
         done = await service.wait_for_job(workspace_id, job["id"], reporter=reporter)
     finally:
+        # a render that did not finish (cancelled, timed out) is stopped before its inputs go, so it is not left to fail on a missing file
+        started = locals().get("job")
+        if started and "done" not in locals():
+            try:
+                await jobs.cancel_job(workspace_id, started["id"])
+            except Exception as exc:  # noqa: BLE001 - it may already have ended
+                logger.debug("No render left to stop for %s: %s", started.get("id"), exc)
         for url in urls.values():
             try:
                 await forget(url)
@@ -178,6 +185,13 @@ async def make_narration(
             raise service.RenderFailed(exc.message)
         done = await service.wait_for_job(workspace_id, job["id"], reporter=reporter)
     finally:
+        # a render that did not finish (cancelled, timed out) is stopped before its inputs go, so it is not left to fail on a missing file
+        started = locals().get("job")
+        if started and "done" not in locals():
+            try:
+                await jobs.cancel_job(workspace_id, started["id"])
+            except Exception as exc:  # noqa: BLE001 - it may already have ended
+                logger.debug("No render left to stop for %s: %s", started.get("id"), exc)
         for url in stored:
             try:
                 await forget(url)

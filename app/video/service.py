@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from app.core.config import settings
 from app.db.mongo import get_db, media_assets
+from app.shared import pipeline_runs
 from app.video import edl, jobs
 from app.video.origin import summarise
 
@@ -57,6 +58,8 @@ async def start_project_render(
         raise RenderFailed(str(exc))
     except jobs.JobError as exc:
         raise RenderFailed(exc.message)
+    except pipeline_runs.RunAlreadyActive:
+        raise RenderFailed("This video is already being rendered. It will show in your videos when it is ready.")
     return job, project
 
 

@@ -7,6 +7,7 @@ our storage under the name it was given, its size is what was declared, and it c
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -184,15 +185,30 @@ async def import_from_link(request: Request, body: LinkBody, ctx: WorkspaceConte
         raise HTTPException(status_code=400, detail=str(exc) or "That link cannot be used.") from exc
 
     cap = await _limit_bytes(ctx.workspace_id)
-    # read only the headers first: where the link really leads, what it is, and how big
+    # read only the headers first: where the link really leads, what it is, and how big. Each redirect is checked before it is followed,
+    # so a link cannot lead this server on to an address it should never call.
     try:
-        async with httpx.AsyncClient(timeout=20, follow_redirects=True, max_redirects=5) as client:
-            async with client.stream("GET", direct) as res:
-                final = str(res.url)
-                kind = (res.headers.get("content-type") or "").split(";")[0].strip().lower()
-                declared = int(res.headers.get("content-length") or 0)
-                disposition = res.headers.get("content-disposition")
-                status = res.status_code
+        final, kind, declared, disposition, status = direct, "", 0, None, 0
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+            for _hop in range(6):
+                async with client.stream("GET", final) as res:
+                    status = res.status_code
+                    if status in (301, 302, 303, 307, 308) and res.headers.get("location"):
+                        nxt = str(httpx.URL(final).join(res.headers["location"]))
+                        if not link_import.fetch_host_ok(nxt):
+                            raise HTTPException(status_code=400, detail="That link could not be opened. Check that anyone with the link can view it.")
+                        await assert_safe_url(nxt)
+                        final = nxt
+                        continue
+                    kind = (res.headers.get("content-type") or "").split(";")[0].strip().lower()
+                    length = (res.headers.get("content-length") or "").strip()
+                    declared = int(length) if length.isdigit() else 0
+                    disposition = res.headers.get("content-disposition")
+                    break
+            else:
+                raise HTTPException(status_code=400, detail="That link sends you round in circles. Check the link.")
+    except UnsafeUrl as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "That link cannot be used.") from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=400, detail="That link could not be reached. Check that anyone with the link can open it.") from exc
     if status != 200 or not link_import.fetch_host_ok(final):
@@ -282,17 +298,30 @@ async def complete_upload(
     if doc["status"] == "done":
         media = await media_assets.find_one({"id": doc["media_id"], "workspace_id": ctx.workspace_id})
         return {"upload": _view(doc), "media": MediaAsset(**media).model_dump(mode="json") if media else None}
-    if doc["status"] != "started":
+    if doc["status"] not in ("started", "completing"):
         raise HTTPException(status_code=409, detail="This upload was cancelled or has expired. Please start it again.")
+    # only one request finishes an upload: a second one that arrives while the first is working is turned away instead of making a second item
+    stale = _now() - timedelta(minutes=5)
+    claimed = await _uploads().find_one_and_update(
+        {"id": upload_id, "workspace_id": ctx.workspace_id, "$or": [{"status": "started"}, {"status": "completing", "completing_at": {"$lt": stale}}]},
+        {"$set": {"status": "completing", "completing_at": _now()}},
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="This upload is already being finished. Give it a moment.")
 
     async def refuse(message: str, code: int = 400) -> HTTPException:
         await _uploads().update_one({"id": upload_id}, {"$set": {"status": "failed", "error": message}})
         await _destroy(doc.get("public_id"))
         return HTTPException(status_code=code, detail=message)
 
-    expected = f"https://res.cloudinary.com/{settings.CLOUDINARY_CLOUD_NAME}/video/upload/"
+    # the address is read apart: the host and the folder must be ours and the file name must be this upload's, in the path itself and
+    # not anywhere in the query or after a fragment
+    parts = urlparse(body.url)
     wanted_name = f"/recast/video_source/{ctx.workspace_id}/{upload_id}_"
-    if not body.url.startswith(expected) or wanted_name not in body.url:
+    if (
+        parts.scheme != "https" or parts.netloc != "res.cloudinary.com" or parts.query or parts.fragment
+        or not parts.path.startswith(f"/{settings.CLOUDINARY_CLOUD_NAME}/video/upload/") or wanted_name not in parts.path
+    ):
         raise await refuse("That file isn't the one this upload was made for.")
     if body.bytes != doc["bytes"]:
         raise await refuse("The file that arrived is not the size that was chosen. Please upload it again.")

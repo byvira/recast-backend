@@ -39,6 +39,7 @@ from app.workers.token_refresh import refresh_expiring_tokens
 from app.workers.editor_notes_purge import purge_orphan_notes_job
 from app.workers.workspace_purge import purge_deleted_workspaces
 from app.video.retention import continue_video_transcripts, run_video_retention
+from app.video.jobs import reap_if_due
 
 
 @dataclass(frozen=True)
@@ -63,12 +64,18 @@ def _every(step: int, *, offset: int = 0) -> frozenset[int]:
     return frozenset(m for m in range(60) if m % step == offset % step)
 
 
+async def _reap_video_jobs() -> None:
+    await reap_if_due(force=True)
+
+
 JOBS: list[Job] = [
     # Publishing & campaigns — every minute (each job holds its own lock).
     Job("scheduled_posts", _no_ctx(process_scheduled_posts)),
     Job("campaign_batches", _no_ctx(run_due_campaign_batches)),
     # Automatic video recipes that are due (each stops on a failed check and waits for a person).
     Job("video_recipes", _no_ctx(run_due_video_recipes), minute=_every(5, offset=2)),
+    # Render jobs whose worker went quiet are put back or closed, so a project is never left "already being rendered" when no worker is running.
+    Job("video_reaper", _no_ctx(_reap_video_jobs)),
     # Webhook deliveries whose wait is over are sent again.
     Job("video_webhooks", _no_ctx(retry_video_webhooks)),
     # Paused work that was forgotten: a note after 1, 3 and 7 days.

@@ -1,9 +1,10 @@
 """Voices for a video: dub it into another language, narrate a video that has no speech, several voices in one scene, caption
 translations for a whole library, and the list of voice tracks a video has. Every long piece of work is a run in the activity
 dock; every spoken line is placed from the real length of its audio and flagged when it cannot fit."""
+import asyncio
 import io
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -139,6 +140,11 @@ async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Dep
         "error": None, "created_at": _now(), "updated_at": _now(),
     }
     running = await _dubs().find_one({"workspace_id": ctx.workspace_id, "source_media_id": body.media_id, "language": code, "status": "running"})
+    if running and (_now() - (_aware_dt(running.get("updated_at")) or _now())) > STALE_DUB_AFTER:
+        # a dub that has said nothing for this long was cut off (a restart, a cancel); it is closed so a new one can start
+        await _dubs().update_one({"id": running["id"], "status": "running"}, {"$set": {
+            "status": "failed", "error": "This dub was interrupted. Please try again.", "updated_at": _now()}})
+        running = None
     if running:
         return {"dub": _public(running), "run": None}
     try:
@@ -150,7 +156,12 @@ async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Dep
         )
     except pipeline_runs.RunAlreadyActive as exc:
         return {"dub": _public(doc), "run": pipeline_runs.public(exc.existing)}
-    await _dubs().insert_one(dict(doc))
+    try:
+        await _dubs().insert_one(dict(doc))
+    except BaseException:
+        # the run already holds this video and language, so a dub row that could not be saved must not leave it open
+        await pipeline_runs._finish(run, "failed", error="The dub could not be started. Please try again.")
+        raise
     voice = await voice_mod.load(ctx.workspace_id, None)
     note = body.register_note or ""
 
@@ -165,6 +176,11 @@ async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Dep
         except service.RenderFailed as exc:
             await _dubs().update_one({"id": doc["id"]}, {"$set": {"status": "failed", "error": str(exc), "updated_at": _now()}})
             raise
+        except asyncio.CancelledError:
+            # a cancel or a restart stops the run without an Exception, and the row must not stay "running" for good
+            await _dubs().update_one({"id": doc["id"], "status": "running"}, {"$set": {
+                "status": "failed", "error": "This dub was stopped.", "updated_at": _now()}})
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("Dub %s failed: %s", doc["id"], exc)
             await _dubs().update_one({"id": doc["id"]}, {"$set": {
@@ -177,6 +193,15 @@ async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Dep
 
     pipeline_runs.start(run, work, interrupt_on_cancel=True)
     return {"dub": _public(doc), "run": pipeline_runs.public(run)}
+
+
+STALE_DUB_AFTER = timedelta(minutes=45)
+
+
+def _aware_dt(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value if isinstance(value, datetime) else None
 
 
 def _public(d: dict) -> dict:

@@ -125,6 +125,10 @@ async def _mark_session_ended(session_id: str, workspace_id: str) -> None:
 # SSE streaming endpoint — GET so EventSource works in browser
 # ─────────────────────────────────────────────────────────────────────────────
 
+#: How long a run may go on by itself after the connection that was watching it is gone.
+DETACHED_RUN_LIMIT_S = 20 * 60
+
+
 @router.get("/generate/stream")
 @limiter.limit("10/minute")
 async def generate_stream(
@@ -264,6 +268,7 @@ async def generate_stream(
         )
 
         # Forward events from queue to SSE stream
+        detached = False
         try:
             while True:
                 try:
@@ -287,8 +292,11 @@ async def generate_stream(
                     yield "event: ping\ndata: {}\n\n"
 
         except asyncio.CancelledError:
-            logger.info("SSE client disconnected — session %s", session_id)
-            pipeline_task.cancel()
+            # The screen was locked, the app went to the background or the page was left. The posts already being written are not
+            # thrown away: the run carries on (with a time limit), each post is saved as it finishes, and a cancel from the member
+            # still stops it. Stopping is done with the cancel control, not by closing the connection.
+            logger.info("SSE client disconnected — session %s; the run carries on", session_id)
+            detached = True
 
         except Exception as exc:
             logger.error("SSE stream error — session %s: %s", session_id, exc)
@@ -299,11 +307,21 @@ async def generate_stream(
             })
 
         finally:
-            heartbeat_task.cancel()
-            _active_sessions.pop(session_id, None)
-            await _mark_session_ended(session_id, ctx.workspace_id)
-            if not pipeline_task.done():
-                pipeline_task.cancel()
+            def _wrap_up() -> None:
+                heartbeat_task.cancel()
+                _active_sessions.pop(session_id, None)
+                asyncio.ensure_future(_mark_session_ended(session_id, ctx.workspace_id))
+
+            if detached and not pipeline_task.done():
+                loop = asyncio.get_running_loop()
+                limit = loop.call_later(DETACHED_RUN_LIMIT_S, lambda: None if pipeline_task.done() else pipeline_task.cancel())
+                pipeline_task.add_done_callback(lambda _t: (limit.cancel(), _wrap_up()))
+            else:
+                heartbeat_task.cancel()
+                _active_sessions.pop(session_id, None)
+                await _mark_session_ended(session_id, ctx.workspace_id)
+                if not pipeline_task.done():
+                    pipeline_task.cancel()
 
     return StreamingResponse(
         event_stream(),
