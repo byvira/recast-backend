@@ -168,3 +168,39 @@ async def test_a_deletion_where_storage_fails_for_every_file_still_removes_the_r
     assert out["files_removed"] == 0 and out["files_to_retry"] == 2
     assert await media_assets.count_documents({"id": mid}) == 0
     assert await get_db()["video_file_cleanup"].count_documents({"workspace_id": ws}) == 2
+
+
+# ── a render that ended without a video can be asked for again ───────────────────
+
+async def test_asking_again_after_a_failed_render_makes_a_new_job_not_the_dead_one():
+    ws = f"ws-{uuid4()}"
+    first = await _make(ws, idem_key="proj:p1:v1:standard:-14.0:h264")
+    await get_db()["video_jobs"].update_one({"id": first["id"]}, {"$set": {"status": "failed", "error_code": "worker_lost"}})
+
+    second = await _make(ws, idem_key="proj:p1:v1:standard:-14.0:h264")
+
+    assert second["id"] != first["id"] and second["status"] == "queued"
+
+
+async def test_asking_again_while_a_render_is_waiting_returns_the_same_job():
+    ws = f"ws-{uuid4()}"
+    first = await _make(ws, idem_key="proj:p2:v1:standard:-14.0:h264")
+    again = await _make(ws, idem_key="proj:p2:v1:standard:-14.0:h264")
+    assert again["id"] == first["id"]
+
+
+async def test_a_delivery_that_arrives_after_the_job_was_taken_away_keeps_no_video(api_client, monkeypatch):
+    async def size(url):
+        # while the stored file is being checked, the member cancels and the job is closed
+        await get_db()["video_jobs"].update_one({"id": claimed["id"]}, {"$set": {"status": "cancelled", "lease_token": None}})
+        return 1000
+
+    monkeypatch.setattr(jobs, "_remote_size", size)
+    job = await _make()
+    claimed = await _claim(api_client)
+    body = {"lease_token": claimed["lease_token"], "outputs": [_video()], "report": _good_report(job)}
+
+    r = await api_client.post(f"/api/v1/worker/jobs/{claimed['id']}/complete", json=body, headers=HEADERS)
+
+    assert r.status_code == 409
+    assert await media_assets.count_documents({"workspace_id": job["workspace_id"], "kind": "video"}) == 0
