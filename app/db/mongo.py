@@ -430,6 +430,8 @@ async def create_indexes() -> None:
     await content_pieces.create_index([("workspace_id", 1), ("created_at", -1)])
     await content_pieces.create_index([("workspace_id", 1), ("approval_status", 1)])
     await content_pieces.create_index([("workspace_id", 1), ("publish_status", 1)])
+    # the scheduler asks every workspace at once which posts are due and which are stuck, so it cannot use an index that starts with the workspace
+    await content_pieces.create_index([("publish_status", 1), ("publish_scheduled_at", 1)])
     await content_pieces.create_index("campaign_id")
 
     # ── Content piece versions ────────────────────────────────────────────
