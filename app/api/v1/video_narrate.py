@@ -9,9 +9,10 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.core.middleware import limiter
+from app.video.guard import video_spend_guard
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import get_db, media_assets
 from app.models.text import LANGUAGE_NAMES
@@ -119,7 +120,7 @@ class DubBody(BaseModel):
 
 @router.post("/dub", status_code=202)
 @limiter.limit("5/minute")
-async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     from app.agents.supervisor.service import assert_ai_budget_available
     from app.pipelines.media.tts_generation import narration_blocker
 
@@ -272,6 +273,10 @@ class NarrationLine(BaseModel):
     text: str = Field(..., min_length=1, max_length=3000)
 
 
+#: Most characters of narration one request may voice.
+NARRATION_MAX_CHARS = 30_000
+
+
 class NarrationBody(BaseModel):
     media_id: str
     script: str = Field("", max_length=6000)
@@ -283,10 +288,18 @@ class NarrationBody(BaseModel):
     music_media_id: Optional[str] = None
     captions: bool = True
 
+    @model_validator(mode="after")
+    def _within_one_voice_budget(self) -> "NarrationBody":
+        # a request spends voice by the character, so the whole of it has a ceiling (the same one a recording's script has)
+        total = len(self.script) + sum(len(line.text) for line in self.lines)
+        if total > NARRATION_MAX_CHARS:
+            raise ValueError(f"That is {total:,} characters of narration. One request can voice at most {NARRATION_MAX_CHARS:,}. Split it into parts.")
+        return self
+
 
 @router.post("/narration", status_code=202)
 @limiter.limit("5/minute")
-async def start_narration(request: Request, body: NarrationBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def start_narration(request: Request, body: NarrationBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     from app.agents.supervisor.service import assert_ai_budget_available
     from app.pipelines.media import duration as dur
     from app.pipelines.media import fit_script as fitter
@@ -357,7 +370,7 @@ class CaptionBatchBody(BaseModel):
 
 @router.post("/captions/localize", status_code=202)
 @limiter.limit("3/minute")
-async def localize_captions(request: Request, body: CaptionBatchBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def localize_captions(request: Request, body: CaptionBatchBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     """Caption translations for many videos at once, one run. Each video's existing transcript is translated line by line with its
     timing kept; videos with no transcript are skipped and listed."""
     from app.agents.supervisor.service import assert_ai_budget_available

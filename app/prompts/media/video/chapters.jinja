@@ -13,6 +13,4 @@ Rules:
 
 Return only JSON: {"chapters": [{"start": "m:ss", "title": "..."}]}
 
-<transcript>
-{{ transcript_lines }}
-</transcript>
+{{ transcript_lines | untrusted("transcript") }}

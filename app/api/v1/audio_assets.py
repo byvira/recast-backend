@@ -544,9 +544,8 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
         raise HTTPException(
             status_code=503,
             detail=(
-                "Real narration couldn't be synthesized right now — no ElevenLabs "
-                "key configured, no real voice set up yet, or the provider call "
-                "itself failed. Nothing was created."
+                "The narration could not be made right now. The voice may not be set up yet, or the voice service did not answer. "
+                "Nothing was created."
             ),
         )
     audio_bytes = speech.audio

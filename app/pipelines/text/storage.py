@@ -151,6 +151,7 @@ async def save_live_piece(
     intended_publish_at: Optional[datetime] = None,
     piece_id: Optional[str] = None,
     extra_fields: Optional[dict] = None,
+    saved: Optional[dict] = None,
 ) -> str:
     """Persist one freshly-generated piece the moment its own graph run
     finishes. Mirrors save_pipeline_result's piece/version-1 document shape
@@ -199,6 +200,9 @@ async def save_live_piece(
     }
     piece_doc.update(extra_fields or {})
     await guard_piece_doc(piece_doc, where="generation")
+    if saved is not None:
+        # what was really stored (after the content check), so the card shown while writing can match it
+        saved.update({k: piece_doc.get(k) for k in ("content", "flagged_for_review", "quality_issues", "hooks", "word_count", "char_count")})
     await content_pieces.insert_one(piece_doc)
     await _promote_if_auto_approved(piece_doc, workspace_id)
     try:

@@ -27,6 +27,8 @@ TIMEOUT_S = 420.0
 #: What the model makes by default: about five seconds.
 DEFAULT_SECONDS = 5.0
 MIN_BYTES = 2_000
+#: AI clips one workspace may make in a day. Every one is a paid request.
+AI_CLIPS_PER_DAY = 20
 
 
 class ClipGenError(Exception):
@@ -109,6 +111,20 @@ def _prompt_key(prompt: str) -> str:
 
 async def make_clip(*, workspace_id: str, user_id: str, prompt: str) -> MediaAsset:
     """Generate and keep one clip, or hand back the one already made from this description in the last day."""
+    from fastapi import HTTPException
+
+    from app.agents.content_guard.media import ContentRejected, assert_speech_ok
+    from app.agents.supervisor.service import assert_generation_allowed
+
+    try:
+        await assert_generation_allowed(workspace_id)
+    except HTTPException as exc:
+        raise ClipGenError(str(exc.detail)) from exc
+    try:
+        # the description is checked against the same rules as any script before it is sent to a paid service
+        await assert_speech_ok(prompt, noun="clip description", workspace_id=workspace_id, where="ai video clip")
+    except ContentRejected as exc:
+        raise ClipGenError(exc.detail.get("message") if isinstance(exc.detail, dict) else "That description cannot be used.") from exc
     key = _prompt_key(prompt)
     recent = await media_assets.find_one(
         {"workspace_id": workspace_id, "ai_prompt_key": key, "created_at": {"$gte": datetime.now(timezone.utc) - REUSE_WITHIN}},
@@ -116,6 +132,9 @@ async def make_clip(*, workspace_id: str, user_id: str, prompt: str) -> MediaAss
     )
     if recent:
         return MediaAsset(**recent)
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    if await media_assets.count_documents({"workspace_id": workspace_id, "source": MediaSource.AI_GENERATED.value, "created_at": {"$gte": today}}) >= AI_CLIPS_PER_DAY:
+        raise ClipGenError(f"This workspace has made its {AI_CLIPS_PER_DAY} AI clips for today. More can be made tomorrow, or use stock footage.")
     data = await generate(prompt)
     media = await save(workspace_id=workspace_id, user_id=user_id, data=data, prompt=prompt)
     await media_assets.update_one({"id": media.id, "workspace_id": workspace_id}, {"$set": {"ai_prompt_key": key}})

@@ -290,6 +290,7 @@ async def enqueue_preview(*, workspace_id: str, user_id: str, media_id: str, url
 
 MAX_COVER_FRAMES = 48
 MAX_SPEECH_LINES = 80
+MAX_SPEECH_LINE_CHARS = 1200
 
 
 async def enqueue_speech(*, workspace_id: str, user_id: str, items: list[dict], language: str, voice: Optional[str] = None, speed: float = 1.0) -> dict:
@@ -297,7 +298,10 @@ async def enqueue_speech(*, workspace_id: str, user_id: str, items: list[dict], 
     audio file. Only a worker that reports a voice is given this job."""
     clean = []
     for it in items[:MAX_SPEECH_LINES]:
-        text = str(it.get("text") or "").strip()[:1200]
+        text = str(it.get("text") or "").strip()
+        if len(text) > MAX_SPEECH_LINE_CHARS:
+            # a line is never cut short and passed off as whole; the caller keeps long lines for a voice that can take them
+            raise JobError(400, f"A spoken line can be at most {MAX_SPEECH_LINE_CHARS} characters.")
         if text and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(it.get("id", ""))):
             clean.append({"id": str(it["id"]), "text": text})
     if not clean:

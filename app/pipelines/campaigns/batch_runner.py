@@ -108,6 +108,10 @@ async def generate_campaign_batch(
                     # Not saved: stop here, so the run says so and the next attempt starts again from this day. Carrying on would
                     # report a finished batch with a day missing.
                     raise RuntimeError(f"Day {day_index + 1} could not be saved. Nothing after it was made. Try again.") from e
+        if not piece_ids:
+            # every post of the day came back empty (a provider outage, for instance). The day is not counted as made and the batch is
+            # not reported as a success, so the next attempt makes it again and the schedule does not move on.
+            raise RuntimeError(f"Day {day_index + 1} came back empty, so it was not counted. Try again.")
         new_piece_ids.extend(piece_ids)
         # The day is saved whole and recorded on the campaign at once, so a failure later leaves the campaign consistent and the
         # next attempt resumes after it.

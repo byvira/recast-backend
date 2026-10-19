@@ -106,6 +106,11 @@ class Voice:
         Anything that cannot be made stays out of the cache and is spoken by the draft voice when asked for."""
         pairs = [(i, None) if isinstance(i, str) else (i[0], i[1] if len(i) > 1 else None) for i in items]
         pairs = [p for p in dict.fromkeys(pairs) if p[0].strip()]
+        too_long = [p for p in pairs if len(p[0].strip()) > jobs.MAX_SPEECH_LINE_CHARS]
+        if too_long:
+            # the natural voice takes shorter lines than the draft voice; a longer one is left whole for the draft voice, not cut short
+            self.notes.append("Some long lines were spoken with the draft voice so none of the words were cut.")
+            pairs = [p for p in pairs if p not in too_long]
         if not pairs or not await self.natural_available():
             return
         by_voice: dict[Optional[str], list[tuple[str, Optional[str]]]] = {}

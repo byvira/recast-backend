@@ -75,6 +75,9 @@ async def _tool_publish(*, image: bytes, brand: dict, workspace_id: str, user_id
     logo = await ig._fetch_logo(((brand.get("visual_identity") or {}).get("logo_url")) or "")
     if logo:
         image = await run_heavy(ig.stamp_logo, image, logo)
+    from app.agents.content_guard.media import assert_image_ok
+
+    await assert_image_ok(image, "image/jpeg", workspace_id=workspace_id, where="image agent")
     url = await upload_file(image, UploadContentType.IMAGE, user_id)
     asset = MediaAsset(
         id=str(uuid4()), workspace_id=workspace_id, kind=MediaKind.IMAGE, url=url, mime_type="image/jpeg",

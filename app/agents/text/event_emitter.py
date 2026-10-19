@@ -16,6 +16,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+#: The longest a paused run waits for the member before it ends by itself.
+MAX_PAUSE_SECONDS = 30 * 60
+
+
 class EventEmitter:
     """
     Async queue-based event emitter.
@@ -243,7 +247,11 @@ class EventEmitter:
         (by raising CancelledError after telling the client, so no code treats it as a failure to retry)."""
         if not self._cancel_requested and not self._gate.is_set():
             await self.emit("pipeline_paused", {})
-            await self._gate.wait()
+            try:
+                await asyncio.wait_for(self._gate.wait(), timeout=MAX_PAUSE_SECONDS)
+            except asyncio.TimeoutError:
+                # nobody came back to it (the tab was closed): it ends here, and every post already made is kept
+                self.request_cancel()
             if not self._cancel_requested:
                 await self.emit("pipeline_resumed", {})
         if self._cancel_requested:

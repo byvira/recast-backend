@@ -36,7 +36,7 @@ from app.shared.llm import call_llm_structured, set_usage_workspace
 from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
-from app.pipelines.text.hook_agent import run_hook_agent, apply_recommended_hook
+from app.pipelines.text.hook_agent import clamp_index, run_hook_agent, apply_recommended_hook
 from app.pipelines.media.default_image import pick_default_image
 from app.pipelines.media.pdf_export import generate_pieces_pdf
 from app.pipelines.publish.spine import platform_key, to_utc_datetime
@@ -91,6 +91,9 @@ def _build_metadata(
         "plagiarism_check":  extras.plagiarism_check,
         "avoid_blacklist":   extras.avoid_blacklist,
         "pdf_export":        extras.pdf_export,
+        "hook_count":        getattr(extras, "hook_count", 3),
+        "carousel_format":   getattr(extras, "carousel_format", False),
+        "enforce_char_limits": getattr(extras, "enforce_char_limits", True),
         "goal":              goal.value if goal else None,
         "tone":              resolved_tone,
         "language":          language,
@@ -121,7 +124,7 @@ async def _emit_failed_card(
             hook_score=0,
             readability_score=0,
             readability_level="N/A",
-            agent_commentary=f"⚠ Generation failed: {reason}",
+            agent_commentary=f"This post could not be made. {reason}",
             decisions=[],
             angle_used="auto",
             angle_score=0,
@@ -253,7 +256,7 @@ async def _run_single_platform(
             word_count=0,
             char_count=0,
             quality_passed=False,
-            quality_issues=[f"Graph error: {str(e)}"],
+            quality_issues=["This post could not be made. Try again."],
             flagged_for_review=True,
         )
         await _log_text_decision(normalised, platform, failed, is_repurpose=is_repurpose, batch_mode=batch_mode, session_id=session_id)
@@ -399,6 +402,9 @@ async def run_text_pipeline(
         ]
 
         results = await asyncio.gather(*platform_coros, return_exceptions=True)
+        for found in results:
+            if isinstance(found, asyncio.CancelledError):
+                raise found          # the run was cancelled: it ends here, it does not carry on as if a post had failed
         pieces  = []
 
         for platform, result in zip(platforms, results):
@@ -409,14 +415,14 @@ async def run_text_pipeline(
                     "Platform generation failed for %s session %s: %s",
                     platform, normalised.session_id, result, exc_info=True,
                 )
-                await _emit_failed_card(emitter, platform, str(result))
+                await _emit_failed_card(emitter, platform, "This post could not be made. Try again.")
                 pieces.append(GeneratedPiece(
                     platform=platform,
                     content="",
                     word_count=0,
                     char_count=0,
                     quality_passed=False,
-                    quality_issues=[f"Generation error: {str(result)}"],
+                    quality_issues=["This post could not be made. Try again."],
                     flagged_for_review=True,
                 ))
             else:
@@ -609,19 +615,22 @@ async def _run_repurpose_path(
     ]
 
     results = await asyncio.gather(*repurpose_coros, return_exceptions=True)
+    for found in results:
+        if isinstance(found, asyncio.CancelledError):
+            raise found
     pieces  = []
 
     for platform, result in zip(platforms, results):
         if isinstance(result, Exception):
             logger.error("Repurpose failed for %s: %s", platform, result, exc_info=True)
-            await _emit_failed_card(emitter, platform, str(result))
+            await _emit_failed_card(emitter, platform, "This post could not be made. Try again.")
             pieces.append(GeneratedPiece(
                 platform=platform,
                 content="",
                 word_count=0,
                 char_count=0,
                 quality_passed=False,
-                quality_issues=[f"Repurpose error: {str(result)}"],
+                quality_issues=["This post could not be made. Try again."],
                 flagged_for_review=True,
                 repurposed=True,
             ))
@@ -801,6 +810,7 @@ async def _run_single_repurpose(
             if hook_result.success:
                 hooks                  = hook_result.output.get("hooks", [])
                 recommended_hook_index = hook_result.output.get("recommended", 0)
+                recommended_hook_index = clamp_index(recommended_hook_index, len(hooks))
                 content_str            = apply_recommended_hook(content_str, hooks, recommended_hook_index, language=normalised.language)
                 logger.info("Repurpose hooks generated for %s — %d variants", platform, len(hooks))
         except Exception as e:
@@ -826,6 +836,27 @@ async def _run_single_repurpose(
                 logger.info("Repurpose SEO generated for %s", platform)
         except Exception as e:
             logger.warning("SEO agent failed on repurpose path for %s: %s", platform, e)
+
+    # ── Last checks on the finished text ──────────────────────────────────
+    # The same two checks a freshly written post gets, run on the text as it will really be saved (after the opening line was
+    # chosen): the platform's own limits, and figures or stories that the source does not back up.
+    if content_str:
+        try:
+            from app.pipelines.publish.spine import platform_key
+            from app.pipelines.publish.validators import validate_for_platform
+            from app.pipelines.text.claims import unsupported_claims
+
+            key = platform_key(_platform_str(platform))
+            if key and key != "twitter" and metadata.get("enforce_char_limits", True):
+                _, limit_issues = validate_for_platform(key, content_str)
+                fresh = [i for i in limit_issues if i not in issues]
+                if fresh:
+                    issues = [*issues, *fresh]
+                    is_valid = False
+            claim_notes = unsupported_claims(content_str, [normalised.raw_content or "", brand_context or ""])
+            issues = [*issues, *(f"Advisory: {w}" for w in claim_notes if f"Advisory: {w}" not in issues)]
+        except Exception as exc:  # noqa: BLE001 - these checks inform the member; they never stop the post being saved
+            logger.warning("Final checks could not run for repurposed %s: %s", platform, exc)
 
     # ── Persist for real before telling the frontend this card is done ─────
     # Same fix as the normal generation path's collect_output_node — a
@@ -1016,7 +1047,8 @@ async def run_batch_pipeline(
         angle_result = {"angles": list(planned_angles)}
     else:
         angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster, language_line=build_language_instruction(language))
-        angle_result = await call_llm_structured(angle_prompt)
+        # the room the plan needs grows with the days (a 30 day plan did not fit the default and came back cut short)
+        angle_result = await call_llm_structured(angle_prompt, max_tokens=min(8000, 600 + 150 * days))
     planned_angles = angle_result.get("angles") if angle_result else None
     # PAR-014: this used to fall back to [topic_cluster] * days silently on
     # any planning failure — call_llm_structured() returns {} on parse

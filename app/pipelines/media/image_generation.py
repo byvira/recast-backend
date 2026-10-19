@@ -604,6 +604,10 @@ async def generate_brand_mascot(
             return None
         qa_flagged, qa_reason = await _qa_gate(image_bytes, brand_profile)
 
+        # the same picture check every stored picture goes through
+        from app.agents.content_guard.media import assert_image_ok
+
+        await assert_image_ok(image_bytes, "image/jpeg", workspace_id=workspace_id, where="brand picture")
         url = await upload_file(image_bytes, UploadContentType.IMAGE, user_id)
         asset = MediaAsset(
             id=str(uuid4()),
@@ -694,10 +698,16 @@ async def _fetch_logo(logo_url: str) -> Optional[bytes]:
     if not logo_url:
         return None
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(logo_url)
+        # Only a public web address is fetched, a redirect is not followed to somewhere else, and the file has a size limit.
+        from app.pipelines.publish.generic.safe_url import assert_safe_url
+        from app.core import limits
+        from app.shared.safe_fetch import get_limited
+
+        await assert_safe_url(logo_url)
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            resp, body = await get_limited(client, logo_url, limits.FETCHED_IMAGE_MAX_BYTES)
             resp.raise_for_status()
-            return resp.content
+            return body
     except Exception as exc:  # noqa: BLE001
         logger.warning("Logo fetch failed for %s, skipping: %s", logo_url, exc)
         return None

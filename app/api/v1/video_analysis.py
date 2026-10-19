@@ -1,10 +1,11 @@
 """What is in a video: outline, chapters, moments worth clipping, the silence and filler cut list, the shot log, and files that carry
 them into other tools. Everything is read from the video's real transcript and preview; suggestions are never applied by themselves."""
+import asyncio
 import csv
 import io
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import uuid4
 
@@ -20,6 +21,10 @@ from app.video.analysis import analyze as A
 from app.video.analysis import silence as S
 
 logger = logging.getLogger(__name__)
+
+
+def _aware(value):
+    return value.replace(tzinfo=timezone.utc) if isinstance(value, datetime) and value.tzinfo is None else value
 
 
 async def no_store(response: Response) -> None:
@@ -92,8 +97,11 @@ async def start(
     # one analysis per video: starting again replaces the last one, but keeps the member's choices on moments that still exist
     previous = await _analyses().find_one({"workspace_id": ctx.workspace_id, "media_id": media_id})
     if previous and previous.get("status") == "running":
-        return {"analysis": _public(previous), "run": None}
-    await _analyses().replace_one({"workspace_id": ctx.workspace_id, "media_id": media_id}, doc, upsert=True)
+        age = _now() - (_aware(previous.get("updated_at")) or _now())
+        if age < timedelta(minutes=45):
+            return {"analysis": _public(previous), "run": None}
+        # nothing has been heard from it for a long time: it was cut off (a restart, a cancel), so it can be started again
+        previous = {**previous, "status": "failed", "error": "This was interrupted. Please try again."}
     run = None
     try:
         await pipeline_runs.assert_capacity(ctx.workspace_id)
@@ -104,6 +112,17 @@ async def start(
         )
     except pipeline_runs.RunAlreadyActive as exc:
         return {"analysis": _public(doc), "run": pipeline_runs.public(exc.existing)}
+    # the earlier result is replaced only now that the run exists, and it is put back if this one fails or is stopped
+    try:
+        await _analyses().replace_one({"workspace_id": ctx.workspace_id, "media_id": media_id}, doc, upsert=True)
+    except BaseException:
+        await pipeline_runs._finish(run, "failed", error="The video could not be read. Please try again.")
+        raise
+
+    async def restore_previous() -> None:
+        if previous:
+            old = {k: v for k, v in previous.items() if k != "_id"}
+            await _analyses().replace_one({"workspace_id": ctx.workspace_id, "media_id": media_id, "id": doc["id"]}, old)
 
     async def work(row: dict) -> dict:
         reporter = pipeline_runs.StepReporter(row["id"])
@@ -122,10 +141,15 @@ async def start(
                 "note": result.get("note"), "stats": {"sentences": result["sentences"], "windows": result["windows"], "cache_hits": result.get("cache_hits", 0)},
                 "updated_at": _now(),
             }})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Analysis %s failed: %s", doc["id"], exc)
-            await _analyses().update_one({"id": doc["id"]}, {"$set": {
-                "status": "failed", "error": "The video could not be read right now. Please try again.", "updated_at": _now()}})
+        except BaseException as exc:  # noqa: BLE001 - a cancel or a restart ends the work without an Exception
+            logger.warning("Analysis %s did not finish: %s", doc["id"], type(exc).__name__)
+            try:
+                await asyncio.shield(restore_previous())
+                if not previous:
+                    await asyncio.shield(_analyses().update_one({"id": doc["id"]}, {"$set": {
+                        "status": "failed", "error": "The video could not be read right now. Please try again.", "updated_at": _now()}}))
+            except Exception as inner:  # noqa: BLE001
+                logger.warning("Could not tidy up analysis %s: %s", doc["id"], inner)
             raise
         from app.video import activity
 
@@ -183,6 +207,14 @@ async def cuts(
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict[str, Any]:
     """Where this talk can be tightened: pauses, fillers and silences. A preview only; nothing is cut until it is applied."""
+    if judge:
+        # the model's second opinion on fillers is a paid call: it needs the right to edit, the owner's pause off and budget left
+        from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
+        from app.core.workspace import assert_permission
+
+        assert_permission(ctx.member, "edit_content")
+        await assert_generation_allowed(ctx.workspace_id)
+        await assert_ai_budget_available(ctx.workspace_id)
     media = await _media(ctx, media_id)
     tr = await _transcript(ctx, media_id)
     words = await transcribe.all_words(tr["id"])

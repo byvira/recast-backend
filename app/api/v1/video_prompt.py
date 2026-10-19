@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.api.v1.video_create import _Base, _budget, _finish, _language
 from app.core.middleware import limiter
+from app.video.guard import video_spend_guard
 from app.core.workspace import WorkspaceContext, require
 from app.db.mongo import brand_profiles, media_assets
 from app.models.media import ORIGIN_AI, MediaAsset, MediaKind, MediaSource
@@ -45,7 +46,7 @@ class DraftBody(_Base):
 
 @router.post("/draft")
 @limiter.limit("6/minute")
-async def draft(request: Request, body: DraftBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def draft(request: Request, body: DraftBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     """A script in scenes for the described video, with stock suggestions for each scene. Nothing is saved to the library and nothing is
     spoken; the member decides what to keep."""
     from app.shared.llm import set_usage_workspace
@@ -112,7 +113,7 @@ class MakeBody(_Base):
 
 @router.post("/make", status_code=202)
 @limiter.limit("4/minute")
-async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     """Saves the chosen clips, speaks every scene and opens a project with the scenes in order. It runs in the activity dock and ends with
     the project's address; it does not render the video."""
     from app.api.v1.video_narrate import _voice_tools, resolve_language

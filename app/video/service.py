@@ -72,7 +72,16 @@ async def render_project_and_wait(
     job, project = await start_project_render(
         workspace_id=workspace_id, user_id=user_id, project_id=project_id, preset=preset, lufs=lufs, show_in_activity=show_in_activity,
     )
-    done = await wait_for_job(workspace_id, job["id"], reporter=reporter, max_wait_s=max_wait_s)
+    try:
+        done = await wait_for_job(workspace_id, job["id"], reporter=reporter, max_wait_s=max_wait_s)
+    except asyncio.CancelledError:
+        # a flow that was cancelled does not leave its render running in the queue (one that only ran out of waiting time does: it
+        # carries on and shows in the activity list)
+        try:
+            await asyncio.shield(jobs.cancel_job(workspace_id, job["id"]))
+        except Exception as exc:  # noqa: BLE001 - it may already have ended
+            logger.debug("No render left to stop for %s: %s", job.get("id"), exc)
+        raise
     await get_db()["video_projects"].update_one(
         {"id": project_id, "workspace_id": workspace_id},
         {"$set": {"last_render": {"job_id": job["id"], "media_id": done["media_id"], "preset": preset, "version": project["version"]}}},

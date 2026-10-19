@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.core.middleware import limiter
+from app.video.guard import video_spend_guard
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import get_db
 from app.shared import pipeline_runs
@@ -101,7 +102,7 @@ def _check_flow(flow: str, params: dict[str, Any]) -> None:
 
 @router.post("/run", status_code=202)
 @limiter.limit("10/minute")
-async def run_one(request: Request, body: RunBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def run_one(request: Request, body: RunBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     _check_flow(body.flow, body.params)
     label = R.FLOWS[body.flow]["label"]
 
@@ -122,7 +123,7 @@ class BatchBody(BaseModel):
 
 @router.post("/batch", status_code=202)
 @limiter.limit("5/minute")
-async def run_batch(request: Request, body: BatchBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def run_batch(request: Request, body: BatchBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     if body.flow not in R.FLOWS:
         raise HTTPException(status_code=404, detail="That flow does not exist.")
 
@@ -222,7 +223,7 @@ class RecipeRunBody(BaseModel):
 
 @router.post("/recipes/{recipe_id}/run", status_code=202)
 @limiter.limit("5/minute")
-async def run_recipe(request: Request, recipe_id: str, body: RecipeRunBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+async def run_recipe(request: Request, recipe_id: str, body: RecipeRunBody, ctx: WorkspaceContext = Depends(video_spend_guard)) -> dict[str, Any]:
     """Run a recipe once with `inputs`, or over many files with `inputs_list` (one pass of every step per file, one summary)."""
     recipe = await _recipes().find_one({"id": recipe_id, "workspace_id": ctx.workspace_id})
     if not recipe:

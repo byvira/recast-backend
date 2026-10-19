@@ -231,6 +231,18 @@ def _log_report_task(task: "asyncio.Task") -> None:
 # URL PREVIEW
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _ai_guard(ctx: WorkspaceContext = Depends(require("create_content"))) -> WorkspaceContext:
+    """For every route that asks a model for something: the owner's pause and the workspace's token budget are honoured, and the
+    spend is counted against this workspace. Without it a paused or exhausted workspace could still spend through these routes."""
+    from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
+    from app.shared.llm import set_usage_workspace
+
+    await assert_generation_allowed(ctx.workspace_id)
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+    return ctx
+
+
 @router.post("/preview-url", response_model=PreviewUrlResponse)
 @limiter.limit("20/minute")
 async def preview_url_content(
@@ -452,7 +464,7 @@ async def repurpose_content(
 async def suggest_repurpose(
     request: Request,
     body: SuggestRepurposeRequest,
-    ctx: WorkspaceContext = Depends(require("create_content")),
+    ctx: WorkspaceContext = Depends(_ai_guard),
 ) -> RepurposeSuggestion:
     """
     New repurpose flow's "AI Suggestions" step — a cheap, read-only call
@@ -487,7 +499,7 @@ async def suggest_repurpose(
 async def batch_generate(
     request: Request,
     body: BatchGenerateRequest,
-    ctx: WorkspaceContext = Depends(require("create_content")),
+    ctx: WorkspaceContext = Depends(_ai_guard),
 ) -> list[TextPipelineResult]:
     """
     Generate a full week of content from a single topic cluster.
@@ -547,7 +559,7 @@ async def score_hook_endpoint(
     # LLM-backed (Groq) — used to require only membership, so a viewer could
     # trigger real LLM calls with no gate at all. create_content matches the
     # other content-generation-adjacent actions (refine, refine-chat, chips).
-    ctx: WorkspaceContext = Depends(require("create_content")),
+    ctx: WorkspaceContext = Depends(_ai_guard),
 ) -> ScoreHookResponse:
     """
     Score the hook quality of existing content.
@@ -701,7 +713,7 @@ async def reader_review(
 async def refine_content(
     request: Request,
     body: ApplyChipRequest,
-    ctx: WorkspaceContext = Depends(require("create_content")),
+    ctx: WorkspaceContext = Depends(_ai_guard),
 ) -> ApplyChipResponse:
     """
     Apply a quick action chip to existing content.
@@ -775,7 +787,7 @@ async def refine_content(
 async def generate_angles(
     request: Request,
     body: GenerateAnglesRequest,
-    ctx: WorkspaceContext = Depends(require("create_content")),
+    ctx: WorkspaceContext = Depends(_ai_guard),
 ) -> GenerateAnglesResponse:
     """
     Generate 3 genuinely distinct strategic angles on existing content —
@@ -838,7 +850,7 @@ async def generate_angles(
 async def refine_chat(
     request: Request,
     body: RefineChatRequest,
-    ctx: WorkspaceContext = Depends(require("create_content")),
+    ctx: WorkspaceContext = Depends(_ai_guard),
 ) -> RefineChatResponse:
     """
     Multi-turn conversational content refinement.

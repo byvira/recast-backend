@@ -7,6 +7,9 @@ not in the source is a problem, never accepted.
 """
 from __future__ import annotations
 
+#: The most scenes one video is made of; the same limit the builders enforce.
+MAX_BEATS = 12
+
 import re
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Optional
@@ -104,7 +107,7 @@ def validate_script(
     figures = numbers_in(source_text)
     beats: list[dict[str, Any]] = []
     problems: list[str] = []
-    for i, b in enumerate(beats_in[:40]):
+    for i, b in enumerate(beats_in[:MAX_BEATS]):
         if not isinstance(b, dict):
             continue
         narration = clean(b.get("narration"), 1200)

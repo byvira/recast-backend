@@ -327,7 +327,7 @@ def limit_warnings(platform: object, content: str) -> list[str]:
         words = len(content.split())
         if words > limits["max_words"]:
             notes.append(f"This is {words} words; {target.value} posts usually stay under {limits['max_words']}.")
-        tags = len(re.findall(r"(?<!w)#w+", content))
+        tags = len(re.findall(r"(?<!\w)#\w+", content))
         if tags > limits["max_hashtags"]:
             notes.append(f"This has {tags} hashtags; {target.value} usually takes at most {limits['max_hashtags']}.")
     return notes

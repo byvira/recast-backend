@@ -98,15 +98,8 @@ def is_language_supported(language: str) -> tuple[bool, str]:
     if settings.DEEPGRAM_API_KEY and lang in DEEPGRAM_SUPPORTED_LANGUAGES:
         return True, ""
     if not settings.ELEVENLABS_API_KEY and not settings.DEEPGRAM_API_KEY:
-        return False, "No TTS provider is configured at all."
-    # Real, specific reason — which provider(s) are actually reachable
-    # today and what they each really support, not a generic "unsupported".
-    reachable = []
-    if settings.DEEPGRAM_API_KEY:
-        reachable.append(f"Deepgram (supports: {', '.join(sorted(DEEPGRAM_SUPPORTED_LANGUAGES))})")
-    if settings.ELEVENLABS_API_KEY:
-        reachable.append(f"ElevenLabs (supports: {', '.join(sorted(ELEVENLABS_SUPPORTED_LANGUAGES))})")
-    return False, f"'{language}' isn't supported by any reachable provider right now — {'; '.join(reachable)}."
+        return False, "No voice is set up on this server yet."
+    return False, f"The voices available right now cannot speak '{language}'. Choose another language."
 
 
 def narration_blocker(language: str, voice_settings: MemberVoiceSettings) -> Optional[str]:

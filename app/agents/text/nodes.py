@@ -20,6 +20,8 @@ Node responsibilities:
 
 
 import logging
+import asyncio
+import hashlib
 from typing import Optional
 
 from app.shared.brand_name import brand_display_name
@@ -145,6 +147,25 @@ async def merge_member_lexicon_enforcement(
 # NODES
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _prepare_source(raw: str, language: str) -> tuple[str, str]:
+    cleaned = await clean_raw_content(raw)
+    return cleaned, await extract_content_brief(cleaned, language=language)
+
+
+async def _normalised_once(emitter, raw: str, language: str) -> tuple[str, str]:
+    """The cleaned source and its brief. Every platform of one run starts from the same source, so the two model calls are made once
+    and shared, not paid again for each platform (and each platform sees the same brief)."""
+    if emitter is None:
+        return await _prepare_source(raw, language)
+    cache = emitter.__dict__.setdefault("_source_cache", {})
+    key = (hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest(), language)
+    task = cache.get(key)
+    if task is None:
+        task = asyncio.ensure_future(_prepare_source(raw, language))
+        cache[key] = task
+    return await asyncio.shield(task)
+
+
 async def normalise_node(state: TextAgentState) -> dict:
     """
     Cleans raw_input and extracts the content brief.
@@ -154,7 +175,7 @@ async def normalise_node(state: TextAgentState) -> dict:
     """
     emitter: EventEmitter = state.get("emitter")
 
-    cleaned = await clean_raw_content(state["raw_input"])
+    cleaned, brief = await _normalised_once(emitter, state["raw_input"], state["language"])
     word_count = len(cleaned.split())
 
     if emitter:
@@ -165,8 +186,6 @@ async def normalise_node(state: TextAgentState) -> dict:
             else state.get("source_type", "text")
         )
         await emitter.emit_log(msg.source_type_detected(source_type))
-
-    brief = await extract_content_brief(cleaned, language=state["language"])
 
     return {
         "normalised_content": cleaned,
@@ -191,9 +210,10 @@ async def build_context_node(state: TextAgentState) -> dict:
     """
     from app.db.mongo import brand_profiles
 
-    _brand_query = {"id": state["brand_id"]}
-    if state.get("workspace_id"):
-        _brand_query["workspace_id"] = state["workspace_id"]
+    if not state.get("workspace_id"):
+        # a brand is only ever read inside its own workspace; a run with no workspace has no brand to read
+        raise ValueError("A run needs a workspace.")
+    _brand_query = {"id": state["brand_id"], "workspace_id": state["workspace_id"]}
     brand_profile = await brand_profiles.find_one(_brand_query)
     if not brand_profile:
         logger.error("Brand profile not found: %s", state["brand_id"])
@@ -779,6 +799,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
         # user, so it falls back to the old empty-id behaviour and logs
         # rather than raising.
         piece_id = ""
+        stored: dict = {}
         # Nothing was written (the model returned nothing): there is no post to save, so no empty flagged piece is left behind.
         if (latest_piece.get("content") or "").strip():
             try:
@@ -825,6 +846,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
                     publish_target=latest_piece.get("publish_target"),
                     intended_publish_at=latest_piece.get("intended_publish_at"),
                     extra_fields={"language": state.get("language") or None, "origin": "ai", "contains_ai": True},
+                    saved=stored,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -842,6 +864,15 @@ async def collect_output_node(state: TextAgentState) -> dict:
         if piece_id:
             pieces[-1]["piece_id"] = piece_id
 
+        # The card shows what was saved: the text after the content check, with its flag, and the hook choices the writer made.
+        shown_content = stored.get("content") if stored.get("content") is not None else latest_piece.get("content", "")
+        if stored:
+            is_flagged = bool(stored.get("flagged_for_review", is_flagged))
+        saved_hooks = stored.get("hooks") or latest_piece.get("hooks") or []
+        hook_texts = [h.get("text", "") for h in saved_hooks if isinstance(h, dict) and h.get("text")]
+        scores = [h.get("score", 0) for h in saved_hooks if isinstance(h, dict) and isinstance(h.get("score"), (int, float))]
+        if scores and not hook_score:
+            hook_score = int(max(scores) * 10)       # hooks are scored 1 to 10; the card and its threshold use 0 to 100
         commentary = msg.build_card_commentary(
             angle_name="Auto",
             angle_score=0,
@@ -854,7 +885,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
 
         await emitter.emit_output_complete(
             platform=platform,
-            content=latest_piece.get("content", ""),
+            content=shown_content,
             hook_score=hook_score,
             readability_score=latest_piece.get("readability_score", 0) or 0,
             readability_level=latest_piece.get("readability_level", "Standard") or "Standard",
@@ -866,7 +897,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
             generation_time=0.0,
             piece_id=piece_id,
             hashtags=latest_piece.get("hashtags", []) or [],
-            hook_alternatives=[],
+            hook_alternatives=hook_texts[:5],
             language=state.get("language", "en"),
             batch_day_index=state.get("batch_day_index"),
         )

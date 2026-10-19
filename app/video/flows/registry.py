@@ -7,6 +7,7 @@ A flow returns a list of specs, each `{"title", "edit", "created_from", "notes"}
 from __future__ import annotations
 
 import logging
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -127,14 +128,35 @@ async def _decorate(env: Env, edit: dict, params: dict, brand: dict, *, title: s
 
 # ── the flows ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+#: Most clips one run may make. Each is a project and a render, so a run cannot be asked for an endless number.
+MAX_CLIPS_PER_FLOW = 10
+
+
+def _whole(value, default: int, low: int, high: int) -> int:
+    """A whole number from a run's settings, kept between low and high. Something that is not a number is a plain refusal."""
+    try:
+        n = int(default if value in (None, "") else value)
+    except (TypeError, ValueError):
+        raise FlowError("One of the settings is not a number.") from None
+    return max(low, min(high, n))
+
+
+def _number(value, default: float, low: float, high: float) -> float:
+    try:
+        n = float(default if value in (None, "") else value)
+    except (TypeError, ValueError):
+        raise FlowError("One of the settings is not a number.") from None
+    return max(low, min(high, n))
+
+
 async def video_to_clips(env: Env, p: dict) -> list[dict]:
     media = await _media(env, p["media_id"], "video")
     tr, words = await _words(env, p["media_id"])
     duration = float(media.get("duration_s") or tr.get("duration_s") or 0)
     brand = await _brand(env, p.get("brand_id"))
     accent, background = _colors(brand)
-    moments = await moments_for(env, p["media_id"], words, language=tr.get("language") or "en", duration_s=duration, count=int(p.get("count", 5)),
-                                min_s=float(p.get("min_s", 20)), max_s=float(p.get("max_s", 60)), only_accepted=bool(p.get("only_accepted")))
+    moments = await moments_for(env, p["media_id"], words, language=tr.get("language") or "en", duration_s=duration, count=_whole(p.get("count"), 5, 1, MAX_CLIPS_PER_FLOW),
+                                min_s=_number(p.get("min_s"), 20, 3, 600), max_s=_number(p.get("max_s"), 60, 3, 600), only_accepted=bool(p.get("only_accepted")))
     if not moments:
         raise FlowError("No moment in this video was strong enough to clip. Try a longer video, or choose the moments yourself first.")
     specs = []
@@ -198,19 +220,34 @@ async def _speak_beats(env: Env, beats: list[dict], language: str) -> list[dict]
         await env.step("Making the voices")
         await speak.prepare([b["narration"] for b in beats])
     out = []
-    for n, b in enumerate(beats, 1):
-        await env.step(f"Speaking beat {n} of {len(beats)}")
-        audio = await speak(b["narration"], None)
-        secs = audio_duration.audio_duration_seconds(audio) if audio else None
-        if not audio or not secs:
-            raise FlowError("The voice could not read the script. Check the voice settings and try again.")
-        stored = await env.store_audio(audio)
-        mid = str(uuid.uuid4())
-        await media_assets.insert_one(MediaAsset(
-            id=mid, workspace_id=env.workspace_id, kind=MediaKind.AUDIO, url=stored["url"], mime_type="audio/mpeg", duration_s=round(secs, 2),
-            source=MediaSource.SYNTHESIZED, created_by=env.user_id, created_at=datetime.now(timezone.utc), size_bytes=stored.get("bytes"),
-        ).model_dump())
-        out.append({"media_id": mid, "seconds": secs, "text": b["narration"]})
+    urls: list[str] = []
+    try:
+        for n, b in enumerate(beats, 1):
+            await env.step(f"Speaking beat {n} of {len(beats)}")
+            audio = await speak(b["narration"], None)
+            secs = audio_duration.audio_duration_seconds(audio) if audio else None
+            if not audio or not secs:
+                raise FlowError("The voice could not read the script. Check the voice settings and try again.")
+            stored = await env.store_audio(audio)
+            urls.append(stored["url"])
+            mid = str(uuid.uuid4())
+            await media_assets.insert_one(MediaAsset(
+                id=mid, workspace_id=env.workspace_id, kind=MediaKind.AUDIO, url=stored["url"], mime_type="audio/mpeg", duration_s=round(secs, 2),
+                source=MediaSource.SYNTHESIZED, created_by=env.user_id, created_at=datetime.now(timezone.utc), size_bytes=stored.get("bytes"),
+            ).model_dump())
+            out.append({"media_id": mid, "seconds": secs, "text": b["narration"]})
+    except BaseException:
+        # a half-voiced video is not kept: the voice files made so far and their library rows go, so nothing is left behind unused
+        try:
+            if out:
+                await asyncio.shield(media_assets.delete_many({"workspace_id": env.workspace_id, "id": {"$in": [o["media_id"] for o in out]}}))
+            from app.shared.storage import delete_file_by_url
+
+            for url in urls:
+                await asyncio.shield(delete_file_by_url(url))
+        except Exception as exc:  # noqa: BLE001 - tidying up must not hide the real outcome
+            logger.warning("Could not remove the voice files of a flow that stopped: %s", exc)
+        raise
     return out
 
 

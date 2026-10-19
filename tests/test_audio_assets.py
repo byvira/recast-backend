@@ -515,7 +515,7 @@ def test_language_support_reflects_which_providers_are_reachable(monkeypatch):
     ok, _ = tts_generation.is_language_supported("english")
     assert ok
     ok, reason = tts_generation.is_language_supported("tamil")
-    assert not ok and "Deepgram" in reason
+    assert not ok and "tamil" in reason.lower()
 
     monkeypatch.setattr(tts_generation.settings, "ELEVENLABS_API_KEY", "el")
     assert tts_generation.is_language_supported("tamil")[0] is True
@@ -523,7 +523,7 @@ def test_language_support_reflects_which_providers_are_reachable(monkeypatch):
     monkeypatch.setattr(tts_generation.settings, "ELEVENLABS_API_KEY", "")
     monkeypatch.setattr(tts_generation.settings, "DEEPGRAM_API_KEY", "")
     ok, reason = tts_generation.is_language_supported("english")
-    assert not ok and "No TTS provider" in reason
+    assert not ok and "No voice is set up" in reason
 
 
 # ── export ───────────────────────────────────────────────────────────────────

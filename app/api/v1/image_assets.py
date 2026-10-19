@@ -614,8 +614,8 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Layout '{body.active_layout.value}' isn't supported yet — "
-                f"only {sorted(l.value for l in SUPPORTED_LAYOUTS)} today."
+                f"The '{body.active_layout.value}' layout is not available yet. "
+                f"These work today: {', '.join(sorted(l.value for l in SUPPORTED_LAYOUTS))}."
             ),
         )
 
@@ -738,6 +738,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 except Exception as exc:  # noqa: BLE001 - keep what was made
                     logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
                     break
+                no_picture_made = extra.background_media_id is None
                 made.append(Slide(
                     slide_number=position, title=f"{body.title} ({position})", slide_type=body.active_layout.value,
                     layout=body.active_layout, media_id=extra.media.id, background_media_id=extra.background_media_id, layers=extra.layers,
@@ -748,6 +749,11 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
                     ).model_dump(),
                 ))
+                if no_picture_made:
+                    # the picture service gave nothing for this one (down, or out of allowance), so the rest are not asked for: each
+                    # would run the same checks and the same provider calls only to end as a text card
+                    logger.warning("Image pack stopped at image %d of %d for asset %s: the picture service made no picture", position, body.count, asset_id)
+                    break
         except asyncio.CancelledError:
             # Stopped part-way (a cancel, or the server going down): the pictures made so far are kept, and the set says how many.
             if len(made) > len(asset.slides):
