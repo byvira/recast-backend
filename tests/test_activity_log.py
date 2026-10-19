@@ -516,7 +516,7 @@ async def test_control_tower_lists_what_runs_next(api_client):
     ws_id = await create_workspace(api_client, "Up Next", tier="large")
     now = datetime.now(timezone.utc)
     await content_pieces.insert_one({
-        "piece_id": str(uuid4()), "workspace_id": ws_id, "publish_status": "queued",
+        "piece_id": str(uuid4()), "workspace_id": ws_id, "publish_status": "queued", "platform": "LinkedIn",
         "publish_scheduled_at": (now + timedelta(hours=3)).isoformat(), "publish_target": "linkedin",
         "content": "Hiring update\nbody", "deleted": False,
     })
