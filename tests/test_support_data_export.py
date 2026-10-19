@@ -15,7 +15,7 @@ def _ticket(ws_id: str, user_id: str, **extra) -> dict:
     now = datetime.now(timezone.utc)
     return {
         "id": f"t-{uuid4()}", "number": next(_NUMBERS), "workspace_id": ws_id, "workspace_name": "WS", "created_by": user_id,
-        "created_by_name": "Asha", "subject": "My post did not go out", "category": "Publishing", "severity": "normal",
+        "created_by_name": "Asha", "subject": "My post did not go out", "category": "Publishing", "severity": "P2",
         "status": "open", "created_at": now, "updated_at": now,
         "messages": [
             {"sender": "member", "sender_name": "Asha", "text": "It never posted.", "created_at": now, "is_internal": False,
