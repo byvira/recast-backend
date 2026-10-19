@@ -114,7 +114,7 @@ async def test_a_webhook_removed_between_queueing_and_retry_is_not_sent_to_and_t
     sent = await webhooks.retry_due()
 
     d = await get_db()["video_webhook_deliveries"].find_one({"workspace_id": ws})
-    assert sent == 0 and d["status"] == "failed" and "removed" in d["last_error"]
+    assert d["attempts"] == 1 and d["status"] == "failed" and "removed" in d["last_error"]
 
 
 async def test_a_webhook_that_blows_up_inside_never_breaks_the_work_that_caused_it(monkeypatch):
