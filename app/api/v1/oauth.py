@@ -871,6 +871,8 @@ async def disconnect_platform(
 
     if group != (platform,):
         await _revoke_google(ctx.workspace_id)
+    elif platform == "linkedin":
+        await _revoke_linkedin(ctx.workspace_id)
     for name in group:
         await delete_token(ctx.workspace_id, name)
 
@@ -896,6 +898,27 @@ async def disconnect_platform(
         "message":     f"{platform} disconnected."
                        + (f" {waiting} scheduled post{'s' if waiting != 1 else ''} will not go out until you connect it again." if waiting else ""),
     }
+
+
+async def _provider_post(url: str, data: dict) -> None:
+    """One form post to a provider, kept apart so tests can stand in for the provider."""
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        (await client.post(url, data=data)).raise_for_status()
+
+
+async def _revoke_linkedin(workspace_id: str) -> None:
+    """Best effort: ask LinkedIn to stop honouring the saved token. The connection is removed whether or not this works."""
+    try:
+        from app.pipelines.publish.linkedin.oauth import LINKEDIN_REVOKE_URL
+        from app.pipelines.publish.token_store import get_token
+
+        token = await get_token(workspace_id, "linkedin")
+        if token and token.get("access_token"):
+            await _provider_post(LINKEDIN_REVOKE_URL, {
+                "client_id": settings.LINKEDIN_CLIENT_ID, "client_secret": settings.LINKEDIN_CLIENT_SECRET, "token": token["access_token"],
+            })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Could not revoke the LinkedIn sign-in for workspace %s: %s", workspace_id, exc)
 
 
 async def _revoke_google(workspace_id: str) -> None:

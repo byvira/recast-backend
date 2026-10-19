@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 LINKEDIN_AUTH_URL    = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL   = "https://www.linkedin.com/oauth/v2/accessToken"
+LINKEDIN_REVOKE_URL  = "https://www.linkedin.com/oauth/v2/revoke"
 LINKEDIN_PROFILE_URL = "https://api.linkedin.com/v2/userinfo"
 
 SCOPES = ["openid", "profile", "email", "w_member_social"]
