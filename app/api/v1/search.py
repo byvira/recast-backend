@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, get_current_workspace
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import (
     audio_assets,
     content_pieces,
@@ -197,7 +197,7 @@ _AGENTIC_SYSTEM = (
 async def agentic_search(
     request: Request,
     body: AgenticSearchRequest,
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> SearchResponse:
     """The member's toggle-on AI search: the LLM reasons over the same real
     items the fast path uses, so a query like "the launch post" can surface

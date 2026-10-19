@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, get_current_workspace
+from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import audio_assets, brand_profiles, content_sessions, get_db, image_assets
 from app.pipelines import suggest as engine
 from app.shared.llm import GroqModel, call_llm, set_usage_workspace
@@ -147,7 +147,7 @@ def _app_has_room() -> bool:
 
 @router.post("/complete")
 @limiter.limit("40/minute")
-async def complete(request: Request, body: CompleteRequest, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
+async def complete(request: Request, body: CompleteRequest, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
     """One short continuation of what is typed, or `{"completion": null}`. Never an error."""
     nothing = {"completion": None, "source": None}
     typed = body.text[-600:]

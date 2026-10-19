@@ -447,7 +447,7 @@ async def asset_performance(
 async def ask_analytics(
     request: Request,
     body: AnalyticsAskRequest,
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> dict:
     result = await run_analytics(
         workspace_id=ctx.workspace_id,

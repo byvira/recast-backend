@@ -24,7 +24,7 @@ from fastapi.responses import StreamingResponse
 
 from app.pipelines.text.scraper import UrlFetchError
 from app.core.middleware import limiter
-from app.core.workspace import WorkspaceContext, get_current_workspace, require_stream
+from app.core.workspace import WorkspaceContext, get_current_workspace, require, require_stream
 from app.db.mongo import brand_profiles
 from app.db.redis import get_cache, set_cache
 from app.models.text import ExtrasConfig, GenerateTextRequest, InputSourceType, ToneOverride, ScheduleMode
@@ -345,7 +345,7 @@ async def resume_pipeline(
     request:    Request,
     session_id: str,
     body:       dict[str, Any],
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> dict:
     """
     Resume a pipeline that emitted agent_paused.
@@ -403,7 +403,7 @@ async def control_session(
     request:    Request,
     session_id: str,
     body:       dict[str, Any],
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> dict:
     """Pause, resume or cancel a run that is going. body: { "action": "pause" | "resume" | "cancel" }.
     A pause takes effect at the next step of the run, and a cancel keeps every post already made. Works across instances."""

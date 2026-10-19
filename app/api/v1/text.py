@@ -248,7 +248,7 @@ async def _ai_guard(ctx: WorkspaceContext = Depends(require("create_content"))) 
 async def preview_url_content(
     request: Request,
     body: PreviewUrlRequest,
-    ctx: WorkspaceContext = Depends(get_current_workspace),
+    ctx: WorkspaceContext = Depends(require("create_content")),
 ) -> PreviewUrlResponse:
     """
     Fetch a URL and return a lightweight preview (title/snippet/word count)
