@@ -18,7 +18,7 @@ scalar-fastapi>=1.0.3
 # (algorithm-confusion, a JWE-decompression DoS). PyJWT is actively
 # maintained and a drop-in replacement for this app's usage — see
 # app/core/auth.py's import comment.
-PyJWT[crypto]==2.13.0
+PyJWT[crypto]==2.15.1
 passlib[bcrypt]==1.7.4
 
 # ─────────────────────────────────────────
