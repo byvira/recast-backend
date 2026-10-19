@@ -128,6 +128,21 @@ async def _test_database_lifecycle():
     client.close()
 
 
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def _no_staff_left_behind_by_a_module():
+    """Support staff accounts made by one test file do not carry into the next.
+
+    A new support ticket and a health alert are sent to at most 50 staff accounts, read unsorted, so after enough files each made a
+    few, a later file's staff member was not among them and was never notified. Each test makes the staff it needs."""
+    yield
+    from app.db.mongo import users
+
+    await users.update_many(
+        {"$or": [{"is_platform_staff": True}, {"is_master_admin": True}, {"support_role": {"$exists": True}}]},
+        {"$set": {"is_platform_staff": False, "is_master_admin": False}, "$unset": {"support_role": ""}},
+    )
+
+
 @pytest_asyncio.fixture
 async def make_client():
     """Factory for independent httpx AsyncClients (each its own cookie jar),
