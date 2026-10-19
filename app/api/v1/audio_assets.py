@@ -1562,7 +1562,7 @@ async def list_audio_assets(
     """The workspace's audio, newest first, each with its playable file, for
     the Library's Audio tab. Read only."""
     flt = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
-    docs = await audio_assets.find(flt, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
+    docs = await audio_assets.find(flt, {"_id": 0}).sort([("created_at", -1), ("id", -1)]).skip(skip).limit(limit).to_list(length=limit)
     total = await audio_assets.count_documents(flt)
 
     media_ids = [m for m in ((d.get("approved_master_media_id") or d.get("media_id")) for d in docs) if m]

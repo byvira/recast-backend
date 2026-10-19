@@ -1738,7 +1738,7 @@ async def list_image_assets(
     """The workspace's images, newest first, each with its first slide as the
     preview, for the Library's Image tab. Read only."""
     flt = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
-    docs = await image_assets.find(flt, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(length=limit)
+    docs = await image_assets.find(flt, {"_id": 0}).sort([("created_at", -1), ("id", -1)]).skip(skip).limit(limit).to_list(length=limit)
     total = await image_assets.count_documents(flt)
 
     def _first_media_id(doc: dict) -> Optional[str]:

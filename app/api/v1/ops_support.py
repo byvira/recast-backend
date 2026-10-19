@@ -300,7 +300,7 @@ async def list_all_tickets(
 
     query: dict = {"$and": clauses} if clauses else {}
     total = await support_tickets.count_documents(query)
-    rows = await support_tickets.find(query).sort("updated_at", -1).skip(skip).limit(limit).to_list(limit)
+    rows = await support_tickets.find(query).sort([("updated_at", -1), ("id", -1)]).skip(skip).limit(limit).to_list(limit)
     await _flag_deleted(rows)
     return {"tickets": [_summary(r) for r in rows], "total": total}
 

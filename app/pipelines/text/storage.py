@@ -502,7 +502,7 @@ async def get_workspace_sessions(
     total = await content_sessions.count_documents(query)
 
     sessions = await content_sessions.find(query).sort(
-        "created_at", -1
+        [("created_at", -1), ("session_id", -1)]
     ).skip(skip).limit(limit).to_list(length=limit)
 
     for s in sessions:
@@ -669,7 +669,7 @@ async def get_workspace_pieces(
     total = await content_pieces.count_documents(query)
 
     pieces = await content_pieces.find(query).sort(
-        "created_at", -1
+        [("created_at", -1), ("piece_id", -1)]
     ).skip(skip).limit(limit).to_list(length=limit)
 
     for p in pieces:

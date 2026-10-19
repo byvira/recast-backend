@@ -161,7 +161,7 @@ async def list_waitlist(
 ) -> dict[str, Any]:
     query = _waitlist_query(status, q, role, team_size, source)
     total = await waitlist_leads.count_documents(query)
-    docs = await waitlist_leads.find(query, _NO_ID).sort("created_at", -1).skip((page - 1) * page_size).limit(page_size).to_list(page_size)
+    docs = await waitlist_leads.find(query, _NO_ID).sort([("created_at", -1), ("id", -1)]).skip((page - 1) * page_size).limit(page_size).to_list(page_size)
     return {"items": [_lead_row(doc) for doc in docs], "total": total, "page": page, "page_size": page_size}
 
 

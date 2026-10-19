@@ -315,7 +315,7 @@ async def list_projects(
     # the list needs sizes, clips and the last render, not the caption words or the first version of every project
     rows = await _projects().find(
         {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"initial_edit": 0, "edit.captions.words": 0},
-    ).sort("updated_at", -1).skip(skip).limit(limit).to_list(length=limit)
+    ).sort([("updated_at", -1), ("id", -1)]).skip(skip).limit(limit).to_list(length=limit)
     # a picture for each: the poster of its finished video, or of the first clip it uses
     wanted: set[str] = set()
     for r in rows:

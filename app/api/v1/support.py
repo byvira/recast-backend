@@ -176,7 +176,7 @@ async def list_my_tickets(
     elif view == "resolved":
         query["status"] = {"$in": ["resolved", "closed"]}
     total = await support_tickets.count_documents(query)
-    rows = await support_tickets.find(query).sort("updated_at", -1).skip(skip).limit(limit).to_list(limit)
+    rows = await support_tickets.find(query).sort([("updated_at", -1), ("id", -1)]).skip(skip).limit(limit).to_list(limit)
     # The list only needs the latest message for its preview.
     return {"tickets": [member_view(r, viewer_id=ctx.user_id, limit=1) for r in rows], "total": total}
 

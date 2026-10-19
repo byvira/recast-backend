@@ -150,7 +150,7 @@ async def list_events(
         flt["created_at"] = {"$gte": since}
     rows = [
         _event_row(row)
-        async for row in safety_events.find(flt, {"fingerprint": 0}).sort("created_at", -1).skip(offset).limit(limit)
+        async for row in safety_events.find(flt, {"fingerprint": 0}).sort([("created_at", -1), ("_id", -1)]).skip(offset).limit(limit)
     ]
     return {"events": rows, "total": await safety_events.count_documents(flt)}
 

@@ -346,6 +346,7 @@ async def list_brand_profiles(
     total = await brand_profiles.count_documents({"workspace_id": ctx.workspace_id})
     docs = (
         await brand_profiles.find({"workspace_id": ctx.workspace_id})
+        .sort([("created_at", 1), ("id", 1)])
         .skip(skip)
         .limit(limit)
         .to_list(length=limit)

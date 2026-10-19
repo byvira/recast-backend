@@ -125,7 +125,7 @@ async def list_repurposes(
     """What was made from this source, newest first, a few at a time."""
     flt = {"workspace_id": ctx.workspace_id, "source_kind": source_kind, "source_id": source_id}
     total = await repurposes.count_documents(flt)
-    rows = await repurposes.find(flt, {"_id": 0}).sort("created_at", -1).skip(offset).limit(limit).to_list(length=limit)
+    rows = await repurposes.find(flt, {"_id": 0}).sort([("created_at", -1), ("id", -1)]).skip(offset).limit(limit).to_list(length=limit)
     return {"items": [await _describe(r, ctx.workspace_id) for r in rows], "total": total, "limit": limit, "offset": offset}
 
 
