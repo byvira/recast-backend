@@ -166,6 +166,7 @@ async def cut_audio(source: str, start_s: float, length_s: float, *, timeout_s: 
             _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         except asyncio.TimeoutError:
             proc.kill()
+            await proc.wait()      # the stopped process is collected, not left behind
             raise ChunkError("Reading the sound of this video took too long. Please try again.")
         if proc.returncode != 0 or not out.exists() or out.stat().st_size == 0:
             logger.warning("Cutting audio failed (%s): %s", proc.returncode, (err or b"")[-300:].decode(errors="replace"))

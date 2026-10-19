@@ -969,6 +969,8 @@ async def run_batch_pipeline(
     before_day: Optional[Callable[[int], Awaitable[None]]] = None,
     tone=None,
     start_day: int = 0,
+    planned_angles: Optional[list[str]] = None,
+    on_angles: Optional[Callable[[list[str]], Awaitable[None]]] = None,
 ) -> list[TextPipelineResult]:
     """
     Batch mode — maps to ConfigPanel batchMode toggle.
@@ -1009,8 +1011,12 @@ async def run_batch_pipeline(
     if emitter:
         await emitter.emit_log(f"Planning {days} days of content angles for this topic…")
 
-    angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster, language_line=build_language_instruction(language))
-    angle_result = await call_llm_structured(angle_prompt)
+    if planned_angles and len(planned_angles) >= days:
+        # a batch carried on after a stop uses the angles it began with, so the days still to make do not repeat the ones already made
+        angle_result = {"angles": list(planned_angles)}
+    else:
+        angle_prompt = load_prompt("text/orchestrate/batch_angles", days=days, topic_cluster=topic_cluster, language_line=build_language_instruction(language))
+        angle_result = await call_llm_structured(angle_prompt)
     planned_angles = angle_result.get("angles") if angle_result else None
     # PAR-014: this used to fall back to [topic_cluster] * days silently on
     # any planning failure — call_llm_structured() returns {} on parse
@@ -1036,6 +1042,12 @@ async def run_batch_pipeline(
             await emitter.emit_log(
                 "⚠ Couldn't plan distinct day angles for every day — some days will repeat the same topic."
             )
+
+    if on_angles and not degraded:
+        try:
+            await on_angles(list(angles[:days]))
+        except Exception as exc:  # noqa: BLE001 - remembering the plan is a convenience, never a reason to stop
+            logger.warning("Could not keep the day angles for a later resume: %s", exc)
 
     results = []
     for i, angle in enumerate(angles[:days]):

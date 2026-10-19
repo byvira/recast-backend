@@ -559,53 +559,68 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
 
     await run.step("Saving the audio")
     url = await upload_file(audio_bytes, UploadContentType.AUDIO, ctx.user_id)
-    now = datetime.now(timezone.utc)
-    media = MediaAsset(
-        id=str(uuid4()),
-        workspace_id=ctx.workspace_id,
-        kind=MediaKind.AUDIO,
-        url=url,
-        mime_type=audio_mime,
-        source=MediaSource.SYNTHESIZED,
-        created_by=ctx.user_id,
-        created_at=now,
-        size_bytes=len(audio_bytes),
-        # The real length: from the audio file itself, else from the provider's word timings.
-        # Never the browser's guess, which is what made every recording read as a fixed length.
-        duration_s=spoken_length.audio_duration_seconds(audio_bytes) or spoken_length.duration_from_words(speech.words or []),
-    )
-    await media_assets.insert_one(media.model_dump())
+    media_id_made: Optional[str] = None
+    try:
+        now = datetime.now(timezone.utc)
+        media = MediaAsset(
+            id=str(uuid4()),
+            workspace_id=ctx.workspace_id,
+            kind=MediaKind.AUDIO,
+            url=url,
+            mime_type=audio_mime,
+            source=MediaSource.SYNTHESIZED,
+            created_by=ctx.user_id,
+            created_at=now,
+            size_bytes=len(audio_bytes),
+            # The real length: from the audio file itself, else from the provider's word timings.
+            # Never the browser's guess, which is what made every recording read as a fixed length.
+            duration_s=spoken_length.audio_duration_seconds(audio_bytes) or spoken_length.duration_from_words(speech.words or []),
+        )
+        await media_assets.insert_one(media.model_dump())
+        media_id_made = media.id
 
-    asset_id = str(uuid4())
-    asset = AudioAsset(
-        id=asset_id,
-        workspace_id=ctx.workspace_id,
-        brand_id=body.brand_id,
-        created_by=ctx.user_id,
-        created_at=now,
-        updated_at=now,
-        title=body.title,
-        source_type=AudioSourceType.SCRIPT_TTS,
-        script=script,
-        voice_settings_snapshot=voice_settings.model_dump(),
-        media_id=media.id,
-        # Real per-word timing from the provider itself when it gave one
-        # (ElevenLabs does; the Deepgram fallback doesn't) — not from Whisper,
-        # since the words spoken are already known exactly.
-        transcript=speech.words or [],
-        # The backup voice has no word timings and none of the speed, tone or style controls. Say so, so captions and clips being empty,
-        # and a pace that was not applied, are explained instead of looking like a fault.
-        transcript_note=None if speech.words else (
-            "This was voiced with the backup voice, which gives no word timing and ignores the pace and delivery style you chose. "
-            "Use Transcribe to get word timing, or voice it again when the main voice is available."
-        ),
-        approval_status=AudioApprovalStatus.PENDING,
-        source_piece_id=body.source_piece_id,
-        source_content_hash=source_content_hash,
-        language=language or "en",
-    )
-    await audio_assets.insert_one(asset.model_dump())
-    await _record_initial_version(asset)
+        asset_id = str(uuid4())
+        asset = AudioAsset(
+            id=asset_id,
+            workspace_id=ctx.workspace_id,
+            brand_id=body.brand_id,
+            created_by=ctx.user_id,
+            created_at=now,
+            updated_at=now,
+            title=body.title,
+            source_type=AudioSourceType.SCRIPT_TTS,
+            script=script,
+            voice_settings_snapshot=voice_settings.model_dump(),
+            media_id=media.id,
+            # Real per-word timing from the provider itself when it gave one
+            # (ElevenLabs does; the Deepgram fallback doesn't) — not from Whisper,
+            # since the words spoken are already known exactly.
+            transcript=speech.words or [],
+            # The backup voice has no word timings and none of the speed, tone or style controls. Say so, so captions and clips being empty,
+            # and a pace that was not applied, are explained instead of looking like a fault.
+            transcript_note=None if speech.words else (
+                "This was voiced with the backup voice, which gives no word timing and ignores the pace and delivery style you chose. "
+                "Use Transcribe to get word timing, or voice it again when the main voice is available."
+            ),
+            approval_status=AudioApprovalStatus.PENDING,
+            source_piece_id=body.source_piece_id,
+            source_content_hash=source_content_hash,
+            language=language or "en",
+        )
+        await audio_assets.insert_one(asset.model_dump())
+        await _record_initial_version(asset)
+
+    except BaseException:
+        # a stop or a failure between storing the file and saving the recording leaves neither the file nor its library row behind
+        try:
+            if media_id_made:
+                await asyncio.shield(media_assets.delete_one({"id": media_id_made, "workspace_id": ctx.workspace_id}))
+            from app.shared.storage import delete_file_by_url
+
+            await asyncio.shield(delete_file_by_url(url))
+        except Exception as exc:  # noqa: BLE001 - tidying up must not hide the real outcome
+            logger.warning("Could not remove the leftovers of a narration that did not finish: %s", exc)
+        raise
 
     # file 04 Part 2 — first-class Phase 1 scope, not deferred, same as Image.
     emit_event_background(

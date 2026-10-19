@@ -130,14 +130,18 @@ async def _fetch_to_disk(url: str) -> Optional[str]:
                     os.unlink(path)
                     return None
                 written = 0
-                with open(path, "wb") as out:
+                out = await asyncio.to_thread(open, path, "wb")
+                try:
                     async for chunk in reply.aiter_bytes(1024 * 1024):
                         written += len(chunk)
                         if written > FETCH_CAP_BYTES:
                             out.close()
                             os.unlink(path)
                             return None
-                        out.write(chunk)
+                        # written off the event loop, so a slow disk does not freeze every other request
+                        await asyncio.to_thread(out.write, chunk)
+                finally:
+                    out.close()
         return path
     except (httpx.HTTPError, OSError) as exc:
         logger.warning("Could not fetch %s to read it: %s", url, exc)
@@ -172,6 +176,7 @@ async def _probe_command(source: str) -> dict[str, Any]:
         _, stderr = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT_S)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()      # the stopped process is collected, not left behind
         raise ProbeError("Reading this video took too long. Please try again.")
     report = stderr.decode(errors="replace")
     probe = parse(report)

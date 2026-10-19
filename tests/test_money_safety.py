@@ -50,6 +50,34 @@ async def test_a_batch_carries_on_from_the_first_missing_day(monkeypatch):
     assert made == [2] and saved == [2]  # days 0 and 1 were already saved by the failed attempt and are not paid for again
 
 
+async def test_a_resumed_batch_keeps_the_angles_it_began_with_and_does_not_plan_again(monkeypatch):
+    planned = []
+    topics = []
+
+    async def planner(prompt, *a, **k):
+        planned.append(1)
+        return {"angles": ["new one", "new two", "new three"]}
+
+    async def day(**kwargs):
+        topics.append(kwargs["content"])
+        return SimpleNamespace(pieces=[])
+
+    monkeypatch.setattr(orchestrator, "call_llm_structured", planner)
+    monkeypatch.setattr(orchestrator, "run_text_pipeline", day)
+    kept = []
+
+    async def remember(angles):
+        kept.append(angles)
+
+    await orchestrator.run_batch_pipeline(
+        topic_cluster="t", platforms=[], brand_id="b", workspace_id="w", user_id="u", extras=None, days=3, start_day=1,
+        planned_angles=["old one", "old two", "old three"], on_angles=remember,
+    )
+    assert not planned                                     # no second planning request is paid for
+    assert topics == ["old two", "old three"]              # the days still to make follow the first plan
+    assert kept == [["old one", "old two", "old three"]]
+
+
 async def test_a_day_by_day_platform_list_is_checked_when_the_campaign_is_made(api_client):
     await signup_new_user(api_client)
     brand_id = await _create_brand(api_client)

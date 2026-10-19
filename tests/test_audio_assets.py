@@ -842,3 +842,30 @@ async def test_an_uploaded_recording_has_no_script_to_voice_again(signup_user, s
     res = await client.post(f"/api/v1/audio-assets/{uploaded['id']}/regenerate", json={}, headers=_h(ws_id))
     assert res.status_code == 400
     assert "no script" in res.json()["detail"]
+
+
+async def test_a_narration_that_cannot_be_saved_leaves_no_file_and_no_library_row(signup_user, stubs, monkeypatch):
+    client, _, ws_id, brand_id = await _setup(signup_user)
+    removed: list[str] = []
+
+    async def fake_delete(url):
+        removed.append(url)
+
+    class Broken:
+        async def insert_one(self, doc):
+            raise RuntimeError("the database went away")
+
+    import app.shared.storage as storage
+
+    monkeypatch.setattr(storage, "delete_file_by_url", fake_delete)
+    monkeypatch.setattr(audio_module, "audio_assets", Broken())
+
+    try:
+        res = await _generate(client, ws_id, brand_id)
+        assert res.status_code >= 500
+    except RuntimeError:
+        pass
+
+    assert len(stubs["uploads"]) == 1
+    assert len(removed) == 1                                   # the stored file was removed again
+    assert await media_assets.count_documents({"workspace_id": ws_id, "kind": "audio"}) == 0

@@ -30,6 +30,8 @@ public_router = APIRouter()
 DEFAULT_DAYS = 14
 MIN_DAYS, MAX_DAYS = 7, 30
 MAX_COMMENTS_PER_LINK = 500
+MAX_DECISIONS_PER_LINK = 100
+MAX_LINKS_PER_PROJECT = 50
 NOT_AVAILABLE = "This link isn't available. It may have expired or been ended."
 
 
@@ -112,6 +114,8 @@ async def create_link(request: Request, project_id: str, body: CreateLinkBody, c
             raise HTTPException(status_code=404, detail="That earlier version was not found.")
         if other["id"] == job["id"]:
             raise HTTPException(status_code=400, detail="Pick an earlier version to compare with, not the current one.")
+    if await _links().count_documents({"workspace_id": ctx.workspace_id, "project_id": project_id, "revoked": {"$ne": True}, "expires_at": {"$gt": _now()}}) >= MAX_LINKS_PER_PROJECT:
+        raise HTTPException(status_code=429, detail="This video already has as many open review links as it can hold. End one you no longer need first.")
     now = _now()
     link = {
         "id": uuid4().hex, "token": secrets.token_urlsafe(24), "workspace_id": ctx.workspace_id, "project_id": project_id, "title": project.get("title") or "Video",
@@ -318,6 +322,8 @@ async def decide(request: Request, token: str, body: DecisionBody) -> dict[str, 
         return {"outcome": body.outcome, "name": body.name.strip()}
     if not await verify_turnstile(body.turnstile_token, _client_ip(request)):
         raise HTTPException(status_code=400, detail="That didn't verify. Reload the page and try again.")
+    if await _decisions().count_documents({"link_id": link["id"]}) >= MAX_DECISIONS_PER_LINK:
+        raise HTTPException(status_code=429, detail="This review has had as many answers as it can hold.")
     await _decisions().insert_one({"id": uuid4().hex, "link_id": link["id"], "workspace_id": link["workspace_id"], "project_id": link["project_id"],
                                    "outcome": body.outcome, "name": body.name.strip()[:80], "note": body.note.strip(), "at": _now()})
     from app.video import activity

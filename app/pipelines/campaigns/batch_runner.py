@@ -35,7 +35,7 @@ async def skip_to_next_cadence(campaign_id: str) -> None:
     campaign = await get_campaigns_collection().find_one({"id": campaign_id}, {"cadence": 1})
     delta = _CADENCE_DELTA.get(((campaign or {}).get("cadence") or {}).get("frequency", "manual"))
     # A cancelled batch starts fresh next time: the resume marker goes, the days it made stay.
-    changes: dict[str, Any] = {"$unset": {"cadence.batch_done_days": ""}}
+    changes: dict[str, Any] = {"$unset": {"cadence.batch_done_days": "", "cadence.batch_angles": ""}}
     if delta:
         changes["$set"] = {"cadence.next_run_at": datetime.now(timezone.utc) + delta}
     await get_campaigns_collection().update_one({"id": campaign_id}, changes)
@@ -163,6 +163,9 @@ async def generate_campaign_batch(
         if run_id:
             await pipeline_runs.mark_progress(run_id, day_index + 1, days)
 
+    async def remember_angles(angles: list[str]) -> None:
+        await get_campaigns_collection().update_one({"id": campaign["id"]}, {"$set": {"cadence.batch_angles": angles}})
+
     async with tracked_run(
         workspace_id=workspace_id, run_id=f"campaign:{campaign['id']}", kind="campaign",
         title=campaign.get("name") or run_label(campaign["topic_cluster"]),
@@ -181,6 +184,8 @@ async def generate_campaign_batch(
                 language=language,
                 tone=ToneOverride(tone_value),
                 on_day_complete=persist_day,
+                planned_angles=(campaign.get("cadence") or {}).get("batch_angles") if start_day > 0 else None,
+                on_angles=remember_angles,
                 before_day=(lambda _i: pipeline_runs.checkpoint(run_id)) if run_id else None,
                 start_day=start_day,
             )
@@ -204,7 +209,7 @@ async def generate_campaign_batch(
     # days it made and also starts fresh next time.
     await get_campaigns_collection().update_one(
         {"id": campaign["id"]},
-        {"$set": update, "$unset": {"cadence.batch_done_days": ""}},
+        {"$set": update, "$unset": {"cadence.batch_done_days": "", "cadence.batch_angles": ""}},
     )
 
     if cancelled:
