@@ -5,6 +5,7 @@ Ops (`/api/v1/ops/content-safety`): read and change the settings, see what was b
 the rules. Settings apply to every workspace, so changing them is for the Ops owner and reading them is for platform staff.
 """
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
@@ -21,6 +22,8 @@ from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, require
 from app.db.mongo import safety_events
 from app.shared.activity import record_system
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 ops_router = APIRouter()
@@ -100,8 +103,8 @@ async def save_settings(request: Request, body: SettingsBody, user: dict = Depen
                 visibility="admins",
                 metadata={"event": "content_safety.saved", "changed": sorted(changes), "version": saved.get("version")},
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - the settings are saved; only the Activity Log entry is missing
+            logger.warning("Could not write the Activity Log entry for the Content safety settings change: %s", exc)
     return _public(saved)
 
 
