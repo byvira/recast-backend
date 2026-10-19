@@ -133,6 +133,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Starting application...")
 
+    import os
+
+    from app.core.startup_checks import fatal_problems, warnings_for
+
+    problems = fatal_problems(environment=settings.ENVIRONMENT, hosted=os.environ.get("RENDER") == "true")
+    if problems:
+        for line in problems:
+            logger.error("STARTUP MISCONFIGURATION: %s", line)
+        raise RuntimeError(problems[0])
+    for line in warnings_for(environment=settings.ENVIRONMENT, fernet_key=settings.FERNET_SECRET_KEY):
+        logger.error("STARTUP MISCONFIGURATION: %s", line)
+
     # Loud, fail-fast-adjacent check for the exact misconfiguration that has
     # already caused a real incident here (see app/core/auth.py::set_auth_cookies'
     # docstring and this file's CORS setup below): ENVIRONMENT=production with
