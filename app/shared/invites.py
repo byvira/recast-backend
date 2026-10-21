@@ -230,10 +230,11 @@ async def lead_digest() -> bool:
     pipeline = [{"$match": {"created_at": {"$gte": since}}}, {"$group": {"_id": {"$ifNull": ["$source", "unknown"]}, "n": {"$sum": 1}}}, {"$sort": {"n": -1}}, {"$limit": 4}]
     top = ", ".join([f"{row['_id']} {row['n']}" async for row in waitlist_leads.aggregate(pipeline)]) or "none"
     variables = {
-        "NEW_WAITLIST": str(new_waitlist),
-        "NEW_MESSAGES": str(new_messages),
-        "SALES_OPEN": str(sales_open),
-        "OVERDUE": str(overdue),
+        # The Resend template declares these four as numbers, so they are sent as numbers, not text.
+        "NEW_WAITLIST": new_waitlist,
+        "NEW_MESSAGES": new_messages,
+        "SALES_OPEN": sales_open,
+        "OVERDUE": overdue,
         "TOP_SOURCES": top,
         "OPS_URL": frontend("/ops/leads"),
     }
