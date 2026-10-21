@@ -1,4 +1,6 @@
-## Recast — Remaining Launch Checklist
+## Ekavo — Remaining Launch Checklist (refreshed 2026-10-21)
+
+> Render deploys from `main`. The app now refuses to start unless `ENVIRONMENT=production` is set on Render (a failed start leaves the old deploy running), so do that first. Tick items off only after checking them in the dashboard.
 
 ### 🔴 Blockers (deploy works without these, but these specific things break)
 - [ ] EMAIL_FROM — verify a real domain in Resend, set EMAIL_FROM=noreply@yourdomain.com (currently gmail.com — production OTP email will fail without this)
@@ -8,7 +10,9 @@
 ### Render dashboard
 - [ ] Enter every env var from .env into Render → Environment (full reference in DEPLOY.md)
 - [ ] Use the separate SECRET_KEY generated for Render — do NOT reuse the local .env value
-- [ ] Set ENVIRONMENT=production
+- [ ] Set ENVIRONMENT=production (required: startup refuses otherwise) and FERNET_SECRET_KEY
+- [ ] Set LANGCHAIN_TRACING_V2=false (LangSmith quota is used up)
+- [ ] Set PYTHON_VERSION to the version you want (runtime.txt says 3.11.9, tests run on 3.12.8) and confirm it in the deploy log
 - [ ] Set start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"`
 - [ ] Confirm health check path = /health (the shallow one, not /health/ready)
 - [ ] Confirm plan / instance count
@@ -34,6 +38,6 @@
 - [ ] Confirm rollback steps (Render "rollback to previous deploy" + when a DB restore is also needed)
 
 ### Lower priority
-- [ ] Reconcile local Python 3.12.8 vs runtime.txt's pinned 3.11.9 (not currently causing issues)
+- [ ] Reconcile local Python 3.12.8 vs runtime.txt's pinned 3.11.9 (see PYTHON_VERSION above)
 - [ ] Consider upgrading the Groq plan — 8000 TPM cap got hit during smoke testing under light load
 - [ ] Optional: prometheus-fastapi-instrumentator at /metrics if Sentry+LangSmith aren't enough

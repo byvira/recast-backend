@@ -7,8 +7,17 @@ your local `.env` (never committed).
 
 ## Runtime
 
-- Python: `3.11.9` (pinned in `runtime.txt`)
-- Framework: FastAPI 0.115 / Uvicorn
+- Python: `3.11.9` is pinned in `runtime.txt`, but tests and local runs use 3.12.8 and Render may not read `runtime.txt`. Set `PYTHON_VERSION` in the Render dashboard to the version you want and confirm it in the deploy log.
+- Framework: FastAPI 0.148 with Starlette 0.49.x / Uvicorn (pinned in `requirements.txt`)
+
+## Startup checks (2026-10-19)
+
+The app refuses to start, and the old deploy keeps running, when:
+
+- it runs on Render (`RENDER=true`) and `ENVIRONMENT` is not `production` (development mode would expose sign-in codes), or
+- `ENVIRONMENT=production` and `FERNET_SECRET_KEY` is missing.
+
+So `ENVIRONMENT=production` **must** be set in Render → Environment before the next deploy.
 
 ## Start command
 
@@ -75,11 +84,11 @@ directly to either runner.
 > _Fill in current Render plan and instance count here — e.g. "Starter, 1
 > instance" — once confirmed against the dashboard._
 
-**Known constraint:** the in-process `AsyncIOScheduler` (`process_scheduled_posts`
-every 1 min, `refresh_expiring_tokens` every 1h — it only renews connections
-that are due, see `app/workers/token_refresh.py` — `refresh_analytics` every 6h)
-is not safe across >1 instance — each job would double-fire. Do not scale past
-1 web instance until that's addressed (locking or moved to Render Cron).
+**Known constraint:** the in-process `AsyncIOScheduler` runs every job in
+`app/workers/jobs.py::JOBS`. Jobs now take a Redis lock (`distributed_job_lock`),
+so a second instance does not double-fire them. The instance is still small
+(512 MB, see `app/core/limits.py`), so keep one instance until load says
+otherwise.
 
 ## Network access
 
@@ -89,9 +98,11 @@ is not safe across >1 instance — each job would double-fire. Do not scale past
 
 ## Environment variables
 
-Set every variable below in Render → Environment. Everything not marked
-**required** defaults to `""`/`False` in `config.py` and fails quietly at call
-time rather than at boot — only the three **required** ones crash on missing.
+Set every variable below in Render → Environment. The list below is the core
+set only: `app/core/config.py` holds about 130 settings (video, support, leads,
+Content Guard, limits and more), each with a default and a comment. Everything
+not marked **required** defaults to `""`/`False` and fails quietly at call time
+rather than at boot. The **required** ones crash on missing.
 
 ### Core (required)
 
@@ -100,7 +111,8 @@ time rather than at boot — only the three **required** ones crash on missing.
 | `SECRET_KEY` | **Required.** Must be a real random value, distinct from the local `.env` value. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
 | `MONGODB_URL` | **Required.** |
 | `REDIS_URL` | **Required.** |
-| `ENVIRONMENT` | Set to `production`. Flips OTP delivery to Resend/Twilio, restricts CORS to `PRODUCTION_DOMAIN`, drops log verbosity. |
+| `ENVIRONMENT` | **Must be `production` on Render** (the app refuses to start otherwise). Flips OTP delivery to Resend/Twilio, restricts CORS to `PRODUCTION_DOMAIN`, drops log verbosity. |
+| `FERNET_SECRET_KEY` | Required in production (startup error if missing). See Token encryption below. |
 
 ### Pending pre-launch blockers — do not deploy to production until resolved
 
@@ -128,7 +140,9 @@ provider)
 
 ### Observability (LangSmith tracing — already wired)
 
-`LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`, `LANGCHAIN_ENDPOINT`
+`LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`, `LANGCHAIN_ENDPOINT`.
+LangSmith's monthly quota is used up, so set `LANGCHAIN_TRACING_V2=false` in Render
+until the quota is renewed or the plan changes.
 
 ### Data stores / storage
 

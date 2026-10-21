@@ -723,5 +723,6 @@ async def suggest_topics(
         topic_cluster=body.topic_cluster,
         brand_context=brand_context,
         existing_topics=body.existing_topics,
+        workspace_id=ctx.workspace_id,
     )
     return result

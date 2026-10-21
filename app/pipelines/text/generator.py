@@ -184,6 +184,7 @@ GENERIC_OPENINGS = [
     "i am excited to share",
     "thrilled to announce",
     "as someone who",
+    "as a [",
     "the uncomfortable truth",
     "an uncomfortable truth",
     "the truth is",

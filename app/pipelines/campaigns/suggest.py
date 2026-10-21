@@ -10,7 +10,7 @@ topics list instead of the user guessing blind.
 import logging
 
 from app.prompts.registry import load_prompt
-from app.shared.llm import call_llm_structured
+from app.shared.llm import call_llm_structured, set_usage_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,7 @@ async def suggest_campaign_topics(
     topic_cluster: str,
     brand_context: str,
     existing_topics: list[str],
+    workspace_id: str | None = None,
 ) -> dict:
     """Suggest additional angles/topics for a campaign brief.
 
@@ -27,6 +28,7 @@ async def suggest_campaign_topics(
     failure never blocks filling the batch topics list manually, the way
     the user always could before.
     """
+    set_usage_workspace(workspace_id)
     prompt = load_prompt(
         "campaigns/suggest_topics",
         brand_context=brand_context,
