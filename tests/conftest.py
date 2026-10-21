@@ -32,12 +32,16 @@ def _test_mongo_url() -> str:
     """
     env_path = Path(__file__).resolve().parent.parent / ".env"
     contents = env_path.read_text(encoding="utf-8")
-    match = re.search(r"^MONGODB_URL=(.+)$", contents, re.MULTILINE)
-    if not match:
-        raise RuntimeError(
-            "MONGODB_URL not found in .env — required to run the integration suite."
-        )
-    base_url = match.group(1).strip()
+    # A separate test cluster (TEST_MONGODB_URL, in the environment or .env) is preferred over MONGODB_URL when set.
+    test_match = re.search(r"^TEST_MONGODB_URL=(.+)$", contents, re.MULTILINE)
+    base_url = (os.environ.get("TEST_MONGODB_URL") or (test_match.group(1) if test_match else "")).strip()
+    if not base_url:
+        match = re.search(r"^MONGODB_URL=(.+)$", contents, re.MULTILINE)
+        if not match:
+            raise RuntimeError(
+                "MONGODB_URL not found in .env — required to run the integration suite."
+            )
+        base_url = match.group(1).strip()
     parts = urlsplit(base_url)
     db_name = parts.path.lstrip("/") or "saas_db"
     # A second run at the same time uses its own database: TEST_DB_SUFFIX=b gives <db>_b_test. Without it nothing changes.
@@ -102,6 +106,19 @@ def _reset_rate_limits():
     the 5th request-otp call anywhere in the run would 429 regardless of
     using a fresh email each time."""
     limiter.reset()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_groq_breaker():
+    """The model circuit breaker and the concurrency permits are module state; a test that makes a call fail, or leaves one still
+    running, must not leave the breaker open or a permit held for the next test."""
+    from app.shared import llm
+
+    llm._groq_breaker = llm._GroqCircuitBreaker()
+    sem = llm._groq_semaphore
+    if not getattr(sem, "_waiters", None):
+        sem._value = llm._GROQ_CONCURRENCY_LIMIT
     yield
 
 

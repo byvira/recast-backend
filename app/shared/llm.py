@@ -776,6 +776,16 @@ async def call_llm(
 # 2. Streaming plain text — Groq
 # ─────────────────────────────────────────────────────────────
 
+# A stream that sends nothing for this long has stalled. The first chunk is allowed longer because the model
+# thinks before it writes.
+_STREAM_FIRST_CHUNK_TIMEOUT_S = 40.0
+_STREAM_GAP_TIMEOUT_S = 30.0
+
+
+class _StreamStalled(Exception):
+    """The model stopped sending text for longer than the allowed gap."""
+
+
 async def call_llm_stream(
     prompt: str,
     model: GroqModel = GroqModel.BALANCED,
@@ -801,6 +811,22 @@ async def call_llm_stream(
     capped   = _safe_max_tokens(prompt, system, max_tokens)
     started  = False  # once a chunk has gone out, another provider cannot take over mid-sentence
 
+    async def _whole_from_fallback(rate_limited: bool = False) -> AsyncIterator[str]:
+        # Nothing was sent yet, so the rest of the chain can answer. It comes back whole, not word by word.
+        try:
+            text = await call_llm_fallback(prompt=prompt, system=system)
+        except Exception:
+            raise HTTPException(status_code=503, detail="LLM rate limit. Please try again in 60 seconds." if rate_limited else "LLM service unavailable.")
+        if text:
+            yield text
+
+    # Same breaker as call_llm: while Groq is known to be failing, skip straight to the fallback chain.
+    if _groq_breaker.should_skip_groq():
+        async for piece in _whole_from_fallback():
+            yield piece
+        return
+
+    stream = None
     try:
         stream = await _groq_create(
             client,
@@ -811,23 +837,37 @@ async def call_llm_stream(
             max_tokens=capped,
             stream=True,
         )
-        async for chunk in stream:
+        chunks = stream.__aiter__()
+        while True:
+            try:
+                chunk = await asyncio.wait_for(
+                    chunks.__anext__(),
+                    timeout=_STREAM_GAP_TIMEOUT_S if started else _STREAM_FIRST_CHUNK_TIMEOUT_S,
+                )
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                raise _StreamStalled() from None
             delta = chunk.choices[0].delta.content
             if delta:
                 started = True
                 yield delta
+        _groq_breaker.record_success()
 
-    except (RateLimitError, APIConnectionError, APIStatusError) as exc:
+    except (RateLimitError, APIConnectionError, APIStatusError, _StreamStalled) as exc:
+        # A rate limit, a lost connection or a stall says Groq is struggling; a 4xx about this one request does not.
+        if not isinstance(exc, APIStatusError) or isinstance(exc, RateLimitError):
+            _groq_breaker.record_failure()
         logger.warning("Groq stream failed (%s)%s", exc.__class__.__name__, " after output began" if started else ", using the fallback chain")
+        if stream is not None and hasattr(stream, "close"):
+            try:
+                await stream.close()
+            except Exception:  # noqa: BLE001
+                pass
         if started:
             raise HTTPException(status_code=503, detail="LLM service unavailable.")
-        # Nothing was sent yet, so the rest of the chain can answer. It comes back whole, not word by word.
-        try:
-            text = await call_llm_fallback(prompt=prompt, system=system)
-        except Exception:
-            raise HTTPException(status_code=503, detail="LLM rate limit. Please try again in 60 seconds." if isinstance(exc, RateLimitError) else "LLM service unavailable.")
-        if text:
-            yield text
+        async for piece in _whole_from_fallback(rate_limited=isinstance(exc, RateLimitError)):
+            yield piece
     except Exception as exc:
         logger.error("Unexpected call_llm_stream error: %s", exc)
         raise HTTPException(status_code=500, detail="Unexpected streaming error.")
