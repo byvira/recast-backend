@@ -33,6 +33,7 @@ from app.db.mongo import brand_profiles, content_pieces, get_campaigns_collectio
 from app.models.campaign import (
     UNSUPPORTED_CAMPAIGN_SOURCES,
     Campaign,
+    CampaignKind,
     CampaignSourceType,
     CampaignStatus,
     CreateCampaignRequest,
@@ -232,6 +233,9 @@ async def create_campaign(
 
     now = datetime.now(timezone.utc)
     cadence = body.cadence.model_dump()
+    if body.kind == "repurpose":
+        # A repurpose is made once: it never runs on a schedule and covers a single day, so it never meets the scheduler.
+        cadence.update(frequency="manual", days_per_batch=1)
     # next_run_at is server-computed only — CampaignCadence is embedded
     # directly in the request body, so a client could otherwise set it
     # itself and jump the scheduler's queue.
@@ -243,6 +247,7 @@ async def create_campaign(
         "workspace_id": ctx.workspace_id,
         "brand_id": body.brand_id,
         "name": body.name,
+        "kind": body.kind,
         "topic_cluster": topic_cluster,
         "source_type": body.source_type.value,
         "source_url": source_url,
@@ -270,6 +275,7 @@ async def create_campaign(
 @limiter.limit("60/minute")
 async def list_campaigns(
     request: Request,
+    kind: Optional[CampaignKind] = None,
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> list[dict[str, Any]]:
     """
@@ -277,11 +283,15 @@ async def list_campaigns(
     GET /{campaign_id} does) — the Pipeline page's job list needs each
     job's real status/branch data to filter/render without an N+1 query
     per card.
+
+    `kind` narrows the list to campaigns or to repurpose jobs; left out, both are listed. A record with no kind is a campaign.
     """
-    docs = await get_campaigns_collection().find(
-        {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
-        sort=[("updated_at", -1)],
-    ).to_list(length=200)
+    query: dict[str, Any] = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
+    if kind == "repurpose":
+        query["kind"] = "repurpose"
+    elif kind == "campaign":
+        query["kind"] = {"$ne": "repurpose"}
+    docs = await get_campaigns_collection().find(query, sort=[("updated_at", -1)]).to_list(length=200)
     progress_by_id = await _campaign_progress_bulk(ctx.workspace_id, [doc["id"] for doc in docs])
     return [
         {**_doc_to_campaign(doc).model_dump(), "progress": progress_by_id[doc["id"]], "post_counts": progress_by_id[doc["id"]]}
@@ -341,6 +351,11 @@ async def update_campaign(
     if payload.get("media_plan") is not None:
         update["media_plan"] = payload["media_plan"]
         update["content_types"] = _content_types(payload["media_plan"])
+
+    if existing.get("kind") == "repurpose" and "cadence" in update:
+        cadence = update["cadence"]
+        if cadence.get("frequency") != "manual" or cadence.get("days_per_batch") != 1:
+            raise HTTPException(status_code=400, detail="A repurpose is made once, so it can't be put on a schedule. Start a campaign for that.")
 
     if "cadence" in update:
         # Same server-computed-only rule as create_campaign — recompute

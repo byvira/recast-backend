@@ -48,7 +48,7 @@ _MAX_QUERY_LEN = 200
 
 
 class SearchItem(BaseModel):
-    type: str          # draft | preset | campaign | voice | audio | image
+    type: str          # draft | preset | campaign | repurpose | voice | audio | image
     title: str
     snippet: str = ""
     href: str
@@ -117,14 +117,16 @@ async def _search_pool(workspace_id: str, pattern: Optional[re.Pattern], per_typ
     if pattern:
         campaign_filter["$or"] = [{"name": {"$regex": pattern}}, {"topic_cluster": {"$regex": pattern}}]
     campaign_docs = await get_campaigns_collection().find(
-        campaign_filter, {"id": 1, "name": 1, "topic_cluster": 1},
+        campaign_filter, {"id": 1, "name": 1, "topic_cluster": 1, "kind": 1},
     ).sort("created_at", -1).limit(per_type).to_list(length=per_type)
     for c in campaign_docs:
+        # A repurpose job lives on the Repurpose page, never on a campaign's page.
+        repurpose = c.get("kind") == "repurpose"
         items.append(SearchItem(
-            type="campaign",
-            title=c.get("name") or "Untitled campaign",
+            type="repurpose" if repurpose else "campaign",
+            title=c.get("name") or ("Untitled repurpose" if repurpose else "Untitled campaign"),
             snippet=_snippet(c.get("topic_cluster", "")),
-            href=f"/dashboard/campaigns/{c['id']}",
+            href="/dashboard/pipeline" if repurpose else f"/dashboard/campaigns/{c['id']}",
         ))
 
     # Brand voices: identity.name is a free-form dict field, not something a

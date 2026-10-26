@@ -54,6 +54,12 @@ UNSUPPORTED_CAMPAIGN_SOURCES = {
 }
 
 
+# What the record is for. A campaign is a plan of posts over days, with an optional schedule. A repurpose is a one-off: one
+# source turned into posts for several platforms at once, made on the Repurpose page. Records saved before this was stored
+# have no kind and count as campaigns.
+CampaignKind = Literal["campaign", "repurpose"]
+
+
 class CampaignStatus(str, Enum):
     DRAFT = "draft"
     ACTIVE = "active"
@@ -176,6 +182,7 @@ class Campaign(BaseModel):
     workspace_id: str
     brand_id: str
     name: str
+    kind: CampaignKind = "campaign"
     topic_cluster: str
     source_type: CampaignSourceType = CampaignSourceType.RAW_TEXT
     source_url: Optional[str] = None
@@ -212,6 +219,7 @@ class Campaign(BaseModel):
 class CreateCampaignRequest(BaseModel):
     name: str
     brand_id: str
+    kind: CampaignKind = "campaign"
     # For RAW_TEXT this is the topic/brief itself. For ARTICLE_URL it's the
     # URL to scrape — the route replaces it with the scraped article text
     # before saving, same as /text/repurpose's source_type="url" handling.

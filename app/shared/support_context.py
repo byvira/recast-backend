@@ -100,7 +100,7 @@ async def _schedule_state(workspace_id: str, now: datetime) -> dict:
 
 async def _campaign_state(workspace_id: str) -> list[dict]:
     rows = (
-        await get_campaigns_collection().find({"workspace_id": workspace_id, "status": {"$in": ["active", "paused"]}, "deleted": {"$ne": True}})
+        await get_campaigns_collection().find({"workspace_id": workspace_id, "kind": {"$ne": "repurpose"}, "status": {"$in": ["active", "paused"]}, "deleted": {"$ne": True}})
         .sort("updated_at", -1)
         .to_list(_MAX_CAMPAIGNS)
     )
