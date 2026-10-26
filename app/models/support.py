@@ -12,9 +12,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from app.shared.support_rules import MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_CHARS
+from app.shared.support_rules import FALLBACK_CATEGORY, MAX_ATTACHMENTS_PER_MESSAGE, MAX_MESSAGE_CHARS, SUPPORT_CATEGORIES
 
 
 class SupportTicketSeverity(str, Enum):
@@ -171,6 +171,13 @@ class SupportTicketCreate(BaseModel):
     source_context: Optional[SupportSourceContext] = None
     client_env: Optional[SupportClientEnv] = None
     related_ticket_id: Optional[str] = Field(default=None, max_length=80)
+
+    @field_validator("category")
+    @classmethod
+    def _known_category(cls, value: str) -> str:
+        """Only the listed categories are kept; anything else is filed under the general one."""
+        match = next((c for c in SUPPORT_CATEGORIES if c.lower() == value.strip().lower()), None)
+        return match or FALLBACK_CATEGORY
 
 
 class SupportMessageCreate(BaseModel):

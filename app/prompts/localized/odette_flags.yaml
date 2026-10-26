@@ -4,7 +4,7 @@
 # are Python str.format() fields — see app/agents/supervisor/rules.py and
 # personas.py::odette_flag_summary() for the format_ctx built per flag_type.
 tier_seat_exceeded: "Your workspace has {active_members} active members, but the {tier} plan includes {seats} seats. Add seats or remove {overage} member(s) to fix this."
-daily_publish_cap: "You've published {count} times in the last 24 hours, and the {tier} plan allows {cap} a day. Spread out your scheduled posts or move to a bigger plan."
+daily_publish_cap: "You've published {count} times in the last 24 hours, more than the {cap} a day Odette watches for on the {tier} plan. Nothing was blocked. Spacing posts out usually gets each one more attention."
 rbac_violation: "A member with the {actor_role} role tried to do '{event_type}', which that role isn't allowed to do. Check their role and how it happened."
 brand_voice_instability: "The brand voice was changed {count} times in the last 24 hours. Frequent changes make everyone's posts sound different. Agree on the changes together, then lock the voice."
 member_churn: "{summary}. Check that this was planned and that access was set up correctly."
@@ -20,8 +20,8 @@ __fallback__: "{flag_type_label}: {detail}"
 # Wording for a workspace of one or two people (chosen by the workspace's plan; see personas.py).
 brand_voice_instability_solo: "You changed your brand voice {count} times in the last 24 hours. That much change makes your posts sound different from each other. Settle your edits, then lock the voice."
 brand_voice_instability_pair: "The brand voice was changed {count} times in the last 24 hours. Frequent changes make both of your posts drift apart. Agree on the edits together, then lock the voice."
-daily_publish_cap_solo: "You've published {count} times in the last 24 hours, and your limit is {cap} a day. Spread out your scheduled posts or move to a bigger plan."
-daily_publish_cap_pair: "The two of you have published {count} times in the last 24 hours, and your limit is {cap} a day. Spread out your scheduled posts or move to a bigger plan."
+daily_publish_cap_solo: "You've published {count} times in the last 24 hours, more than the {cap} a day Odette watches for. Nothing was blocked. Spacing posts out usually gets each one more attention."
+daily_publish_cap_pair: "The two of you have published {count} times in the last 24 hours, more than the {cap} a day Odette watches for. Nothing was blocked. Spacing posts out usually gets each one more attention."
 video_renders_failing: "{failures} video renders failed in the last {window_hours} hours. Open the video activity to see the reasons. If it keeps happening, the render host may need attention."
 video_minutes_high: "You have used {used} of your {limit} video render minutes this month. New renders stop at the limit, and your minutes start again on the 1st."
 video_storage_high: "Your videos take {used} MB of the {limit} MB your plan includes. Remove videos you no longer need before new ones are refused."

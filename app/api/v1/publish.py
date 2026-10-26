@@ -23,7 +23,7 @@ from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles, content_pieces, post_metric_checkpoints
 from app.pipelines.publish import executor
 from app.pipelines.publish.media_limits import media_problem
-from app.pipelines.publish.spine import availability_block, check_gate, platform_key, record_override
+from app.pipelines.publish.spine import availability_block, check_gate, instagram_day_full, platform_key, record_override
 from app.workers.token_refresh import recover_connection
 from app.pipelines.publish.token_store import get_token
 from app.pipelines.publish.supervisor.alerts import alert_fatal, save_incident
@@ -318,6 +318,11 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
     if media_issue:
         await _release_claim(body.piece_id, ws, previous_status)
         raise HTTPException(status_code=422, detail=media_issue)
+    if platform_key(platform) == "instagram":
+        day_full = await instagram_day_full(ws, datetime.now(timezone.utc), exclude_piece_id=body.piece_id)
+        if day_full:
+            await _release_claim(body.piece_id, ws, previous_status)
+            raise HTTPException(status_code=409, detail=day_full)
 
     content    = piece["content"]
     attempt    = 0

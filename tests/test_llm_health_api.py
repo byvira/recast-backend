@@ -170,29 +170,8 @@ async def test_auto_fix_sweep_closes_quiet_issues_and_leaves_manual_ones(make_cl
     assert (await client.get(f"{B}/issues/{manual['number']}")).json()["status"] == "open"
 
 
-async def test_old_notes_are_copied_into_issues_once_and_the_old_routes_are_gone(make_client):
-    from uuid import uuid4
-
-    from app.db.mongo import llm_issues, ops_llm_notes
-
+async def test_the_old_ops_ai_routes_are_gone(make_client):
     client, _ = await _staff(make_client)
-    nid = "legacy-" + uuid4().hex[:8]
-    await ops_llm_notes.insert_one({
-        "_id": nid, "kind": "security", "severity": "high", "title": "Rotate the Groq key", "detail": "Key was pasted in chat",
-        "status": "resolved", "created_by": "u1", "created_at": datetime(2026, 9, 1, tzinfo=timezone.utc),
-        "resolved_at": datetime(2026, 9, 2, tzinfo=timezone.utc),
-    })
-    try:
-        assert await issues.merge_legacy_notes() >= 1
-        assert await issues.merge_legacy_notes() == 0  # a second run copies nothing
-        doc = await llm_issues.find_one({"legacy_note_id": nid})
-        assert doc["source"] == "manual" and doc["status"] == "fixed" and doc["priority"] == "high" and doc["kind"] == "security"
-        assert doc["title"] == "Rotate the Groq key" and doc["notes"][0]["text"] == "Key was pasted in chat"
-        shown = (await client.get(f"{B}/issues", params={"q": "rotate the groq key"})).json()
-        assert any(i["number"] == doc["number"] and i["title"] == "Rotate the Groq key" for i in shown["items"])
-    finally:
-        await ops_llm_notes.delete_one({"_id": nid})
-        await llm_issues.delete_many({"legacy_note_id": nid})
     for old in ("/api/v1/ops/ai/notes", "/api/v1/ops/ai/health"):
         assert (await client.get(old)).status_code == 404
     assert (await client.post("/api/v1/ops/ai/ping")).status_code in (404, 405)

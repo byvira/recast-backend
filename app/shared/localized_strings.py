@@ -117,6 +117,15 @@ def _language_name(code: str) -> str:
     return known or f"the language identified by the code or name '{normalised}'"
 
 
+def language_label(language: str) -> str:
+    """A language code as words a prompt can use: "ta" is "Tamil", and a mixed register such as "ta+en" is "Tamil written
+    in English letters, blended with English" (Tanglish). A prompt never sees the bare code."""
+    vars_ = language_prompt_vars(language)
+    if vars_["mixed"]:
+        return f"{vars_['native']} written in English letters, blended with {vars_['other']}"
+    return vars_["language_name"] or _language_name(language)
+
+
 def language_prompt_vars(language: str) -> dict[str, Any]:
     """Variables the translate prompt needs for `language`.
 

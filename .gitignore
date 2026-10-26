@@ -61,3 +61,6 @@ LAUNCH_CHECKLIST.md
 
 # ── Local one-off debug scripts (not for the repo) ────────────────────────────
 /_get_otp.py
+
+# Brand fonts fetched from Google Fonts at run time (app/pipelines/media/web_fonts.py)
+app/pipelines/media/fonts/web/

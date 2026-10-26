@@ -905,9 +905,13 @@ async def _translate_with_quality_gate(source_text: str, target_language: str, b
     _TRANSLATION_MAX_ATTEMPTS total attempts, keep whichever attempt
     scored highest rather than always keeping the last one."""
     best_text, best_score = "", -1.0
+    # the prompts read the language as words ("Tamil", or "Tamil written in English letters, blended with English"), never a code
+    from app.shared.localized_strings import language_label
+
+    language_words = language_label(target_language)
     for attempt in range(1, _TRANSLATION_MAX_ATTEMPTS + 1):
         translate_prompt = load_prompt(
-            "audio/localize/translate_script", target_language=target_language, script=source_text, brand_context=brand_context,
+            "audio/localize/translate_script", target_language=language_words, script=source_text, brand_context=brand_context,
         )
         # Room for a long script: about one token for every two characters of the source, within what the provider allows.
         candidate = clean_translation(await call_llm(translate_prompt, max_tokens=max(2500, min(len(source_text) // 2, 6000))))
@@ -928,7 +932,7 @@ async def _translate_with_quality_gate(source_text: str, target_language: str, b
 
         score_prompt = load_prompt(
             "audio/localize/score_translation",
-            source_text=source_text, target_language=target_language, translated_text=candidate,
+            source_text=source_text, target_language=language_words, translated_text=candidate,
         )
         score, reason = _parse_translation_score((await call_llm(score_prompt)).strip())
         logger.info(

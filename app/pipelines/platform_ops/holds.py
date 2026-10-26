@@ -82,13 +82,12 @@ async def hold_scheduled_posts(
     await content_pieces.update_many(newly, {"$set": {"hold": marker, "schedule_note": note, "updated_at": now}})
     await content_pieces.update_many(upgrade, {"$set": {"hold": marker, "schedule_note": note, "updated_at": now}})
 
-    held = await content_pieces.find(
-        {"hold.platform_key": definition.key, "hold.held_at": now}, {"workspace_id": 1},
-    ).to_list(length=20000)
-    counts: dict[str, int] = {}
-    for piece in held:
-        counts[piece.get("workspace_id", "")] = counts.get(piece.get("workspace_id", ""), 0) + 1
-    counts.pop("", None)
+    # counted by the database, one row per workspace, so a platform with many queued posts is never read into memory
+    grouped = await content_pieces.aggregate([
+        {"$match": {"hold.platform_key": definition.key, "hold.held_at": now}},
+        {"$group": {"_id": "$workspace_id", "n": {"$sum": 1}}},
+    ]).to_list(length=None)
+    counts: dict[str, int] = {row["_id"]: row["n"] for row in grouped if row.get("_id")}
 
     if reason == "platform_paused":
         await _tell_workspaces(
@@ -112,7 +111,8 @@ async def _release(
     """Let held posts matching `extra` go back to the queue where they may. Returns counts: released,
     still_held and to_reschedule."""
     now = datetime.now(timezone.utc)
-    pieces = await content_pieces.find({**_belongs_to(definition), **extra}).to_list(length=20000)
+    # read in batches as the loop goes, so releasing many posts never holds them all in memory at once
+    pieces = content_pieces.find({**_belongs_to(definition), **extra}).batch_size(200)
 
     released = still_held = to_reschedule = 0
     per_workspace: dict[str, dict[str, int]] = {}
@@ -120,7 +120,7 @@ async def _release(
     def bump(workspace_id: str, kind: str) -> None:
         per_workspace.setdefault(workspace_id, {"released": 0, "still_held": 0, "to_reschedule": 0})[kind] += 1
 
-    for piece in pieces:
+    async for piece in pieces:
         workspace_id = piece.get("workspace_id", "")
         flt = {"piece_id": piece["piece_id"]}
 

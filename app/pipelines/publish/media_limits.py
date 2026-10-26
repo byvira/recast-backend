@@ -25,6 +25,8 @@ LIMITS: dict[str, Limits] = {
     "facebook": Limits(image_bytes=10 * MB),
     "threads": Limits(image_bytes=8 * MB, video_bytes=1024 * MB, video_seconds=300),
     "bluesky": Limits(video_bytes=300 * MB),
+    # The LinkedIn Videos API takes files up to 5 GB, sent in parts.
+    "linkedin": Limits(video_bytes=5 * 1024 * MB),
     # A feed picture is between 4:5 and 1.91:1.
     "instagram": Limits(image_ratio=(0.8, 1.91)),
 }

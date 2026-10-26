@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 EMAIL_TEMPLATE = "support-ticket-update"
 _EMAIL_ATTEMPTS = 3
 _EMAIL_BACKOFF_SECONDS = (1.0, 3.0)
-_MAX_OPS_RECIPIENTS = 50
 
 # Tasks are held here so a fire-and-forget email is not garbage collected mid-send.
 _background: set[asyncio.Task] = set()
@@ -140,7 +139,7 @@ async def notify_ops_new_ticket(ticket: dict) -> None:
     try:
         staff = await users.find(
             {"$or": [{"is_platform_staff": True}, {"is_master_admin": True}]}, {"id": 1}
-        ).to_list(_MAX_OPS_RECIPIENTS)
+        ).sort("id", 1).to_list(length=None)
         for s in staff:
             await _insert(
                 s["id"], ticket, "new_ticket",
@@ -161,7 +160,7 @@ async def notify_leads(title: str, body: str, tickets: list[dict], *, type: str)
         leads = await users.find(
             {"$or": [{"is_master_admin": True}, {"support_role": {"$in": ["lead", "admin"]}}]},
             {"id": 1, "email": 1, "name": 1},
-        ).to_list(_MAX_OPS_RECIPIENTS)
+        ).sort("id", 1).to_list(length=None)
         if not tickets:
             return
         newline = chr(10)
@@ -185,7 +184,7 @@ async def notify_leads_alert(key: str, title: str, body: str) -> None:
     try:
         leads = await users.find(
             {"$or": [{"is_master_admin": True}, {"support_role": {"$in": ["lead", "admin"]}}]}, {"id": 1}
-        ).to_list(_MAX_OPS_RECIPIENTS)
+        ).sort("id", 1).to_list(length=None)
         for lead in leads:
             await _insert(lead["id"], {"id": key, "subject": title}, "health_alert", title, preview(body), "ops")
     except Exception:

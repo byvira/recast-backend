@@ -211,7 +211,7 @@ async def upload_attachment(
     or reply. A file that fails the check is refused; if it was meant for a
     ticket, staff are told on that ticket."""
     if ctx.user.get("support_muted"):
-        raise HTTPException(status_code=403, detail="Support is paused for your account. Please email hello@recast.so.")
+        raise HTTPException(status_code=403, detail="Support is paused for your account. Please email hello@mail.byvirastudio.com.")
     since = datetime.now(timezone.utc) - timedelta(hours=1)
     # Refused files count too: they cost a scan each, and a repeated rejected attempt must not be free.
     blocked = await support_ticket_events.count_documents(
@@ -322,7 +322,7 @@ async def create_ticket(
 async def _create_ticket(request: Request, body: SupportTicketCreate, ctx: WorkspaceContext) -> SupportTicketMemberView:
     if ctx.user.get("support_muted"):
         raise HTTPException(
-            status_code=403, detail="Filing tickets is paused for your account. Please email hello@recast.so."
+            status_code=403, detail="Filing tickets is paused for your account. Please email hello@mail.byvirastudio.com."
         )
     await _enforce_ticket_limits(ctx)
     now = datetime.now(timezone.utc)
@@ -429,7 +429,7 @@ async def add_message(
 ) -> SupportTicketMemberView:
     if ctx.user.get("support_muted"):
         # Pausing a member's support access covers replying and uploading too, not only opening new tickets.
-        raise HTTPException(status_code=403, detail="Support is paused for your account. Please email hello@recast.so.")
+        raise HTTPException(status_code=403, detail="Support is paused for your account. Please email hello@mail.byvirastudio.com.")
     ticket = await _own_ticket(ticket_id, ctx)
     if ticket["status"] == "closed":
         raise HTTPException(

@@ -80,14 +80,22 @@ def _status(health_state: str, expires_at: Optional[datetime], now: datetime) ->
 
 async def _raw_connections(definition: PlatformDefinition) -> list[dict[str, Any]]:
     if definition.integration_pattern in ("token_webhook", "manual_handoff"):
-        docs = await platform_configs.find({"platform": definition.key, "workspace_id": {"$ne": PLATFORM_WIDE}}).to_list(length=5000)
+        docs = await platform_configs.find(
+            {"platform": definition.key, "workspace_id": {"$ne": PLATFORM_WIDE}},
+            {"_id": 0, "id": 1, "workspace_id": 1, "label": 1, "created_by": 1, "created_at": 1, "enabled": 1},
+        ).to_list(length=5000)
         return [{
             "id": d["id"], "kind": "config", "workspace_id": d["workspace_id"],
             "account": d.get("label") or definition.label,
             "connected_by": d.get("created_by"), "connected_at": d.get("created_at"),
             "expires_at": None, "health": {"state": "healthy" if d.get("enabled", True) else "degraded", "reason": ""},
         } for d in docs]
-    docs = await workspace_connections.find({"platform": definition.key, "is_active": True}).to_list(length=5000)
+    # only the fields this list shows: the stored tokens are never read for it
+    docs = await workspace_connections.find(
+        {"platform": definition.key, "is_active": True},
+        {"id": 1, "workspace_id": 1, "username": 1, "platform_user_id": 1, "connected_by": 1, "connected_at": 1,
+         "expires_at": 1, "health": 1, "scopes": 1},
+    ).to_list(length=5000)
     return [{
         "id": d.get("id") or str(d["_id"]), "kind": "oauth", "workspace_id": d["workspace_id"],
         "account": d.get("username") or d.get("platform_user_id") or "",

@@ -1,6 +1,6 @@
 """Tests for the /health/ready deep readiness check.
 
-llm_health_check() makes real Groq/Gemini calls, so it's monkeypatched here
+The readiness route calls cached_llm_health_check(), which makes real Groq/Gemini calls, so it is monkeypatched here
 same as every other external-service call in this suite — no real LLM call
 in the automated tests.
 """
@@ -21,7 +21,7 @@ async def test_health_ready_ok_when_everything_healthy(api_client, monkeypatch):
             "gemini": {"status": "ok", "latency_ms": 120},
         }
 
-    monkeypatch.setattr(main_module, "llm_health_check", fake_llm_health_check)
+    monkeypatch.setattr(main_module, "cached_llm_health_check", fake_llm_health_check)
 
     res = await api_client.get("/health/ready")
     assert res.status_code == 200
@@ -41,7 +41,7 @@ async def test_health_ready_stays_200_when_llm_degraded_but_db_ok(api_client, mo
             "gemini": {"status": "ok", "latency_ms": 120},
         }
 
-    monkeypatch.setattr(main_module, "llm_health_check", fake_llm_health_check)
+    monkeypatch.setattr(main_module, "cached_llm_health_check", fake_llm_health_check)
 
     res = await api_client.get("/health/ready")
     assert res.status_code == 200
@@ -64,10 +64,32 @@ async def test_health_ready_503_when_mongo_down(api_client, monkeypatch):
         return {"groq": {"status": "ok"}, "gemini": {"status": "ok"}}
 
     monkeypatch.setattr(main_module, "get_mongo_client", lambda: _FailingClient())
-    monkeypatch.setattr(main_module, "llm_health_check", fake_llm_health_check)
+    monkeypatch.setattr(main_module, "cached_llm_health_check", fake_llm_health_check)
 
     res = await api_client.get("/health/ready")
     assert res.status_code == 503
     body = res.json()
     assert body["status"] == "not ready"
     assert any("mongo" in p for p in body["problems"])
+
+
+async def test_cached_llm_health_check_pings_once_within_the_window(monkeypatch):
+    """A monitor hitting the readiness route every minute must not spend provider allowance each time."""
+    import app.shared.llm as llm
+
+    calls = 0
+
+    async def fake_ping():
+        nonlocal calls
+        calls += 1
+        return {"groq": {"status": "ok"}, "gemini": {"status": "ok"}}
+
+    monkeypatch.setattr(llm, "llm_health_check", fake_ping)
+    monkeypatch.setattr(llm, "_health_cache", None)
+    first = await llm.cached_llm_health_check()
+    second = await llm.cached_llm_health_check()
+    assert first == second
+    assert calls == 1
+    # past the window it pings again
+    await llm.cached_llm_health_check(max_age_s=0)
+    assert calls == 2

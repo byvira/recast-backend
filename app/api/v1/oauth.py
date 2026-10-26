@@ -97,6 +97,10 @@ async def _consume_state(state: str) -> dict | None:
     return data
 
 
+# A Google account has no public profile page; this is the person's own account page, the closest thing to one.
+GOOGLE_ACCOUNT_URL = "https://myaccount.google.com/"
+
+
 def _derive_profile_url(platform: str, username: str, platform_user_id: str = "") -> str | None:
     """Best-effort public profile URL from data already returned by the OAuth
     flow — no extra API calls. None where the platform doesn't expose a
@@ -216,6 +220,11 @@ async def list_accounts(
         a["profile_url"] = normalize_profile_url(a.get("profile_url"))
         if a["platform"] == "instagram" and not a["profile_url"]:
             await _heal_instagram(ctx.workspace_id, a)
+    # A Google account has no public profile: its icon opens the YouTube channel when there is one, else the account page.
+    youtube = next((a for a in accounts if a["platform"] == "youtube" and a.get("profile_url")), None)
+    for a in accounts:
+        if a["platform"] == "google" and not a["profile_url"]:
+            a["profile_url"] = youtube["profile_url"] if youtube else GOOGLE_ACCOUNT_URL
 
     # Accounts with no picture yet are read from their platform in the background, so this list is never held up.
     from app.pipelines.publish.profile import needs_refresh, schedule_refresh
@@ -681,6 +690,9 @@ async def google_callback(
         username=token_data.get("username", ""),
         connected_by=user_id,
         scopes=token_data.get("scopes"),
+        profile_url=(
+            _derive_profile_url("youtube", "", token_data["youtube_channel_id"]) if token_data.get("youtube_channel_id") else GOOGLE_ACCOUNT_URL
+        ),
     )
     connected.append("google")
     logger.info("Google connected for user %s — %s", user_id, token_data.get("email"))

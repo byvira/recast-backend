@@ -158,7 +158,9 @@ def _register_audio() -> None:
     from app.api.v1.audio_assets import TranscribeRequest
 
     _audio_action("audio.transcribe", handler_name="transcribe_audio_asset", settings_model=TranscribeRequest, with_asset=True,
-                  title=lambda p: "Transcribe recording", steps_total=2, restartable=True, retries=1,
+                  title=lambda p: "Transcribe recording", steps_total=2, restartable=True, retries=0,
+                  # no automatic retry: a timeout can come after the provider has done (and charged for) the work. Starting again
+                  # after a restart stays safe because the handler refuses a recording that already has a transcript.
                   description="Write out what was said (safe to start again after a restart).")
     _audio_action("audio.cleanup", handler_name="cleanup_audio_asset", settings_model=CleanupSettings, with_asset=True,
                   title=lambda p: "Clean up recording", steps_total=3, restartable=False, retries=0,

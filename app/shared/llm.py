@@ -272,11 +272,12 @@ def _record_workspace_usage(total_tokens: int, calls: int = 1) -> None:
 
     async def _write() -> None:
         try:
-            from datetime import date as _date
+            from datetime import datetime as _datetime, timezone as _timezone
 
             from app.db.mongo import workspace_ai_usage_daily
 
-            today = _date.today().isoformat()
+            # the day in UTC, the same calendar the usage windows and resets are worked out in
+            today = _datetime.now(_timezone.utc).date().isoformat()
             await workspace_ai_usage_daily.update_one(
                 {"_id": f"{workspace_id}:{today}"},
                 {
@@ -518,13 +519,19 @@ def _flatten_chat(messages: list[dict[str, str]]) -> str:
 
 
 def _log_if_truncated(response: Any, context: str) -> None:
-    """Warn when the model stopped before a natural end."""
+    """Warn when the model stopped before a natural end, and report an answer the provider blocked or left empty to LLM
+    health, so those failures are seen there and not only in the logs."""
     reason = response.choices[0].finish_reason
     if reason != "stop":
         logger.warning(
             "%s — response truncated: finish_reason=%s usage=%s",
             context, reason, response.usage,
         )
+    model = str(getattr(response, "model", "") or "groq")
+    if reason == "content_filter":
+        note_app_failure("content_blocked", "groq", model, f"{context}: the provider's content filter stopped the answer.")
+    elif not _raw_text(response).strip():
+        note_app_failure("empty_response", "groq", model, f"{context}: the model answered with no text (finish_reason={reason}).")
 
 
 def _raw_text(response: Any) -> str:
@@ -925,7 +932,11 @@ async def call_llm_structured(
         )
         _log_if_truncated(resp, f"call_llm_structured({mdl.name})")
         _record_usage(mdl.value, resp.usage)
-        return parse_llm_json(_raw_text(resp))
+        text = _raw_text(resp)
+        parsed = parse_llm_json(text)
+        if text.strip() and not parsed:
+            note_app_failure("unparseable_response", "groq", mdl.value, f"call_llm_structured({mdl.name}): the answer was not readable JSON.")
+        return parsed
 
     # Circuit breaker — see call_llm()'s identical check for why: skip the
     # timeout+retries+backoff tax entirely once Groq has already shown
@@ -1304,6 +1315,20 @@ async def transcribe_audio(
 # 6. Gemini plain-text fallback (severe Groq rate limits only)
 # ─────────────────────────────────────────────────────────────
 
+def note_app_failure(kind: str, provider: str, model: str, message: str) -> None:
+    """Report a failure the app itself noticed (an empty or unreadable answer, a blocked answer) to LLM health. The call was
+    already counted when it was made, so this adds the event without counting the call twice. Never raises."""
+    try:
+        from app.shared.llm_health.recorder import Attempt, recorder
+
+        recorder.record(Attempt(
+            provider=provider, model=model, ok=False, latency_ms=0.0, error_class=kind, error_message=message[:300],
+            count_in_rollup=False,
+        ))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _note_fallback_failed(model: str) -> None:
     """Every provider that was tried failed: people are seeing the failure. Recorded as its own kind, without counting a call twice."""
     try:
@@ -1477,3 +1502,24 @@ async def llm_health_check() -> dict[str, Any]:
         result["gemini"] = {"status": "error", "detail": str(exc)}
 
     return result
+
+
+# The readiness check is hit by an outside monitor every minute or so. Each live ping spends real provider allowance, so the
+# answer is kept for a few minutes and shared by concurrent callers; an outage still shows within that window.
+_HEALTH_TTL_S = 300.0
+_health_cache: tuple[float, dict[str, Any]] | None = None
+_health_lock = asyncio.Lock()
+
+
+async def cached_llm_health_check(max_age_s: float = _HEALTH_TTL_S) -> dict[str, Any]:
+    """`llm_health_check`, answered from the last result while it is younger than `max_age_s`."""
+    global _health_cache
+    now = time.monotonic()
+    if _health_cache and now - _health_cache[0] < max_age_s:
+        return _health_cache[1]
+    async with _health_lock:
+        if _health_cache and time.monotonic() - _health_cache[0] < max_age_s:
+            return _health_cache[1]
+        result = await llm_health_check()
+        _health_cache = (time.monotonic(), result)
+        return result

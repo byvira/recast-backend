@@ -34,7 +34,7 @@ from app.core.middleware import MaxBodySizeMiddleware, RequestLoggingMiddleware,
 from app.db.mongo import create_indexes, get_client as get_mongo_client
 from app.db.migrations import run_startup_migrations
 from app.db.redis import get_redis
-from app.shared.llm import llm_health_check
+from app.shared.llm import cached_llm_health_check
 from app.api.v1 import text_stream
 from app.api.v1 import activity as activity_router
 from app.api.v1 import assistant as assistant_router
@@ -508,7 +508,7 @@ async def health_ready() -> JSONResponse:
     except Exception as exc:  # noqa: BLE001
         problems.append(f"redis: {exc}")
 
-    llm_status = await llm_health_check()
+    llm_status = await cached_llm_health_check()
     llm_problems = [
         f"{provider}: {info.get('detail', 'unknown error')}"
         for provider, info in llm_status.items()

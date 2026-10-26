@@ -16,6 +16,7 @@
 {%- if c.get("sentence_length") == "short" %}{% set _ = ns.lines.append("Short sentences.") %}{% elif c.get("sentence_length") == "flowing" %}{% set _ = ns.lines.append("Longer, flowing sentences.") %}{% endif -%}
 {%- if c.get("paragraph_spacing") == "double" %}{% set _ = ns.lines.append("A blank line between paragraphs.") %}{% elif c.get("paragraph_spacing") == "dense" %}{% set _ = ns.lines.append("Dense paragraphs with little white space.") %}{% endif -%}
 {%- if c.get("vocabulary_level") == "technical" %}{% set _ = ns.lines.append("Use precise technical vocabulary.") %}{% elif c.get("vocabulary_level") == "academic" %}{% set _ = ns.lines.append("Use an academic register.") %}{% endif -%}
+{%- if c.get("emoji_usage") == "none" %}{% set _ = ns.lines.append("No emoji at all.") %}{% elif c.get("emoji_usage") == "bullets" %}{% set _ = ns.lines.append("Emoji only as bullet markers at the start of list lines, nowhere else.") %}{% elif c.get("emoji_usage") == "expressive" %}{% set _ = ns.lines.append("Emoji are welcome where they add feeling, a few per post, never in place of words.") %}{% endif -%}
 {%- if c.get("signature_phrases") %}{% set _ = ns.lines.append("Signature phrases to use naturally where they fit, never forced: " ~ (c.get("signature_phrases") | join(", "))) %}{% endif -%}
 {%- for platform, rule in (c.get("channel_rules") or {}).items() %}{% if rule %}{% set _ = ns.lines.append("For " ~ platform ~ ": " ~ rule) %}{% endif %}{% endfor -%}
 {%- if ns.lines %}

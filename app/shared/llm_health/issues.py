@@ -162,30 +162,6 @@ def manual_issue_doc(*, number: int, title: str, detail: str, priority: str, fea
     return doc
 
 
-async def merge_legacy_notes() -> int:
-    """One time, safe to repeat: copies the old Ops LLM notes into issues so there is a single list.
-    The old collection is left as it was. Returns how many were copied."""
-    from app.db.mongo import llm_issues, ops_llm_notes
-
-    copied = 0
-    now = datetime.now(timezone.utc)
-    async for note in ops_llm_notes.find({}):
-        nid = str(note["_id"])
-        if await llm_issues.find_one({"legacy_note_id": nid}, {"_id": 1}):
-            continue
-        doc = manual_issue_doc(
-            number=await _next_number(), title=note.get("title", "Untitled"), detail=note.get("detail", ""),
-            priority=note.get("severity", "medium") if note.get("severity") in PRIORITIES else "medium", feature=None,
-            by=note.get("created_by"), now=now, kind=note.get("kind", "issue"), created_at=note.get("created_at"),
-            legacy_note_id=nid, resolved_at=note.get("resolved_at") if note.get("status") == "resolved" else None,
-        )
-        if note.get("status") == "resolved" and not doc["resolution"]:
-            doc["status"], doc["resolution"] = "fixed", {"by": note.get("created_by"), "at": now, "note": ""}
-        await llm_issues.insert_one(doc)
-        copied += 1
-    return copied
-
-
 async def apply_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Groups saved events by fingerprint and creates or updates their issues. Returns counts."""
     from app.db.mongo import llm_events, llm_issues

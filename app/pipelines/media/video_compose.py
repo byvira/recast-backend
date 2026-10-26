@@ -157,7 +157,7 @@ def compose_layers(
     if title:
         draw = ImageDraw.Draw(layer)
         size_px = max(28, w // 20)
-        font = _load_font(look.heading_font, size_px, bold=True)
+        font = _load_font(look.heading_font, size_px, bold=True, web=False)
         for line in _wrap_text(draw, title, font, w - margin * 2)[:2]:
             draw.text((margin + 2, y + 2), line, font=font, fill=(0, 0, 0, 120))
             draw.text((margin, y), line, font=font, fill=(255, 255, 255, 255))

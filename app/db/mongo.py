@@ -78,10 +78,6 @@ workspace_cohorts: AsyncIOMotorCollection     = get_client().get_default_databas
 workspace_ai_budgets: AsyncIOMotorCollection  = get_client().get_default_database()["workspace_ai_budgets"]
 workspace_ai_usage_daily: AsyncIOMotorCollection = get_client().get_default_database()["workspace_ai_usage_daily"]
 
-# The old Ops LLM notes list. Its rows were copied into llm_issues by a startup migration
-# (app/shared/llm_health/issues.py::merge_legacy_notes). Nothing writes to it any more.
-# REMOVE this line, its index and that migration after one production deploy has run.
-ops_llm_notes: AsyncIOMotorCollection = get_client().get_default_database()["ops_llm_notes"]
 
 # Real, workspace-scoped media references — see app.models.media.MediaAsset.
 media_assets: AsyncIOMotorCollection = get_client().get_default_database()["media_assets"]
@@ -364,7 +360,6 @@ async def create_indexes() -> None:
     await workspace_cohorts.create_index("workspace_id")
     await workspace_ai_budgets.create_index("workspace_id", unique=True)
     await workspace_ai_usage_daily.create_index([("workspace_id", 1), ("date", 1)], unique=True)
-    await ops_llm_notes.create_index([("status", 1), ("created_at", -1)])
     await media_assets.create_index([("workspace_id", 1), ("created_at", -1)])
     await support_tickets.create_index([("workspace_id", 1), ("created_at", -1)])
     await support_tickets.create_index([("status", 1), ("created_at", -1)])

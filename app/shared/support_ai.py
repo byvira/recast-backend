@@ -30,6 +30,7 @@ from fastapi import HTTPException
 from app.db.mongo import support_ai_usage
 from app.prompts.registry import load_prompt, template_version
 from app.shared.localized_strings import looks_leaked
+from app.shared.support_rules import SUPPORT_CATEGORIES
 from app.shared import support_guides
 from app.shared.llm import GroqModel, call_llm, private_content, usage_workspace
 
@@ -50,7 +51,7 @@ MAX_MESSAGE_CHARS = 1200
 CALLS_PER_STAFF_PER_HOUR = 30
 CALLS_PER_DAY = 200
 
-CATEGORIES = ["Brand voice", "Connecting accounts", "Publishing", "Billing", "Something's broken"]
+CATEGORIES = list(SUPPORT_CATEGORIES)
 
 # ── Masking ──────────────────────────────────────────────────────────────────
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")

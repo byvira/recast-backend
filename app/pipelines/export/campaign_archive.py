@@ -12,7 +12,7 @@ from __future__ import annotations
 import io
 import zipfile
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, tzinfo
 from typing import Optional
 
 from docx import Document
@@ -41,24 +41,27 @@ class CampaignPost:
     media: list[CampaignMedia] = field(default_factory=list)
 
 
-def _date_label(piece: dict) -> str:
+def _date_label(piece: dict, tz: Optional[tzinfo] = None) -> str:
+    """The post's day as the member sees it: stored times are UTC, so a post at 00:30 in India is still that day there."""
     value = piece.get("publish_scheduled_at") or piece.get("created_at")
     if isinstance(value, datetime):
+        if tz is not None:
+            value = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(tz)
         return value.strftime("%Y-%m-%d")
     if isinstance(value, str) and len(value) >= 10:
         return value[:10]
     return "undated"
 
 
-def plan_campaign_export(pieces: list[dict]) -> list[CampaignPost]:
+def plan_campaign_export(pieces: list[dict], tz: Optional[tzinfo] = None) -> list[CampaignPost]:
     """One CampaignPost per piece, in the order given. Media goes in a folder named
-    title_date-of-publish_platform; folders and files stay unique."""
+    title_date-of-publish_platform, the date in the member's time zone `tz`; folders and files stay unique."""
     posts: list[CampaignPost] = []
     folder_names: list[str] = []
     for p in pieces:
         title = naming.first_line_title(p.get("content"))
         platform = str(p.get("platform") or "")
-        date = _date_label(p)
+        date = _date_label(p, tz)
         folder_names.append(
             "_".join([naming.slugify(title), date, naming.slugify(platform, fallback="general", max_chars=24)])
         )

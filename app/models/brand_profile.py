@@ -268,7 +268,8 @@ class VoiceCalibration(BaseModel):
     vocabulary_level: Literal["simple", "technical", "academic"] = "simple"
     hook_aggressiveness: int = Field(50, ge=0, le=100)
     emoji_usage: Literal["none", "minimal", "bullets", "expressive"] = "minimal"
-    allow_em_dashes: bool = True
+    # Em dashes are always taken out of generated text (app.models.text.strip_em_dashes), so the stored value says so.
+    allow_em_dashes: bool = False
     allow_ellipses: bool = False
     use_lowercase_bullets: bool = True
     channel_rules: dict[str, str] = Field(default_factory=dict)

@@ -39,5 +39,10 @@ def test_instagram_shape_must_be_between_4_5_and_1_91():
     assert media_problem("instagram", [asset("image", width=2000, height=800)]) is not None
 
 
+def test_linkedin_video_over_5_gb_is_stopped():
+    assert "5120 MB" in media_problem("linkedin", [asset("video", size_bytes=10_000 * MB)])
+    assert media_problem("linkedin", [asset("video", size_bytes=5 * 1024 * MB)]) is None
+
+
 def test_platforms_without_a_confirmed_limit_are_left_alone():
-    assert media_problem("linkedin", [asset("video", size_bytes=10_000 * MB)]) is None
+    assert media_problem("youtube", [asset("video", size_bytes=10_000 * MB)]) is None

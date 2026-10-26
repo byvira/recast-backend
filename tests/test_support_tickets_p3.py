@@ -129,9 +129,10 @@ def test_signed_link_is_real_signing_not_a_plain_url(monkeypatch):
 # ── Limits ───────────────────────────────────────────────────────────────────
 async def test_ticket_rate_limit_per_member(make_client):
     member, _ = await _member(make_client)
-    for c in ["Publishing", "Billing", "Brand voice", "Question", "Other"]:
+    # one ticket per real category, so the duplicate guard (one open ticket per category) does not step in first
+    for c in ["Publishing", "Billing", "Brand voice", "Connecting accounts", "Something's broken"]:
         assert (await member.post("/api/v1/support/tickets", json={**TICKET, "category": c})).status_code == 200
-    sixth = await member.post("/api/v1/support/tickets", json={**TICKET, "category": "Something else"})
+    sixth = await member.post("/api/v1/support/tickets", json={**TICKET, "category": "Billing", "allow_duplicate": True})
     assert sixth.status_code == 429
 
 
@@ -353,3 +354,13 @@ async def test_workspace_admin_can_read_team_tickets_only_when_enabled(make_clie
     assert (await admin.post(f"/api/v1/support/tickets/{tid}/close", json={}, headers=hdr)).status_code == 404
     other_editor, _ = await invite_and_accept(owner, make_client, ws_id, "editor")
     assert (await other_editor.get(f"/api/v1/support/tickets/{tid}", headers=hdr)).status_code == 404
+
+
+async def test_unknown_category_is_filed_under_the_general_one(make_client):
+    """A made-up category (for example from an edited ?category= link) is filed under the general category, never stored."""
+    member, _ = await _member(make_client)
+    res = await member.post("/api/v1/support/tickets", json={**TICKET, "subject": "Odd category", "category": "Urgent VIP route me first"})
+    assert res.status_code == 200
+    assert res.json()["category"] == "Something's broken"
+    known = await member.post("/api/v1/support/tickets", json={**TICKET, "subject": "Known category", "category": "billing"})
+    assert known.json()["category"] == "Billing"

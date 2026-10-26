@@ -84,9 +84,17 @@ def fonts_dir() -> str:
     return _FONTS_DIR
 
 
-def _resolve_font_path(font_name: Optional[str], *, bold: bool) -> str:
+def _resolve_font_path(font_name: Optional[str], *, bold: bool, web: bool = True) -> str:
     key = (font_name or "").strip().lower()
-    entry = _GOOGLE_FONTS.get(key) or _GOOGLE_FONTS[_DEFAULT_FONT_KEY]
+    entry = _GOOGLE_FONTS.get(key)
+    if entry is None and key and web:
+        # any other Google font the brand named is fetched once and kept (web_fonts); Inter only when that is not possible
+        from app.pipelines.media.web_fonts import font_files
+
+        fetched = font_files(font_name)
+        if fetched:
+            return fetched["bold" if bold else "regular"]
+    entry = entry or _GOOGLE_FONTS[_DEFAULT_FONT_KEY]
     filename = entry["bold" if bold else "regular"]
     return os.path.join(_FONTS_DIR, filename)
 
@@ -118,9 +126,12 @@ def shaping_available() -> bool:
     return bool(features.check("raqm"))
 
 
-def _load_font(font_name: Optional[str], size: int, *, bold: bool = False, text: Optional[str] = None) -> ImageFont.FreeTypeFont:
+def _load_font(
+    font_name: Optional[str], size: int, *, bold: bool = False, text: Optional[str] = None, web: bool = True,
+) -> ImageFont.FreeTypeFont:
+    """`web=False` keeps to the bundled families (video, whose captions the render machine draws with those only)."""
     entry = script_font_entry(text)
-    path = os.path.join(_FONTS_DIR, entry["bold" if bold else "regular"]) if entry else _resolve_font_path(font_name, bold=bold)
+    path = os.path.join(_FONTS_DIR, entry["bold" if bold else "regular"]) if entry else _resolve_font_path(font_name, bold=bold, web=web)
     try:
         return ImageFont.truetype(path, size=size)
     except Exception as exc:  # noqa: BLE001

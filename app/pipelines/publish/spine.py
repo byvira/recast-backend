@@ -288,6 +288,32 @@ async def record_override(piece: dict, workspace_id: str, user_id: str) -> None:
 # SCHEDULING CHECKS
 # ─────────────────────────────────────────────────────────────────────────────
 
+#: Instagram takes at most this many posts through the API from one account in any 24 hours (a carousel counts once).
+INSTAGRAM_POSTS_PER_DAY = 100
+
+
+async def instagram_day_full(workspace_id: str, when: datetime, exclude_piece_id: Optional[str] = None) -> Optional[str]:
+    """A plain reason when this workspace's Instagram account already has the platform's daily number of posts published or
+    queued within 24 hours of `when`, or None. Checked when a post is scheduled and when it is sent, so a post that Instagram
+    would refuse is stopped now instead of failing later with nobody watching."""
+    when = when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    window = {"$gt": when - timedelta(hours=24), "$lt": when + timedelta(hours=24)}
+    query: dict[str, Any] = {
+        "workspace_id": workspace_id, "deleted": {"$ne": True}, "platform": {"$regex": "^instagram$", "$options": "i"},
+        "$or": [
+            {"publish_status": "published", "published_at": window},
+            {"publish_status": {"$in": ["queued", "publishing"]}, "publish_scheduled_at": window},
+        ],
+    }
+    if exclude_piece_id:
+        query["piece_id"] = {"$ne": exclude_piece_id}
+    if await content_pieces.count_documents(query, limit=INSTAGRAM_POSTS_PER_DAY) >= INSTAGRAM_POSTS_PER_DAY:
+        return (
+            f"Instagram takes up to {INSTAGRAM_POSTS_PER_DAY} posts a day from one account, and this account already has that many "
+            "within a day of this time. Pick a time at least a day away."
+        )
+    return None
+
 async def schedule_blocker(piece: dict, workspace_id: str) -> Optional[tuple[int, str]]:
     """(status code, plain message) for the first reason this piece cannot be
     queued for later, or None. Platforms that refuse a post with no media would
@@ -340,6 +366,11 @@ async def schedule_blocker(piece: dict, workspace_id: str) -> Optional[tuple[int
     kinds = {str(m.get("kind")) for m in (piece.get("media") or [])}
     if slug == "instagram" and not kinds:
         return 400, "Instagram posts need an image or video. Add one first."
+    if slug == "instagram":
+        when = to_utc_datetime(piece.get("publish_scheduled_at")) or datetime.now(timezone.utc)
+        full = await instagram_day_full(workspace_id, when, exclude_piece_id=piece.get("piece_id"))
+        if full:
+            return 409, full
     if slug == "youtube" and "video" not in kinds:
         return 400, "YouTube posts need a video. Add one first."
     return None

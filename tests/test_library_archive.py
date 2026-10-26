@@ -117,3 +117,20 @@ def test_the_same_file_reached_twice_is_downloaded_once():
     planned = la.plan_library_export(pieces, [], IMAGES, MEDIA)
     urls = [f.url for f in planned if f.folder == "media"]
     assert urls.count("https://x/c1.png") == 1
+
+
+def test_hashtags_kept_apart_are_added_to_the_post_text_once():
+    piece = {"content": "Ship it #launch", "platform": "LinkedIn", "seo": {"hashtags": ["#launch", "buildinpublic"]}}
+    text = la.plan_library_export([piece])[0].text
+    assert text.endswith("Hashtags: #buildinpublic")
+    assert text.count("#launch") == 1
+
+
+def test_a_recording_with_a_transcript_gets_its_own_text_file():
+    audio = [{"title": "Episode 2", "source_type": "uploaded", "media_id": "m1", "transcript": [
+        {"word": "Hello", "speaker": "Host"}, {"word": "there", "speaker": "Host"}, {"word": "Hi", "speaker": "Guest"},
+    ]}]
+    files = la.plan_library_export([], audio, [], MEDIA)
+    transcript = [f for f in files if f.folder == "text"]
+    assert len(transcript) == 1
+    assert transcript[0].text == "Host: Hello there\n\nGuest: Hi"

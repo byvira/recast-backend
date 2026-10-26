@@ -2,7 +2,7 @@
 documents already read from the database and assembles bytes the caller already downloaded, so
 the rules can be tested without a network or a database.
 
-Layout:  text/  one .txt per post   |   media/  audio, images and video in their native format
+Layout:  text/  one .txt per post (with its hashtags) and per recording transcript   |   media/  audio, images and video in their native format
 Every file is named post-title_platform_pipeline_type.ext (see naming.py).
 """
 
@@ -40,6 +40,31 @@ def _media_kind(media: dict) -> str:
     return major if major in ("image", "audio", "video") else "file"
 
 
+def _post_text(piece: dict) -> str:
+    """The post as published, plus its hashtags when they are kept apart from the text and not already in it."""
+    text = str(piece.get("content") or "")
+    tags = [str(t).strip() for t in ((piece.get("seo") or {}).get("hashtags") or []) if str(t).strip()]
+    missing = [t if t.startswith("#") else f"#{t}" for t in tags if t.lstrip("#").lower() not in text.lower()]
+    return f"{text}\n\nHashtags: {' '.join(missing)}" if missing else text
+
+
+def _transcript_text(words: list[dict]) -> str:
+    """A recording's word-timed transcript as plain text, a new line each time the speaker changes."""
+    lines: list[str] = []
+    speaker, current = None, []
+    for w in words:
+        if w.get("speaker") != speaker and current:
+            lines.append((f"{speaker}: " if speaker else "") + " ".join(current))
+            current = []
+        speaker = w.get("speaker")
+        word = str(w.get("word") or "").strip()
+        if word:
+            current.append(word)
+    if current:
+        lines.append((f"{speaker}: " if speaker else "") + " ".join(current))
+    return "\n\n".join(lines)
+
+
 def plan_library_export(
     pieces: Iterable[dict],
     audio_assets: Iterable[dict] = (),
@@ -57,7 +82,7 @@ def plan_library_export(
         planned.append(PlannedFile(
             folder="text",
             name=naming.export_filename(title, platform, pipeline, "post", "txt"),
-            text=str(p.get("content") or ""),
+            text=_post_text(p),
             label=title,
         ))
         for media in (p.get("media") or [])[:1]:
@@ -86,6 +111,14 @@ def plan_library_export(
             url=media["url"],
             label=title,
         ))
+        transcript = _transcript_text(a.get("transcript") or [])
+        if transcript:
+            planned.append(PlannedFile(
+                folder="text",
+                name=naming.export_filename(title, None, "audio", "transcript", "txt"),
+                text=transcript,
+                label=f"{title} transcript",
+            ))
 
     for a in image_assets:
         slides = a.get("slides") or []

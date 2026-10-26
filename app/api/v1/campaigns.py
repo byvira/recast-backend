@@ -21,9 +21,10 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel
 
 from app.core.middleware import limiter
@@ -83,25 +84,15 @@ async def _campaign_progress(workspace_id: str, campaign_id: str) -> dict[str, i
     """Real per-stage piece counts for a campaign, computed on read from
     content_pieces — same "don't store a driftable derived field" approach
     compute_kanban_stage() itself already uses."""
-    counts: dict[str, int] = {stage: 0 for stage in KANBAN_STAGES}
-    docs = await content_pieces.find(
-        {"workspace_id": workspace_id, "campaign_id": campaign_id, "deleted": {"$ne": True}},
-        {"archived": 1, "publish_status": 1, "approval_status": 1},
-    ).to_list(length=None)
-    for doc in docs:
-        stage = compute_kanban_stage(doc)
-        counts[stage] = counts.get(stage, 0) + 1
-    counts["total"] = len(docs)
-    return counts
+    return (await _campaign_progress_bulk(workspace_id, [campaign_id]))[campaign_id]
 
 
 async def _campaign_progress_bulk(
     workspace_id: str, campaign_ids: list[str]
 ) -> dict[str, dict[str, int]]:
-    """Same per-stage counts as _campaign_progress, for every campaign in
-    one query instead of one per campaign — list_campaigns' docstring
-    already claimed this, but actually called _campaign_progress in a loop
-    (one content_pieces query per campaign card)."""
+    """Per-stage piece counts for every campaign in one query. A post's stage depends only on archived, publish_status and
+    approval_status, so the database groups the posts by those and returns a few counted rows, never the posts themselves,
+    however large a campaign grows."""
     def _empty_counts() -> dict[str, int]:
         counts = {stage: 0 for stage in KANBAN_STAGES}
         counts["total"] = 0
@@ -111,22 +102,25 @@ async def _campaign_progress_bulk(
     if not campaign_ids:
         return progress
 
-    docs = await content_pieces.find(
-        {
-            "workspace_id": workspace_id,
-            "campaign_id": {"$in": campaign_ids},
-            "deleted": {"$ne": True},
-        },
-        {"archived": 1, "publish_status": 1, "approval_status": 1, "campaign_id": 1},
-    ).to_list(length=None)
+    groups = await content_pieces.aggregate([
+        {"$match": {"workspace_id": workspace_id, "campaign_id": {"$in": campaign_ids}, "deleted": {"$ne": True}}},
+        {"$group": {
+            "_id": {
+                "campaign_id": "$campaign_id", "archived": "$archived",
+                "publish_status": "$publish_status", "approval_status": "$approval_status",
+            },
+            "n": {"$sum": 1},
+        }},
+    ]).to_list(length=None)
 
-    for doc in docs:
-        cid = doc.get("campaign_id")
+    for group in groups:
+        key = group["_id"]
+        cid = key.get("campaign_id")
         if cid not in progress:
             continue
-        stage = compute_kanban_stage(doc)
-        progress[cid][stage] = progress[cid].get(stage, 0) + 1
-        progress[cid]["total"] += 1
+        stage = compute_kanban_stage(key)
+        progress[cid][stage] = progress[cid].get(stage, 0) + group["n"]
+        progress[cid]["total"] += group["n"]
 
     return progress
 
@@ -418,7 +412,10 @@ async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> 
     media_ids = {a.get("media_id") for a in audio if a.get("media_id")}
     for doc in images:
         media_ids.update(s.get("media_id") for s in doc.get("slides", []) if s.get("media_id"))
-    docs = await media_assets.find({"id": {"$in": list(media_ids)}, "workspace_id": workspace_id}).to_list(length=None)
+    docs = await media_assets.find(
+        {"id": {"$in": list(media_ids)}, "workspace_id": workspace_id},
+        {"_id": 0, "id": 1, "url": 1, "mime_type": 1, "kind": 1, "qa_flagged": 1, "qa_flag_reason": 1},
+    ).to_list(length=None)
     by_id = {m["id"]: m for m in docs}
 
     found: dict[str, list[dict]] = {}
@@ -519,11 +516,24 @@ async def regenerate_post_image(
     return result
 
 
+def _member_zone(asked: Optional[str], user: dict) -> Optional[ZoneInfo]:
+    """The time zone for dates the member reads: the browser's, else the one saved on their account, else UTC (None)."""
+    for name in (asked, (user or {}).get("timezone")):
+        if not name:
+            continue
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            continue
+    return None
+
+
 @router.get("/{campaign_id}/export")
 @limiter.limit("10/minute")
 async def export_campaign(
     request: Request,
     campaign_id: str,
+    tz: Optional[str] = Query(None, max_length=64, description="The member's time zone (IANA name) for the dates in folder names."),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> Response:
     """One ZIP: a .docx with every post's text (each naming where its media is) and a media/
@@ -541,7 +551,7 @@ async def export_campaign(
     ).sort("created_at", 1).to_list(length=1000)
 
     await _attach_generated_media(pieces, ctx.workspace_id)
-    posts = campaign_archive.plan_campaign_export(pieces)
+    posts = campaign_archive.plan_campaign_export(pieces, _member_zone(tz, ctx.user))
     items = [m for p in posts for m in p.media][:200]
     media_bytes: dict[str, bytes] = {}
     if items:
@@ -555,7 +565,7 @@ async def export_campaign(
     return Response(
         content=body,
         media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="recast-campaign.zip"'},
+        headers={"Content-Disposition": 'attachment; filename="ekavo-campaign.zip"'},
     )
 
 

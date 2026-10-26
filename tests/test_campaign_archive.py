@@ -58,3 +58,13 @@ def test_media_that_could_not_be_downloaded_is_flagged_in_the_docx():
 def test_empty_campaign_still_makes_a_valid_zip():
     zf = zipfile.ZipFile(io.BytesIO(ca.build_zip("Empty", [], {})))
     assert zf.namelist() == ["empty.docx"]
+
+
+def test_folder_date_is_the_members_own_day():
+    """A post at 00:30 in India is stored as the previous evening in UTC; its folder carries the Indian date."""
+    from zoneinfo import ZoneInfo
+
+    late = [{"content": "Night post", "platform": "LinkedIn", "publish_scheduled_at": datetime(2026, 10, 2, 19, 15, tzinfo=timezone.utc),
+             "media": [{"url": "https://x/n.png", "mime_type": "image/png", "kind": "image"}]}]
+    assert ca.plan_campaign_export(late)[0].date_label == "2026-10-02"
+    assert ca.plan_campaign_export(late, ZoneInfo("Asia/Kolkata"))[0].date_label == "2026-10-03"

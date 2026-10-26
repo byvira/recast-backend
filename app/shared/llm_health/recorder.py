@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.shared.llm_health import classifier
-from app.shared.llm_health.context import current_feature, current_prompt_path, current_request_id
+from app.shared.llm_health.context import UNKNOWN_FEATURE, current_feature, current_prompt_path, current_request_id
 from app.shared.llm_health.scrub import scrub_message
 
 logger = logging.getLogger(__name__)
@@ -196,6 +196,8 @@ class Recorder:
         self.last_flush_at: float | None = None
         self.last_error: str | None = None
         self._last_sweep = 0.0
+        #: recorder errors already reported as an event, so each new one is reported once when saving works again
+        self._reported_errors = 0
         #: per provider, the last few minutes of (time, ok, fallback) for the status chip; local to this process
         self.recent: dict[str, Any] = {}
 
@@ -263,11 +265,34 @@ class Recorder:
                     logger.error("LLM issue update failed: %s", exc)
             self.last_flush_at = time.time()
             self.last_error = None
+            if self.recorder_errors > self._reported_errors:
+                await self._report_recorder_errors()
         except Exception as exc:  # noqa: BLE001
             self.recorder_errors += 1
             self.last_error = scrub_message(exc, 200)
             logger.error("LLM health recorder could not save a batch: %s", exc)
             self._merge_back(batch)
+
+    async def _report_recorder_errors(self) -> None:
+        """The recorder could not save, or could not record, some calls. Once saving works again that is written as one
+        `recorder_error` event, so a gap in the figures shows on LLM health instead of passing silently."""
+        missed = self.recorder_errors - self._reported_errors
+        self._reported_errors = self.recorder_errors
+        try:
+            from app.db.mongo import llm_events
+            from bson import ObjectId
+
+            from app.shared.llm_health import issues
+
+            note = Attempt(
+                provider="ekavo", model="recorder", ok=False, latency_ms=0.0, error_class="recorder_error", outcome="failed",
+                error_message=f"{missed} model call(s) could not be recorded; the figures may be short.", count_in_rollup=False,
+            )
+            event = {**Batch._event(note, UNKNOWN_FEATURE, "recorder_error"), "_id": ObjectId()}
+            await llm_events.insert_one(event)
+            await issues.apply_events([event])
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Could not report recorder errors: %s", exc)
 
     def _merge_back(self, batch: Batch) -> None:
         """Keep what could not be saved for the next try, within the same bounds."""

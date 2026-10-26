@@ -120,13 +120,45 @@ async def _purge_bad_localized_strings(db) -> None:
     )
 
 
-async def _merge_legacy_llm_notes(db) -> None:
-    """The Ops LLM notes and the LLM health issues were two lists for the same thing. Copy the notes into issues."""
-    from app.shared.llm_health import issues
+async def _approve_waiting_posts_without_review(db) -> None:
+    """Posts made before the plan-based flow kept "waiting for approval" in workspaces whose plan has no review step, where a
+    new post is approved at once. They are marked approved here, the same as a new post would be. Nothing is queued or sent:
+    a post with a planned time that has already passed must not go out because of an update, so the member schedules it."""
+    migration_id = "2026-10-26_approve_waiting_posts_without_review"
+    if await _already_applied(db, migration_id):
+        return
+    from app.shared.tier_policy import policy_for
 
-    copied = await issues.merge_legacy_notes()
-    if copied:
-        logger.info("Copied %d Ops LLM notes into LLM health issues", copied)
+    approved = 0
+    workspace_count = 0
+    async for ws in workspaces.find({}, {"id": 1, "tier": 1, "require_review": 1}):
+        if not ws.get("id") or policy_for(ws)["review_required"]:
+            continue
+        res = await content_pieces.update_many(
+            {
+                "workspace_id": ws["id"], "approval_status": "pending", "deleted": {"$ne": True}, "archived": {"$ne": True},
+                "publish_status": {"$nin": ["published", "publishing"]},
+            },
+            {"$set": {"approval_status": "approved", "updated_at": datetime.now(timezone.utc)}},
+        )
+        if res.modified_count:
+            workspace_count += 1
+            approved += res.modified_count
+    logger.info("migration %s: approved %d waiting posts in %d workspaces with no review step", migration_id, approved, workspace_count)
+    await _mark_applied(db, migration_id, {"approved": approved, "workspaces": workspace_count})
+
+
+async def _em_dash_setting_matches_behaviour(db) -> None:
+    """Brands were saved with allow_em_dashes=True while em dashes were always removed from generated text. The stored value
+    is set to what actually happens, so the setting never claims something the product does not do. No output changes."""
+    migration_id = "2026-10-26_allow_em_dashes_matches_behaviour"
+    if await _already_applied(db, migration_id):
+        return
+    from app.db.mongo import brand_profiles
+
+    res = await brand_profiles.update_many({"calibration.allow_em_dashes": True}, {"$set": {"calibration.allow_em_dashes": False}})
+    logger.info("migration %s: %d brand calibrations now say em dashes are removed", migration_id, res.modified_count)
+    await _mark_applied(db, migration_id, {"modified": res.modified_count})
 
 
 async def run_startup_migrations() -> None:
@@ -135,7 +167,8 @@ async def run_startup_migrations() -> None:
         _backfill_content_pieces_pipeline_type,
         _backfill_workspace_is_personal_and_language,
         _purge_bad_localized_strings,
-        _merge_legacy_llm_notes,
+        _approve_waiting_posts_without_review,
+        _em_dash_setting_matches_behaviour,
     ):
         try:
             await migration(db)

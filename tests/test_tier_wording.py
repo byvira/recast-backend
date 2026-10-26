@@ -11,7 +11,9 @@ async def test_flag_wording_follows_the_plan():
 
     cap_solo = await odette_flag_summary("daily_publish_cap", {"count": 12, "cap": 10, "tier": "single"})
     cap_team = await odette_flag_summary("daily_publish_cap", {"count": 40, "cap": 30, "tier": "large"})
-    assert "You've published 12 times" in cap_solo and "bigger plan" in cap_solo
+    # an alert line, not a limit: the wording must not claim a cap or push a bigger plan while nothing is blocked
+    assert "You've published 12 times" in cap_solo and "Nothing was blocked" in cap_solo
+    assert "bigger plan" not in cap_solo and "allows" not in cap_team
     assert "large plan" in cap_team
 
 

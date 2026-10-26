@@ -62,3 +62,8 @@ AI_CATEGORY_FALLBACK_ENABLED = False
 # removed and only the counts (area, priority, timings, rating) stay.
 TICKET_RETENTION = timedelta(days=730)  # about 24 months
 RETENTION_BATCH = 200                   # tickets cleaned per housekeeping pass
+
+# The ticket categories a member can choose. A ticket that names any other category is filed under the last one, so a made-up
+# category can never steer incident grouping or routing, and a member asking for help is never turned away over the field.
+SUPPORT_CATEGORIES = ("Brand voice", "Connecting accounts", "Publishing", "Billing", "Something's broken")
+FALLBACK_CATEGORY = SUPPORT_CATEGORIES[-1]

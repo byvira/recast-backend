@@ -170,6 +170,28 @@ def client_key(request: Request) -> str:
 
 limiter = Limiter(key_func=client_key)
 
+# Query values are written to the request log only for keys known to be harmless (paging, sorting, filters, ids). Every
+# other value, such as an OAuth `code` or `state`, a token, an email or the source text of a live stream, is written as
+# [redacted], so a new route with a sensitive parameter is covered without anyone having to remember it.
+_SAFE_QUERY_KEYS = frozenset({
+    "page", "page_size", "limit", "offset", "skip", "cursor", "before", "after", "sort", "order", "dir",
+    "status", "state_filter", "kind", "type", "pipeline", "platform", "platforms", "medium", "tab", "view", "range",
+    "days", "period", "from", "to", "since", "until", "year", "month", "lang", "language", "format", "include",
+    "workspace_id", "brand_id", "campaign_id", "asset_id", "audio_asset_id", "image_asset_id", "project_id", "piece_id",
+    "run_id", "job_id", "slide", "slide_number", "version", "preset", "size", "fresh", "archived", "deleted",
+})
+
+
+def safe_query(params) -> str:
+    """The query string for the log, with the value of every key not in the safe list replaced by [redacted]."""
+    items = params.multi_items() if hasattr(params, "multi_items") else params
+    parts = []
+    for key, value in items:
+        shown = value if key.lower() in _SAFE_QUERY_KEYS and len(value) <= 80 else "[redacted]"
+        parts.append(f"{key}={shown}")
+    return "&".join(parts)
+
+
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Log all incoming requests with request tracing and latency."""
 
@@ -184,10 +206,14 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         method = request.method
         path = request.url.path
+        # model calls made while answering this request are labelled by route when nothing more specific names them
+        from app.shared.llm_health.context import set_request_path
+
+        set_request_path(path)
         # Support pages take search terms (member names, emails) in the query
         # string, so those are never written to the logs.
         query_params = (
-            "" if path.startswith(("/api/v1/support", "/api/v1/ops/support")) else str(request.query_params)
+            "" if path.startswith(("/api/v1/support", "/api/v1/ops/support")) else safe_query(request.query_params)
         )
 
         client_ip = (
