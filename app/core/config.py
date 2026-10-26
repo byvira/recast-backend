@@ -241,6 +241,13 @@ class Settings(BaseSettings):
     # without it rather than guessing/using an undisclosed shared key.
     JAMENDO_CLIENT_ID: str = ""
 
+    # Razorpay — subscriptions and payments. Test keys until launch; the
+    # webhook secret is the value typed into Razorpay's webhook form and is
+    # used to check that each webhook really came from Razorpay.
+    RAZORPAY_KEY_ID: str = ""
+    RAZORPAY_KEY_SECRET: str = ""
+    RAZORPAY_WEBHOOK_SECRET: str = ""
+
     # Gemini Nano Banana (gemini-2.5-flash-image) as a PAID fallback for
     # image generation, only used once Cloudflare's free ~173/day is
     # exhausted. $0.039/image — capped so an exhausted free tier can't turn
