@@ -36,20 +36,10 @@ MAX_ASSISTANT_QUESTIONS_PER_DAY = 5000
 MAX_MESSAGES_PER_CHAT = 60
 HISTORY_TURNS = 10  # messages sent back to the model on each turn
 
-_SYSTEM = (
-    "You are the Ekavo support assistant. Ekavo is a content workspace: a member describes an idea "
-    "once and Ekavo turns it into platform-ready posts in that workspace's own brand voice, across "
-    "text, audio and image work, with review before anything publishes.\n\n"
-    "How to answer:\n"
-    "- Use only the facts about this workspace and the guides below, plus the conversation. If the answer "
-    "is not there, say plainly that you do not know and suggest filing a ticket so a person can look. "
-    "Never invent a setting, a number, a date, an error code or a feature.\n"
-    "- Never promise a fix, a refund or a date.\n"
-    "- Be warm, short and plain. No technical jargon. Do not use dashes to join sentences.\n"
-    "- If the facts below show a likely cause (for example an account that needs reconnecting), say so first.\n"
-    "- You cannot change anything in the account. Do not offer to.\n"
-    "- Do not include links or email addresses.\n"
-)
+def _system() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("support/assistant_system")
 
 
 class AssistRequest(BaseModel):
@@ -168,8 +158,9 @@ async def assist(
     guides = support_guides.search(body.message, limit=3)
     facts = await _workspace_facts(ctx)
 
+    base = _system()
     system = (
-        _SYSTEM
+        base
         + "\nFacts about this member's workspace right now:\n"
         + ("\n".join(f"- {f}" for f in facts) if facts else "- No facts available.")
         + "\n\nGuides that may help:\n"
@@ -189,7 +180,7 @@ async def assist(
         )
     reply = (reply or "").strip()
     await log_assistant_call(
-        text_version("support/assistant", _SYSTEM), GroqModel.FAST.value, bool(reply),
+        text_version("support/assistant", base), GroqModel.FAST.value, bool(reply),
         sum(len(m["content"]) for m in messages) + len(system), len(reply),
     )
     if not reply:

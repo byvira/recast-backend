@@ -52,6 +52,7 @@ from app.api.v1 import content_guard as content_guard_module
 from app.api.v1 import ops_banners as ops_banners_module
 from app.api.v1 import ops_cohorts as ops_cohorts_router
 from app.api.v1 import ops_ai_budget as ops_ai_budget_router
+from app.api.v1 import ops_plans as ops_plans_router
 from app.api.v1 import ops_llm_health as ops_llm_health_router
 from app.api.v1 import support as support_router
 from app.api.v1 import support_assistant as support_assistant_router
@@ -460,6 +461,7 @@ app.include_router(content_guard_module.ops_router, prefix="/api/v1/ops/content-
 app.include_router(ops_banners_module.router, prefix="/api/v1/ops/banners", tags=["Ops"])
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
+app.include_router(ops_plans_router.router, prefix="/api/v1/ops/plans", tags=["Ops"])
 app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"])
 app.include_router(support_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(support_assistant_router.router, prefix="/api/v1/support", tags=["Support"])

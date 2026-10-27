@@ -440,7 +440,11 @@ def get_gemini_client() -> genai.Client:
 # Internal helpers
 # ─────────────────────────────────────────────────────────────
 
-_JSON_SYSTEM_SUFFIX = load_prompt("fragments/json_output_contract")
+def _json_system_suffix() -> str:
+    """The rule every structured call adds to its system prompt, read from its file on each use."""
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("fragments/json_output_contract")
 
 # Approximate chars-per-token for prompt budget estimation. Deliberately
 # conservative (overestimates token count) because Groq's real accounting
@@ -499,7 +503,7 @@ def _build_messages(
     if system:
         parts.append(system)
     if json_mode:
-        parts.append(_JSON_SYSTEM_SUFFIX)
+        parts.append(_json_system_suffix())
 
     messages: list[dict[str, str]] = []
     if parts:
@@ -1430,17 +1434,17 @@ async def call_llm_structured_fallback(
     Mirrors call_llm_structured but uses Gemini when Groq is fully down.
     Returns {} on failure — never raises.
     """
-    system_with_json = f"{system}\n\n{_JSON_SYSTEM_SUFFIX}" if system else _JSON_SYSTEM_SUFFIX
+    suffix = _json_system_suffix()
+    system_with_json = f"{system}\n\n{suffix}" if system else suffix
     raw = await call_llm_fallback(prompt=prompt, system=system_with_json, model=model, json_mode=True)
     parsed = parse_llm_json(raw)
     if parsed:
         return parsed
     # The backup models follow strict JSON less reliably than Groq. One more try, quoting what came back and asking for
     # the JSON only, before giving up.
-    repair = (
-        f"{prompt}\n\nYour previous answer could not be read as JSON:\n{(raw or '')[:1500]}\n\n"
-        "Answer again with ONLY the valid JSON object for the task above. No explanation, no code fence."
-    )
+    from app.prompts.registry import render_fragment
+
+    repair = render_fragment("fragments/json_repair", prompt=prompt, previous=(raw or "")[:1500])
     try:
         return parse_llm_json(await call_llm_fallback(prompt=repair, system=system_with_json, model=model, json_mode=True))
     except HTTPException:

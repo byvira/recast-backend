@@ -149,16 +149,29 @@ def build_language_instruction(language_code: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # SPECIFICITY INSTRUCTION
 # ─────────────────────────────────────────────────────────────────────────────
-SPECIFICITY_INSTRUCTION = load_prompt(
-    "text/generate/specificity", good_bad_pairs=load_fixture("generator_good_bad_pairs")
-)
+def specificity_instruction() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("text/generate/specificity", good_bad_pairs=load_fixture("generator_good_bad_pairs"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENGAGEMENT PATTERNS
 # ─────────────────────────────────────────────────────────────────────────────
 
-ENGAGEMENT_PATTERNS = load_prompt("text/generate/engagement_patterns")
+def engagement_patterns() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("text/generate/engagement_patterns")
+
+
+_FRAGMENT_NAMES = {"SPECIFICITY_INSTRUCTION": specificity_instruction, "ENGAGEMENT_PATTERNS": engagement_patterns}
+
+
+def __getattr__(name: str):
+    if name in _FRAGMENT_NAMES:
+        return _FRAGMENT_NAMES[name]()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -655,8 +668,8 @@ async def generate_for_platform(task: AgentTask) -> AgentResult:
         goal_context=goal_context,
         engagement_context=engagement_context,
         content_brief=content_brief,
-        specificity_instruction=SPECIFICITY_INSTRUCTION,
-        engagement_patterns=ENGAGEMENT_PATTERNS,
+        specificity_instruction=specificity_instruction(),
+        engagement_patterns=engagement_patterns(),
         approved_copy_instruction=approved_copy_instruction,
         retry_block=retry_block,
         platform_rules=platform_rules,

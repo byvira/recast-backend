@@ -39,6 +39,7 @@ from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggest
 from app.pipelines.brand.voice_playground import preview_rewrite_in_voice
 from app.pipelines.brand.trait_extraction import extract_sample_traits
 from app.pipelines.media.image_generation import generate_brand_mascot
+from app.shared import entitlements
 from app.shared import pipeline_runs as pipeline_runs_mod
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_BRAND_PROFILES_PER_WORKSPACE = 10
+BRAND_LIMIT_MESSAGE = "Maximum of 10 brand profiles per workspace reached."
 
 
 def normalise_brand_keys(data: dict) -> dict:
@@ -291,12 +293,8 @@ async def create_brand_profile(
     Create a minimal brand profile in the caller's active workspace.
     Enforces a maximum of 10 brand profiles per workspace.
     """
-    existing_count = await brand_profiles.count_documents({"workspace_id": ctx.workspace_id})
-    if existing_count >= MAX_BRAND_PROFILES_PER_WORKSPACE:
-        raise HTTPException(
-            status_code=400,
-            detail="Maximum of 10 brand profiles per workspace reached.",
-        )
+    ent = await entitlements.entitlements_for(ctx.workspace)
+    await entitlements.require_room(ent, "brand_voices", legacy_message=BRAND_LIMIT_MESSAGE)
 
     now = datetime.now(timezone.utc)
     brand_id = str(uuid4())
@@ -325,9 +323,9 @@ async def create_brand_profile(
 
     await brand_profiles.insert_one(doc)
     # Counted again now that this one is saved: two creates at the same moment cannot both take the last place.
-    if await brand_profiles.count_documents({"workspace_id": ctx.workspace_id}) > MAX_BRAND_PROFILES_PER_WORKSPACE:
+    if not entitlements.has_room(ent, "brand_voices", await entitlements.count_usage(ent, "brand_voices"), 0):
         await brand_profiles.delete_one({"id": brand_id})
-        raise HTTPException(status_code=400, detail="Maximum of 10 brand profiles per workspace reached.")
+        await entitlements.require_room(ent, "brand_voices", legacy_message=BRAND_LIMIT_MESSAGE)
 
     return {"brand_profile_id": brand_id, "brand_type": body.brand_type.value}
 
@@ -594,8 +592,8 @@ async def duplicate_brand_profile(
     doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
-    if await brand_profiles.count_documents({"workspace_id": ctx.workspace_id}) >= MAX_BRAND_PROFILES_PER_WORKSPACE:
-        raise HTTPException(status_code=400, detail="Maximum of 10 brand profiles per workspace reached.")
+    ent = await entitlements.entitlements_for(ctx.workspace)
+    await entitlements.require_room(ent, "brand_voices", legacy_message=BRAND_LIMIT_MESSAGE)
 
     now = datetime.now(timezone.utc)
     copy = {k: v for k, v in doc.items() if k != "_id"}
@@ -607,9 +605,9 @@ async def duplicate_brand_profile(
             break
     copy["identity"] = identity
     await brand_profiles.insert_one(copy)
-    if await brand_profiles.count_documents({"workspace_id": ctx.workspace_id}) > MAX_BRAND_PROFILES_PER_WORKSPACE:
+    if not entitlements.has_room(ent, "brand_voices", await entitlements.count_usage(ent, "brand_voices"), 0):
         await brand_profiles.delete_one({"id": copy["id"]})
-        raise HTTPException(status_code=400, detail="Maximum of 10 brand profiles per workspace reached.")
+        await entitlements.require_room(ent, "brand_voices", legacy_message=BRAND_LIMIT_MESSAGE)
     return {"brand_profile_id": copy["id"]}
 
 

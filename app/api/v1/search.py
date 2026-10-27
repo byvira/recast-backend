@@ -183,15 +183,10 @@ async def search(
     return SearchResponse(items=items[:24])
 
 
-_AGENTIC_SYSTEM = (
-    "You search one member's own workspace for them. You are given their query "
-    "and a numbered list of real items already in their workspace (drafts, "
-    "presets, campaigns, brand voices, audio and images). Pick only the items "
-    "that genuinely answer the query — by topic, meaning or wording, not just "
-    "shared letters. Return fewer items rather than padding with weak matches. "
-    "For each pick, write one short, specific reason (under 12 words) naming "
-    "what in that item matches."
-)
+def _agentic_system() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("search/agentic_system")
 
 
 @router.post("/agentic")
@@ -231,7 +226,7 @@ async def agentic_search(
 
     set_usage_workspace(ctx.workspace_id)
     try:
-        result = await call_llm_structured(prompt, system=_AGENTIC_SYSTEM, model=GroqModel.FAST, max_tokens=600)
+        result = await call_llm_structured(prompt, system=_agentic_system(), model=GroqModel.FAST, max_tokens=600)
     except Exception as exc:
         # Never let a flaky model call break search — the member's toggle
         # can fall back to the plain results the frontend already has.

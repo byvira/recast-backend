@@ -49,8 +49,10 @@ async def usage_by_workspace(request: Request, limit: int = Query(20, ge=1, le=1
     ]).to_list(length=limit)
     tiers = {w["id"]: w.get("tier") for w in await db["workspaces"].find({"id": {"$in": [r["_id"] for r in rows]}}, {"id": 1, "tier": 1}).to_list(length=limit)}
     out = []
+    from app.shared import entitlements
+
     for r in rows:
-        cap = limits.limits_for({"tier": tiers.get(r["_id"])})["render_minutes"]
+        cap = (await entitlements.entitlements_for(r["_id"])).limit("render_minutes_month")
         minutes = round(r["seconds"] / 60, 1)
         out.append({"workspace_id": r["_id"], "tier": tiers.get(r["_id"]), "render_minutes": minutes, "limit_minutes": cap,
                     "renders": r["renders"], "failed": r["failed"], "estimated_cost_usd": round(minutes * rate, 2)})

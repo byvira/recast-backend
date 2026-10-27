@@ -18,7 +18,7 @@ from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import get_db, media_assets, workspaces
+from app.db.mongo import get_db, media_assets
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.video import probe as probe_module
 from app.video import storage_params
@@ -115,14 +115,7 @@ async def start_upload(request: Request, body: StartBody, ctx: WorkspaceContext 
         )
     from app.video import limits
 
-    ws_doc = await workspaces.find_one({"id": ctx.workspace_id}, {"tier": 1})
-    room_mb = limits.limits_for(ws_doc)["storage_mb"]
-    used_mb = await limits.storage_bytes_used(ctx.workspace_id) / 1_000_000.0
-    if used_mb + body.bytes / 1_000_000.0 > room_mb:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Your videos take {used_mb:.0f} MB of the {room_mb} MB your plan includes, so this one does not fit. Remove videos you no longer need first.",
-        )
+    await limits.assert_storage_room(ctx.workspace_id, body.bytes)
     await _sweep_abandoned(ctx.workspace_id)
     open_now = await _uploads().count_documents({"workspace_id": ctx.workspace_id, "status": "started"})
     if open_now >= MAX_OPEN_UPLOADS:
@@ -217,11 +210,7 @@ async def import_from_link(request: Request, body: LinkBody, ctx: WorkspaceConte
         raise HTTPException(status_code=400, detail="That link opens a page, not the video. Share the file so anyone with the link can view it. A very large Drive file may not hand over directly.")
     if declared and declared > cap:
         raise HTTPException(status_code=413, detail=f"This video is {declared / (1024 * 1024):.0f} MB. For now a video can be up to {cap // (1024 * 1024)} MB.")
-    ws_doc = await workspaces.find_one({"id": ctx.workspace_id}, {"tier": 1})
-    room_mb = limits.limits_for(ws_doc)["storage_mb"]
-    used_mb = await limits.storage_bytes_used(ctx.workspace_id) / 1_000_000.0
-    if used_mb + declared / 1_000_000.0 > room_mb:
-        raise HTTPException(status_code=413, detail=f"Your videos take {used_mb:.0f} MB of the {room_mb} MB your plan includes, so this one does not fit. Remove videos you no longer need first.")
+    await limits.assert_storage_room(ctx.workspace_id, declared)
 
     upload_id = str(uuid4())
     filename = link_import.name_from_headers(disposition, f"{provider}-video.mp4")
@@ -246,7 +235,17 @@ async def import_from_link(request: Request, body: LinkBody, ctx: WorkspaceConte
     if not url.startswith(f"https://res.cloudinary.com/{settings.CLOUDINARY_CLOUD_NAME}/video/upload/") or size <= 0:
         await _destroy(public_id)
         raise HTTPException(status_code=502, detail="The video could not be fetched from that link. Please try again, or upload the file instead.")
-    if size > cap or used_mb + size / 1_000_000.0 > room_mb:
+    # The link may not have said how big the file was: the real size is checked now that it is stored.
+    too_big = size > cap
+    if not too_big:
+        try:
+            await limits.assert_storage_room(ctx.workspace_id, size)
+        except HTTPException as exc:
+            if exc.status_code == 402:
+                await _destroy(public_id)
+                raise
+            too_big = True
+    if too_big:
         await _destroy(public_id)
         raise HTTPException(status_code=413, detail=f"This video is {size / (1024 * 1024):.0f} MB, which is more than your account can hold right now.")
     try:

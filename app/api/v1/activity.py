@@ -520,12 +520,12 @@ async def allowance(
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     """What this workspace has left today of what has a daily ceiling (AI pictures), so the member sees it next to what spends it."""
-    from app.api.v1.image_assets import pictures_made_today
-    from app.core import limits
+    from app.shared import entitlements
 
-    made = await pictures_made_today(ctx.workspace_id)
-    cap = limits.IMAGES_PER_WORKSPACE_PER_DAY
-    return {"pictures": {"limit": cap, "used": made, "left": max(0, cap - made)}}
+    ent = await entitlements.entitlements_for(ctx.workspace)
+    made = int(await entitlements.count_usage(ent, "pictures_day"))
+    cap = ent.limit("pictures_day")
+    return {"pictures": {"limit": cap, "used": made, "left": None if cap is None else max(0, cap - made)}}
 
 
 @router.get("/unread-count")

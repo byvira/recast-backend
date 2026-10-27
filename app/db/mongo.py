@@ -552,6 +552,10 @@ async def create_indexes() -> None:
     await get_db()["video_review_decisions"].create_index([("link_id", 1), ("at", -1)])
     await get_db()["api_keys"].create_index("hash", unique=True)
     await get_db()["api_keys"].create_index([("workspace_id", 1), ("created_at", -1)])
+    # plans: one saved row per plan, the change log, and the workspaces that share a paid workspace's plan
+    await get_db()["billing_plans"].create_index("id", unique=True)
+    await get_db()["billing_audit"].create_index([("at", -1)])
+    await workspaces.create_index("billing_group_id", sparse=True)
     await get_db()["video_webhooks"].create_index([("workspace_id", 1), ("active", 1)])
     await get_db()["video_webhook_deliveries"].create_index([("status", 1), ("next_at", 1)])
     await get_db()["video_webhook_deliveries"].create_index([("hook_id", 1), ("created_at", -1)])

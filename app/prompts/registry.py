@@ -84,6 +84,14 @@ def load_prompt(name: str, /, **variables) -> str:
     return rendered
 
 
+def render_fragment(name: str, /, **variables) -> str:
+    """Render a template that is a part of another prompt (a system line, a suffix, a rule block), on every use.
+
+    The same rendering as `load_prompt`, but it leaves the prompt name the health log records alone, so a call is still logged
+    under its main prompt rather than under the last fragment added to it."""
+    return _env.get_template(f"{name}.jinja").render(**variables)
+
+
 @lru_cache(maxsize=None)
 def load_fixture(name: str) -> Any:
     """Load JSON fixture data (few-shot examples, example outputs) from app/prompts/fixtures/.

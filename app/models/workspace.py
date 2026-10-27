@@ -46,6 +46,8 @@ class MediaUploadLimits(BaseModel):
 class CreateWorkspaceBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     tier: WorkspaceTier
+    # A paid workspace the caller owns whose plan this new workspace shares (see app.shared.entitlements). Empty: it stands alone.
+    billing_group_id: Optional[str] = Field(None, max_length=64)
 
     @field_validator("name")
     @classmethod

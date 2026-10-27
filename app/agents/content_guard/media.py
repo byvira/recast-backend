@@ -64,14 +64,10 @@ async def check_image_bytes(data: bytes, mime_type: str = "image/jpeg") -> Scree
     if key in _VERDICTS:
         _VERDICTS.move_to_end(key)
         return _VERDICTS[key]
+    from app.prompts.registry import render_fragment
+
     reply = await call_vision(
-        prompt=(
-            "Decide whether this picture is unsafe for a brand to publish. Unsafe means: explicit nudity or sexual acts, "
-            "graphic violence or gore, hate symbols or hateful imagery, or self harm. Swimwear, art, medical and news "
-            "pictures that are not graphic, and ordinary people are fine.\n"
-            'Answer with JSON only: {"unsafe": true or false, "categories": ["sexual","violence","hate","self_harm"], '
-            '"reason": "a short phrase"}.'
-        ),
+        prompt=render_fragment("content_guard/picture_unsafe"),
         image_bytes=data,
         mime_type=mime_type,
     )
@@ -325,12 +321,10 @@ async def picture_has_writing(data: bytes, mime_type: str = "image/jpeg") -> Opt
         _WRITING.move_to_end(key)
         return _WRITING[key]
     try:
+        from app.prompts.registry import render_fragment
+
         reply = await call_vision(
-            prompt=(
-                "Look for writing anywhere in this picture: letters, words, numbers, logos, captions, signs, labels, screens or speech "
-                "bubbles with text, and also invented or garbled lettering that only looks like text. "
-                'Answer with JSON only: {"has_text": true or false}.'
-            ),
+            prompt=render_fragment("content_guard/picture_writing"),
             image_bytes=data,
             mime_type=mime_type,
         )

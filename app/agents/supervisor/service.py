@@ -142,7 +142,9 @@ async def _sync_flag_activity(flag_id: str) -> None:
 async def dashboard(workspace_id: str) -> dict:
     now = datetime.now(timezone.utc)
     ws = await workspaces.find_one({"id": workspace_id}) or {}
-    seats = int((ws.get("tier_config") or {}).get("seats", 0) or 0)
+    from app.shared.entitlements import entitlements_for
+
+    seats = int((await entitlements_for(workspace_id)).limit("seats") or 0)
     active_members = await workspace_members.count_documents(
         {"workspace_id": workspace_id, "status": "active"}
     )

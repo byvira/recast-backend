@@ -325,6 +325,16 @@ async def schedule_blocker(piece: dict, workspace_id: str) -> Optional[tuple[int
     unavailable = await availability_block(platform, workspace_id)
     if unavailable:
         return 409, unavailable.message
+    # The plan's posts scheduled ahead: moving a post that is already queued never counts again.
+    if piece.get("publish_status") not in ("queued", "scheduled"):
+        from fastapi import HTTPException
+
+        from app.shared import entitlements
+
+        try:
+            await entitlements.require_room(await entitlements.entitlements_for(workspace_id), "scheduled_ahead")
+        except HTTPException as exc:
+            return exc.status_code, exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc.detail)
     from app.agents.content_guard.agent import check_piece_before_send
 
     await check_piece_before_send(piece, workspace_id)

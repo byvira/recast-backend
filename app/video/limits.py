@@ -54,15 +54,16 @@ def _meter(used: float, limit: float) -> dict[str, Any]:
 
 
 async def usage(workspace_id: str) -> dict[str, Any]:
-    """The two meters a member sees: render minutes this month and storage."""
-    ws = await get_db()["workspaces"].find_one({"id": workspace_id}, {"tier": 1})
-    lim = limits_for(ws)
-    seconds = await render_seconds_used(workspace_id)
-    stored = await storage_bytes_used(workspace_id)
+    """The two meters a member sees: render minutes this month and storage, from the workspace's plan limits."""
+    from app.shared import entitlements
+
+    ent = await entitlements.entitlements_for(workspace_id)
+    minutes = await entitlements.count_usage(ent, "render_minutes_month")
+    stored_mb = await entitlements.count_usage(ent, "storage_mb")
     return {
         "month": month_start().strftime("%Y-%m"),
-        "render_minutes": _meter(seconds / 60.0, lim["render_minutes"]),
-        "storage_mb": _meter(stored / 1_000_000.0, lim["storage_mb"]),
+        "render_minutes": _meter(minutes, ent.limit("render_minutes_month") or 0),
+        "storage_mb": _meter(stored_mb, ent.limit("storage_mb") or 0),
     }
 
 
@@ -75,13 +76,43 @@ class OverLimit(Exception):
 
 
 async def assert_render_room(workspace_id: str, seconds: float) -> None:
-    """Raises OverLimit when this render would take the workspace past its render minutes for the month."""
-    ws = await get_db()["workspaces"].find_one({"id": workspace_id}, {"tier": 1})
-    limit = limits_for(ws)["render_minutes"] * 60
-    used = await render_seconds_used(workspace_id)
-    if used + max(0.0, seconds) > limit:
-        left = max(0, int((limit - used) // 60))
+    """Raises OverLimit when this render would take the workspace (and every workspace sharing its plan) past its render minutes
+    for the month."""
+    from app.shared import entitlements
+
+    ent = await entitlements.entitlements_for(workspace_id)
+    minutes = ent.limit("render_minutes_month")
+    if minutes is None:
+        return
+    used = await entitlements.count_usage(ent, "render_minutes_month") * 60
+    if used + max(0.0, seconds) > minutes * 60:
+        if ent.enforced:
+            raise OverLimit(entitlements.limit_message(ent, "render_minutes_month", used / 60, max(0.0, seconds) / 60))
+        left = max(0, int((minutes * 60 - used) // 60))
         raise OverLimit(
-            f"This would use more than your {limits_for(ws)['render_minutes']} render minutes for this month. You have about {left} minutes left. "
+            f"This would use more than your {minutes} render minutes for this month. You have about {left} minutes left. "
             "Your minutes start again on the 1st."
         )
+
+
+async def assert_storage_room(workspace_id: str, adding_bytes: int) -> None:
+    """Raises a plain-words 413 (402 once plans are on) when this upload would not fit the workspace's storage. While plans are off
+    only videos count, against the video space as before; once they are on, every stored file counts against the plan's storage."""
+    from fastapi import HTTPException
+
+    from app.shared import entitlements
+
+    ent = await entitlements.entitlements_for(workspace_id)
+    room_mb = ent.limit("storage_mb")
+    if room_mb is None:
+        return
+    used_mb = await entitlements.count_usage(ent, "storage_mb")
+    adding_mb = max(0, adding_bytes) / 1_000_000.0
+    if used_mb + adding_mb <= room_mb:
+        return
+    if ent.enforced:
+        raise HTTPException(status_code=402, detail=entitlements.limit_detail(ent, "storage_mb", used_mb, adding_mb))
+    raise HTTPException(
+        status_code=413,
+        detail=f"Your videos take {used_mb:.0f} MB of the {room_mb} MB your plan includes, so this one does not fit. Remove videos you no longer need first.",
+    )

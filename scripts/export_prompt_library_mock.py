@@ -62,7 +62,77 @@ put(DEV, ["analytics/recommend", "audio/chapters", "audio/soundbite_refine", "au
           "text/normalize/content_brief_format", "text/normalize/extract_content_brief",
           "text/orchestrate/batch_angles", "text/repurpose/structured", "text/repurpose/suggest", "text/seo/master"])
 
+# Moved out of Python code into prompt files (Stage 5, Phase 0).
+put(OPS, ["personal/align_system"])
+put(HYBRID, ["search/agentic_system", "support/assistant_system", "publish/youtube_metadata"])
+put(DEV, ["content_guard/screen", "content_guard/screen_system", "content_guard/rewrite", "content_guard/rewrite_system",
+          "content_guard/picture_unsafe", "content_guard/picture_writing", "brand/extract_traits_system",
+          "brand/preview_rewrite_system", "brand/suggest_voice_patterns_system", "suggest/complete_system",
+          "fragments/json_repair"])
+
+# Classified 2026-10-27 so the library shows every prompt (drafts for the owner's sign-off).
+put(OPS, ['media/image_raw_style_default'])
+put(HYBRID, ['media/image_raw_topic', 'media/image_raw_style', 'media/image_raw_colors', 'media/image_headline', 'media/image_pack_variation', 'media/image_polish', 'media/image_mascot_intro', 'media/image_mascot_about', 'media/image_mascot_voice', 'media/image_mascot_colors', 'media/image_mascot_background', 'video/script_from_text', 'video/script_from_images', 'video/outline', 'video/hook_writer', 'video/cover_text', 'video/title_description_tags', 'text/generate/carousel_format'])
+put(DEV, ['media/image_no_text', 'media/image_soft_screen', 'media/image_screen_suffix', 'media/image_avoid', 'media/image_describe', 'media/image_qa', 'media/image_safety', 'media/image_brand_fit', 'video/edit_plan', 'video/moments', 'video/understand_window', 'video/broll_queries', 'video/filler_judge', 'video/caption_polish', 'video/qa_critic', 'video/repair', 'video/dub_translate', 'video/remy_voice_check', 'text/generate/hashtag_banned', 'text/generate/hashtag_none', 'text/generate/english_terms', 'text/critique/judge', 'text/reader/review'])
+
 WHY = {
+    "media/image_raw_topic": "How a topic becomes a picture idea is editable. The variable slots are locked.",
+    "media/image_raw_style": "Style wording is editable. The variable slots are locked.",
+    "media/image_raw_style_default": "The default picture style. Wording only.",
+    "media/image_raw_colors": "Colour wording is editable. The colour slots are locked.",
+    "media/image_headline": "How a headline is written is editable. Its length limit is locked.",
+    "media/image_pack_variation": "How pictures in a pack differ is editable. The variation slot is locked.",
+    "media/image_polish": "How a picture prompt is polished is editable. The no-writing rule is locked.",
+    "media/image_mascot_intro": "Mascot wording is editable. The brand slots are locked.",
+    "media/image_mascot_about": "Mascot wording is editable. The brand slots are locked.",
+    "media/image_mascot_voice": "Mascot wording is editable. The brand slots are locked.",
+    "media/image_mascot_colors": "Mascot wording is editable. The colour slots are locked.",
+    "media/image_mascot_background": "Mascot wording is editable. The background rule is locked.",
+    "media/image_no_text": "Keeps writing out of pictures. Tests assert its wording.",
+    "media/image_soft_screen": "Replaces screens with soft light so no fake text appears.",
+    "media/image_screen_suffix": "Keeps screens in pictures blank. Tests assert its wording.",
+    "media/image_avoid": "Adds what a picture must avoid. Its shape is read by the code.",
+    "media/image_describe": "Describes an uploaded picture for search and alt text. Short reply the code stores.",
+    "media/image_qa": "Picture quality gate. Returns a verdict the code reads.",
+    "media/image_safety": "Picture safety gate. Returns a verdict the code reads.",
+    "media/image_brand_fit": "Brand fit gate. Returns a verdict the code reads.",
+    "video/script_from_text": "How a script is written is editable. The scene format the code reads is locked.",
+    "video/script_from_images": "How a script is written is editable. The scene format the code reads is locked.",
+    "video/outline": "How an outline is written is editable. The section format is locked.",
+    "video/hook_writer": "Hook craft is editable. The answer shape is locked.",
+    "video/cover_text": "Cover wording is editable. The length limit is locked.",
+    "video/title_description_tags": "Writing guidance is editable. The fields the code reads are locked.",
+    "video/edit_plan": "Returns an edit plan as JSON with frame times.",
+    "video/moments": "Returns moments as JSON with exact times.",
+    "video/understand_window": "Reads a stretch of video. Returns JSON the code reads.",
+    "video/broll_queries": "Returns stock search terms the code sends on.",
+    "video/filler_judge": "Decides which words are filler. Returns JSON with times.",
+    "video/caption_polish": "Polishes captions while keeping their timing. Shape is locked.",
+    "video/qa_critic": "Video quality check. Returns a verdict the code reads.",
+    "video/repair": "Fixes a plan that failed a check. Returns JSON the code reads.",
+    "video/dub_translate": "Translation for dubbing. Timing and placeholders are checked by the code.",
+    "video/remy_voice_check": "Checks a script against the brand voice. Returns a verdict.",
+    "text/generate/carousel_format": "Carousel writing guidance is editable. The slide format the code reads is locked.",
+    "text/generate/hashtag_banned": "Hashtags a post must not use. Its wording is checked by the code.",
+    "text/generate/hashtag_none": "Tells a platform with no hashtags to use none. Tests assert its wording.",
+    "text/generate/english_terms": "Language safety for kept English terms. Tests assert its wording.",
+    "text/critique/judge": "Reviews a long draft and sends weak ones back. Returns a verdict the code reads.",
+    "text/reader/review": "A reader's check of a draft. Returns notes the code reads.",
+    "personal/align_system": "One line that sets the persona for keeping a draft in its author's voice. Wording only.",
+    "search/agentic_system": "How matches are picked and explained is editable. The short reason length the screen shows is locked.",
+    "support/assistant_system": "Tone and answer style are editable. Never promising fixes, no links and only known facts are locked.",
+    "publish/youtube_metadata": "Writing guidance is editable. The two-line reply the code reads and the material fences are locked.",
+    "content_guard/screen": "Safety check. Returns JSON with fixed categories the code reads.",
+    "content_guard/screen_system": "Safety reviewer persona. Locked so a safety rule cannot be edited away.",
+    "content_guard/rewrite": "Safety rewrite. Locked so a safety rule cannot be edited away.",
+    "content_guard/rewrite_system": "Safety rewrite persona. Locked with the rewrite.",
+    "content_guard/picture_unsafe": "Picture safety check. Returns JSON with fixed categories.",
+    "content_guard/picture_writing": "Checks a picture for writing. Returns has_text as JSON.",
+    "brand/extract_traits_system": "System line for a JSON task.",
+    "brand/preview_rewrite_system": "System line for a JSON task.",
+    "brand/suggest_voice_patterns_system": "System line for a JSON task.",
+    "suggest/complete_system": "Typing suggestions. The word limit and reply shape are read by the code that cleans the reply.",
+    "fragments/json_repair": "The retry when an answer is not valid JSON.",
     "analytics/analyze": "Free text read by people.",
     "analytics/analyze_question": "Free text read by people.",
     "supervisor/odette_system": "Odette's voice and manner. Wording only.",
@@ -125,7 +195,9 @@ WHY = {
 PLATFORM_WHY = "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked."
 
 # families that the library shows as one folder summary row
-SAFETY_SENSITIVE = {"support/draft_reply", "text/refine/system", "text/generate/master", "text/repurpose/master"}
+SAFETY_SENSITIVE = {"support/draft_reply", "text/refine/system", "text/generate/master", "text/repurpose/master",
+                    "support/assistant_system", "content_guard/screen", "content_guard/rewrite",
+                    "content_guard/picture_unsafe"}
 
 
 def reason(path: str) -> str:

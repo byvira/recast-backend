@@ -241,6 +241,11 @@ class Settings(BaseSettings):
     # without it rather than guessing/using an undisclosed shared key.
     JAMENDO_CLIENT_ID: str = ""
 
+    # Plan limits. Off: every limit is what it was before plans existed (seats from the workspace's team size, the shared picture
+    # and video ceilings, the fixed caps) and nothing else is checked. On: each workspace gets its plan's limits from the plans
+    # table. Switched on at launch, once the launch gates pass.
+    BILLING_ENFORCED: bool = False
+
     # Razorpay — subscriptions and payments. Test keys until launch; the
     # webhook secret is the value typed into Razorpay's webhook form and is
     # used to check that each webhook really came from Razorpay.

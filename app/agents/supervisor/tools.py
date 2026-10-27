@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
+from app.shared.entitlements import entitlements_for
 from app.core.tracing import tool_run
 from app.db.mongo import (
     brand_profiles,
@@ -89,7 +90,7 @@ def make_tools(workspace_id: str) -> tuple[list[dict], ToolFn]:
         ).sort("occurred_at", -1).limit(10).to_list(length=10)
         return {
             "current_tier": ws.get("tier"),
-            "seats": (ws.get("tier_config") or {}).get("seats"),
+            "seats": (await entitlements_for(workspace_id)).limit("seats"),
             "changes": [
                 {"at": c.get("occurred_at"), **(c.get("payload") or {})} for c in changes
             ],

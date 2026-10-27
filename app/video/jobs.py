@@ -235,6 +235,11 @@ async def enqueue(
     }
     if project_id:
         doc["project_id"] = project_id
+    from app.shared import entitlements
+
+    priority = (await entitlements.entitlements_for(workspace_id)).limit("render_priority") or 0
+    if priority > 0:
+        doc["priority"] = int(priority)
     if (output or {}).get("lufs") is not None:
         doc["target_lufs"] = output["lufs"]
     if idem_key:
@@ -509,7 +514,8 @@ async def claim(worker_id: str, version: str, capabilities: dict) -> Optional[di
         "$inc": {"attempts": 1},
     }
     for flt in ({**base, "workspace_id": {"$nin": busy}}, base):
-        doc = await _jobs().find_one_and_update(flt, update, sort=[("created_at", 1)], return_document=ReturnDocument.AFTER)
+        # renders on plans with render priority go first; with no priority set (plans off) this is plain first in, first out
+        doc = await _jobs().find_one_and_update(flt, update, sort=[("priority", -1), ("created_at", 1)], return_document=ReturnDocument.AFTER)
         if doc:
             await runs.started(doc.get("run_id"))
             return _wire(doc)

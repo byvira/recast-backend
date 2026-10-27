@@ -16,6 +16,7 @@ _request_path: contextvars.ContextVar[str | None] = contextvars.ContextVar("llm_
 _PROMPT_FOLDER_FEATURES = {
     "text": "text", "media": "image", "audio": "audio", "video": "video", "brand": "brand_voice", "campaigns": "campaigns",
     "presets": "presets", "analytics": "analytics", "personal": "remy", "supervisor": "odette", "support": "support",
+    "content_guard": "safety", "search": "search", "suggest": "suggestions", "publish": "publish",
     "fragments": None, "localized": None, "fixtures": None,
 }
 _ROUTE_FEATURES = (

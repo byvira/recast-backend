@@ -43,7 +43,10 @@ def font_family(data: bytes) -> str:
 @router.post("", status_code=201)
 @limiter.limit("10/minute")
 async def upload_font(request: Request, file: UploadFile = File(...), ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
+    from app.shared.entitlements import require_storage_room
+
     data = await read_limited(file, MAX_FONT_BYTES, detail="A font file must be 4 MB or smaller.")
+    await require_storage_room(ctx.workspace_id, len(data))
     try:
         family = font_family(data)
     except ValueError as exc:

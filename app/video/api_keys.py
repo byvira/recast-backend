@@ -53,8 +53,12 @@ async def create(workspace_id: str, user_id: str, name: str, scopes: list[str]) 
     chosen = [s for s in dict.fromkeys(scopes or []) if s in SCOPES]
     if not chosen:
         raise KeyError_("Choose what the key may do: read your videos, or also start renders.")
-    if await _keys().count_documents({"workspace_id": workspace_id, "revoked": {"$ne": True}}) >= MAX_KEYS:
-        raise KeyError_(f"A workspace can have {MAX_KEYS} keys. Revoke one you no longer use first.")
+    from app.shared import entitlements
+
+    await entitlements.require_room(
+        await entitlements.entitlements_for(workspace_id), "api_keys",
+        legacy_message=f"A workspace can have {MAX_KEYS} keys. Revoke one you no longer use first.",
+    )
     plain = PREFIX + secrets.token_urlsafe(30)
     doc = {"id": uuid4().hex, "workspace_id": workspace_id, "name": name, "prefix": plain[: len(PREFIX) + 6], "hash": _hash(plain), "scopes": chosen,
            "created_by": user_id, "created_at": _now(), "last_used_at": None, "revoked": False}

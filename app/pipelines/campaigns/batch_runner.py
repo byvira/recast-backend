@@ -54,6 +54,14 @@ async def generate_campaign_batch(
     days. Days already made are kept either way, and RunCancelled is raised once they are saved."""
     if "text" not in (campaign.get("content_types") or ["text"]):
         raise ValueError("A campaign always makes text; media is added on top of it.")
+    from fastapi import HTTPException
+
+    from app.shared.entitlements import require_campaign_room
+
+    try:
+        await require_campaign_room(workspace_id, campaign)
+    except HTTPException as exc:
+        raise ValueError(exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc.detail))
 
     brand = await brand_profiles.find_one({"id": campaign["brand_id"], "workspace_id": workspace_id})
     if not brand or not brand.get("is_complete"):

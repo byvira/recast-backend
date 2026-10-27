@@ -242,7 +242,10 @@ _TEXT_BEARING_WORDS = re.compile(
     r"conversations?|dialogues?|quotes?|quotation marks?|word clouds?|infographics?|banners?|stickers?|handwriting|notes? cards?)\b",
     re.IGNORECASE,
 )
-NO_TEXT_SUFFIX = load_prompt("media/image_no_text")
+def no_text_suffix() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("media/image_no_text")
 
 
 # A device "showing a dashboard" is the commonest way a picture ends up with garbled, made-up interface text, because image
@@ -254,8 +257,26 @@ _UI_CLAUSE = re.compile(
     re.IGNORECASE,
 )
 _SCREEN_WORD = re.compile(r"\b(?:monitors?|screens?|laptops?|tablets?|phones?|smartphones?|displays?|televisions?|TVs?|computers?)\b", re.IGNORECASE)
-SOFT_SCREEN = load_prompt("media/image_soft_screen")
-SCREEN_SUFFIX = load_prompt("media/image_screen_suffix")
+def soft_screen() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("media/image_soft_screen")
+
+
+def screen_suffix() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("media/image_screen_suffix")
+
+
+# The fixed wording these names used to hold, read from its file each time it is asked for.
+_FRAGMENT_NAMES = {"NO_TEXT_SUFFIX": no_text_suffix, "SOFT_SCREEN": soft_screen, "SCREEN_SUFFIX": screen_suffix}
+
+
+def __getattr__(name: str):
+    if name in _FRAGMENT_NAMES:
+        return _FRAGMENT_NAMES[name]()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def soften_screens(prompt: str) -> str:
@@ -263,7 +284,7 @@ def soften_screens(prompt: str) -> str:
     soft abstract glow, so the model does not draw an interface full of invented letters."""
     if not _SCREEN_WORD.search(prompt):
         return prompt
-    softened = _UI_CLAUSE.sub(f"showing {SOFT_SCREEN}", prompt)
+    softened = _UI_CLAUSE.sub(f"showing {soft_screen()}", prompt)
     return re.sub(r"\s{2,}", " ", softened).strip()
 
 
@@ -281,7 +302,7 @@ def enforce_no_text(prompt: str) -> str:
     prompt = soften_screens(prompt)
     cleaned = _TEXT_BEARING_WORDS.sub("", prompt)
     cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-    suffix = NO_TEXT_SUFFIX + (SCREEN_SUFFIX if has_screen else "")
+    suffix = no_text_suffix() + (screen_suffix() if has_screen else "")
     return (cleaned[: 2048 - len(suffix)] + suffix).strip()
 
 
@@ -591,6 +612,13 @@ async def generate_brand_mascot(
     never blocks brand creation/completion."""
     if not _image_provider_configured():
         logger.warning("No image generation provider configured — skipping mascot generation.")
+        return None
+
+    from app.shared.entitlements import picture_room_message
+
+    full = await picture_room_message(workspace_id)
+    if full:
+        logger.info("Mascot not made for workspace %s: %s", workspace_id, full)
         return None
 
     try:

@@ -88,6 +88,11 @@ async def save_token(
             f"Add a PlatformDefinition for it before connecting."
         )
 
+    # A new account must fit the plan's social accounts; a renewal or reconnect of one the workspace has never counts again.
+    from app.shared.entitlements import require_connection_room
+
+    await require_connection_room(workspace_id, platform)
+
     now = datetime.now(timezone.utc)
     previous = await workspace_connections.find_one(
         {"workspace_id": workspace_id, "platform": platform}, {"health.state": 1, "health.reason": 1, "platform_user_id": 1}

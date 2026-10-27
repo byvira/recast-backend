@@ -66,6 +66,11 @@ async def configure(
     recipe = await _recipes().find_one({"id": recipe_id, "workspace_id": workspace_id})
     if not recipe:
         raise AutomationError("That recipe was not found.")
+    if enabled and not (recipe.get("automation") or {}).get("enabled"):
+        # Switching one on must fit the plan's video automations; changing one that is already on never counts again.
+        from app.shared import entitlements
+
+        await entitlements.require_room(await entitlements.entitlements_for(workspace_id), "video_automations")
     when = now or _now()
     state = {
         "enabled": bool(enabled), "frequency": frequency, "autonomy": autonomy, "inputs": dict(inputs or {}), "paused": False,

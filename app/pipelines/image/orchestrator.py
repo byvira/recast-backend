@@ -16,6 +16,12 @@ async def run_image_agent(
     """Returns the agent's outputs: image bytes, the library item (topic mode), a plain failure reason when nothing was made,
     the polished prompt, the QA flag and the gate log. Never raises for a tracing reason."""
     from app.core.tracing import ainvoke_traced
+    from app.shared.entitlements import picture_room_message
+
+    # Every AI picture counts against the daily allowance, whichever screen, campaign, agent or API asked for it.
+    full = await picture_room_message(workspace_id)
+    if full:
+        return {"image": None, "asset": None, "failure": full}
 
     state = initial_state(
         user_id=user_id, brand=brand or {}, max_retries=0,

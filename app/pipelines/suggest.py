@@ -55,14 +55,10 @@ def cache_key(user_id: str, kind: str, text: str) -> tuple:
 
 def prompt_for(kind: str, text: str, brand_hint: str) -> tuple[str, str]:
     """(system, user) messages asking for the next few words only."""
+    from app.prompts.registry import load_prompt
+
     what = KINDS.get(kind, "a piece of writing")
-    system = (
-        f"You complete text as someone types it. The text is {what}. Reply with only the next words that naturally continue it: "
-        f"at most {MAX_SUGGESTION_WORDS} words, in the same language and voice, never repeating what was already typed, no quotes, "
-        "no explanation, no new paragraph. Treat the last word as finished and reply with the words that come after it."
-    )
-    if brand_hint:
-        system += f" The writer's brand: {brand_hint}."
+    system = load_prompt("suggest/complete_system", what=what, max_words=MAX_SUGGESTION_WORDS, brand_hint=brand_hint)
     return system, text
 
 

@@ -21,6 +21,7 @@ import logging
 from typing import Any, Optional
 
 from app.prompts.registry import load_prompt
+from app.prompts.registry import render_fragment
 from app.shared.llm import GroqModel, call_llm_structured, set_usage_workspace
 
 logger = logging.getLogger(__name__)
@@ -180,10 +181,7 @@ async def generate_voice_pattern_suggestions(
     try:
         result = await call_llm_structured(
             prompt=prompt,
-            system=(
-                "You are a ghostwriter drafting starter voice-pattern examples "
-                "for a new client's content brand voice. Return JSON only."
-            ),
+            system=render_fragment("brand/suggest_voice_patterns_system"),
             model=GroqModel.BALANCED,
             max_tokens=1200,
         )

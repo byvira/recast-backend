@@ -122,9 +122,12 @@ async def _upload_media(request: Request, file: UploadFile, ctx: WorkspaceContex
     from app.shared.uploads import assert_image_size, read_limited, upright
 
     max_bytes = await _max_bytes_for(kind, ctx.workspace_id)
+    from app.shared.entitlements import require_storage_room
+
     contents = await read_limited(
         file, max_bytes, detail=f"{kind.value.capitalize()} must be {max_bytes // (1024 * 1024)}MB or smaller."
     )
+    await require_storage_room(ctx.workspace_id, len(contents))
 
     if kind == MediaKind.IMAGE:
         from app.agents.content_guard.media import assert_image_ok

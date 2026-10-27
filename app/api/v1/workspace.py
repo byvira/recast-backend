@@ -9,12 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.core.auth import get_current_user
+from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.notifications import send_templated_email
 from app.core.rbac import require_permission
 from app.core.tiers import TIER_DEFAULTS
 from app.db.mongo import users, workspaces, workspace_members
 from app.models.workspace import CreateWorkspaceBody, MediaUploadLimits, WorkspaceRole
+from app.shared import entitlements
 
 #: How long a deleted workspace is kept before everything in it is removed for good.
 DELETE_HOLD_DAYS = 30
@@ -43,6 +45,38 @@ class SetRoleBody(BaseModel):
     role: WorkspaceRole
 
 
+FREE_WORKSPACE_MESSAGE = (
+    "A free account has one workspace, and you already have it. Add the new workspace to one of your paid workspaces, "
+    "or move a workspace to a paid plan."
+)
+
+
+async def _room_for_new_workspace(user_id: str, billing_group_id: Optional[str]) -> Optional[str]:
+    """The paid workspace a new workspace joins, after checking there is room on its plan. While plans are off the link is kept
+    for later and nothing more is checked; once they are on, a workspace that joins no paid plan is the owner's one free one."""
+    if billing_group_id:
+        group = await workspaces.find_one(
+            {"id": billing_group_id, "owner_id": user_id, "deleted_at": {"$exists": False}}, {"id": 1, "billing_group_id": 1, "tier_config": 1}
+        )
+        if not group or group.get("billing_group_id"):
+            raise HTTPException(status_code=400, detail="Choose one of your own workspaces that pays for its plan.")
+        ent = await entitlements.entitlements_for(billing_group_id)
+        await entitlements.require_room(ent, "owned_workspaces", len(await entitlements.group_ids(billing_group_id)))
+        return billing_group_id
+    if settings.BILLING_ENFORCED:
+        standalone_free = 0
+        async for w in workspaces.find(
+            {"owner_id": user_id, "deleted_at": {"$exists": False}, "billing_group_id": {"$exists": False}}, {"id": 1}
+        ):
+            if (await entitlements.entitlements_for(w["id"])).plan == "free":
+                standalone_free += 1
+        if standalone_free >= 1:
+            raise HTTPException(status_code=402, detail={"code": "limit_reached", "limit": "owned_workspaces", "allowed": 1,
+                                                         "used": standalone_free, "plan": "free", "enforced": True,
+                                                         "message": FREE_WORKSPACE_MESSAGE})
+    return None
+
+
 @router.post("/", status_code=201)
 @limiter.limit("10/minute")
 async def create_workspace(
@@ -58,6 +92,7 @@ async def create_workspace(
     )
     if owned >= MAX_OWNED_WORKSPACES:
         raise HTTPException(status_code=400, detail=f"You already own {MAX_OWNED_WORKSPACES} workspaces, which is the most one person can have.")
+    group_id = await _room_for_new_workspace(current_user["id"], body.billing_group_id)
     now = datetime.now(timezone.utc)
     workspace_id = str(uuid4())
     tier_config = TIER_DEFAULTS[body.tier]
@@ -70,6 +105,7 @@ async def create_workspace(
         "owner_id": current_user["id"],
         "is_personal": False,
         "language": None,
+        **({"billing_group_id": group_id} if group_id else {}),
         "created_at": now,
         "updated_at": now,
     }
@@ -84,6 +120,7 @@ async def create_workspace(
     }
 
     await workspaces.insert_one(workspace_doc)
+    entitlements.forget(group_id)
     try:
         await workspace_members.insert_one(member_doc)
     except Exception:
@@ -151,6 +188,22 @@ async def get_workspace(
     doc.pop("_id", None)
     doc["policy"] = policy_for(doc)
     return doc
+
+
+@router.get("/{workspace_id}/entitlements")
+@limiter.limit("60/minute")
+async def get_entitlements(
+    request: Request,
+    workspace_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The workspace's plan, every limit, and what is used of each. Any member may see it."""
+    doc = await workspaces.find_one({"id": workspace_id}, {"_id": 0, "id": 1, "deleted_at": 1})
+    if not doc or doc.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    if not await workspace_members.find_one({"workspace_id": workspace_id, "user_id": current_user["id"], "status": "active"}):
+        raise HTTPException(status_code=403, detail="Access denied.")
+    return await entitlements.summary(await entitlements.entitlements_for(workspace_id))
 
 
 @router.get("/{workspace_id}/members")
@@ -272,9 +325,21 @@ async def restore_workspace(
         raise HTTPException(status_code=404, detail="There is no deleted workspace with that id.")
     if ws.get("owner_id") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Only the owner can bring a workspace back.")
+    # A workspace brought back counts again, the same as a new one: the most one person can own, and its plan's room.
+    if not ws.get("is_personal"):
+        owned = await workspaces.count_documents(
+            {"owner_id": current_user["id"], "is_personal": False, "deleted_at": {"$exists": False}}
+        )
+        if owned >= MAX_OWNED_WORKSPACES:
+            raise HTTPException(status_code=400, detail=f"You already own {MAX_OWNED_WORKSPACES} workspaces, which is the most one person can have.")
+        if ws.get("billing_group_id"):
+            await _room_for_new_workspace(current_user["id"], ws["billing_group_id"])
+        elif (ws.get("plan") or "free") == "free":
+            await _room_for_new_workspace(current_user["id"], None)
     await workspaces.update_one(
         {"id": workspace_id}, {"$unset": {"deleted_at": "", "purge_after": "", "deleted_by": ""}},
     )
+    entitlements.forget(ws.get("billing_group_id") or workspace_id)
     return {"workspace_id": workspace_id, "restored": True}
 
 
@@ -306,7 +371,26 @@ async def set_member_role(
             raise HTTPException(status_code=403, detail="Only the current owner can hand the workspace to someone else.")
         if not target:
             raise HTTPException(status_code=404, detail="Member not found.")
-        await workspaces.update_one({"id": workspace_id}, {"$set": {"owner_id": member_user_id}})
+        # Once plans are on, a workspace that does not pay for its own plan becomes the new owner's free workspace: it leaves the
+        # previous owner's plan, and the new owner must not already have a free one. A paid workspace keeps its plan.
+        leaves_group = False
+        if settings.BILLING_ENFORCED and (ws.get("billing_group_id") or (ws.get("plan") or "free") == "free"):
+            async for w in workspaces.find(
+                {"owner_id": member_user_id, "deleted_at": {"$exists": False}, "billing_group_id": {"$exists": False}}, {"id": 1}
+            ):
+                if (await entitlements.entitlements_for(w["id"])).plan == "free":
+                    raise HTTPException(status_code=402, detail={
+                        "code": "limit_reached", "limit": "owned_workspaces", "allowed": 1, "used": 1, "plan": "free", "enforced": True,
+                        "message": "They already have a free workspace, so this one cannot be handed to them as another free one. "
+                                   "Put this workspace on a paid plan first, or hand it to someone without a free workspace.",
+                    })
+            leaves_group = bool(ws.get("billing_group_id"))
+        await workspaces.update_one(
+            {"id": workspace_id}, {"$set": {"owner_id": member_user_id}, **({"$unset": {"billing_group_id": ""}} if leaves_group else {})},
+        )
+        if leaves_group:
+            entitlements.forget(ws["billing_group_id"])
+        entitlements.forget(workspace_id)
         await workspace_members.update_one(
             {"workspace_id": workspace_id, "user_id": current_user["id"]}, {"$set": {"role": WorkspaceRole.ADMIN.value}},
         )

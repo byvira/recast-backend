@@ -73,7 +73,10 @@ async def upload_thumbnail(
     _, flt, field, _topic = await _target(kind, item_id, clip_id, ctx.workspace_id)
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail=f"Use a JPEG, PNG or WebP picture, not '{file.content_type}'.")
+    from app.shared.entitlements import require_storage_room
+
     data = await file.read(MAX_BYTES + 1)
+    await require_storage_room(ctx.workspace_id, len(data))
     if not data:
         raise HTTPException(status_code=400, detail="That picture is empty.")
     if len(data) > MAX_BYTES:

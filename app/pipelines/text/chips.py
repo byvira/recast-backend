@@ -11,6 +11,7 @@ Usage:
   Returns: { original, refined, chip, platform, word_count, char_count }
 """
 
+from collections.abc import Mapping
 import logging
 from typing import Optional
 from app.prompts.registry import load_prompt
@@ -39,9 +40,25 @@ _CHIP_NAMES = (
     "add_hashtags", "add_timestamps", "simplify_show_notes", "add_keywords", "expand",
 )
 
-CHIP_PROMPTS: dict[str, str] = {
-    name: load_prompt(f"text/refine/chips/{name}") for name in _CHIP_NAMES
-}
+class _ChipPrompts(Mapping):
+    """Each chip's instruction, read from its file when it is asked for, so a changed file is used without a restart. Reads
+    like the dict it replaces: membership, keys and `.get` work as before."""
+
+    def __getitem__(self, name: str) -> str:
+        if name not in _CHIP_NAMES:
+            raise KeyError(name)
+        from app.prompts.registry import render_fragment
+
+        return render_fragment(f"text/refine/chips/{name}")
+
+    def __iter__(self):
+        return iter(_CHIP_NAMES)
+
+    def __len__(self) -> int:
+        return len(_CHIP_NAMES)
+
+
+CHIP_PROMPTS: Mapping[str, str] = _ChipPrompts()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

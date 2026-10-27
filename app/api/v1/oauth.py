@@ -162,6 +162,22 @@ def normalize_profile_url(url: str | None) -> str | None:
     return urlunsplit(("https", host, parts.path, parts.query, parts.fragment))
 
 
+async def _require_room_for_any(platforms: list[str], workspace_id: str) -> None:
+    """Before a sign-in starts: there must be room for at least one account it would add, unless every one is already connected."""
+    from app.shared.entitlements import connection_room_message, require_connection_room
+
+    for platform in platforms:
+        if await connection_room_message(workspace_id, platform) is None:
+            return
+    await require_connection_room(workspace_id, platforms[0])
+
+
+async def _room_note(workspace_id: str, platform: str) -> str | None:
+    from app.shared.entitlements import connection_room_message
+
+    return await connection_room_message(workspace_id, platform)
+
+
 def _js(value: str) -> str:
     """A value as a JavaScript string literal that is safe inside a script tag: every angle bracket is written as an escape, so
     nothing in it can end the script or start a tag."""
@@ -270,6 +286,7 @@ async def connect_bluesky(
     Connect a Bluesky account to the active workspace using handle + app password.
     No OAuth redirect needed — ATP handles auth directly.
     """
+    await _require_room_for_any(["bluesky"], ctx.workspace_id)
     from app.pipelines.publish.bluesky.publisher import BlueSkyPublisher
 
     publisher = BlueSkyPublisher()
@@ -316,6 +333,7 @@ async def connect_meta(
     Start Meta OAuth flow — covers Instagram + Threads + Facebook.
     One connect flow, three platforms connected simultaneously.
     """
+    await _require_room_for_any(["instagram", "facebook"], ctx.workspace_id)
     from app.pipelines.publish.meta.oauth import build_auth_url
     state    = await _create_state(ctx.user_id, "meta", ctx.workspace_id, _opener_origin(request))
     auth_url = build_auth_url(state, platform="meta")
@@ -369,9 +387,13 @@ async def meta_callback(
         return _oauth_popup_response(False, "Failed to connect Meta. Please try again.")
 
     connected = []
+    limit_notes: list[str] = []
 
     # ── Instagram — only if Business account linked to Facebook Page ──────
-    if token_data.get("ig_user_id"):
+    ig_full = await _room_note(workspace_id, "instagram") if token_data.get("ig_user_id") else None
+    if ig_full:
+        limit_notes.append(f"Instagram was not added. {ig_full}")
+    if token_data.get("ig_user_id") and not ig_full:
         await save_token(
             workspace_id=workspace_id,
             platform="instagram",
@@ -395,7 +417,10 @@ async def meta_callback(
 
     # ── Facebook — only if user manages at least one Page ────────────────
     pages = token_data.get("pages", [])
-    if pages:
+    fb_full = await _room_note(workspace_id, "facebook") if pages else None
+    if fb_full:
+        limit_notes.append(f"Facebook was not added. {fb_full}")
+    if pages and not fb_full:
         first_page = pages[0]
         await save_token(
             workspace_id=workspace_id,
@@ -440,7 +465,9 @@ async def meta_callback(
     logger.info("Meta callback complete for user %s — connected: %s", user_id, connected)
 
     if connected:
-        return _oauth_popup_response(True, f"Connected: {', '.join(connected)}")
+        return _oauth_popup_response(True, f"Connected: {', '.join(connected)}" + (f". {' '.join(limit_notes)}" if limit_notes else ""))
+    if limit_notes:
+        return _oauth_popup_response(False, " ".join(limit_notes))
 
     notes = []
     if "instagram" not in connected:
@@ -510,6 +537,7 @@ async def connect_threads(
     Start Threads OAuth flow — separate from Facebook Login.
     Threads uses threads.net/oauth/authorize not Facebook.
     """
+    await _require_room_for_any(["threads"], ctx.workspace_id)
     state    = await _create_state(ctx.user_id, "threads", ctx.workspace_id, _opener_origin(request))
     params   = {
         "client_id":     settings.THREADS_APP_ID,
@@ -605,6 +633,9 @@ async def threads_callback(
         logger.error("Threads token exchange failed: %s", exc)
         return _oauth_popup_response(False, "Failed to connect Threads.")
 
+    full = await _room_note(workspace_id, "threads")
+    if full:
+        return _oauth_popup_response(False, f"Threads was not added. {full}")
     await save_token(
         workspace_id=workspace_id,
         platform="threads",
@@ -633,6 +664,7 @@ async def connect_google(
     Start Google OAuth flow.
     Covers YouTube (and other Google products as scopes are added).
     """
+    await _require_room_for_any(["youtube"], ctx.workspace_id)
     from app.pipelines.publish.google.oauth import build_auth_url
     state    = await _create_state(ctx.user_id, "google", ctx.workspace_id, _opener_origin(request))
     auth_url = build_auth_url(state, platform="google")
@@ -697,6 +729,9 @@ async def google_callback(
     connected.append("google")
     logger.info("Google connected for user %s — %s", user_id, token_data.get("email"))
 
+    yt_full = await _room_note(workspace_id, "youtube") if token_data.get("youtube_channel_id") else None
+    if yt_full:
+        return _oauth_popup_response(False, f"Google is connected, but YouTube was not added. {yt_full}")
     if token_data.get("youtube_channel_id"):
         await save_token(
             workspace_id=workspace_id,
@@ -798,6 +833,7 @@ async def connect_platform(
             detail=f"Platform '{platform}' not supported.",
         )
 
+    await _require_room_for_any([platform], ctx.workspace_id)
     state    = await _create_state(ctx.user_id, platform, ctx.workspace_id, _opener_origin(request))
     if platform == "linkedin":
         from app.pipelines.publish.destinations_support import destination_enabled
@@ -847,6 +883,9 @@ async def oauth_callback(
         logger.error("Token exchange failed for %s user %s: %s", platform, user_id, exc)
         return _oauth_popup_response(False, f"Failed to connect {platform}. Please try again.")
 
+    full = await _room_note(workspace_id, platform)
+    if full:
+        return _oauth_popup_response(False, f"{platform.title()} was not added. {full}")
     await save_token(
         workspace_id=workspace_id,
         platform=platform,

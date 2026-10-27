@@ -1140,6 +1140,9 @@ async def upload_audio_in_background(
     # to finish costs no memory.
     await pipeline_runs.assert_capacity(ctx.workspace_id)
     max_bytes = await _max_bytes_for(MediaKind.AUDIO, ctx.workspace_id)
+    from app.shared.entitlements import require_storage_room
+
+    await require_storage_room(ctx.workspace_id, getattr(file, "size", 0) or 0)
     data = await spool_limited(file, max_bytes, detail=f"Audio must be {max_bytes // (1024 * 1024)}MB or smaller.")
     name, content_type = file.filename, file.content_type
     try:
@@ -1217,6 +1220,9 @@ async def _ingest_audio(
     """Everything after the bytes are in hand: cleanup, storage, the kept
     original, transcription, the asset and its first version. Shared by the
     file upload and the link import so both behave identically."""
+    from app.shared.entitlements import require_storage_room
+
+    await require_storage_room(ctx.workspace_id, len(contents))
     await _assert_own_brand(brand_id, ctx.workspace_id)
     if run:
         await run.step("Cleaning up the audio")

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 from app.prompts.registry import load_prompt
+from app.prompts.registry import render_fragment
 from app.shared.llm import GroqModel, call_llm_structured, set_usage_workspace
 
 logger = logging.getLogger(__name__)
@@ -36,10 +37,7 @@ async def extract_sample_traits(content: str, *, workspace_id: str = "") -> list
     try:
         result = await call_llm_structured(
             prompt=prompt,
-            system=(
-                "You are a sharp editor identifying specific, verifiable "
-                "stylistic traits in a piece of writing. Return JSON only."
-            ),
+            system=render_fragment("brand/extract_traits_system"),
             model=GroqModel.FAST,
             max_tokens=400,
         )

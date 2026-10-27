@@ -39,7 +39,10 @@ _ALIGN_ENGLISH_TEMPLATES = load_localized("remy_align_states")
 # can actually reuse, since the rest is per-user persona stats + draft text.
 # call_llm_structured always runs json_mode=True, which already appends its
 # own "respond only with JSON" system fragment — no need to repeat that here.
-_ALIGN_SYSTEM = "You help an author keep a draft in their own established voice."
+def _align_system() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("personal/align_system")
 
 
 async def _align_messages(language: str) -> dict[str, str]:
@@ -187,7 +190,7 @@ async def _align_draft_impl(
         # GENERATION_MAX_TOKENS for non-English requests.
         with usage_workspace(workspace_id):
             res = await call_llm_structured(
-                prompt=prompt, system=_ALIGN_SYSTEM, model=GroqModel.BALANCED, max_tokens=1500,
+                prompt=prompt, system=_align_system(), model=GroqModel.BALANCED, max_tokens=1500,
             )
         if isinstance(res, dict):
             suggested_openers = [str(s) for s in (res.get("suggested_openers") or [])][:3]

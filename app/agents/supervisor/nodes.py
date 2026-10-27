@@ -118,7 +118,10 @@ async def reason_node(state: SupervisorState) -> dict:
 
 # Renders app/prompts/supervisor/synth_instructions.jinja — computed once at
 # import time since it's fully static (no per-call variables).
-_SYNTH_INSTRUCTIONS = load_prompt("supervisor/synth_instructions")
+def _synth_instructions() -> str:
+    from app.prompts.registry import render_fragment
+
+    return render_fragment("supervisor/synth_instructions")
 
 
 def _flatten_scratchpad_for_synthesis(scratchpad: list[dict]) -> list[dict]:
@@ -201,7 +204,7 @@ async def synthesize_node(state: SupervisorState) -> dict:
         else ""
     )
     extra = "\n\n".join(part for part in (note, repeat_note) if part)
-    messages.append({"role": "user", "content": _SYNTH_INSTRUCTIONS + (f"\n\n{extra}" if extra else "")})
+    messages.append({"role": "user", "content": _synth_instructions() + (f"\n\n{extra}" if extra else "")})
 
     findings = {"insights": [], "flags": [], "notify": False}
     try:

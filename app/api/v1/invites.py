@@ -16,6 +16,7 @@ from app.core.notifications import send_templated_email
 from app.core.rbac import require_permission
 from app.db.mongo import invites, users, workspace_members, workspaces
 from app.models.workspace import InviteMemberBody, InviteStatus
+from app.shared import entitlements
 
 router = APIRouter()
 
@@ -44,6 +45,9 @@ def _effective_status(invite: dict) -> str:
 
 
 _EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+SEAT_LIMIT_MESSAGE = "Seat limit reached for this tier."
 
 
 async def _seats_used(workspace_id: str, now: datetime) -> int:
@@ -85,9 +89,16 @@ async def create_invite(
     if person and await workspace_members.find_one({"workspace_id": workspace_id, "user_id": person["id"], "status": "active"}):
         raise HTTPException(status_code=409, detail="That person is already a member of this workspace.")
 
-    seats = ws["tier_config"]["seats"]
-    if await _seats_used(workspace_id, now) >= seats:
-        raise HTTPException(status_code=400, detail="Seat limit reached for this tier.")
+    ent = await entitlements.entitlements_for(ws)
+    # Someone who already counts against the plan's seats (a member, or invited, in another workspace sharing it) needs no new seat.
+    already_counted = bool(person) and await entitlements.holds_seat(ent, person["id"])
+    if ent.enforced and not already_counted and len(ent.scope_ids) > 1:
+        already_counted = bool(await invites.find_one({
+            "workspace_id": {"$in": ent.scope_ids}, "email": email, "status": InviteStatus.PENDING.value, "expires_at": {"$gt": now},
+        }, {"_id": 1}))
+    await entitlements.require_room(
+        ent, "seats", await entitlements.seats_used(ent), 0 if already_counted else 1, legacy_message=SEAT_LIMIT_MESSAGE,
+    )
 
     invite_doc = {
         "id": str(uuid4()),
@@ -102,9 +113,10 @@ async def create_invite(
     }
     await invites.insert_one(invite_doc)
     # Counted again now that the invite is saved: two admins inviting at the same moment cannot both take the last seat.
-    if await _seats_used(workspace_id, now) > seats:
+    entitlements.forget(workspace_id)
+    if not entitlements.has_room(ent, "seats", await entitlements.seats_used(ent), 0):
         await invites.delete_one({"id": invite_doc["id"]})
-        raise HTTPException(status_code=400, detail="Seat limit reached for this tier.")
+        await entitlements.require_room(ent, "seats", await entitlements.seats_used(ent), legacy_message=SEAT_LIMIT_MESSAGE)
 
     invite_link = f"{settings.FRONTEND_URL}/invite/{invite_doc['token']}"
     email_sent = await send_templated_email(
@@ -162,9 +174,10 @@ async def resend_invite(
         raise HTTPException(status_code=404, detail="Workspace not found.")
 
     now_for_seats = datetime.now(timezone.utc)
-    if _effective_status(invite) == InviteStatus.EXPIRED.value and await _seats_used(workspace_id, now_for_seats) >= ws["tier_config"]["seats"]:
+    if _effective_status(invite) == InviteStatus.EXPIRED.value:
         # An expired invite gave its seat back; bringing it back needs a free one.
-        raise HTTPException(status_code=400, detail="Seat limit reached for this tier.")
+        ent = await entitlements.entitlements_for(ws)
+        await entitlements.require_room(ent, "seats", await entitlements.seats_used(ent), legacy_message=SEAT_LIMIT_MESSAGE)
     new_expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await invites.update_one(
         {"id": invite_id},
@@ -305,6 +318,14 @@ async def accept_invite(
         raise HTTPException(status_code=409, detail="Already a member of this workspace.")
 
     now = datetime.now(timezone.utc)
+    # The open invite already holds its seat, but seats can be removed after it was sent: joining needs the members to still fit.
+    ent = await entitlements.entitlements_for(invite["workspace_id"])
+    if not await entitlements.holds_seat(ent, current_user["id"]):
+        if ent.enforced:
+            members = len(await workspace_members.distinct("user_id", {"workspace_id": {"$in": ent.scope_ids}, "status": "active"}))
+        else:
+            members = await workspace_members.count_documents({"workspace_id": invite["workspace_id"], "status": "active"})
+        await entitlements.require_room(ent, "seats", members, legacy_message=SEAT_LIMIT_MESSAGE)
     # The invite is claimed with one conditional write before the member is added, so a double click or two tabs cannot both accept
     # it (the second would otherwise reach the unique member index and answer with a server error).
     claimed = await invites.find_one_and_update(

@@ -80,7 +80,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-_DESCRIBE_IMAGE_PROMPT = load_prompt("media/image_describe")
+
 
 
 #: Pictures larger than this are not sent to the vision service for a description.
@@ -97,7 +97,7 @@ async def _describe_uploaded_image(contents: bytes, mime_type: str, workspace_id
     try:
         await assert_ai_budget_available(workspace_id)
         set_usage_workspace(workspace_id)
-        text = await asyncio.wait_for(call_vision(_DESCRIBE_IMAGE_PROMPT, contents, mime_type), timeout=15)
+        text = await asyncio.wait_for(call_vision(load_prompt("media/image_describe"), contents, mime_type), timeout=15)
     except Exception as exc:  # noqa: BLE001 — includes the budget's HTTPException
         logger.info("Image description skipped for workspace %s: %s", workspace_id, exc)
         return None
@@ -593,15 +593,16 @@ async def pictures_made_today(workspace_id: str) -> int:
 async def _assert_daily_allowance(workspace_id: str, wanted: int) -> None:
     """A workspace may make a set number of AI pictures a day. The free picture service has one daily ceiling shared by everyone, so
     one workspace asking for a pack of ten again and again must not use it all up."""
-    from app.core import limits
+    from app.shared import entitlements
 
-    made = await pictures_made_today(workspace_id)
-    if made + wanted > limits.IMAGES_PER_WORKSPACE_PER_DAY:
-        left = max(0, limits.IMAGES_PER_WORKSPACE_PER_DAY - made)
-        raise HTTPException(
-            status_code=429,
-            detail=f"This workspace can make {limits.IMAGES_PER_WORKSPACE_PER_DAY} pictures a day and has {left} left today. Try again tomorrow, or make fewer.",
-        )
+    ent = await entitlements.entitlements_for(workspace_id)
+    cap = ent.limit("pictures_day")
+    made = await entitlements.count_usage(ent, "pictures_day")
+    left = max(0, int((cap or 0) - made))
+    await entitlements.require_room(
+        ent, "pictures_day", made, wanted, legacy_status=429,
+        legacy_message=f"This workspace can make {cap} pictures a day and has {left} left today. Try again tomorrow, or make fewer.",
+    )
 
 
 async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceContext) -> ImageAsset:
@@ -839,7 +840,10 @@ async def upload_image_asset(
 
     await _get_brand_profile(brand_id, ctx.workspace_id)  # the brand must be one of this workspace's
     max_bytes = await _max_bytes_for(MediaKind.IMAGE, ctx.workspace_id)
+    from app.shared.entitlements import require_storage_room
+
     contents = await read_limited(file, max_bytes, detail=f"Image must be {max_bytes // (1024 * 1024)}MB or smaller.")
+    await require_storage_room(ctx.workspace_id, len(contents))
     assert_image_size(contents)
     contents = upright(contents)
 
@@ -1383,7 +1387,10 @@ async def apply_looks_with_cutout(
         raise HTTPException(status_code=422, detail="The looks could not be read. Try again.") from exc
     if (cutout.content_type or "") != "image/png":
         raise HTTPException(status_code=400, detail="The cut-out has to be a PNG picture.")
+    from app.shared.entitlements import require_storage_room
+
     data = await read_limited(cutout, limits.FETCHED_IMAGE_MAX_BYTES, detail="That cut-out is too large.")
+    await require_storage_room(ctx.workspace_id, len(data))
     assert_image_size(data)
     return await _apply_looks(request, image_asset_id, slide_number, parsed, ctx, cutout_bytes=data)
 
@@ -1494,12 +1501,15 @@ async def apply_looks_to_all(
     if len(cutout_numbers) != len(cutouts):
         raise HTTPException(status_code=422, detail="Each cut-out needs its picture number.")
     found: dict[int, bytes] = {}
+    from app.shared.entitlements import require_storage_room
+
     for number, upload in zip(cutout_numbers, cutouts):
         if (upload.content_type or "") != "image/png":
             raise HTTPException(status_code=400, detail="The cut-outs have to be PNG pictures.")
         data = await read_limited(upload, limits.FETCHED_IMAGE_MAX_BYTES, detail="That cut-out is too large.")
         assert_image_size(data)
         found[number] = data
+    await require_storage_room(ctx.workspace_id, sum(len(b) for b in found.values()))
     return await _apply_looks_many(request, image_asset_id, numbers, parsed, ctx, found or None)
 
 

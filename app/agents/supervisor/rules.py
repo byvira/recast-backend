@@ -77,7 +77,9 @@ async def evaluate_rules(workspace_id: str, language: str = "en") -> list[dict]:
     ws = await workspaces.find_one({"id": workspace_id}) or {}
     tier = ws.get("tier", "")
     hidden_rules = set(policy_for(ws)["hidden_rules"])
-    seats = int((ws.get("tier_config") or {}).get("seats", 0) or 0)
+    from app.shared.entitlements import entitlements_for
+
+    seats = int((await entitlements_for(workspace_id)).limit("seats") or 0)
     active_members = await workspace_members.count_documents(
         {"workspace_id": workspace_id, "status": "active"}
     )

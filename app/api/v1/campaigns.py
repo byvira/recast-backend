@@ -47,6 +47,7 @@ from app.pipelines.campaigns.suggest import suggest_campaign_topics
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.scraper import scrape_url
 from app.pipelines.text.storage import KANBAN_STAGES, compute_kanban_stage
+from app.shared import entitlements
 from app.shared.storage import ContentType as UploadContentType, upload_file
 
 MAX_THUMBNAIL_BYTES = 5 * 1024 * 1024  # 5MB
@@ -341,6 +342,8 @@ async def update_campaign(
     for field in ("name", "topic_cluster", "status", "cadence", "platforms_by_day"):
         if field in payload and payload[field] is not None:
             update[field] = payload[field]
+    if update.get("status") == CampaignStatus.ACTIVE.value:
+        await entitlements.require_campaign_room(ctx.workspace_id, existing)
 
     if "language" in payload:
         update["language"] = (payload["language"] or "").strip() or None
@@ -604,6 +607,7 @@ async def start_campaign_run(
     if running:
         raise HTTPException(status_code=409, detail="This campaign is already making a batch.")
 
+    await entitlements.require_campaign_room(ctx.workspace_id, campaign)
     await pipeline_runs.assert_capacity(ctx.workspace_id)
     days = (campaign.get("cadence") or {}).get("days_per_batch", 7)
     try:
@@ -653,6 +657,7 @@ async def generate_next_batch(
         if await pipeline_runs.active_run_for(ctx.workspace_id, "campaign", {"campaign_id": campaign_id}):
             raise HTTPException(status_code=409, detail="This campaign is already making a batch.")
         await pipeline_runs.assert_capacity(ctx.workspace_id)
+    await entitlements.require_campaign_room(ctx.workspace_id, campaign)
 
     try:
         result = await generate_campaign_batch(campaign, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
@@ -702,7 +707,10 @@ async def upload_campaign_thumbnail(
 
     from app.shared.uploads import assert_image_size, read_limited
 
+    from app.shared.entitlements import require_storage_room
+
     contents = await read_limited(file, MAX_THUMBNAIL_BYTES, detail="Thumbnail must be 5MB or smaller.")
+    await require_storage_room(ctx.workspace_id, len(contents))
     assert_image_size(contents)  # also confirms the bytes really are a picture, whatever type the browser claimed
 
     try:
