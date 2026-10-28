@@ -10,6 +10,7 @@ brand, stamps the logo, stores it and records the library item.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -40,13 +41,19 @@ async def _tool_gate(*, raw_prompt: str, brand: dict, avoid: Any, feedback: str)
     `_run_gates`; the graph decides what a failure means."""
     ig = _ig()
     polished = await ig._polish_prompt(raw_prompt + ig._avoid_clause(avoid) + feedback)
-    verdict = await ig._safety_verdict(polished)
+    # The two model checks run at the same time when the brand-fit answer can matter (the local generic check passes), instead
+    # of one after the other. The results are still judged in the same order, so every decision is the one it always was.
+    specific = ig._anti_generic_gate(polished)
+    if specific:
+        verdict, fits = await asyncio.gather(ig._safety_verdict(polished), ig._brand_fit_gate(polished, brand))
+    else:
+        verdict, fits = await ig._safety_verdict(polished), True
     if verdict != "safe":
         return {"polished": polished, "verdict": verdict, "passed": False, "reason": "safety"}
-    if not ig._anti_generic_gate(polished):
+    if not specific:
         return {"polished": polished, "verdict": verdict, "passed": False, "reason": "generic",
                 "feedback": " The last attempt was too generic. Make the scene specific and distinctive."}
-    if not await ig._brand_fit_gate(polished, brand):
+    if not fits:
         return {"polished": polished, "verdict": verdict, "passed": False, "reason": "brand_fit",
                 "feedback": " The last attempt did not match the brand's visual style. Follow the brand style more closely."}
     return {"polished": polished, "verdict": verdict, "passed": True}

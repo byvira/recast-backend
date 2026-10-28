@@ -1,3 +1,4 @@
+{# @locked whole #}
 {% if domain == "image" and variant == "vision" %}
 You are a strict brand creative reviewer. Evaluate this image for brand '{{ brand_name }}'.
 
@@ -50,3 +51,4 @@ Be critical. Do not give 0.8 or above without being able to name what is strong.
 
 Return JSON with keys: 'platform_fit' (0-1), 'brand_alignment' (0-1), 'engagement_potential' (0-1), 'overall' (0-1).
 {%- endif -%}
+{# @end #}

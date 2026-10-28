@@ -289,6 +289,38 @@ async def test_filters_and_cursor_pagination(api_client):
     assert by_person["total"] == 0
 
 
+async def test_date_range_and_unread_only_filters(api_client):
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Dates", tier="large")
+    now = datetime.now(timezone.utc)
+    for n, days_ago in enumerate((0, 2, 10)):
+        await record_system(
+            workspace_id=ws_id, key=f"dated:{n}", actor_name="Connection monitor",
+            category="account_connected", title=f"Day {days_ago}", description="",
+            occurred_at=now - timedelta(days=days_ago),
+        )
+
+    last_week = await _list(api_client, ws_id, lane="passive", **{"from": (now - timedelta(days=7)).isoformat()})
+    assert [i["title"] for i in last_week["items"]] == ["Day 0", "Day 2"]
+    assert last_week["total"] == 2
+    # "to" is left out of the range, so the day it names is not included
+    older = await _list(api_client, ws_id, lane="passive", to=(now - timedelta(days=1)).isoformat())
+    assert [i["title"] for i in older["items"]] == ["Day 2", "Day 10"]
+    backwards = await api_client.get(
+        "/api/v1/activity", headers=_ws_headers(ws_id),
+        params={"lane": "passive", "from": now.isoformat(), "to": (now - timedelta(days=1)).isoformat()},
+    )
+    assert backwards.status_code == 400
+
+    everything = await _list(api_client, ws_id, lane="passive")
+    first_id = next(i["id"] for i in everything["items"] if i["title"] == "Day 0")
+    res = await api_client.post("/api/v1/activity/read", json={"ids": [first_id]}, headers=_ws_headers(ws_id))
+    assert res.status_code == 200, res.text
+    unread = await _list(api_client, ws_id, lane="passive", unread_only="true")
+    assert {i["title"] for i in unread["items"]} == {"Day 2", "Day 10"}
+    assert all(i["unread"] for i in unread["items"])
+
+
 async def test_activity_requires_membership(api_client, make_client):
     await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Private WS", tier="large")

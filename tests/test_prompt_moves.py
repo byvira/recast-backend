@@ -156,8 +156,11 @@ def test_a_changed_prompt_file_is_used_without_a_restart(tmp_path, monkeypatch):
 
     (tmp_path / "media").mkdir()
     (tmp_path / "media" / "image_no_text.jinja").write_text("no words, please", encoding="utf-8")
+    # Both the published-text loader and the plain file loader read the folder, so patch both.
     monkeypatch.setattr(registry._env, "loader", FileSystemLoader(str(tmp_path)))
-    registry._env.cache.clear() if registry._env.cache else None
+    monkeypatch.setattr(registry._file_env, "loader", FileSystemLoader(str(tmp_path)))
+    for env in (registry._env, registry._file_env):
+        env.cache.clear() if env.cache else None
     assert ig.no_text_suffix() == "no words, please"
 
 

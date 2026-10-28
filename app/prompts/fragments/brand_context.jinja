@@ -1,3 +1,4 @@
+{# @locked whole #}
 {#- Writing style from the voice calibration. Only settings moved away from the middle are written, so
     a profile left at its defaults produces exactly the prompt it always did. -#}
 {%- macro writing_style(calibration) -%}
@@ -516,3 +517,4 @@ Pipeline: {{ pipeline }}
 {{ blacklist_str }}
 Always match the brand voice exactly.
 {%- endif -%}
+{# @end #}

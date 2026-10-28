@@ -7,7 +7,7 @@ Only runs when hookVariations is True.
 import logging
 from app.prompts.safe import contains_banned, hook_fits
 from app.models.text import AgentTask, AgentResult
-from app.pipelines.text.generator import GENERIC_OPENINGS, build_language_instruction
+from app.pipelines.text.generator import build_language_instruction, generic_openings
 from app.prompts.registry import load_prompt
 from app.shared.llm import call_llm_structured
 
@@ -57,7 +57,7 @@ async def run_hook_agent(task: AgentTask) -> AgentResult:
 
 def _starts_with_generic_opening(text: str) -> bool:
     lowered = text.strip().lower()
-    return any(lowered.startswith(g) for g in GENERIC_OPENINGS)
+    return any(lowered.startswith(g) for g in generic_openings())
 
 
 def _first_line(content: str) -> str:

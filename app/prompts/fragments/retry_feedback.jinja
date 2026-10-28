@@ -1,3 +1,4 @@
+{# @locked whole #}
 {% if kind == "detail" %}
 {#- Mirrors orchestrator.py::_build_retry_feedback() and agents/text/nodes.py::
    rewrite_node's inline builder — the two were byte-identical in output shape,
@@ -33,3 +34,4 @@ ENFORCEMENT CONTEXT FOR THIS RETRY:
 {{ retry_feedback }}
 Every issue above must be resolved in this generation.
 {% endif %}
+{# @end #}

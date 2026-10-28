@@ -264,9 +264,23 @@ def build_query(
     status: Optional[str] = None,
     q: Optional[str] = None,
     hidden_flags: Any = (),
+    occurred_from: Optional[datetime] = None,
+    occurred_to: Optional[datetime] = None,
+    unread_only: bool = False,
+    read_before: Optional[datetime] = None,
 ) -> dict:
     query = visibility_filter(workspace_id, user_id, role)
     and_clauses: list[dict] = []
+    if occurred_from or occurred_to:
+        # "from" is kept, "to" is not, so two ranges side by side never show the same row twice
+        span: dict = {}
+        if occurred_from:
+            span["$gte"] = occurred_from
+        if occurred_to:
+            span["$lt"] = occurred_to
+        and_clauses.append({"occurred_at": span})
+    if unread_only:
+        and_clauses.append(unread_filter(user_id, read_before))
     query["lane"] = lane
     if lane == LANE_ACTIVE:
         # A snoozed suggestion comes back on its own once the snooze lapses.

@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
-from app.db.mongo import brand_profiles, content_pieces, get_campaigns_collection
+from app.db.mongo import brand_profiles, content_pieces, get_campaigns_collection, get_db
 from app.models.campaign import (
     UNSUPPORTED_CAMPAIGN_SOURCES,
     Campaign,
@@ -420,12 +420,12 @@ async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> 
     query = {"workspace_id": workspace_id, "source_piece_id": {"$in": piece_ids}, "deleted": {"$ne": True}}
     # Only the few fields this listing uses are read; a recording's transcript and a picture's layers are large and not needed here.
     audio = await audio_assets.find(
-        query, {"_id": 0, "media_id": 1, "title": 1, "source_piece_id": 1},
+        query, {"_id": 0, "id": 1, "media_id": 1, "title": 1, "source_piece_id": 1},
     ).to_list(length=2000)
     # a picture that was made again is replaced: the old one stays in the library but is not shown on the post
     images = await image_assets.find(
         {**query, "replaced_by": {"$exists": False}},
-        {"_id": 0, "title": 1, "source_piece_id": 1, "slides.media_id": 1},
+        {"_id": 0, "id": 1, "title": 1, "source_piece_id": 1, "slides.media_id": 1},
     ).to_list(length=2000)
     media_ids = {a.get("media_id") for a in audio if a.get("media_id")}
     for doc in images:
@@ -441,7 +441,8 @@ async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> 
         m = by_id.get(a.get("media_id") or "")
         if m and m.get("url"):
             found.setdefault(a["source_piece_id"], []).append(
-                {"kind": "audio", "url": m["url"], "mime_type": m.get("mime_type"), "title": a.get("title")}
+                # which library item it is, so the post window can open it in its own editor
+                {"kind": "audio", "url": m["url"], "mime_type": m.get("mime_type"), "title": a.get("title"), "asset_type": "audio", "asset_id": a.get("id")}
             )
     for doc in images:
         for slide in doc.get("slides", []):
@@ -450,6 +451,7 @@ async def _generated_media_by_piece(piece_ids: list[str], workspace_id: str) -> 
                 found.setdefault(doc["source_piece_id"], []).append(
                     {
                         "kind": "image", "url": m["url"], "mime_type": m.get("mime_type"), "title": doc.get("title"),
+                        "asset_type": "image", "asset_id": doc.get("id"),
                         # a text card because no AI picture could be made, and why
                         "flagged": bool(m.get("qa_flagged")), "flag_reason": m.get("qa_flag_reason"),
                     }
@@ -485,9 +487,18 @@ async def campaign_media(
         {"piece_id": 1, "media_status": 1},
     ).to_list(length=None)
     ids = [p["piece_id"] for p in pieces if p.get("piece_id")]
+    # the video projects made for each post, so a post's video can be opened in the video editor
+    projects = await get_db()["video_projects"].find(
+        {"workspace_id": ctx.workspace_id, "created_from.piece_id": {"$in": ids}, "deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "created_from.piece_id": 1},
+    ).to_list(length=2000) if ids else []
+    video_projects: dict[str, list[str]] = {}
+    for proj in projects:
+        video_projects.setdefault((proj.get("created_from") or {}).get("piece_id"), []).append(proj["id"])
     return {
         "items": await _generated_media_by_piece(ids, ctx.workspace_id),
         "status": {p["piece_id"]: p["media_status"] for p in pieces if p.get("piece_id") and p.get("media_status")},
+        "video_projects": video_projects,
     }
 
 

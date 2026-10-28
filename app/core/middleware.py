@@ -250,6 +250,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             )
 
             response.headers["X-Request-ID"] = request_id
+            # The server's own time for this request, shown in the browser's DevTools (Network, Timing), so a slow page can be
+            # told apart from a slow network without reading the server logs.
+            response.headers["Server-Timing"] = f"app;dur={process_time:.1f}"
 
             return response
 

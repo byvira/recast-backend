@@ -35,7 +35,7 @@ import aiofiles
 from fastapi import HTTPException
 from google import genai
 from google.genai import types
-from groq import APIConnectionError, APIStatusError, AsyncGroq, RateLimitError
+from groq import APIConnectionError, APIStatusError, AsyncGroq, InternalServerError, RateLimitError
 
 from app.core.config import settings
 from app.core.tracing import add_run_metadata, traceable
@@ -412,21 +412,42 @@ _gemini_client: genai.Client | None = None
 def get_groq_client() -> AsyncGroq:
     global _groq_client
     if _groq_client is None:
-        client = AsyncGroq(
-            api_key=settings.GROQ_API_KEY,
-            timeout=30.0,
-            max_retries=2,
-        )
-        # Patch for LangSmith tracing (no-op when tracing is disabled). Every
-        # chat.completions.create through this singleton — llm.py helpers and the
-        # supervisor's raw ReAct loop alike — then becomes a traced LLM run.
-        try:
-            from app.core.tracing import wrap_groq
-            client = wrap_groq(client)
-        except Exception:  # noqa: BLE001 — tracing must never break the client
-            pass
-        _groq_client = client
+        _groq_client = _new_groq_client(max_retries=2)
     return _groq_client
+
+
+_groq_quick_client: AsyncGroq | None = None
+
+
+def get_groq_quick_client() -> AsyncGroq:
+    """The Groq client for calls that go through _backoff_retry (call_llm, call_llm_structured, call_llm_chat). It does not retry
+    by itself: the shared client's own retries slept through Groq's retry-after (tens of seconds on a used-up minute budget)
+    unseen, and then _backoff_retry waited again. Here _backoff_retry alone decides, and only waits when the wait is short.
+    Streaming and the supervisor's own loop keep the shared client and its retries, unchanged."""
+    global _groq_quick_client
+    if _groq_quick_client is None:
+        _groq_quick_client = _new_groq_client(max_retries=0)
+    return _groq_quick_client
+
+
+def _groq_for_backoff() -> AsyncGroq:
+    """The client a _backoff_retry-wrapped call uses: the no-retry one, unless get_groq_client has been replaced (a test's
+    stand-in), which is then used as it always was."""
+    shared = get_groq_client()
+    return get_groq_quick_client() if shared is _groq_client else shared
+
+
+def _new_groq_client(*, max_retries: int) -> AsyncGroq:
+    client = AsyncGroq(api_key=settings.GROQ_API_KEY, timeout=30.0, max_retries=max_retries)
+    # Patch for LangSmith tracing (no-op when tracing is disabled). Every
+    # chat.completions.create through these clients — llm.py helpers and the
+    # supervisor's raw ReAct loop alike — then becomes a traced LLM run.
+    try:
+        from app.core.tracing import wrap_groq
+        client = wrap_groq(client)
+    except Exception:  # noqa: BLE001 — tracing must never break the client
+        pass
+    return client
 
 
 def get_gemini_client() -> genai.Client:
@@ -574,9 +595,16 @@ async def _groq_create(client: AsyncGroq, *, reasoning_effort: str | None, **kwa
     bounded gate rather than firing unbounded.
     """
     model_name = kwargs.get("model", "unknown")
-    t0 = time.perf_counter()
+    queued_at = time.perf_counter()
+    t0 = queued_at
     try:
         async with _groq_semaphore:
+            # The time logged for the call starts here, once it is Groq's turn, so the AI health page shows how fast Groq
+            # answered and not how long this call waited behind others in this process. A long wait is logged on its own.
+            t0 = time.perf_counter()
+            waited = t0 - queued_at
+            if waited > 1.0:
+                logger.info("Groq call waited %.1f s for its turn (%d at a time)", waited, _GROQ_CONCURRENCY_LIMIT)
             if reasoning_effort is None:
                 result = await client.chat.completions.create(**kwargs)
             else:
@@ -613,6 +641,21 @@ def _note_retry_success(label: str) -> None:
 # One call, with every retry and wait included, may take this long before the next provider is tried.
 LLM_CALL_DEADLINE_S = 60.0
 
+# The longest a rate limit is waited out before moving on. Groq's free budget resets each minute, so its retry-after is often
+# 20 to 50 seconds; a backup answers in a few seconds, so anything longer than this goes to the next option instead of waiting.
+MAX_RATE_LIMIT_WAIT_S = 3.0
+
+
+def _retry_after_s(exc: BaseException) -> float | None:
+    """How long the provider asked us to wait, from its retry-after header (seconds), when it said."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    try:
+        value = headers.get("retry-after")
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
 
 async def _backoff_retry(
     coro_factory,
@@ -647,16 +690,28 @@ async def _backoff_retry(
         except RateLimitError as exc:
             if attempt == attempts:
                 raise
-            delay = base_delay ** attempt
+            # wait as long as the provider asked, or the usual backoff, but never long: a long wait goes to the next option
+            asked = _retry_after_s(exc)
+            delay = asked if asked is not None else base_delay ** attempt
+            # a wait that would not fit in the time left is out of time: the caller goes straight to the backups
             if delay >= deadline_s - (time.monotonic() - started):
                 import httpx
 
                 raise APIConnectionError(request=httpx.Request("POST", "https://api.groq.com")) from exc
+            if delay > MAX_RATE_LIMIT_WAIT_S:
+                logger.warning("%s rate limit with a %.0f s wait: moving on instead of waiting", label, delay)
+                raise
             logger.warning(
                 "%s rate limit (attempt %d/%d) — retrying in %.0f s",
                 label, attempt, attempts, delay,
             )
             await asyncio.sleep(delay)
+        except (InternalServerError, APIConnectionError):
+            # A dropped connection or a passing Groq error usually clears straight away. The Groq client used to retry these
+            # itself; now it does not, so one quick retry is made here before the caller moves to a backup, as before.
+            if attempt >= 2:
+                raise
+            await asyncio.sleep(0.5)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -686,7 +741,7 @@ async def call_llm(
     should ever need more than "low" here), or "high" for a task that
     genuinely needs deeper deliberation.
     """
-    client   = get_groq_client()
+    client   = _groq_for_backoff()
     messages = _build_messages(prompt, system)
     capped   = _safe_max_tokens(prompt, system, max_tokens)
 
@@ -921,7 +976,7 @@ async def call_llm_structured(
     complete, correctly-parsed JSON in a fraction of the time. See
     _groq_create's docstring for the measured numbers.
     """
-    client   = get_groq_client()
+    client   = _groq_for_backoff()
     messages = _build_messages(prompt, system, json_mode=True)
     capped   = _safe_max_tokens(prompt, system, max_tokens)
 
@@ -1035,7 +1090,7 @@ async def call_llm_chat(
     Each turn refines the previous version.
     Full history sent on every turn for context continuity.
     """
-    client = get_groq_client()
+    client = _groq_for_backoff()
 
     full_messages: list[dict[str, str]] = []
     if system:
@@ -1348,18 +1403,31 @@ def _note_fallback_failed(model: str) -> None:
 
 _gemini_skip_until = 0.0  # time.monotonic() until which Gemini is not tried (it said no for a reason retrying will not fix)
 GEMINI_SKIP_SECONDS = 600.0
+# How long Gemini is left alone after each kind of refusal. A used-up quota (1,207 refusals in 30 days in production, each one
+# a wasted call before the next backup) will not refill in the next minute either; a busy minute or a passing outage might.
+_GEMINI_SKIP_FOR: dict[str, float] = {
+    "auth_invalid_key": GEMINI_SKIP_SECONDS,
+    "billing_or_access": GEMINI_SKIP_SECONDS,
+    "model_unavailable": GEMINI_SKIP_SECONDS,
+    "quota_daily": GEMINI_SKIP_SECONDS,
+    "quota_tokens": 120.0,
+    "rate_limit_minute": 60.0,
+    "provider_outage": 30.0,
+}
 
 
 def _skip_gemini_if_refused(exc: BaseException) -> None:
-    """A refused key, denied project or retired model will not fix itself in the next minute, so stop trying for a while."""
+    """Stop trying Gemini for a while after a refusal that retrying straight away will not fix: a refused key, denied project or
+    retired model, a used-up quota, a busy minute, or an outage. The next backup is used meanwhile, as when Gemini fails."""
     global _gemini_skip_until
     try:
         from app.shared.llm_health.classifier import classify
         from app.shared.llm_health.track import _message_of, _status_of
 
         kind = classify(http_status=_status_of(exc), error_class=exc.__class__.__name__, message=_message_of(exc))
-        if kind in ("auth_invalid_key", "billing_or_access", "model_unavailable"):
-            _gemini_skip_until = time.monotonic() + GEMINI_SKIP_SECONDS
+        seconds = _GEMINI_SKIP_FOR.get(kind)
+        if seconds:
+            _gemini_skip_until = max(_gemini_skip_until, time.monotonic() + seconds)
     except Exception:  # noqa: BLE001
         pass
 

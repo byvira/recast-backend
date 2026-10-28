@@ -1,0 +1,1887 @@
+{
+ "assertions": [
+  {
+   "assertion": {
+    "kind": "includes",
+    "text": "habits"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "includes",
+     "text": "habits"
+    },
+    "message": "Found it.",
+    "ok": true
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "includes",
+    "text": "goals"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "includes",
+     "text": "goals"
+    },
+    "message": "The text \"goals\" is missing.",
+    "ok": false
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "excludes",
+    "text": "goals"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "excludes",
+     "text": "goals"
+    },
+    "message": "Not present.",
+    "ok": true
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "excludes",
+    "text": "Asha"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "excludes",
+     "text": "Asha"
+    },
+    "message": "The text \"Asha\" is in the prompt.",
+    "ok": false
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "starts_with",
+    "text": "Write"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "starts_with",
+     "text": "Write"
+    },
+    "message": "It starts that way.",
+    "ok": true
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "starts_with",
+    "text": "Read"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "starts_with",
+     "text": "Read"
+    },
+    "message": "It doesn't start with \"Read\".",
+    "ok": false
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "min_chars",
+    "value": 10
+   },
+   "expected": {
+    "assertion": {
+     "kind": "min_chars",
+     "value": 10
+    },
+    "message": "48 characters.",
+    "ok": true
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "min_chars",
+    "value": 500
+   },
+   "expected": {
+    "assertion": {
+     "kind": "min_chars",
+     "value": 500
+    },
+    "message": "Only 48 characters. Needs at least 500.",
+    "ok": false
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "max_chars",
+    "value": 500
+   },
+   "expected": {
+    "assertion": {
+     "kind": "max_chars",
+     "value": 500
+    },
+    "message": "48 characters.",
+    "ok": true
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "max_chars",
+    "value": 10
+   },
+   "expected": {
+    "assertion": {
+     "kind": "max_chars",
+     "value": 10
+    },
+    "message": "48 characters. The limit is 10.",
+    "ok": false
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "max_tokens",
+    "value": 100
+   },
+   "expected": {
+    "assertion": {
+     "kind": "max_tokens",
+     "value": 100
+    },
+    "message": "About 13 tokens.",
+    "ok": true
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "max_tokens",
+    "value": 2
+   },
+   "expected": {
+    "assertion": {
+     "kind": "max_tokens",
+     "value": 2
+    },
+    "message": "About 13 tokens. The limit is 2.",
+    "ok": false
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "no_unfilled"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "no_unfilled"
+    },
+    "message": "Not filled: missing.",
+    "ok": false
+   },
+   "rendered": "Write about habits for Asha. தமிழ் {{ missing }}"
+  },
+  {
+   "assertion": {
+    "kind": "no_unfilled"
+   },
+   "expected": {
+    "assertion": {
+     "kind": "no_unfilled"
+    },
+    "message": "Every variable is filled.",
+    "ok": true
+   },
+   "rendered": "All filled."
+  }
+ ],
+ "caseValidation": [
+  {
+   "case": {
+    "assertions": [
+     {
+      "kind": "no_unfilled"
+     }
+    ],
+    "id": "case_1",
+    "name": "Fills every variable",
+    "values": {}
+   },
+   "expected": []
+  },
+  {
+   "case": {
+    "assertions": [],
+    "id": "case_2",
+    "name": "x",
+    "values": {}
+   },
+   "expected": [
+    "Give the test a name.",
+    "x needs at least one check."
+   ]
+  },
+  {
+   "case": {
+    "assertions": [
+     {
+      "kind": "includes",
+      "text": " "
+     },
+     {
+      "kind": "max_chars",
+      "value": 0
+     }
+    ],
+    "id": "case_3",
+    "name": "Text checks",
+    "values": {}
+   },
+   "expected": [
+    "Text checks: \"Contains the text\" needs some text.",
+    "Text checks: \"Has at most this many characters\" needs a number above zero."
+   ]
+  }
+ ],
+ "checks": [
+  {
+   "edits": {
+    "craft": "Write like a thoughtful person. Keep [BRAND NAME] as it is.\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "Write plainly.\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Keep [BRAND NAME]. Members replace it.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "close": "End with one question.\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Add {topic} back. The prompt needs it.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "close": "End with {{ topic }} and {{ extra }}.\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "{extra} isn't a variable for this prompt.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "close": "End with {{ topic }} and {{ audience }}.\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "{% if x %}Keep [BRAND NAME].{% endif %}\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "{x} isn't a variable for this prompt.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "The template logic in this section changed. Put the tags back as they were.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "   \n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Keep [BRAND NAME]. Members replace it.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "This section can't be empty.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "Keep [BRAND NAME]. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Keep this section under 6000 characters.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "Keep [BRAND NAME]. The previous attempt failed, so try again.\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "That wording is internal and can leak into answers. Reword it.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "warn"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "locked_1": "Changed.\n"
+   },
+   "expected": [
+    {
+     "detail": "Locked: locked_1.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "not_a_section": "Anything.\n"
+   },
+   "expected": [
+    {
+     "detail": "Locked: not_a_section.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "Keep [BRAND NAME]. {{ brand.__class__ }}\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "{brand} isn't a variable for this prompt.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "Only plain variables like {{ name }} can be added. Put the rest back as it was.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "Keep [BRAND NAME]. {{ audience }} please.\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "All template tags match the code.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "Keep [BRAND NAME]. {#\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No unknown or missing variables.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Remove {# and #}. They would hide text in the rest of the prompt.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  },
+  {
+   "edits": {
+    "craft": "Keep [BRAND NAME]. {{ topic\n"
+   },
+   "expected": [
+    {
+     "detail": "Every locked section is exactly as it is in code.",
+     "id": "locked_integrity",
+     "name": "Locked parts are unchanged",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "{topic} isn't a variable for this prompt.",
+     "id": "variables",
+     "name": "Variables resolve",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "A curly bracket is not closed. Every {{ needs a }}.",
+     "id": "template_logic",
+     "name": "Template logic is unchanged",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "[BRAND NAME] still present.",
+     "id": "protected_text",
+     "name": "Protected text is present",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "No section is empty or too long.",
+     "id": "size",
+     "name": "Sections are a sensible size",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "Nothing that could leak into an answer.",
+     "id": "no_leak_wording",
+     "name": "No internal wording",
+     "required": false,
+     "status": "pass"
+    }
+   ],
+   "extra": [
+    "audience"
+   ],
+   "protected": [
+    "[BRAND NAME]"
+   ]
+  }
+ ],
+ "compose": [
+  {
+   "expected": "You write for {{ brand }}.\n{% if tone %}Tone: {{ tone }}.\n{% endif %}\nNew craft\nEnd with one question about {{ topic }}.\n",
+   "overrides": {
+    "craft": "New craft",
+    "locked_1": "Never"
+   },
+   "text": "{# @locked locked_1 #}\nYou write for {{ brand }}.\n{% if tone %}Tone: {{ tone }}.\n{% endif %}\n{# @end #}\n{# @editable craft \"Craft\" #}\nWrite like a person. Keep [BRAND NAME] as it is.\n{# @end #}\n{# @editable close \"Closing\" #}\nEnd with one question about {{ topic }}.\n{# @end #}\n"
+  }
+ ],
+ "gate": [
+  {
+   "expected": {
+    "failing": [],
+    "status": "none",
+    "warnings": []
+   },
+   "results": null,
+   "stale": false
+  },
+  {
+   "expected": {
+    "failing": [],
+    "status": "none",
+    "warnings": []
+   },
+   "results": [],
+   "stale": false
+  },
+  {
+   "expected": {
+    "failing": [],
+    "status": "stale",
+    "warnings": []
+   },
+   "results": [
+    {
+     "detail": "",
+     "id": "a",
+     "name": "A",
+     "required": true,
+     "status": "pass"
+    }
+   ],
+   "stale": true
+  },
+  {
+   "expected": {
+    "failing": [],
+    "status": "passed",
+    "warnings": []
+   },
+   "results": [
+    {
+     "detail": "",
+     "id": "a",
+     "name": "A",
+     "required": true,
+     "status": "pass"
+    }
+   ],
+   "stale": false
+  },
+  {
+   "expected": {
+    "failing": [
+     "B"
+    ],
+    "status": "failed",
+    "warnings": []
+   },
+   "results": [
+    {
+     "detail": "",
+     "id": "a",
+     "name": "A",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "",
+     "id": "b",
+     "name": "B",
+     "required": true,
+     "status": "fail"
+    }
+   ],
+   "stale": false
+  },
+  {
+   "expected": {
+    "failing": [],
+    "status": "passed",
+    "warnings": [
+     "C"
+    ]
+   },
+   "results": [
+    {
+     "detail": "",
+     "id": "a",
+     "name": "A",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "",
+     "id": "c",
+     "name": "C",
+     "required": false,
+     "status": "warn"
+    }
+   ],
+   "stale": false
+  },
+  {
+   "expected": {
+    "failing": [
+     "D"
+    ],
+    "status": "error",
+    "warnings": []
+   },
+   "results": [
+    {
+     "detail": "",
+     "id": "a",
+     "name": "A",
+     "required": true,
+     "status": "pass"
+    },
+    {
+     "detail": "",
+     "id": "b",
+     "name": "B",
+     "required": true,
+     "status": "fail"
+    },
+    {
+     "detail": "",
+     "id": "d",
+     "name": "D",
+     "required": false,
+     "status": "error"
+    }
+   ],
+   "stale": false
+  }
+ ],
+ "newFolder": [
+  {
+   "expected": [],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "name": "lab",
+    "parent": "text"
+   }
+  },
+  {
+   "expected": [
+    {
+     "field": "parent",
+     "message": "That parent folder does not exist."
+    },
+    {
+     "field": "name",
+     "message": "Give the folder a name."
+    }
+   ],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "name": "",
+    "parent": "nope"
+   }
+  },
+  {
+   "expected": [
+    {
+     "field": "name",
+     "message": "Use lower case letters, numbers and underscores, starting with a letter."
+    }
+   ],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "name": "Text",
+    "parent": ""
+   }
+  },
+  {
+   "expected": [
+    {
+     "field": "name",
+     "message": "A folder with that name already exists here."
+    }
+   ],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "name": "generate",
+    "parent": "text"
+   }
+  }
+ ],
+ "newPrompt": [
+  {
+   "expected": [],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "folder": "text/generate",
+    "name": "new_one",
+    "reason": "Used for a test",
+    "text": "Write one specific opening line."
+   },
+   "paths": [
+    "text/generate/master"
+   ]
+  },
+  {
+   "expected": [
+    {
+     "field": "folder",
+     "message": "Choose a folder, or type a new one."
+    },
+    {
+     "field": "name",
+     "message": "Give the prompt a name."
+    },
+    {
+     "field": "reason",
+     "message": "Say where it will be used (at least 10 characters)."
+    },
+    {
+     "field": "text",
+     "message": "Write the prompt (at least 20 characters)."
+    }
+   ],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "folder": "",
+    "name": "",
+    "reason": "",
+    "text": ""
+   },
+   "paths": [
+    "text/generate/master"
+   ]
+  },
+  {
+   "expected": [
+    {
+     "field": "folder",
+     "message": "Folder names use lower case letters, numbers and underscores, and start with a letter."
+    },
+    {
+     "field": "name",
+     "message": "Use lower case letters, numbers and underscores, starting with a letter."
+    },
+    {
+     "field": "reason",
+     "message": "Say where it will be used (at least 10 characters)."
+    },
+    {
+     "field": "text",
+     "message": "Write the prompt (at least 20 characters)."
+    }
+   ],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "folder": "Text/Bad",
+    "name": "1bad",
+    "reason": "short",
+    "text": "tiny"
+   },
+   "paths": [
+    "text/generate/master"
+   ]
+  },
+  {
+   "expected": [
+    {
+     "field": "folder",
+     "message": "That folder does not exist. Create the folder first, then add the prompt."
+    }
+   ],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "folder": "text/missing",
+    "name": "ok_name",
+    "reason": "Used for a test",
+    "text": "Write one specific opening line."
+   },
+   "paths": [
+    "text/generate/master"
+   ]
+  },
+  {
+   "expected": [
+    {
+     "field": "name",
+     "message": "A prompt with that name already exists in this folder."
+    },
+    {
+     "field": "text",
+     "message": "Remove the region marker lines. They are added for you."
+    }
+   ],
+   "folders": [
+    "text",
+    "text/generate"
+   ],
+   "input": {
+    "folder": "text/generate",
+    "name": "master",
+    "reason": "Used for a test",
+    "text": "{# @locked x #}\nWrite one specific opening line."
+   },
+   "paths": [
+    "text/generate/master"
+   ]
+  }
+ ],
+ "opsData": [
+  {
+   "expected": [],
+   "kind": "register_notes",
+   "rows": [
+    {
+     "code": "ta",
+     "language": "Tamil",
+     "note": "Everyday Tamil."
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "hi",
+     "message": "Hindi: keep the note under 400 characters."
+    }
+   ],
+   "kind": "register_notes",
+   "rows": [
+    {
+     "code": "hi",
+     "language": "Hindi",
+     "note": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "hi",
+     "message": "Hindi: remove the curly brackets. Notes are plain text."
+    }
+   ],
+   "kind": "register_notes",
+   "rows": [
+    {
+     "code": "hi",
+     "language": "Hindi",
+     "note": "Use {{ name }}"
+    }
+   ]
+  },
+  {
+   "expected": [],
+   "kind": "tone_options",
+   "rows": [
+    {
+     "enabled": true,
+     "id": "formal",
+     "instruction": "Write formally with full sentences.",
+     "label": "Formal"
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "formal",
+     "message": "Every tone needs a name."
+    },
+    {
+     "at": "formal",
+     "message": "A tone: the instruction needs at least 20 characters."
+    },
+    {
+     "at": "",
+     "message": "Leave at least one tone switched on."
+    }
+   ],
+   "kind": "tone_options",
+   "rows": [
+    {
+     "enabled": false,
+     "id": "formal",
+     "instruction": "short",
+     "label": ""
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "a",
+     "message": "B: two tones share the same id."
+    },
+    {
+     "at": "a",
+     "message": "B: remove the curly brackets. Instructions are plain text."
+    }
+   ],
+   "kind": "tone_options",
+   "rows": [
+    {
+     "enabled": true,
+     "id": "a",
+     "instruction": "Write formally with full sentences.",
+     "label": "A"
+    },
+    {
+     "enabled": true,
+     "id": "a",
+     "instruction": "Write formally with {% x %} sentences.",
+     "label": "B"
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "3_words",
+     "message": "Three: the id uses lower case letters, numbers and underscores."
+    }
+   ],
+   "kind": "tone_options",
+   "rows": [
+    {
+     "enabled": true,
+     "id": "3_words",
+     "instruction": "Write formally with full sentences.",
+     "label": "Three"
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "",
+     "message": "Keep at least one tone."
+    }
+   ],
+   "kind": "tone_options",
+   "rows": []
+  },
+  {
+   "expected": [
+    {
+     "at": "",
+     "message": "Keep at least one content goal."
+    }
+   ],
+   "kind": "content_goals",
+   "rows": []
+  },
+  {
+   "expected": [],
+   "kind": "content_goals",
+   "rows": [
+    {
+     "id": "educate",
+     "text": "Teach one useful thing clearly."
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "educate",
+     "message": "Too short: the goal needs at least 20 characters."
+    },
+    {
+     "at": "sell",
+     "message": "yyyyyyyyyyyyyyyyyyyyyyyyyyyy: keep the goal under 600 characters."
+    }
+   ],
+   "kind": "content_goals",
+   "rows": [
+    {
+     "id": "educate",
+     "text": "Too short"
+    },
+    {
+     "id": "sell",
+     "text": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "",
+     "message": "Every goal needs an id of lower case letters, numbers and underscores."
+    },
+    {
+     "at": "sell",
+     "message": "sell: two goals share the same id."
+    }
+   ],
+   "kind": "content_goals",
+   "rows": [
+    {
+     "id": "",
+     "text": "Teach one useful thing clearly."
+    },
+    {
+     "id": "sell",
+     "text": "Sell one thing clearly please."
+    },
+    {
+     "id": "sell",
+     "text": "Sell another thing clearly now."
+    }
+   ]
+  },
+  {
+   "expected": [],
+   "kind": "quality_words",
+   "rows": [
+    {
+     "label": "Generic openings",
+     "language": "en",
+     "list": "generic_openings",
+     "words": [
+      "in today's world"
+     ]
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "en:filler_words",
+     "message": "Filler words (en): the list can't be empty."
+    }
+   ],
+   "kind": "quality_words",
+   "rows": [
+    {
+     "label": "Filler words",
+     "language": "en",
+     "list": "filler_words",
+     "words": []
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "en:filler_words",
+     "message": "Filler words (en): write \"Many\" in lower case with no spaces around it."
+    },
+    {
+     "at": "en:filler_words",
+     "message": "Filler words (en): \"zzzzzzzzzzzzzzzzzzzzzzzz...\" is too long for one entry."
+    },
+    {
+     "at": "en:filler_words",
+     "message": "Filler words (en): 1 entry is repeated."
+    }
+   ],
+   "kind": "quality_words",
+   "rows": [
+    {
+     "label": "Filler words",
+     "language": "en",
+     "list": "filler_words",
+     "words": [
+      "many",
+      "Many ",
+      "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+     ]
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "en:filler_words",
+     "message": "Filler words (en): \"\" is too short. Each entry needs at least 2 letters."
+    }
+   ],
+   "kind": "quality_words",
+   "rows": [
+    {
+     "label": "Filler words",
+     "language": "en",
+     "list": "filler_words",
+     "words": [
+      "",
+      "a",
+      "ok"
+     ]
+    }
+   ]
+  },
+  {
+   "expected": [
+    {
+     "at": "en:filler_words",
+     "message": "Filler words (en): the list isn't in the right shape."
+    }
+   ],
+   "kind": "quality_words",
+   "rows": [
+    {
+     "label": "Filler words",
+     "language": "en",
+     "list": "filler_words",
+     "words": "abc"
+    }
+   ]
+  }
+ ],
+ "regions": [
+  {
+   "expected": [
+    {
+     "body": "You write for {{ brand }}.\n{% if tone %}Tone: {{ tone }}.\n{% endif %}\n",
+     "id": "locked_1",
+     "kind": "locked",
+     "label": ""
+    },
+    {
+     "body": "Write like a person. Keep [BRAND NAME] as it is.\n",
+     "id": "craft",
+     "kind": "editable",
+     "label": "Craft"
+    },
+    {
+     "body": "End with one question about {{ topic }}.\n",
+     "id": "close",
+     "kind": "editable",
+     "label": "Closing"
+    }
+   ],
+   "text": "{# @locked locked_1 #}\nYou write for {{ brand }}.\n{% if tone %}Tone: {{ tone }}.\n{% endif %}\n{# @end #}\n{# @editable craft \"Craft\" #}\nWrite like a person. Keep [BRAND NAME] as it is.\n{# @end #}\n{# @editable close \"Closing\" #}\nEnd with one question about {{ topic }}.\n{# @end #}\n"
+  },
+  {
+   "expected": [
+    {
+     "body": "No final newline here",
+     "id": "all",
+     "kind": "editable",
+     "label": "Prompt text"
+    }
+   ],
+   "text": "{# @editable all \"Prompt text\" #}\nNo final newline here"
+  },
+  {
+   "expected": [
+    {
+     "body": "Before the markers.\n",
+     "id": "outside_1",
+     "kind": "locked",
+     "label": ""
+    },
+    {
+     "body": "x\n",
+     "id": "a",
+     "kind": "locked",
+     "label": ""
+    },
+    {
+     "body": "After.\n",
+     "id": "outside_2",
+     "kind": "locked",
+     "label": ""
+    }
+   ],
+   "text": "Before the markers.\n{# @locked a #}\nx\n{# @end #}\nAfter.\n"
+  },
+  {
+   "expected": [
+    {
+     "body": "Kept even with no end marker.\n",
+     "id": "a",
+     "kind": "locked",
+     "label": ""
+    },
+    {
+     "body": "Second.\n",
+     "id": "b",
+     "kind": "editable",
+     "label": "B"
+    }
+   ],
+   "text": "{# @locked a #}\nKept even with no end marker.\n{# @editable b \"B\" #}\nSecond.\n{# @end #}\n"
+  }
+ ],
+ "renderSample": [
+  {
+   "expected": "Hi Asha, habits {% if x %}{{ unknown }}{% endif %}",
+   "text": "Hi {{ first_name }}, {{ topic | title }} {% if x %}{{ unknown }}{% endif %}",
+   "values": {
+    "first_name": "Asha",
+    "topic": "habits"
+   }
+  }
+ ],
+ "slots": [
+  {
+   "expected": [
+    "name",
+    "topic"
+   ],
+   "text": "Hello {{ name }} and {{ topic | upper }}."
+  },
+  {
+   "expected": [
+    "items"
+   ],
+   "text": "{% for item in items %}{{ item.title }}{% endfor %}"
+  },
+  {
+   "expected": [
+    "mode",
+    "ready"
+   ],
+   "text": "{% if not ready %}wait{% elif mode %}{{ mode }}{% endif %}"
+  },
+  {
+   "expected": [
+    "title"
+   ],
+   "text": "{% set n = 3 %}{{ n }} {{ (title) }}"
+  },
+  {
+   "expected": [
+    "spaced"
+   ],
+   "text": "{{- spaced -}} {% if true %}x{% endif %}"
+  }
+ ],
+ "tags": [
+  {
+   "expected": [],
+   "text": "Hello {{ name }} and {{ topic | upper }}."
+  },
+  {
+   "expected": [
+    "{% for item in items %}",
+    "{% endfor %}"
+   ],
+   "text": "{% for item in items %}{{ item.title }}{% endfor %}"
+  },
+  {
+   "expected": [
+    "{% if not ready %}",
+    "{% elif mode %}",
+    "{% endif %}"
+   ],
+   "text": "{% if not ready %}wait{% elif mode %}{{ mode }}{% endif %}"
+  },
+  {
+   "expected": [
+    "{% set n = 3 %}"
+   ],
+   "text": "{% set n = 3 %}{{ n }} {{ (title) }}"
+  },
+  {
+   "expected": [
+    "{% if true %}",
+    "{% endif %}"
+   ],
+   "text": "{{- spaced -}} {% if true %}x{% endif %}"
+  }
+ ]
+}

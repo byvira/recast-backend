@@ -53,6 +53,7 @@ from app.api.v1 import ops_banners as ops_banners_module
 from app.api.v1 import ops_cohorts as ops_cohorts_router
 from app.api.v1 import ops_ai_budget as ops_ai_budget_router
 from app.api.v1 import ops_plans as ops_plans_router
+from app.api.v1 import ops_prompts as ops_prompts_router
 from app.api.v1 import ops_llm_health as ops_llm_health_router
 from app.api.v1 import support as support_router
 from app.api.v1 import support_assistant as support_assistant_router
@@ -210,6 +211,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         llm_recorder.start()
     except Exception as exc:  # noqa: BLE001 - the health log must never stop the app from starting
         logger.error("LLM health recorder did not start: %s", exc)
+    try:
+        from app.prompt_library import deploy_check, live as prompt_live
+
+        from app.db.mongo import get_db
+
+        await prompt_live.refresh(get_db())
+        prompt_live.start()
+        await deploy_check.run_once(get_db())
+    except Exception as exc:  # noqa: BLE001 - prompts fall back to their files; the app must still start
+        logger.error("Published prompt versions were not loaded: %s", exc)
 
     yield
 
@@ -231,6 +242,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     from app.shared.activity import live as activity_live
     await activity_live.stop()
+    from app.prompt_library import live as prompt_live
+    await prompt_live.stop()
     from app.agents.text import session_relay
     await session_relay.stop_listener()
     get_mongo_client().close()
@@ -360,6 +373,8 @@ from app.core.errors import make_handlers  # noqa: E402
 
 _rate_limit_handler, _unhandled_handler = make_handlers(origins)
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+from app.prompt_library.service import LibraryError as _LibraryError  # noqa: E402
+app.add_exception_handler(_LibraryError, ops_prompts_router.library_error_response)
 app.add_exception_handler(Exception, _unhandled_handler)
 
 
@@ -462,6 +477,8 @@ app.include_router(ops_banners_module.router, prefix="/api/v1/ops/banners", tags
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
 app.include_router(ops_plans_router.router, prefix="/api/v1/ops/plans", tags=["Ops"])
+app.include_router(ops_prompts_router.router, prefix="/api/v1/ops/prompt-library", tags=["Ops"])
+app.include_router(ops_prompts_router.lists_router, prefix="/api/v1/prompt-lists", tags=["Content"])
 app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"])
 app.include_router(support_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(support_assistant_router.router, prefix="/api/v1/support", tags=["Support"])

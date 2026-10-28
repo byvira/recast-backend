@@ -1,6 +1,3 @@
-print(">>> generator.py reloaded")
-
-
 """
 Text content generator — single platform generation with full brand enforcement.
 
@@ -22,11 +19,12 @@ Context layers injected in order:
 import logging
 import re
 
-from jinja2 import TemplateNotFound
-from typing import Dict, List, Tuple
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
 from app.models.text import AgentTask, AgentResult, Platform, LANGUAGE_NAMES
-from app.prompts.registry import load_fixture, load_prompt
+from app.prompts.registry import load_fixture, load_prompt, render_fragment
 from app.pipelines.text.language_check import language_problem
 from app.pipelines.text.quality import MIN_WORD_COUNTS
 from app.prompts.safe import contains_banned, guard_output, is_english
@@ -140,7 +138,9 @@ def build_language_instruction(language_code: str) -> str:
 
     name = resolve_language_name(language_code)
     normalised = normalised.split("-")[0]
-    register_note = CONVERSATIONAL_REGISTER_NOTES.get(normalised, "")
+    from app.prompt_library.ops_lists import register_note as _register_note
+
+    register_note = _register_note(normalised)
     return load_prompt(
         "text/generate/language_instruction", name=name, register_note=register_note
     )
@@ -203,38 +203,80 @@ GENERIC_OPENINGS = [
     "the truth is",
 ]
 
+# Closings and vague filler words the quality check flags in English posts. Ops can edit all three lists (the Ops data
+# "Quality word lists"); these are the values used when nothing is published there.
+GENERIC_CLOSINGS = [
+    "so, are you ready to",
+    "the choice is yours",
+    "what are you waiting for",
+    "don't hesitate to",
+    "join us on this journey",
+    "let's connect",
+    "feel free to reach out",
+]
+FILLER_WORDS = [
+    "many", "several", "often", "recently", "soon",
+    "significant", "substantial", "various", "numerous",
+]
+
+
+def generic_openings() -> list[str]:
+    """The generic openings the product avoids and flags: the published Ops list, or GENERIC_OPENINGS."""
+    from app.prompt_library.ops_lists import words
+
+    return words("generic_openings")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PLATFORM RULES
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _per_platform(folder: str, **variables_for: dict) -> dict:
+_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+
+
+class _PerPlatform(Mapping):
     """One prompt per text platform, found by name: `text/generate/<folder>/<platform name in lower case>.jinja`. The set of
     platforms comes from the platform list (the Platform enum is built from it), so a new text platform needs its prompt files
-    added and its registry entry, not a code edit here. `variables_for` gives a platform's own template variables."""
-    found = {}
-    for member in Platform:
+    added and its registry entry, not a code edit here. `variables_for` gives a platform's own template variables.
+
+    Each lookup reads the prompt again, so a published Ops version or an edited file reaches the next post. They are read as
+    fragments of the post prompt, so the health log keeps recording the call under that prompt."""
+
+    def __init__(self, folder: str, **variables_for: Callable[[], dict]):
+        self._folder = folder
+        self._variables_for = variables_for
+        self._members = [m for m in Platform if (_PROMPTS_DIR / "text" / "generate" / folder / f"{m.name.lower()}.jinja").exists()]
+        for member in Platform:
+            if member not in self._members:
+                logger.warning("No %s prompt file for %s, so it gets none", folder, member.value)
+
+    def __getitem__(self, member):
+        if member not in self._members:
+            raise KeyError(member)
         name = member.name.lower()
-        try:
-            found[member] = load_prompt(f"text/generate/{folder}/{name}", **variables_for.get(name, {}))
-        except TemplateNotFound:
-            logger.warning("No %s prompt file for %s, so it gets none", folder, member.value)
-    return found
+        variables = self._variables_for[name]() if name in self._variables_for else {}
+        return render_fragment(f"text/generate/{self._folder}/{name}", **variables)
+
+    def __iter__(self):
+        return iter(self._members)
+
+    def __len__(self) -> int:
+        return len(self._members)
 
 
-PLATFORM_RULES = _per_platform("platform_rules", twitter={"example_tweet": load_fixture("generator_example_tweet")})
+PLATFORM_RULES = _PerPlatform("platform_rules", twitter=lambda: {"example_tweet": load_fixture("generator_example_tweet")})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HASHTAG RULES
 #
 # Same shape as PLATFORM_RULES above: one .jinja file per platform under
-# app/prompts/text/generate/hashtag_rules/, loaded once at import time.
+# app/prompts/text/generate/hashtag_rules/, read on each use.
 # Previously a plain dict of hardcoded strings, inconsistent with every other
 # per-platform prompt fragment in this module — moved here to match.
 # ─────────────────────────────────────────────────────────────────────────────
 
-HASHTAG_RULES = _per_platform("hashtag_rules")
+HASHTAG_RULES = _PerPlatform("hashtag_rules")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -244,7 +286,7 @@ HASHTAG_RULES = _per_platform("hashtag_rules")
 # under app/prompts/text/generate/cta_rules/.
 # ─────────────────────────────────────────────────────────────────────────────
 
-CTA_RULES = _per_platform("cta_rules")
+CTA_RULES = _PerPlatform("cta_rules")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -325,6 +367,15 @@ PLATFORM_LIMITS: Dict[Platform, Dict[str, int]] = {
 }
 
 
+def platform_char_limit(platform: Platform) -> Optional[int]:
+    """The most characters one post can hold on this platform, from its registry entry. None when the platform sets no limit (a
+    thread's format has no entry of its own, and each of its posts is checked separately)."""
+    from app.platforms.base import get_platform
+
+    definition = get_platform(platform.name.lower())
+    return definition.max_chars if definition else None
+
+
 def limit_warnings(platform: object, content: str) -> list[str]:
     """Plain-words notes when a text is over what its platform takes (length, hashtags, the Twitter character limit). Used after
     a quick edit, where the text is kept as the member's own but they should know before it goes out."""
@@ -336,6 +387,9 @@ def limit_warnings(platform: object, content: str) -> list[str]:
     notes: list[str] = []
     if target == Platform.TWITTER and len(content) > 280:
         notes.append(f"This is {len(content)} characters and a post on X holds 280.")
+    max_chars = platform_char_limit(target)
+    if target != Platform.TWITTER and max_chars and len(content) > max_chars:
+        notes.append(f"This is {len(content)} characters and a post on {target.value} holds {max_chars:,}.")
     limits = PLATFORM_LIMITS.get(target)
     if limits:
         words = len(content.split())
@@ -432,27 +486,26 @@ def validate_content(
         shown = ", ".join(dict.fromkeys(placeholders[:4]))
         advisory_issues.append(f"Advisory: Placeholder text left in the post: {shown}. Replace it before publishing.")
 
-    # ── Hard gate 3 — Twitter char limit ──────────────────────────────────
+    # ── Hard gate 3 — character limit ──────────────────────────────────────
     if platform == Platform.TWITTER and char_count > 280:
         hard_issues.append(f"Twitter character limit exceeded: {char_count}/280")
+    # every other platform's limit comes from its registry entry (Threads 500, Bluesky 300, Instagram 2,200), so a post the
+    # platform would refuse is written again rather than failing when it goes out
+    max_chars = platform_char_limit(platform)
+    if platform != Platform.TWITTER and max_chars and char_count > max_chars:
+        hard_issues.append(f"{platform.value} character limit exceeded: {char_count}/{max_chars}")
 
     # ── Hard gate 4 — generic openings ────────────────────────────────────
     first_200 = content_lower[:200]
-    for generic in (GENERIC_OPENINGS if english else []):
+    from app.prompt_library.ops_lists import words as _quality_words
+
+    for generic in (_quality_words("generic_openings") if english else []):
         if first_200.startswith(generic) or first_200.startswith(f"\n{generic}"):
             hard_issues.append(f"Generic opening detected: '{generic}'")
             break
 
     # ── Hard gate 5 — generic closings ────────────────────────────────────
-    generic_closings = [
-        "so, are you ready to",
-        "the choice is yours",
-        "what are you waiting for",
-        "don't hesitate to",
-        "join us on this journey",
-        "let's connect",
-        "feel free to reach out",
-    ]
+    generic_closings = _quality_words("generic_closings")
     last_200 = content_lower[-200:]
     for generic in (generic_closings if english else []):
         if generic in last_200:
@@ -460,10 +513,7 @@ def validate_content(
             break
 
     # ── Hard gate 6 — weasel words ────────────────────────────────────────
-    weasel_words = [
-        "many", "several", "often", "recently", "soon",
-        "significant", "substantial", "various", "numerous",
-    ]
+    weasel_words = _quality_words("filler_words")
     found_weasels = []
     for weasel in (weasel_words if english else []):
         pattern = r'\b' + re.escape(weasel) + r'\b'

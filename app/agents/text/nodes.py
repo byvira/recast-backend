@@ -28,7 +28,7 @@ from app.shared.brand_name import brand_display_name
 from app.agents.text.state import TextAgentState
 from app.models.text import AgentTask, GeneratedPiece, Platform
 from app.pipelines.text.brand_context import build_goal_context, build_tone_and_terms, build_tone_override, build_engagement_context
-from app.pipelines.text.generator import GENERIC_OPENINGS, generate_for_platform
+from app.pipelines.text.generator import generate_for_platform, generic_openings
 from app.pipelines.publish.spine import to_utc_datetime
 from app.pipelines.text.hook_agent import apply_recommended_hook, clamp_index, run_hook_agent
 from app.pipelines.text.normalizer import clean_raw_content, extract_content_brief
@@ -391,7 +391,7 @@ async def hooks_node(state: TextAgentState) -> dict:
         # GENERIC_OPENINGS — missing "the uncomfortable truth" here is how a
         # phrase already banned elsewhere kept reaching real output via this
         # node's hook generation. Now one source of truth.
-        "banned_openings": GENERIC_OPENINGS,
+        "banned_openings": generic_openings(),
     },
 )
     

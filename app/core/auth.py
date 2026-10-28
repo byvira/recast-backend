@@ -1,5 +1,6 @@
 """JWT utilities, token blacklisting, refresh token rotation, and auth dependency."""
 
+import asyncio
 import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -315,6 +316,21 @@ async def is_token_blacklisted(token: str) -> bool:
     return await _revoked_at(token) is not None
 
 
+async def _revocation_flags(token: str, sid: str | None) -> tuple[bool, bool]:
+    """Whether this token was revoked, and whether its session was ended, in one trip to Redis (the same three keys
+    is_token_blacklisted and is_session_revoked read)."""
+    redis = await get_redis()
+    pipe = redis.pipeline(transaction=False)
+    pipe.get(_blacklist_key(token))
+    pipe.exists(f"blacklist:{token}")
+    if sid:
+        pipe.exists(f"revoked_session:{sid}")
+    answers = await pipe.execute()
+    token_revoked = answers[0] is not None or bool(answers[1])
+    session_revoked = bool(answers[2]) if sid else False
+    return token_revoked, session_revoked
+
+
 async def _revoked_at(token: str) -> float | None:
     """When a token was revoked (0.0 when that is not known), or None if it has not been. Entries made before keys were hashed are honoured
     until they expire."""
@@ -441,14 +457,7 @@ async def get_current_user(request: Request) -> dict:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Reject blacklisted tokens before attempting to decode
-    if await is_token_blacklisted(token):
-        raise HTTPException(
-            status_code=401,
-            detail="Token has been revoked. Please log in again.",
-        )
-
-    # Decode and validate all claims — raises 401 on any failure
+    # Decode and validate all claims first — it needs no network, and a forged or expired token is refused before any lookup
     try:
         payload = jwt.decode(
             token,
@@ -477,10 +486,32 @@ async def get_current_user(request: Request) -> dict:
             detail="Invalid token payload — missing subject claim.",
         )
 
-    if await is_session_revoked(payload.get("sid")):
+    # Every lookup this request needs goes out at once, so they cost one trip to the database and Redis instead of one after
+    # another: the revocation checks, the user, and (when the request names one) the workspace and this person's membership of
+    # it, which get_current_workspace then uses instead of asking again. The checks themselves, and their order, are unchanged.
+    workspace_id = (request.headers.get("x-workspace-id") or "").strip()[:64]
+    lookups = [_revocation_flags(token, payload.get("sid")), users.find_one({"id": user_id})]
+    if workspace_id:
+        from app.db.mongo import workspace_members, workspaces
+
+        lookups += [
+            workspace_members.find_one({"workspace_id": workspace_id, "user_id": user_id}),
+            workspaces.find_one({"id": workspace_id}),
+        ]
+    results = await asyncio.gather(*lookups)
+    token_revoked, session_revoked = results[0]
+    user = results[1]
+    if workspace_id:
+        request.state.workspace_prefetch = {"user_id": user_id, "workspace_id": workspace_id, "member": results[2], "workspace": results[3]}
+
+    if token_revoked:
+        raise HTTPException(
+            status_code=401,
+            detail="Token has been revoked. Please log in again.",
+        )
+    if session_revoked:
         raise HTTPException(status_code=401, detail="Session has ended. Please log in again.")
 
-    user = await users.find_one({"id": user_id})
     if not user:
         raise HTTPException(
             status_code=404,

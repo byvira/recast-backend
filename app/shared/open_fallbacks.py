@@ -26,6 +26,45 @@ TEXT_TIMEOUT_S = 45.0
 IMAGE_TIMEOUT_S = 90.0
 
 
+# ── Leaving a refusing provider alone for a while ────────────────────────────
+# A provider that refused for a reason the next call will not fix (wrong model name, no credit, a used-up minute) was tried
+# again on every call: in production, 90 "model not found" and 14 "payment required" in 30 days, each one a wasted call before
+# the next backup. Each provider and model is now left alone for a while after such a refusal. Order and answers are unchanged:
+# the next provider in line is tried, exactly as when this one fails, and when every one is being left alone they are all
+# tried anyway, so a call never fails without trying.
+_skip_until: dict[str, float] = {}
+
+
+def _skip_seconds(exc: BaseException) -> float:
+    """How long to leave a provider alone after this failure. 0 for a failure worth trying again on the next call."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status in (401, 402, 403, 404):
+        return 3600.0  # wrong key, no credit, no access or no such model: a person has to change something
+    if status == 429:
+        try:
+            asked = float((response.headers or {}).get("retry-after") or 0)
+        except (TypeError, ValueError, AttributeError):
+            asked = 0.0
+        return min(max(asked, 60.0), 600.0)
+    if isinstance(status, int) and status >= 500:
+        return 30.0
+    return 0.0
+
+
+def _note_failure(key: str, exc: BaseException) -> None:
+    seconds = _skip_seconds(exc)
+    if seconds:
+        _skip_until[key] = time.monotonic() + seconds
+
+
+def _in_turn(keys: list[str]) -> list[int]:
+    """The positions to try, in order: those not being left alone, or every one when all of them are."""
+    now = time.monotonic()
+    ready = [i for i, k in enumerate(keys) if _skip_until.get(k, 0.0) <= now]
+    return ready or list(range(len(keys)))
+
+
 @dataclass(frozen=True)
 class TextProvider:
     name: str
@@ -100,19 +139,25 @@ async def cloudflare_text(prompt: str, system: str = "", json_mode: bool = False
         logger.info("Served this answer via the cloudflare fallback.")
         return text
     except Exception as exc:  # noqa: BLE001
+        # the only backup for a member's own footage, so it is never left alone: it is always tried
         logger.warning("cloudflare text fallback failed: %s", exc)
         return None
 
 
 async def open_text_fallback(prompt: str, system: str = "", json_mode: bool = False) -> str | None:
-    """The first open-model provider that answers, or None when none is set up or all of them fail."""
-    for p in text_providers():
+    """The first open-model provider that answers, or None when none is set up or all of them fail. A provider that just refused
+    for a lasting reason is passed over for a while (see _skip_until)."""
+    providers = text_providers()
+    keys = [f"text:{p.name}:{p.model}" for p in providers]
+    for i in _in_turn(keys):
+        p = providers[i]
         try:
             with fallback_scope():
                 text = await _chat(p, prompt, system, json_mode)
             logger.info("Served this answer via the %s fallback.", p.name)
             return text
         except Exception as exc:  # noqa: BLE001
+            _note_failure(keys[i], exc)
             logger.warning("%s text fallback failed: %s", p.name, exc)
     return None
 
@@ -123,9 +168,10 @@ async def open_vision_fallback(prompt: str, image_bytes: bytes, mime_type: str =
         return None
     data_uri = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode()}"
     content = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_uri}}]
-    for model in (settings.OPENROUTER_VISION_MODEL, settings.OPENROUTER_VISION_MODEL_2, settings.OPENROUTER_VISION_MODEL_3):
-        if not model:
-            continue
+    models = [m for m in (settings.OPENROUTER_VISION_MODEL, settings.OPENROUTER_VISION_MODEL_2, settings.OPENROUTER_VISION_MODEL_3) if m]
+    keys = [f"vision:openrouter:{m}" for m in models]
+    for i in _in_turn(keys):
+        model = models[i]
         try:
             with fallback_scope():
                 async with track("openrouter", model, feature="vision"):
@@ -142,6 +188,7 @@ async def open_vision_fallback(prompt: str, image_bytes: bytes, mime_type: str =
             logger.info("Looked at this picture via the %s fallback.", model)
             return text
         except Exception as exc:  # noqa: BLE001
+            _note_failure(keys[i], exc)
             logger.warning("%s vision fallback failed: %s", model, exc)
     return None
 
@@ -183,13 +230,16 @@ async def open_image_fallback(prompt: str, errors: list[str] | None = None) -> b
         steps.append(("huggingface", _huggingface))
     if settings.POLLINATIONS_ENABLED:
         steps.append(("pollinations", _pollinations))
-    for name, fn in steps:
+    keys = [f"image:{name}" for name, _ in steps]
+    for i in _in_turn(keys):
+        name, fn = steps[i]
         try:
             with fallback_scope():
                 data = await fn(prompt)
             logger.info("Served this image via the %s fallback.", name)
             return data
         except Exception as exc:  # noqa: BLE001
+            _note_failure(keys[i], exc)
             logger.warning("%s image fallback failed: %s", name, exc)
             if errors is not None:
                 errors.append(f"{name.capitalize()} did not return a picture ({_brief(exc)}).")

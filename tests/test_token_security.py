@@ -22,6 +22,26 @@ class FakeRedis:
     async def exists(self, key):
         return 1 if key in self.data else 0
 
+    def pipeline(self, transaction=True):
+        return FakePipeline(self)
+
+
+class FakePipeline:
+    """Queues get and exists calls and answers them together, the way the sign-in check sends them in one trip."""
+
+    def __init__(self, redis):
+        self.redis = redis
+        self.calls = []
+
+    def get(self, key):
+        self.calls.append(self.redis.get(key))
+
+    def exists(self, key):
+        self.calls.append(self.redis.exists(key))
+
+    async def execute(self):
+        return [await c for c in self.calls]
+
 
 class FakeUsers:
     def __init__(self, doc=None):
@@ -111,6 +131,41 @@ def test_revoked_session_blocks_the_access_token(stand_ins):
     with pytest.raises(HTTPException) as err:
         run(auth.get_current_user(request))
     assert err.value.status_code == 401
+
+
+def test_a_revoked_access_token_is_refused_even_though_lookups_go_out_together(stand_ins):
+    from starlette.requests import Request
+
+    access, _ = auth.issue_tokens("u1")
+    request = Request({"type": "http", "headers": [(b"authorization", f"Bearer {access}".encode())]})
+    run(auth.blacklist_token(access))
+    with pytest.raises(HTTPException) as err:
+        run(auth.get_current_user(request))
+    assert err.value.status_code == 401 and "revoked" in err.value.detail
+
+
+def test_the_named_workspace_is_read_alongside_the_sign_in_check(stand_ins, monkeypatch):
+    from starlette.requests import Request
+    from app.db import mongo
+
+    class One:
+        def __init__(self, doc):
+            self.doc, self.queries = doc, []
+
+        async def find_one(self, query, projection=None):
+            self.queries.append(query)
+            return self.doc
+
+    members = One({"workspace_id": "w1", "user_id": "u1", "status": "active", "role": "owner"})
+    spaces = One({"id": "w1"})
+    monkeypatch.setattr(mongo, "workspace_members", members)
+    monkeypatch.setattr(mongo, "workspaces", spaces)
+    access, _ = auth.issue_tokens("u1")
+    request = Request({"type": "http", "headers": [(b"authorization", f"Bearer {access}".encode()), (b"x-workspace-id", b"w1")]})
+    run(auth.get_current_user(request))
+    prefetch = request.state.workspace_prefetch
+    assert prefetch["workspace_id"] == "w1" and prefetch["member"]["status"] == "active" and prefetch["workspace"] == {"id": "w1"}
+    assert members.queries == [{"workspace_id": "w1", "user_id": "u1"}]
 
 
 def test_sign_out_everywhere_rejects_older_tokens(stand_ins):

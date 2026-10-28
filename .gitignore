@@ -49,6 +49,7 @@ scripts/*
 !scripts/rotate_fernet_key.py
 !scripts/seed_presets.py
 !scripts/export_prompt_library_mock.py
+!scripts/export_prompt_rule_cases.py
 !scripts/video_quality_regression.py
 !scripts/voice_check.py
 !scripts/youtube_cover_check.py

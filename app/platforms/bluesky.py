@@ -23,4 +23,7 @@ def _bluesky() -> PlatformDefinition:
         tone_profile="tech, creator-oriented",
         access_notes="Connected; free API, no approval needed. Video goes through Bluesky's video service (service auth, upload, then processing); built from its documented flow and not yet confirmed on a live account.",
         confidence="verified",
+        # posts are written for Bluesky directly (prompt files under text/generate/*/bluesky.jinja), not only published there
+        has_text_prompt_rules=True,
+        text_enum_value="Bluesky",
     )

@@ -1,3 +1,4 @@
+{# @locked whole #}
 {%- if banned_words %}
 {%- set replacements = {} %}
 {%- for syn in preferred_synonyms %}
@@ -21,3 +22,4 @@ BANNED WORDS — STRUCTURAL REPLACEMENTS REQUIRED:
 If you are about to write a banned word — STOP. Use the replacement instead.
 Content containing banned words will be automatically rejected and rewritten.
 {% endif %}
+{# @end #}

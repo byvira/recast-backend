@@ -1,3 +1,4 @@
+{# @locked whole #}
 {% if domain == "image" and variant == "vision" %}
 Describe this image: extract style, colors, composition, and brand elements.
 {%- elif domain == "image" and variant == "text" %}
@@ -18,3 +19,4 @@ Analyse this video transcript for {{ output_type }}:
 
 Return JSON with keys: 'key_moments' (list of {time, text, value}), 'topics' (list), 'clip_suggestions' (list of {start, end, reason}), 'content_type' (str), 'repurpose_angles' (list).
 {%- endif -%}
+{# @end #}

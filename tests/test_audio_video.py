@@ -292,6 +292,19 @@ def test_clip_suggestions_are_snapped_to_real_words_and_held_to_the_length_rule(
     assert kept[0].quote.startswith("w10 w11") and "invented" not in kept[0].quote
 
 
+def test_a_short_recording_keeps_moments_shorter_than_fifteen_seconds():
+    from app.api.v1.audio_assets import CLIP_FLOOR_SECONDS, clip_min_seconds, validate_clip_suggestions
+
+    words = [{"word": f"w{i}", "start_s": i * 1.0, "end_s": i * 1.0 + 0.6, "speaker": None} for i in range(30)]
+    result = {"suggestions": [
+        {"start_s": 0.0, "end_s": 10.6, "quote": "x", "reason": "ok"},     # 10.6 s, over a third of a 29.6 s recording
+        {"start_s": 12.0, "end_s": 15.6, "quote": "x", "reason": "short"},  # 3.6 s, under the floor
+    ]}
+    kept = validate_clip_suggestions(result, words)
+    assert [(c.start_s, c.end_s) for c in kept] == [(0.0, 10.6)]
+    assert clip_min_seconds(words[:3]) == CLIP_FLOOR_SECONDS
+
+
 # ── written versions (show notes, captions, summary) ─────────────────────────
 
 async def test_a_recording_can_be_turned_into_show_notes_and_the_latest_is_saved(signup_user, stubs, monkeypatch):

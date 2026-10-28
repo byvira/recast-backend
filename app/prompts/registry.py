@@ -15,22 +15,77 @@ from typing import Any
 
 import yaml
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
 
 from app.prompts.fence import fence as _fence
 
 _PROMPTS_DIR = Path(__file__).resolve().parent
 
-_env = Environment(
-    loader=FileSystemLoader(str(_PROMPTS_DIR)),
-    undefined=StrictUndefined,
-    autoescape=False,
-    trim_blocks=True,
-    lstrip_blocks=True,
-    keep_trailing_newline=True,
-)
 
-# `{{ pasted_text | untrusted("tag") }}` puts outside text in a labelled block it cannot break out of.
-_env.filters["untrusted"] = _fence
+class _PublishedLoader(FileSystemLoader):
+    """Reads a prompt file and puts in the text Ops has published for its editable sections, when a version applies
+    (app/prompt_library/live.py). The template is rebuilt when the file or the applied version changes."""
+
+    def get_source(self, environment, template):
+        source, filename, uptodate = super().get_source(environment, template)
+        name = template[:-6] if template.endswith(".jinja") else template
+        try:
+            from app.prompt_library import live
+
+            applied = live.compose_live(name, source)
+        except Exception:  # noqa: BLE001 - the file is always a safe answer
+            applied = None
+        if applied is None:
+            return source, filename, lambda: uptodate() and _applied_now(name) is None
+        text, key = applied
+        return text, filename, lambda: uptodate() and _applied_now(name) == key
+
+
+def _applied_now(name: str) -> str | None:
+    try:
+        from app.prompt_library import live
+
+        return live.live_key(name)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _environment(loader, sandboxed: bool = False) -> Environment:
+    env = (SandboxedEnvironment if sandboxed else Environment)(
+        loader=loader,
+        undefined=StrictUndefined,
+        autoescape=False,
+        trim_blocks=True,
+        lstrip_blocks=True,
+        keep_trailing_newline=True,
+    )
+    # `{{ pasted_text | untrusted("tag") }}` puts outside text in a labelled block it cannot break out of.
+    env.filters["untrusted"] = _fence
+    return env
+
+
+# The prompts as the product uses them (published Ops text applied), and the files exactly as written in code.
+# Published text is written by Ops staff, not code, so it is rendered in Jinja's sandbox: it can fill variables but never
+# reach Python objects.
+_env = _environment(_PublishedLoader(str(_PROMPTS_DIR)), sandboxed=True)
+_file_env = _environment(FileSystemLoader(str(_PROMPTS_DIR)))
+
+
+def _render(name: str, variables: dict) -> str:
+    """Renders with the published text when a version applies. If that fails for any reason the file is used, so an Ops
+    edit can never break a feature; an error the file itself raises (a missing variable) still reaches the caller."""
+    if _applied_now(name) is None:
+        return _file_env.get_template(f"{name}.jinja").render(**variables)
+    try:
+        return _env.get_template(f"{name}.jinja").render(**variables)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            from app.prompt_library import live
+
+            live.record_fallback(name, exc)
+        except Exception:  # noqa: BLE001
+            pass
+        return _file_env.get_template(f"{name}.jinja").render(**variables)
 
 
 def template_version(name: str) -> str:
@@ -40,9 +95,11 @@ def template_version(name: str) -> str:
 
     path = _PROMPTS_DIR / f"{name}.jinja"
     try:
-        return f"{name}@{hashlib.sha1(path.read_bytes()).hexdigest()[:8]}"
+        label = f"{name}@{hashlib.sha1(path.read_bytes()).hexdigest()[:8]}"
     except OSError:
         return f"{name}@unknown"
+    applied = _applied_now(name)
+    return f"{label}+{applied}" if applied else label
 
 
 def text_version(name: str, text: str) -> str:
@@ -72,8 +129,7 @@ def load_prompt(name: str, /, **variables) -> str:
             variable that wasn't passed in `variables`.
         jinja2.exceptions.TemplateNotFound: No template exists at that path.
     """
-    template = _env.get_template(f"{name}.jinja")
-    rendered = template.render(**variables)
+    rendered = _render(name, variables)
     # The model call that follows this render is for this prompt: the health log records it with the call.
     try:
         from app.shared.llm_health.context import set_prompt_path
@@ -89,7 +145,7 @@ def render_fragment(name: str, /, **variables) -> str:
 
     The same rendering as `load_prompt`, but it leaves the prompt name the health log records alone, so a call is still logged
     under its main prompt rather than under the last fragment added to it."""
-    return _env.get_template(f"{name}.jinja").render(**variables)
+    return _render(name, variables)
 
 
 @lru_cache(maxsize=None)

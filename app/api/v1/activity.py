@@ -68,6 +68,11 @@ def _iso(value) -> Optional[str]:
     return value
 
 
+def _aware(value: datetime) -> datetime:
+    """A date sent without a timezone is read as UTC, the same as every stored time."""
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
 def _clean_description(doc: dict) -> str:
     """Rows projected before a post link moved out of the sentence carried it
     as a trailing raw URL — strip it; the link is rendered from href."""
@@ -141,27 +146,40 @@ async def list_activity(
     q: Optional[str] = Query(None, max_length=120),
     cursor: Optional[str] = Query(None, max_length=120),
     limit: int = Query(30, ge=1, le=100),
+    occurred_from: Optional[datetime] = Query(None, alias="from", description="Only entries at or after this moment."),
+    occurred_to: Optional[datetime] = Query(None, alias="to", description="Only entries before this moment."),
+    unread_only: bool = Query(False),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    hidden_flags = await hidden_flags_for(ctx.workspace_id)
+    if occurred_from and occurred_to and _aware(occurred_from) >= _aware(occurred_to):
+        raise HTTPException(status_code=400, detail="The start of the date range must be before its end.")
+    # Reads that do not depend on each other go out together, since each is a round trip to the database.
+    hidden_flags, cursor_read = await asyncio.gather(
+        hidden_flags_for(ctx.workspace_id), inbox_mod.read_before(ctx.workspace_id, ctx.user_id),
+    )
     query = build_query(
         workspace_id=ctx.workspace_id, user_id=ctx.user_id, role=ctx.role,
         lane=lane, category=category, actor_type=actor_type, status=status, q=q, hidden_flags=hidden_flags,
+        occurred_from=_aware(occurred_from) if occurred_from else None, occurred_to=_aware(occurred_to) if occurred_to else None,
+        unread_only=unread_only, read_before=cursor_read,
+    )
+
+    async def _none() -> None:
+        return None
+
+    # Totals are only needed on the first page; later pages reuse the header.
+    active_query = None if cursor or lane == LANE_ACTIVE else build_query(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, role=ctx.role, lane=LANE_ACTIVE, hidden_flags=hidden_flags,
     )
     try:
-        page = await list_entries(query, cursor=cursor, limit=limit)
+        page, total, other_total = await asyncio.gather(
+            list_entries(query, cursor=cursor, limit=limit),
+            count_entries(query) if not cursor else _none(),
+            count_entries(active_query) if active_query is not None else _none(),
+        )
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid cursor.")
-    # Totals are only needed on the first page; later pages reuse the header.
-    total = await count_entries(query) if not cursor else None
-    active_total = None
-    if not cursor:
-        active_total = (
-            total if lane == LANE_ACTIVE else await count_entries(build_query(
-                workspace_id=ctx.workspace_id, user_id=ctx.user_id, role=ctx.role, lane=LANE_ACTIVE, hidden_flags=hidden_flags,
-            ))
-        )
-    cursor_read = await inbox_mod.read_before(ctx.workspace_id, ctx.user_id)
+    active_total = None if cursor else (total if lane == LANE_ACTIVE else other_total)
     return {
         "items": [present(d, user_id=ctx.user_id, read_before=cursor_read) for d in page["docs"]],
         "next_cursor": page["next_cursor"],
@@ -229,13 +247,18 @@ async def control_tower(
         "category": {"$in": ["content_generated", "post_published"]},
         "occurred_at": {"$gte": datetime.now(timezone.utc) - _COMPLETED_WINDOW},
     })
-    completed = await activity_entries.find(query).sort(
-        [("occurred_at", -1), ("_id", -1)]
-    ).limit(_COMPLETED_LIMIT).to_list(length=_COMPLETED_LIMIT)
+    # The four parts do not depend on each other, so they are read at the same time: this is polled every few seconds, and each
+    # read is a round trip to the database.
+    completed, live, failed, upcoming = await asyncio.gather(
+        activity_entries.find(query).sort([("occurred_at", -1), ("_id", -1)]).limit(_COMPLETED_LIMIT).to_list(length=_COMPLETED_LIMIT),
+        _live_work(ctx.workspace_id),
+        _recent_failures(ctx.workspace_id),
+        _upcoming(ctx.workspace_id),
+    )
     return {
-        "live": await _live_work(ctx.workspace_id),
-        "failed": await _recent_failures(ctx.workspace_id),
-        "upcoming": await _upcoming(ctx.workspace_id),
+        "live": live,
+        "failed": failed,
+        "upcoming": upcoming,
         "completed": [_completed_card(d) for d in completed],
     }
 

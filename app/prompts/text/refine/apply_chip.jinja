@@ -1,3 +1,4 @@
+{# @locked locked_1 #}
 
 {{ language_instruction }}
 
@@ -10,22 +11,35 @@
 {%- endfor %}
 
 BANNED WORDS — never use these in the refined content: {{ quoted | join(", ") }}
+{# @end #}
+{# @editable if_you_are_about_to_write "If you are about to write" #}
 If you are about to write a banned word — STOP and use brand vocabulary instead.
+{# @end #}
+{# @locked locked_2 #}
 {% endif %}
 
 PLATFORM: {{ platform }}
 
+{# @end #}
+{# @editable refinement_instruction_from_ "REFINEMENT INSTRUCTION from the member" #}
 REFINEMENT INSTRUCTION (from the member):
+{# @end #}
+{# @locked locked_3 #}
 {{ instruction | untrusted("member_instruction") }}
 
+{# @end #}
+{# @editable rules "RULES" #}
 RULES:
 - Apply the instruction above faithfully
 - Preserve the brand voice exactly — same tone, same vocabulary
 - Never introduce banned words
 - Never add generic filler sentences
+{# @end #}
+{# @locked locked_4 #}
 - Return only the refined content — no explanation, no JSON, no preamble
 
 ORIGINAL CONTENT:
 {{ content | untrusted("original_content") }}
 
 Output the refined content only.
+{# @end #}

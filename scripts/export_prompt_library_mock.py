@@ -10,7 +10,7 @@ simple rule so the screens behave like the finished product:
   Ops     whole file is one editable region
   Hybrid  paragraphs holding template logic, answer shapes, limits or fences are locked; the rest is editable
 
-Run from the backend folder:  .venv/Scripts/python.exe scripts/export_prompt_library_mock.py <frontend-mock-dir>
+Run from the backend folder:  .venv/Scripts/python.exe scripts/export_prompt_library_mock.py markers | manifest | mock <dir>
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ PROMPTS = ROOT / "app" / "prompts"
 APP = ROOT / "app"
 
 OPS, HYBRID, DEV = "ops", "hybrid", "dev"
-PLATFORMS = ["blog", "facebook", "instagram", "linkedin", "newsletter", "twitter", "twitter_thread", "youtube"]
+PLATFORMS = ["blog", "bluesky", "facebook", "instagram", "linkedin", "newsletter", "threads", "twitter", "twitter_thread", "youtube"]
 CHIPS = ["add_cta", "add_hashtags", "add_keywords", "add_numbers", "add_story", "add_timestamps", "expand",
          "fix_weasel_words", "make_punchier", "more_casual", "more_formal", "shorten", "simplify_show_notes", "stronger_hook"]
 
@@ -230,65 +230,130 @@ def label_for(paragraph: str) -> str:
     return text[:48]
 
 
-def _wrap(kind: str, rid: str, label: str, body: str) -> str:
-    """One marked region. Every marker sits on its own line, so deleting the marker lines gives back the
-    original file byte for byte."""
+def _wrap(kind: str, rid: str, label: str, body: str, last: bool) -> str:
+    """One marked region. Every marker sits on its own line, so deleting the marker lines gives back the original file
+    byte for byte. The last region of a file with no final newline has no end marker (the reader closes it)."""
     nl = chr(10)
-    body = body if body.endswith(nl) else body + nl
     head = f"{{# @{kind} {rid} #}}{nl}" if kind == "locked" else f'{{# @editable {rid} "{label}" #}}{nl}'
+    if last and not body.endswith(nl):
+        return head + body
     return head + body + "{# @end #}" + nl
 
 
-def mark(path: str, klass: str, text: str) -> str:
-    text = text if text.endswith(chr(10)) else text + chr(10)
+def _segments(klass: str, text: str) -> list[list[str]]:
+    """The file cut into [kind, body] runs: L locked, E editable."""
     if klass == DEV:
-        return _wrap("locked", "whole", "", text)
+        return [["L", text]]
     if klass == OPS:
-        return _wrap("editable", "all", "Prompt text", text)
+        return [["E", text]]
 
     # Hybrid: lines holding template logic, answer shapes, limits or fences are locked; the prose is editable.
-    lines = text.splitlines(keepends=True)
-    runs: list[tuple[str, list[str]]] = []
-    for line in lines:
+    runs: list[list] = []
+    for line in re.findall(r"[^\n]*\n|[^\n]+$", text):
         if not line.strip():
             kind = runs[-1][0] if runs else "E"  # blank lines stay with the run before them
         else:
             kind = "L" if (LOCK_HINTS.search(line) or LIMIT_HINTS.search(line)) else "E"
         if runs and runs[-1][0] == kind:
-            runs[-1][1].append(line)
+            runs[-1][1] += line
         else:
-            runs.append((kind, [line]))
+            runs.append([kind, line])
 
     # an editable run too small to be worth editing is locked with its neighbours
-    merged: list[tuple[str, str]] = []
-    for kind, run in runs:
-        body = "".join(run)
+    merged: list[list[str]] = []
+    for kind, body in runs:
         if kind == "E" and len(body.strip()) < 40:
             kind = "L"
         if merged and merged[-1][0] == kind:
-            merged[-1] = (kind, merged[-1][1] + body)
+            merged[-1][1] += body
         else:
-            merged.append((kind, body))
+            merged.append([kind, body])
+    return merged
 
+
+def _inside_tag(text: str) -> bool:
+    """True when the text ends inside an open `{% %}`, `{{ }}` or `{# #}` (a tag that spans lines)."""
+    opened = max(text.rfind(t) for t in ("{%", "{{", "{#"))
+    closed = max(text.rfind(t) for t in ("%}", "}}", "#}"))
+    return opened > closed
+
+
+_TRIM_AFTER = re.compile(r"-(%|\}|#)\}\s*$")
+_TRIM_BEFORE = re.compile(r"^\s*\{(%|\{|#)-")
+
+
+def _join_trimming(segments: list[list[str]]) -> list[list[str]]:
+    """A marker line between a tag that trims whitespace (`-%}`, `{%-`) and its neighbour would change what is trimmed, so
+    those two runs become one (locked when either was locked)."""
+    out: list[list[str]] = []
+    for kind, body in segments:
+        if out and (_TRIM_AFTER.search(out[-1][1]) or _TRIM_BEFORE.search(body) or _inside_tag("".join(b for _, b in out))):
+            out[-1] = ["L" if "L" in (out[-1][0], kind) else "E", out[-1][1] + body]
+        else:
+            out.append([kind, body])
+    return out
+
+
+def mark(path: str, klass: str, text: str) -> str:
+    """The file with region markers. A file that already has them is returned as it is."""
+    from app.prompt_library.regions import has_markers
+
+    if has_markers(text):
+        return text
+    segments = _join_trimming(_segments(klass, text))
+    if klass == HYBRID and all(kind == "L" for kind, _ in segments):
+        # A prompt too short to split (often one line): all of it is editable, and the parts the code depends on are
+        # protected text instead (see protected_literals).
+        segments = [["E", text]]
     out: list[str] = []
     used: set[str] = set()
     n_locked = 0
-    for kind, body in merged:
+    for i, (kind, body) in enumerate(segments):
+        last = i == len(segments) - 1
         if kind == "L":
             n_locked += 1
-            out.append(_wrap("locked", f"locked_{n_locked}", "", body))
+            rid = "whole" if klass == DEV else f"locked_{n_locked}"
+            out.append(_wrap("locked", rid, "", body, last))
             continue
-        label = label_for(body)
-        rid = slug(label)
+        label = "Prompt text" if klass == OPS else label_for(body)
+        rid = "all" if klass == OPS else slug(label)
         while rid in used:
             rid += "_2"
         used.add(rid)
-        out.append(_wrap("editable", rid, label, body))
+        out.append(_wrap("editable", rid, label, body, last))
     return "".join(out)
 
 
+# Exact text an edit must keep, beyond what the checks already protect (variables, template tags, fences).
+PROTECT: dict[str, list[str]] = {
+    "media/image_polish": [
+        "The image must contain NO text of any kind: no words, letters, numbers, logos, brand names, captions, signs, "
+        "labels, or screens, posters, books or devices showing writing.",
+        "Reply with ONLY the rewritten prompt, no preamble, under 400 characters.",
+    ],
+    "text/generate/carousel_format": ['"Slide 1:", "Slide 2:"'],
+}
+
+FENCE = re.compile(r"\{\{-?[^{}]*\|\s*untrusted\([^{}]*\)[^{}]*-?\}\}")
+
+
+def protected_literals(path: str, klass: str, raw: str, marked: str) -> list[str]:
+    """Text an edit must keep: placeholders members replace ([LIKE THIS]), every untrusted-text fence, the extra rules
+    above, and for a prompt that is one editable section, its limits and answer-shape phrases."""
+    from app.prompt_library.regions import parse_regions
+
+    found = set(re.findall(r"\[[A-Z][A-Z ]{3,}\]", raw))
+    found.update(m.group(0) for m in FENCE.finditer(raw))
+    found.update(PROTECT.get(path, []))
+    regions = parse_regions(marked)
+    if klass == HYBRID and len(regions) == 1 and regions[0].kind == "editable":
+        found.update(m.group(0).strip() for m in LIMIT_HINTS.finditer(raw))
+        found.update(m.group(0) for m in re.finditer(r"Return (only|ONLY|valid)[^.\n]*\.|Reply with ONLY[^.\n]*\.", raw))
+    return sorted(t for t in found if t and t in raw)
+
+
 # ---- code references ---------------------------------------------------------------------------
-CALL = re.compile(r"load_prompt\(\s*(?:\n\s*)?[\"']([^\"']+)[\"']")
+CALL = re.compile(r"(?:load_prompt|render_fragment)\(\s*(?:\n\s*)?[\"']([^\"']+)[\"']")
 
 
 def code_references() -> dict[str, list[str]]:
@@ -336,7 +401,7 @@ def call_variables(found: list[str]) -> dict[str, dict[str, dict]]:
         except SyntaxError:
             continue
         for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or _call_name(node) != "load_prompt" or not node.args:
+            if not isinstance(node, ast.Call) or _call_name(node) not in ("load_prompt", "render_fragment") or not node.args:
                 continue
             first = node.args[0]
             if isinstance(first, ast.Constant) and isinstance(first.value, str):
@@ -355,20 +420,56 @@ def call_variables(found: list[str]) -> dict[str, dict[str, dict]]:
     return out
 
 
-def main(out_dir: Path) -> None:
-    out_dir.mkdir(parents=True, exist_ok=True)
+def prompt_paths() -> list[str]:
     found = sorted(p.relative_to(PROMPTS).as_posix()[:-6] for p in PROMPTS.rglob("*.jinja"))
     assert sorted(CLASS) == found, (set(CLASS) ^ set(found))
+    return found
+
+
+def _read(path: str) -> str:
+    return (PROMPTS / f"{path}.jinja").read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+def apply_markers() -> None:
+    """Writes the region markers into every prompt file that has none, after proving for each one that the marked file
+    gives back the original byte for byte and compiles to the same template. Nothing is written if any file fails."""
+    sys.path.insert(0, str(ROOT))
+    from app.prompt_library.regions import compose, parse_regions, strip_markers, token_stream  # noqa: WPS433
+    from app.prompts.registry import _env  # noqa: WPS433
+
+    pending: dict[str, str] = {}
+    failed: list[str] = []
+    for path in prompt_paths():
+        raw = _read(path)
+        marked = mark(path, CLASS[path], raw)
+        if marked == raw:
+            continue
+        same = strip_markers(marked) == raw and compose(parse_regions(marked)) == raw
+        if not same or token_stream(_env, marked) != token_stream(_env, raw):
+            failed.append(path)
+        pending[path] = marked
+    if failed:
+        raise SystemExit(f"not written, these would change: {failed}")
+    for path, marked in pending.items():
+        (PROMPTS / f"{path}.jinja").write_bytes(marked.encode("utf-8"))
+    print("marked", len(pending), "prompt files")
+
+
+def build_items() -> list[dict]:
+    """Every prompt file as the library sees it: class, reason, sections, protected text and what the code passes in."""
+    sys.path.insert(0, str(ROOT))
+    from app.prompt_library.regions import strip_markers  # noqa: WPS433
+
+    found = prompt_paths()
     refs = code_references()
     prefix = refs.pop("__prefix__")  # type: ignore[arg-type]
     variables = call_variables(found)
-
     items = []
     for path in found:
         klass = CLASS[path]
-        raw = (PROMPTS / f"{path}.jinja").read_text(encoding="utf-8")
+        text = mark(path, klass, _read(path))
+        raw = strip_markers(text)
         used_by = refs.get(path) or next((files for pre, files in prefix.items() if path.startswith(pre)), [])
-        literals = sorted(set(re.findall(r"\[[A-Z][A-Z ]{3,}\]", raw)))
         items.append({
             "path": path,
             "folder": path.rsplit("/", 1)[0] if "/" in path else "",
@@ -377,9 +478,9 @@ def main(out_dir: Path) -> None:
             "reason": reason(path),
             "safetySensitive": path in SAFETY_SENSITIVE,
             "lines": len(raw.splitlines()),
-            "text": mark(path, klass, raw),
-            "usedBy": used_by,
-            "protectedLiterals": literals,
+            "text": text,
+            "usedBy": sorted(used_by),
+            "protectedLiterals": protected_literals(path, klass, raw, text),
             "receives": [
                 {"name": n, "source": v["source"], "sites": v["sites"]}
                 for n, v in sorted(variables.get(path, {}).items())
@@ -387,41 +488,61 @@ def main(out_dir: Path) -> None:
             ],
             "receivesMore": "**" in variables.get(path, {}),
         })
+    return items
+
+
+MANIFEST = PROMPTS / "manifest.json"
+MANIFEST_KEYS = ("klass", "reason", "safetySensitive", "usedBy", "protectedLiterals", "receives", "receivesMore")
+
+
+def manifest_of(items: list[dict]) -> dict:
+    """What the server needs about each prompt that is not in the file itself."""
+    return {"prompts": {i["path"]: {k: i[k] for k in MANIFEST_KEYS} for i in items}}
+
+
+def manifest_text(items: list[dict]) -> str:
+    return json.dumps(manifest_of(items), ensure_ascii=False, indent=1, sort_keys=True) + "\n"
+
+
+def write_manifest(items: list[dict]) -> None:
+    MANIFEST.write_bytes(manifest_text(items).encode("utf-8"))
+    print("wrote", MANIFEST.relative_to(ROOT).as_posix(), "with", len(items), "prompts")
+
+
+def write_mock(out_dir: Path, items: list[dict]) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "inventory.generated.json").write_text(json.dumps(items, ensure_ascii=False, indent=1), encoding="utf-8")
 
-    # ---- Ops data: the real values that live in code today --------------------------------------
-    sys.path.insert(0, str(ROOT))
-    from app.models.text import LANGUAGE_NAMES  # noqa: WPS433
-    from app.pipelines.text.brand_context import build_goal_context, build_tone_override  # noqa: WPS433
-    from app.pipelines.text.generator import CONVERSATIONAL_REGISTER_NOTES, GENERIC_OPENINGS  # noqa: WPS433
 
-    goals = {}
-    for goal in ["educate", "promote", "entertain", "inspire", "announce", "engage", "convert"]:
-        goals[goal] = build_goal_context(goal).strip()
-    tones = {}
-    for tone in ["formal", "casual", "punchy", "storytelling", "professional", "direct", "witty", "empathetic"]:
-        tones[tone] = build_tone_override(tone, "en").strip()
+def write_ops_data(out_dir: Path) -> None:
+    """The real values the Ops data lists start from (the same ones the server shows as the code values)."""
+    sys.path.insert(0, str(ROOT))
+    from app.prompt_library.ops_lists import code_defaults  # noqa: WPS433
 
     data = {
-        "registerNotes": [
-            {"code": code, "language": LANGUAGE_NAMES.get(code, code), "note": CONVERSATIONAL_REGISTER_NOTES.get(code, "")}
-            for code in sorted(LANGUAGE_NAMES)
-        ],
-        "toneOptions": [{"id": k, "label": k.capitalize(), "instruction": v, "enabled": True} for k, v in tones.items()],
-        "contentGoals": [{"id": k, "text": v} for k, v in goals.items()],
-        "qualityWordLists": [
-            {"language": "en", "list": "generic_openings", "label": "Generic openings", "words": list(GENERIC_OPENINGS)},
-            {"language": "en", "list": "generic_closings", "label": "Generic closings", "words": [
-                "so, are you ready to", "the choice is yours", "what are you waiting for", "don't hesitate to",
-                "join us on this journey", "let's connect", "feel free to reach out"]},
-            {"language": "en", "list": "filler_words", "label": "Filler words", "words": [
-                "many", "several", "often", "recently", "soon", "significant", "substantial", "various", "numerous"]},
-        ],
+        "registerNotes": code_defaults("register_notes"),
+        "toneOptions": code_defaults("tone_options"),
+        "contentGoals": code_defaults("content_goals"),
+        "qualityWordLists": code_defaults("quality_words"),
     }
     (out_dir / "ops-data.generated.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    counts = {k: sum(1 for i in items if i["klass"] == k) for k in (OPS, HYBRID, DEV)}
-    print("wrote", len(items), "prompts", counts, "and", {k: len(v) for k, v in data.items()})
+    print("wrote Ops data", {k: len(v) for k, v in data.items()})
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    # markers            put the region markers into the prompt files (proved unchanged first)
+    # manifest           write app/prompts/manifest.json
+    # mock <frontend dir> write the sample data for the Ops screens
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command == "markers":
+        apply_markers()
+    elif command == "manifest":
+        write_manifest(build_items())
+    elif command == "mock" and len(sys.argv) > 2:
+        built = build_items()
+        write_mock(Path(sys.argv[2]), built)
+        write_ops_data(Path(sys.argv[2]))
+        counts = {k: sum(1 for i in built if i["klass"] == k) for k in (OPS, HYBRID, DEV)}
+        print("wrote", len(built), "prompts", counts)
+    else:
+        raise SystemExit("usage: export_prompt_library_mock.py markers | manifest | mock <frontend mock dir>")

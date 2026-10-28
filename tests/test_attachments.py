@@ -98,6 +98,29 @@ async def test_attach_an_image_sets_the_publishable_media_and_the_backlink(signu
     assert [lp["piece_id"] for lp in asset["linked_pieces"]] == [piece_id]
 
 
+async def test_media_made_from_a_post_is_listed_whether_or_not_it_is_attached(signup_user):
+    client, profile = await signup_user()
+    ws_id = await create_workspace(client, "Attach WS made")
+    piece_id = await _piece(ws_id, profile["id"])
+    image_id, (image_media,) = await _image(ws_id, source_piece_id=piece_id)
+    recording = await _audio(ws_id, source_piece_id=piece_id)
+    # a picture made again is replaced, and an item made from another post is not this post's
+    await _image(ws_id, source_piece_id=piece_id, replaced_by="newer")
+    await _image(ws_id, source_piece_id="another-post")
+
+    res = await client.get(f"/api/v1/content/pieces/{piece_id}/attachments", headers=H(ws_id))
+    made = {m["asset_id"]: m for m in res.json()["made_for_post"]}
+    assert set(made) == {image_id, recording["id"]}
+    assert made[image_id]["media_kind"] == "image" and made[image_id]["media_url"].endswith(image_media)
+    assert made[image_id]["attached"] is False and made[image_id]["attachable"] is True
+    assert made[recording["id"]]["media_kind"] == "audio"
+
+    await _attach(client, ws_id, piece_id, asset_type="image", asset_id=image_id)
+    res = await client.get(f"/api/v1/content/pieces/{piece_id}/attachments", headers=H(ws_id))
+    made = {m["asset_id"]: m for m in res.json()["made_for_post"]}
+    assert made[image_id]["attached"] is True and made[recording["id"]]["attached"] is False
+
+
 async def test_attaching_the_same_asset_again_returns_the_same_attachment(signup_user):
     client, profile = await signup_user()
     ws_id = await create_workspace(client, "Attach WS 2")

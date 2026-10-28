@@ -1,3 +1,4 @@
+{# @locked whole #}
 A member typed a plain-language instruction for cleaning up a batch of short audio soundbites. You only have exactly these three real actions available - never invent a new one, and only pick an action if the instruction genuinely asks for it:
 
 - "prevent_clipping": reduce loud peaks so audio stops clipping/distorting.
@@ -11,3 +12,4 @@ Return ONLY a JSON object shaped exactly like this, no explanation, no markdown:
 {"actions": ["prevent_clipping"]}
 
 If nothing in the instruction matches any of the three real actions, return {"actions": []}.
+{# @end #}

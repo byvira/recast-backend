@@ -31,7 +31,7 @@ from app.models.text import (
 from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.normalizer import normalise_input
 from app.pipelines.text.repurpose import run_repurpose_agent, run_structured_repurpose_agent
-from app.pipelines.text.generator import GENERIC_OPENINGS, build_language_instruction, validate_content, validate_structured_sections
+from app.pipelines.text.generator import build_language_instruction, generic_openings, validate_content, validate_structured_sections
 from app.shared.llm import call_llm_structured, set_usage_workspace
 from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
@@ -803,7 +803,7 @@ async def _run_single_repurpose(
                         # text/hooks/generate.jinja's "Hook 3" label steers
                         # the model toward. Import the single source of
                         # truth instead of maintaining a second copy.
-                        "banned_openings": GENERIC_OPENINGS,
+                        "banned_openings": generic_openings(),
                     },
                 )
             )

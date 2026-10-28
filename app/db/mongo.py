@@ -555,6 +555,13 @@ async def create_indexes() -> None:
     # plans: one saved row per plan, the change log, and the workspaces that share a paid workspace's plan
     await get_db()["billing_plans"].create_index("id", unique=True)
     await get_db()["billing_audit"].create_index([("at", -1)])
+    # Ops prompt library
+    await get_db()["prompt_library_audit"].create_index([("at", -1)])
+    await get_db()["prompt_library_audit"].create_index([("subject", 1), ("at", -1)])
+    await get_db()["prompt_comments"].create_index([("path", 1), ("at", 1)])
+    await get_db()["prompt_comments"].create_index([("path", 1), ("id", 1)], unique=True)
+    await get_db()["prompt_library_staff"].create_index("id", unique=True)
+    await get_db()["prompt_fallbacks"].create_index("lastAt")
     await workspaces.create_index("billing_group_id", sparse=True)
     await get_db()["video_webhooks"].create_index([("workspace_id", 1), ("active", 1)])
     await get_db()["video_webhook_deliveries"].create_index([("status", 1), ("next_at", 1)])

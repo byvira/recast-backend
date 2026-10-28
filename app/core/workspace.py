@@ -16,7 +16,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 import structlog
-from fastapi import Depends, Header, HTTPException, Query
+from fastapi import Depends, Header, HTTPException, Query, Request
 
 from app.core.auth import get_current_user
 from app.core.rbac import assert_permission
@@ -55,6 +55,7 @@ class WorkspaceContext:
 
 
 async def get_current_workspace(
+    request: Request,
     current_user: dict[str, Any] = Depends(get_current_user),
     x_workspace_id: Optional[str] = Header(default=None, alias="X-Workspace-Id"),
 ) -> WorkspaceContext:
@@ -65,7 +66,7 @@ async def get_current_workspace(
         HTTPException 403: Caller is not an active member of the target workspace.
         HTTPException 404: Membership exists but the workspace document is gone.
     """
-    return await _resolve_workspace(current_user, x_workspace_id)
+    return await _resolve_workspace(current_user, x_workspace_id, getattr(request.state, "workspace_prefetch", None))
 
 
 async def get_stream_workspace(
@@ -96,7 +97,9 @@ async def usable_workspace_id(user_id: str) -> Optional[str]:
     return candidates[0]["workspace_id"] if candidates else None
 
 
-async def _resolve_workspace(current_user: dict[str, Any], requested: Optional[str]) -> WorkspaceContext:
+async def _resolve_workspace(
+    current_user: dict[str, Any], requested: Optional[str], prefetch: Optional[dict[str, Any]] = None,
+) -> WorkspaceContext:
     workspace_id = requested or current_user.get("default_workspace_id")
     if not requested and workspace_id:
         # The saved default may point at a workspace that was deleted or that the person left. Use (and save) one that works.
@@ -122,13 +125,20 @@ async def _resolve_workspace(current_user: dict[str, Any], requested: Optional[s
             detail="No workspace context. Send an X-Workspace-Id header or set a default workspace.",
         )
 
-    member = await workspace_members.find_one(
+    # The membership and workspace were read alongside the sign-in check when the request named this workspace (see
+    # get_current_user); only a different workspace (the saved default) is read here.
+    fetched = (
+        prefetch
+        if prefetch and prefetch.get("workspace_id") == workspace_id and prefetch.get("user_id") == current_user["id"]
+        else None
+    )
+    member = fetched["member"] if fetched else await workspace_members.find_one(
         {"workspace_id": workspace_id, "user_id": current_user["id"]}
     )
     if not member or member.get("status") != "active":
         raise HTTPException(status_code=403, detail="Not a member of this workspace.")
 
-    workspace = await workspaces.find_one({"id": workspace_id})
+    workspace = fetched["workspace"] if fetched else await workspaces.find_one({"id": workspace_id})
     if not workspace or workspace.get("deleted_at"):
         raise HTTPException(status_code=404, detail="Workspace not found.")
 

@@ -3102,15 +3102,28 @@ async def send_clip_to_draft(
 CLIP_SEARCH_WORDS = 6000
 CLIP_MIN_SECONDS = 15.0
 CLIP_MAX_SECONDS = 60.0
+#: The shortest a moment may ever be. A short recording has no room for several 15-second moments, so its minimum drops to a
+#: third of its length, down to this.
+CLIP_FLOOR_SECONDS = 5.0
+
+
+def _recording_seconds(words: list[dict]) -> float:
+    return max((float(w.get("end_s") or 0) for w in words if isinstance(w, dict)), default=0.0)
+
+
+def clip_min_seconds(words: list[dict]) -> float:
+    return min(CLIP_MIN_SECONDS, max(CLIP_FLOOR_SECONDS, _recording_seconds(words) / 3))
 
 
 def validate_clip_suggestions(result: dict, words: list[dict]) -> list[SuggestedClip]:
     """The model's suggested moments, checked against the real transcript. Each span is moved onto real word boundaries, must be
-    15 to 60 seconds, and must not overlap one already kept; the quote is the words actually spoken in the span, never the
-    model's wording, so nothing made up reaches the member."""
+    between the recording's shortest allowed length (15 seconds, less for a short recording) and 60 seconds, and must not overlap
+    one already kept; the quote is the words actually spoken in the span, never the model's wording, so nothing made up reaches
+    the member."""
     spoken = [w for w in words if isinstance(w, dict) and "start_s" in w and "end_s" in w]
     if not spoken:
         return []
+    shortest = clip_min_seconds(spoken)
     kept: list[SuggestedClip] = []
     for item in ((result or {}).get("suggestions") or [])[:5]:
         try:
@@ -3122,7 +3135,7 @@ def validate_clip_suggestions(result: dict, words: list[dict]) -> list[Suggested
         if last <= first:
             continue
         start_s, end_s = float(spoken[first]["start_s"]), float(spoken[last]["end_s"])
-        if not (CLIP_MIN_SECONDS <= end_s - start_s <= CLIP_MAX_SECONDS):
+        if not (shortest <= end_s - start_s <= CLIP_MAX_SECONDS):
             continue
         if any(start_s < c.end_s and end_s > c.start_s for c in kept):
             continue
@@ -3141,6 +3154,9 @@ async def _generate_clip_suggestions(doc: dict, workspace_id: str, audio_asset_i
     words = doc.get("transcript", [])
     if not words:
         raise HTTPException(status_code=400, detail="This recording has no transcript to find moments in yet.")
+    # Checked before the paid call: a recording this short has no moment long enough to keep.
+    if _recording_seconds(words) < CLIP_FLOOR_SECONDS:
+        raise HTTPException(status_code=422, detail="This recording is too short to pull moments from.")
 
     await assert_ai_budget_available(workspace_id)
     set_usage_workspace(workspace_id)
@@ -3338,7 +3354,8 @@ async def _extract_soundbites(audio_asset_id: str, ctx: WorkspaceContext) -> lis
 
     suggestions = await _generate_clip_suggestions(doc, ctx.workspace_id, audio_asset_id)
     if not suggestions:
-        raise HTTPException(status_code=502, detail="Couldn't find any real soundbite moments in this recording.")
+        # The model answered, but no moment it picked passed the checks: that is about this recording, not a server fault.
+        raise HTTPException(status_code=422, detail="No moment in this recording stood on its own as a soundbite. Try again, or try a longer recording.")
 
     media = await media_assets.find_one({"id": doc["media_id"], "workspace_id": ctx.workspace_id})
     if not media:

@@ -478,6 +478,52 @@ async def list_with_status(piece: dict, workspace_id: str) -> list[dict]:
     return out
 
 
+async def made_for_piece(piece: dict, workspace_id: str) -> list[dict]:
+    """The pictures, recordings and videos made from this post (a campaign makes them per post), whether or not they are attached.
+    Lets the editor show them, add one that is not attached yet, and open each in its own editor."""
+    piece_id = piece.get("piece_id")
+    if not piece_id:
+        return []
+    attached = {(a.get("asset_type"), a.get("asset_id")) for a in piece.get("attachments") or []}
+    # a picture that was made again is replaced: the old one stays in the library but is not offered here
+    images = await image_assets.find(
+        {"workspace_id": workspace_id, "source_piece_id": piece_id, "deleted": {"$ne": True}, "replaced_by": {"$exists": False}},
+        {"_id": 0, "id": 1, "title": 1, "slides.media_id": 1},
+    ).to_list(length=20)
+    audios = await audio_assets.find(
+        {"workspace_id": workspace_id, "source_piece_id": piece_id, "deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "title": 1, "media_id": 1, "approved_master_media_id": 1},
+    ).to_list(length=20)
+    projects = await get_db()["video_projects"].find(
+        {"workspace_id": workspace_id, "created_from.piece_id": piece_id, "deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "title": 1, "last_render.media_id": 1},
+    ).to_list(length=20)
+
+    rows: list[dict] = []
+    for d in images:
+        media_id = next((s.get("media_id") for s in d.get("slides") or [] if s.get("media_id")), None)
+        rows.append({"asset_type": "image", "asset_id": d["id"], "title": d.get("title"), "media_id": media_id})
+    for d in audios:
+        rows.append({"asset_type": "audio", "asset_id": d["id"], "title": d.get("title"), "media_id": d.get("approved_master_media_id") or d.get("media_id")})
+    for d in projects:
+        rows.append({"asset_type": "project", "asset_id": d["id"], "title": d.get("title"), "media_id": (d.get("last_render") or {}).get("media_id")})
+
+    media_ids = [r["media_id"] for r in rows if r["media_id"]]
+    medias = {m["id"]: m for m in await media_assets.find({"id": {"$in": media_ids}, "workspace_id": workspace_id}, {"_id": 0, "id": 1, "url": 1, "kind": 1}).to_list(length=None)} if media_ids else {}
+    out: list[dict] = []
+    for r in rows:
+        media = medias.get(r.pop("media_id") or "") or {}
+        out.append({
+            **r,
+            "media_url": media.get("url"),
+            "media_kind": "video" if r["asset_type"] == "project" else r["asset_type"],
+            "attached": (r["asset_type"], r["asset_id"]) in attached,
+            # a video project with no finished render can be opened in the editor but not attached yet
+            "attachable": bool(media),
+        })
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PATCH /content/pieces/{id}/media and campaign media
 # ─────────────────────────────────────────────────────────────────────────────

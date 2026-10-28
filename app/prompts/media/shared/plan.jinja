@@ -1,3 +1,4 @@
+{# @locked whole #}
 {% if domain == "image" %}
 Create an image generation plan for:
 {{ concept | untrusted("concept") }}
@@ -12,3 +13,4 @@ Create a video content plan for the title below
  (goal: {{ output_type }}).
 Return JSON with key 'steps' as an array of short action strings.
 {%- endif -%}
+{# @end #}

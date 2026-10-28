@@ -1,3 +1,4 @@
+{# @locked locked_1 #}
 {%- set language_note = "" %}
 {%- if language_note_active %}
 {%- set ln_lines = ["", "LANGUAGE: The CURRENT CONTENT below is not plain English (it is another language, or a mix such as Tanglish or Hinglish written in English letters). Write current_reason and all 3 alternative hooks in the SAME language and the SAME mix as the current content. Do not translate to English.", ""] %}
@@ -45,6 +46,8 @@
 {{ banned_enforcement }}
 {{ approved_openers_block }}
 {{ approved_openers_exact }}
+{# @end #}
+{# @editable banned_hook_openings_never_s "BANNED HOOK OPENINGS never start any" #}
 BANNED HOOK OPENINGS — never start any hook with these:
   ✗ "Are you tired of" / "Are you struggling" / "Are you finding it"
   ✗ "Have you ever wondered" / "Did you know"
@@ -70,6 +73,8 @@ HOOK QUALITY RULES:
   ✓ Statement beats question: tell them something, do not ask them something
   ✓ Short beats long: 2 punchy sentences beat 1 long sentence
 
+{# @end #}
+{# @locked locked_2 #}
 You are scoring the hook quality of this {{ platform }} content.
 
 CURRENT CONTENT:
@@ -78,6 +83,8 @@ CURRENT CONTENT:
 CURRENT HOOK (first line):
 {{ current_hook | untrusted("current_hook") }}
 
+{# @end #}
+{# @editable task "TASK" #}
 TASK:
 1. Score the current hook 1-10 for scroll-stopping power
 2. Give one specific reason for the score
@@ -101,6 +108,8 @@ RECOMMENDED SELECTION RULE:
   scores 9, 8, 7 → recommended must be 0
   Never recommend a lower-scored hook over a higher-scored one.
 
+{# @end #}
+{# @locked locked_3 #}
 Return valid JSON only:
 {
   "current_score": 5,
@@ -127,3 +136,4 @@ Return valid JSON only:
   ],
   "recommended": 1
 }
+{# @end #}

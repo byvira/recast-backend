@@ -10,7 +10,7 @@ from statistics import mean
 from typing import Optional
 
 from app.pipelines.text.claims import unsupported_claims
-from app.pipelines.text.generator import GENERIC_OPENINGS
+from app.pipelines.text.generator import generic_openings
 from app.pipelines.text.language_check import language_problem
 
 LANGUAGES = ("en", "ta+en", "hi+en")
@@ -46,7 +46,7 @@ def score_post(content: str, language: str, source: str = "") -> dict:
     return {
         "words": len(text.split()),
         "language_ok": language_problem(text, language) is None,
-        "generic_opening": any(first_line.startswith(g) for g in GENERIC_OPENINGS),
+        "generic_opening": any(first_line.startswith(g) for g in generic_openings()),
         "unsupported_claims": len(unsupported_claims(text, [source])),
     }
 

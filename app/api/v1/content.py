@@ -569,7 +569,8 @@ async def list_piece_attachments(
     if not piece:
         raise HTTPException(status_code=404, detail="Piece not found.")
     items = await piece_attachments.list_with_status(piece, ctx.workspace_id)
-    return {"piece_id": piece_id, "attachments": items, "total": len(items)}
+    made = await piece_attachments.made_for_piece(piece, ctx.workspace_id)
+    return {"piece_id": piece_id, "attachments": items, "total": len(items), "made_for_post": made}
 
 
 @router.post("/pieces/{piece_id}/attachments")

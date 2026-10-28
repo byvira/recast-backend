@@ -1,0 +1,3460 @@
+{
+ "prompts": {
+  "analytics/analyze": {
+   "klass": "ops",
+   "protectedLiterals": [
+    "{{ (post_summary or \"No published posts yet.\") | untrusted(\"post_summary\") }}",
+    "{{ question | untrusted(\"question\") }}"
+   ],
+   "reason": "Free text read by people.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/analytics/nodes.py"
+   ]
+  },
+  "analytics/analyze_question": {
+   "klass": "ops",
+   "protectedLiterals": [
+    "{{ (post_summary or \"No published posts yet.\") | untrusted(\"post_summary\") }}",
+    "{{ question | untrusted(\"question\") }}"
+   ],
+   "reason": "Free text read by people.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "analytics/recommend": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ analysis | untrusted(\"analysis\") }}",
+    "{{ question | untrusted(\"question\") }}"
+   ],
+   "reason": "Returns a list the code reads.",
+   "receives": [
+    {
+     "name": "analysis",
+     "sites": 1,
+     "source": "state['analysis']"
+    },
+    {
+     "name": "example_line",
+     "sites": 1,
+     "source": "load_fixture('analytics_recommend_example')['example_line']"
+    },
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "resolve_language_directive_name(language)"
+    },
+    {
+     "name": "plan_line",
+     "sites": 1,
+     "source": "await _plan_line(state.get('workspace_id'))"
+    },
+    {
+     "name": "question",
+     "sites": 1,
+     "source": "state['question']"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/analytics/nodes.py"
+   ]
+  },
+  "audio/chapters": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ spoken | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Returns chapters as JSON, checked against the recording.",
+   "receives": [
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "resolve_language_directive_name(language)"
+    },
+    {
+     "name": "lines",
+     "sites": 1,
+     "source": "chapter_rules.transcript_for_prompt(words)"
+    },
+    {
+     "name": "max_chapters",
+     "sites": 1,
+     "source": "min(chapter_rules.MAX_CHAPTERS, max(3, int(duration // 120) + 2))"
+    },
+    {
+     "name": "min_chapters",
+     "sites": 1,
+     "source": "2 if duration < 300 else 3"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/api/v1/audio_assets.py"
+   ]
+  },
+  "audio/fit_script": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ script | untrusted(\"script\") }}"
+   ],
+   "reason": "Wording is editable. The fence, the target length numbers and the return-only rule are locked.",
+   "receives": [
+    {
+     "name": "current_words",
+     "sites": 1,
+     "source": "assessment['words']"
+    },
+    {
+     "name": "direction",
+     "sites": 1,
+     "source": "direction"
+    },
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "language_name"
+    },
+    {
+     "name": "script",
+     "sites": 1,
+     "source": "script"
+    },
+    {
+     "name": "target_seconds",
+     "sites": 1,
+     "source": "int(target)"
+    },
+    {
+     "name": "target_words",
+     "sites": 1,
+     "source": "assessment['words_needed']"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/fit_script.py"
+   ]
+  },
+  "audio/localize/score_translation": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ source_text | untrusted(\"original\") }}",
+    "{{ translated_text | untrusted(\"translation\") }}"
+   ],
+   "reason": "Returns one score line the code parses.",
+   "receives": [
+    {
+     "name": "source_text",
+     "sites": 1,
+     "source": "source_text"
+    },
+    {
+     "name": "target_language",
+     "sites": 1,
+     "source": "language_words"
+    },
+    {
+     "name": "translated_text",
+     "sites": 1,
+     "source": "candidate"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/api/v1/audio_assets.py"
+   ]
+  },
+  "audio/localize/translate_script": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ brand_context | untrusted(\"brand\") }}",
+    "{{ script | untrusted(\"script\") }}"
+   ],
+   "reason": "Translation style is editable. The script fence and the return-only rule are locked.",
+   "receives": [
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "script",
+     "sites": 1,
+     "source": "source_text"
+    },
+    {
+     "name": "target_language",
+     "sites": 1,
+     "source": "language_words"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/api/v1/audio_assets.py"
+   ]
+  },
+  "audio/soundbite_refine": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ instruction | untrusted(\"member_instruction\") }}"
+   ],
+   "reason": "Returns one action from a fixed list.",
+   "receives": [
+    {
+     "name": "instruction",
+     "sites": 1,
+     "source": "instruction"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/api/v1/audio_assets.py"
+   ]
+  },
+  "audio/suggest_clips": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ transcript_text | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Returns clips as JSON with exact times.",
+   "receives": [
+    {
+     "name": "words",
+     "sites": 1,
+     "source": "[{'word': w['word'], 'start_s': w['start_s'], 'end_s': w['end_s']} for"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/api/v1/audio_assets.py"
+   ]
+  },
+  "brand/extract_traits": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"sample\") }}"
+   ],
+   "reason": "Returns traits as JSON.",
+   "receives": [
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content[:3000]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/brand/trait_extraction.py"
+   ]
+  },
+  "brand/extract_traits_system": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "System line for a JSON task.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/brand/trait_extraction.py"
+   ]
+  },
+  "brand/preview_rewrite": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ audience_line | untrusted(\"audience\") }}",
+    "{{ identity_line | untrusted(\"identity\") }}",
+    "{{ sample_text | untrusted(\"sample_text\") }}",
+    "{{ style | untrusted(\"style_notes\") }}",
+    "{{ tone_line | untrusted(\"tone\") }}"
+   ],
+   "reason": "Returns JSON with the rewrite and a score.",
+   "receives": [
+    {
+     "name": "audience_line",
+     "sites": 1,
+     "source": "audience_line"
+    },
+    {
+     "name": "brand_type",
+     "sites": 1,
+     "source": "brand_type"
+    },
+    {
+     "name": "identity_line",
+     "sites": 1,
+     "source": "identity_line"
+    },
+    {
+     "name": "language_line",
+     "sites": 1,
+     "source": "build_language_instruction(language)"
+    },
+    {
+     "name": "sample_text",
+     "sites": 1,
+     "source": "sample_text[:2000]"
+    },
+    {
+     "name": "style",
+     "sites": 1,
+     "source": "style"
+    },
+    {
+     "name": "tone_line",
+     "sites": 1,
+     "source": "tone_line"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/brand/voice_playground.py"
+   ]
+  },
+  "brand/preview_rewrite_system": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "System line for a JSON task.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/brand/voice_playground.py"
+   ]
+  },
+  "brand/suggest_voice_patterns": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ audience_line | untrusted(\"audience\") }}",
+    "{{ identity_line | untrusted(\"identity\") }}",
+    "{{ style | untrusted(\"style_notes\") }}",
+    "{{ tone_line | untrusted(\"tone\") }}"
+   ],
+   "reason": "Returns suggestions as JSON.",
+   "receives": [
+    {
+     "name": "audience_line",
+     "sites": 1,
+     "source": "audience_line"
+    },
+    {
+     "name": "brand_type",
+     "sites": 1,
+     "source": "brand_type"
+    },
+    {
+     "name": "identity_line",
+     "sites": 1,
+     "source": "identity_line"
+    },
+    {
+     "name": "language_line",
+     "sites": 1,
+     "source": "build_language_instruction(language)"
+    },
+    {
+     "name": "style",
+     "sites": 1,
+     "source": "style"
+    },
+    {
+     "name": "tone_line",
+     "sites": 1,
+     "source": "tone_line"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/brand/voice_suggestions.py"
+   ]
+  },
+  "brand/suggest_voice_patterns_system": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "System line for a JSON task.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/brand/voice_suggestions.py"
+   ]
+  },
+  "campaigns/suggest_topics": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ existing_topics | join(\", \") | untrusted(\"existing_topics\") }}",
+    "{{ topic_cluster | untrusted(\"topic\") }}"
+   ],
+   "reason": "Returns topics and tone as JSON.",
+   "receives": [
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "existing_topics",
+     "sites": 1,
+     "source": "existing_topics[:10]"
+    },
+    {
+     "name": "topic_cluster",
+     "sites": 1,
+     "source": "topic_cluster[:3000]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/campaigns/suggest.py"
+   ]
+  },
+  "content_guard/picture_unsafe": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Picture safety check. Returns JSON with fixed categories.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": true,
+   "usedBy": [
+    "app/agents/content_guard/media.py"
+   ]
+  },
+  "content_guard/picture_writing": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Checks a picture for writing. Returns has_text as JSON.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/content_guard/media.py"
+   ]
+  },
+  "content_guard/rewrite": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Safety rewrite. Locked so a safety rule cannot be edited away.",
+   "receives": [
+    {
+     "name": "problems",
+     "sites": 1,
+     "source": "problems"
+    },
+    {
+     "name": "text",
+     "sites": 1,
+     "source": "text"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": true,
+   "usedBy": [
+    "app/agents/content_guard/agent.py"
+   ]
+  },
+  "content_guard/rewrite_system": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Safety rewrite persona. Locked with the rewrite.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/content_guard/agent.py"
+   ]
+  },
+  "content_guard/screen": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ post | untrusted(\"post\") }}"
+   ],
+   "reason": "Safety check. Returns JSON with fixed categories the code reads.",
+   "receives": [
+    {
+     "name": "allowed",
+     "sites": 1,
+     "source": "allowed"
+    },
+    {
+     "name": "post",
+     "sites": 1,
+     "source": "text[start:start + MAX_CHECK_CHARS]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": true,
+   "usedBy": [
+    "app/agents/content_guard/agent.py"
+   ]
+  },
+  "content_guard/screen_system": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Safety reviewer persona. Locked so a safety rule cannot be edited away.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/content_guard/agent.py"
+   ]
+  },
+  "fixtures/_test_fixture": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Test only.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "fragments/brand_context": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "517 lines, three shapes, central to every generation, logic heavy. Later: expose a few wording lines as Hybrid.",
+   "receives": [
+    {
+     "name": "batch_day_index",
+     "sites": 1,
+     "source": "batch_day_index"
+    },
+    {
+     "name": "brand",
+     "sites": 1,
+     "source": "brand"
+    },
+    {
+     "name": "brand_profile",
+     "sites": 2,
+     "source": "brand_profile"
+    },
+    {
+     "name": "document_shape",
+     "sites": 3,
+     "source": "'media_util'"
+    },
+    {
+     "name": "pipeline",
+     "sites": 1,
+     "source": "pipeline"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/text/nodes.py",
+    "app/pipelines/text/brand_context.py",
+    "app/utils/brand.py"
+   ]
+  },
+  "fragments/json_output_contract": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "The answer contract itself.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/shared/llm.py"
+   ]
+  },
+  "fragments/json_repair": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "The retry when an answer is not valid JSON.",
+   "receives": [
+    {
+     "name": "previous",
+     "sites": 1,
+     "source": "(raw or '')[:1500]"
+    },
+    {
+     "name": "prompt",
+     "sites": 1,
+     "source": "prompt"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/shared/llm.py"
+   ]
+  },
+  "fragments/retry_feedback": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ previous_draft | untrusted(\"previous_draft\") }}"
+   ],
+   "reason": "Drives the retry loop. Its wording is tied to the leak markers.",
+   "receives": [
+    {
+     "name": "approved_closers",
+     "sites": 2,
+     "source": "approved_closers"
+    },
+    {
+     "name": "approved_openers",
+     "sites": 2,
+     "source": "approved_openers"
+    },
+    {
+     "name": "banned_words",
+     "sites": 2,
+     "source": "banned_words"
+    },
+    {
+     "name": "hard_issues",
+     "sites": 2,
+     "source": "hard_issues"
+    },
+    {
+     "name": "kind",
+     "sites": 5,
+     "source": "'detail'"
+    },
+    {
+     "name": "previous_draft",
+     "sites": 1,
+     "source": "state.get('generated_content', '')"
+    },
+    {
+     "name": "required_phrases",
+     "sites": 2,
+     "source": "required_phrases"
+    },
+    {
+     "name": "retry_feedback",
+     "sites": 3,
+     "source": "retry_feedback"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/text/nodes.py",
+    "app/pipelines/text/generator.py",
+    "app/pipelines/text/orchestrator.py",
+    "app/pipelines/text/repurpose.py"
+   ]
+  },
+  "fragments/translate_template": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "The translation wrapper. The leak and placeholder checks depend on its shape.",
+   "receives": [
+    {
+     "name": "english_template",
+     "sites": 1,
+     "source": "english_template"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/shared/localized_strings.py"
+   ]
+  },
+  "media/image_avoid": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Adds what a picture must avoid. Its shape is read by the code.",
+   "receives": [
+    {
+     "name": "avoid",
+     "sites": 1,
+     "source": "avoid[:400]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_brand_fit": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Brand fit gate. Returns a verdict the code reads.",
+   "receives": [
+    {
+     "name": "brand_name",
+     "sites": 1,
+     "source": "brand_name or 'this brand'"
+    },
+    {
+     "name": "brand_visual_style",
+     "sites": 1,
+     "source": "style_notes or '(not set)'"
+    },
+    {
+     "name": "image_prompt",
+     "sites": 1,
+     "source": "prompt"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_describe": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Describes an uploaded picture for search and alt text. Short reply the code stores.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/api/v1/image_assets.py"
+   ]
+  },
+  "media/image_headline": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"post\") }}"
+   ],
+   "reason": "How a headline is written is editable. Its length limit is locked.",
+   "receives": [
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content[:2500]"
+    },
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "language_name"
+    },
+    {
+     "name": "max_words",
+     "sites": 1,
+     "source": "MAX_WORDS"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/headline.py"
+   ]
+  },
+  "media/image_mascot_about": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Mascot wording is editable. The brand slots are locked.",
+   "receives": [
+    {
+     "name": "description",
+     "sites": 1,
+     "source": "description"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_mascot_background": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Mascot wording is editable. The background rule is locked.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_mascot_colors": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Mascot wording is editable. The colour slots are locked.",
+   "receives": [
+    {
+     "name": "color_desc",
+     "sites": 1,
+     "source": "color_desc"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_mascot_intro": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Mascot wording is editable. The brand slots are locked.",
+   "receives": [
+    {
+     "name": "brand_type",
+     "sites": 1,
+     "source": "brand_type or 'brand'"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_mascot_voice": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Mascot wording is editable. The brand slots are locked.",
+   "receives": [
+    {
+     "name": "personality",
+     "sites": 1,
+     "source": "', '.join((x for x in [tones, voice_style] if x))"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_no_text": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Keeps writing out of pictures. Tests assert its wording.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_pack_variation": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "How pictures in a pack differ is editable. The variation slot is locked.",
+   "receives": [
+    {
+     "name": "base",
+     "sites": 1,
+     "source": "base"
+    },
+    {
+     "name": "direction",
+     "sites": 1,
+     "source": "direction"
+    },
+    {
+     "name": "number",
+     "sites": 1,
+     "source": "i + 1"
+    },
+    {
+     "name": "total",
+     "sites": 1,
+     "source": "n"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_pack.py"
+   ]
+  },
+  "media/image_polish": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "400 char",
+    "Reply with ONLY the rewritten prompt, no preamble, under 400 characters.",
+    "The image must contain NO text of any kind: no words, letters, numbers, logos, brand names, captions, signs, labels, or screens, posters, books or devices showing writing.",
+    "{{ raw_prompt | untrusted(\"request\") }}"
+   ],
+   "reason": "How a picture prompt is polished is editable. The no-writing rule is locked.",
+   "receives": [
+    {
+     "name": "raw_prompt",
+     "sites": 1,
+     "source": "raw_prompt"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_qa": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Picture quality gate. Returns a verdict the code reads.",
+   "receives": [
+    {
+     "name": "style_notes",
+     "sites": 1,
+     "source": "style_notes"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_raw_colors": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Colour wording is editable. The colour slots are locked.",
+   "receives": [
+    {
+     "name": "color_desc",
+     "sites": 1,
+     "source": "color_desc"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_raw_style": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Style wording is editable. The variable slots are locked.",
+   "receives": [
+    {
+     "name": "style_notes",
+     "sites": 2,
+     "source": "style_notes"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_raw_style_default": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "The default picture style. Wording only.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_raw_topic": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "How a topic becomes a picture idea is editable. The variable slots are locked.",
+   "receives": [
+    {
+     "name": "topic",
+     "sites": 1,
+     "source": "topic"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_safety": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Picture safety gate. Returns a verdict the code reads.",
+   "receives": [
+    {
+     "name": "prompt",
+     "sites": 1,
+     "source": "prompt"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_screen_suffix": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Keeps screens in pictures blank. Tests assert its wording.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/image_soft_screen": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Replaces screens with soft light so no fake text appears.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/image_generation.py"
+   ]
+  },
+  "media/shared/analyse": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ text | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Returns analysis as JSON.",
+   "receives": [
+    {
+     "name": "domain",
+     "sites": 1,
+     "source": "'audio'"
+    },
+    {
+     "name": "output_type",
+     "sites": 1,
+     "source": "output_type"
+    },
+    {
+     "name": "text",
+     "sites": 1,
+     "source": "text[:6000]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/audio/nodes.py"
+   ]
+  },
+  "media/shared/evaluate": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"content\") }}"
+   ],
+   "reason": "Returns scores the code parses.",
+   "receives": [
+    {
+     "name": "brand_name",
+     "sites": 1,
+     "source": "brand_name"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content"
+    },
+    {
+     "name": "domain",
+     "sites": 1,
+     "source": "'audio'"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/audio/nodes.py"
+   ]
+  },
+  "media/shared/generate": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ key_quotes | untrusted(\"key_quotes\") }}",
+    "{{ transcript_excerpt | untrusted(\"transcript_excerpt\") }}"
+   ],
+   "reason": "How to write from a transcript is editable. The transcript fences are locked.",
+   "receives": [
+    {
+     "name": "chapters",
+     "sites": 1,
+     "source": "raw.get('chapters', []) if isinstance(raw, dict) else []"
+    },
+    {
+     "name": "domain",
+     "sites": 1,
+     "source": "'audio'"
+    },
+    {
+     "name": "key_quotes",
+     "sites": 1,
+     "source": "analysis.get('key_quotes', [])"
+    },
+    {
+     "name": "output_type",
+     "sites": 1,
+     "source": "output_type"
+    },
+    {
+     "name": "retry",
+     "sites": 1,
+     "source": "retry"
+    },
+    {
+     "name": "retry_focus",
+     "sites": 1,
+     "source": "state['intermediate_outputs'].get('retry_focus', '')"
+    },
+    {
+     "name": "topics",
+     "sites": 1,
+     "source": "analysis.get('topics', [])"
+    },
+    {
+     "name": "transcript_excerpt",
+     "sites": 1,
+     "source": "transcript.get('text', '')[:4000]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/audio/nodes.py"
+   ]
+  },
+  "media/shared/plan": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ concept | untrusted(\"concept\") }}",
+    "{{ title | untrusted(\"title\") }}"
+   ],
+   "reason": "Returns a plan the code reads.",
+   "receives": [
+    {
+     "name": "domain",
+     "sites": 1,
+     "source": "'audio'"
+    },
+    {
+     "name": "title",
+     "sites": 1,
+     "source": "title"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/audio/nodes.py"
+   ]
+  },
+  "media/video/chapters": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ transcript_lines | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Returns chapters as JSON.",
+   "receives": [
+    {
+     "name": "coverage_note",
+     "sites": 1,
+     "source": "coverage_note"
+    },
+    {
+     "name": "duration_label",
+     "sites": 1,
+     "source": "format_timestamp(total)"
+    },
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "resolve_language_directive_name(language) if language else 'the spoken"
+    },
+    {
+     "name": "max_chapters",
+     "sites": 1,
+     "source": "min(MAX_CHAPTERS, max(MIN_CHAPTERS, int(total // 60) + MIN_CHAPTERS))"
+    },
+    {
+     "name": "min_chapters",
+     "sites": 1,
+     "source": "MIN_CHAPTERS"
+    },
+    {
+     "name": "transcript_lines",
+     "sites": 1,
+     "source": "'\\n'.join(lines)"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/media/video_analysis.py"
+   ]
+  },
+  "personal/align_draft": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ (target or \"general\") | untrusted(\"target\") }}",
+    "{{ draft_text | untrusted(\"draft\") }}",
+    "{{ known_openers | untrusted(\"openers\") }}"
+   ],
+   "reason": "Returns JSON.",
+   "receives": [
+    {
+     "name": "avg_sentence_len",
+     "sites": 1,
+     "source": "persona['style_fingerprint'].get('avg_sentence_len')"
+    },
+    {
+     "name": "deltas",
+     "sites": 1,
+     "source": "deltas"
+    },
+    {
+     "name": "draft_text",
+     "sites": 1,
+     "source": "draft_text[:1800]"
+    },
+    {
+     "name": "emoji_rate",
+     "sites": 1,
+     "source": "persona['style_fingerprint'].get('emoji_rate')"
+    },
+    {
+     "name": "known_openers",
+     "sites": 1,
+     "source": "known_openers"
+    },
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "resolve_language_directive_name(language)"
+    },
+    {
+     "name": "platform_policy_constraints",
+     "sites": 1,
+     "source": "target_platform.policy_constraints if target_platform else []"
+    },
+    {
+     "name": "platform_tone_profile",
+     "sites": 1,
+     "source": "target_platform.tone_profile if target_platform else None"
+    },
+    {
+     "name": "question_rate",
+     "sites": 1,
+     "source": "persona['style_fingerprint'].get('question_rate')"
+    },
+    {
+     "name": "target",
+     "sites": 1,
+     "source": "target"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/personal/assist.py"
+   ]
+  },
+  "personal/align_system": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One line that sets the persona for keeping a draft in its author's voice. Wording only.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/personal/assist.py"
+   ]
+  },
+  "personal/judge_drift": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content_text | untrusted(\"content\") }}",
+    "{{ exemplars | join(\"\\n---\\n\") | untrusted(\"exemplars\") }}"
+   ],
+   "reason": "Returns JSON with fixed severity values.",
+   "receives": [
+    {
+     "name": "content_text",
+     "sites": 1,
+     "source": "state['content_text'][:1800]"
+    },
+    {
+     "name": "exemplars",
+     "sites": 1,
+     "source": "[t[:1200] for t in exemplars]"
+    },
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "resolve_language_directive_name(language)"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/personal/nodes.py"
+   ]
+  },
+  "presets/suggest_structure": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ (\"Name: \" ~ title ~ \"\nKind: \" ~ category_label ~ ((\"\nPurpose: \" ~ description) if description else \"\")) | untrusted(\"template_details\") }}",
+    "{{ steps_text | untrusted(\"existing_sections\") }}"
+   ],
+   "reason": "Returns sections as JSON.",
+   "receives": [
+    {
+     "name": "category_label",
+     "sites": 1,
+     "source": "category_label[:80]"
+    },
+    {
+     "name": "channels",
+     "sites": 1,
+     "source": "channels[:12]"
+    },
+    {
+     "name": "description",
+     "sites": 1,
+     "source": "description[:600]"
+    },
+    {
+     "name": "existing_steps",
+     "sites": 1,
+     "source": "existing_steps[:8]"
+    },
+    {
+     "name": "title",
+     "sites": 1,
+     "source": "title[:200]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/presets_suggest.py"
+   ]
+  },
+  "publish/youtube_metadata": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Writing guidance is editable. The two-line reply the code reads and the material fences are locked.",
+   "receives": [
+    {
+     "name": "brand_name",
+     "sites": 1,
+     "source": "brand_name or 'this brand'"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content"
+    },
+    {
+     "name": "spoken",
+     "sites": 1,
+     "source": "spoken"
+    },
+    {
+     "name": "title_max_chars",
+     "sites": 1,
+     "source": "YOUTUBE_TITLE_MAX_CHARS"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/publish/youtube/metadata.py"
+   ]
+  },
+  "search/agentic_system": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "12 word"
+   ],
+   "reason": "How matches are picked and explained is editable. The short reason length the screen shows is locked.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/api/v1/search.py"
+   ]
+  },
+  "suggest/complete_system": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Typing suggestions. The word limit and reply shape are read by the code that cleans the reply.",
+   "receives": [
+    {
+     "name": "brand_hint",
+     "sites": 1,
+     "source": "brand_hint"
+    },
+    {
+     "name": "max_words",
+     "sites": 1,
+     "source": "MAX_SUGGESTION_WORDS"
+    },
+    {
+     "name": "what",
+     "sites": 1,
+     "source": "what"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/suggest.py"
+   ]
+  },
+  "supervisor/odette_system": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "Odette's voice and manner. Wording only.",
+   "receives": [
+    {
+     "name": "name",
+     "sites": 1,
+     "source": "name"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/supervisor/personas.py"
+   ]
+  },
+  "supervisor/reason_kickoff": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ digest_json | untrusted(\"digest\") }}"
+   ],
+   "reason": "Internal step of the supervisor.",
+   "receives": [
+    {
+     "name": "digest_json",
+     "sites": 1,
+     "source": "json.dumps(digest, default=str, indent=2)"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/supervisor/nodes.py"
+   ]
+  },
+  "supervisor/scratchpad_notes": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"tool_result\") }}"
+   ],
+   "reason": "Internal step of the supervisor.",
+   "receives": [
+    {
+     "name": "calls_desc",
+     "sites": 1,
+     "source": "', '.join(calls_desc)"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "msg.get('content', '')"
+    },
+    {
+     "name": "kind",
+     "sites": 2,
+     "source": "'investigated'"
+    },
+    {
+     "name": "name",
+     "sites": 1,
+     "source": "name"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/supervisor/nodes.py"
+   ]
+  },
+  "supervisor/synth_instructions": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Returns insights as JSON.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/agents/supervisor/nodes.py"
+   ]
+  },
+  "support/assistant_system": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Tone and answer style are editable. Never promising fixes, no links and only known facts are locked.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": true,
+   "usedBy": [
+    "app/api/v1/support_assistant.py"
+   ]
+  },
+  "support/category": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Must answer with exactly one area from a list.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "support/draft_reply": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Voice and do and don't list are editable. The ticket fence, the trust line and never promising fixes are locked.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": true,
+   "usedBy": []
+  },
+  "text/angles/generate": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "Returns angles as JSON.",
+   "receives": [
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "task.metadata.get('banned_words', [])"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "task.brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "task.content[:4000]"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "language_instruction"
+    },
+    {
+     "name": "platform_label",
+     "sites": 1,
+     "source": "platform_label"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/angles.py"
+   ]
+  },
+  "text/critique/judge": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ brand_context | untrusted(\"brand_context\") }}",
+    "{{ draft | untrusted(\"draft\") }}",
+    "{{ source_content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "Reviews a long draft and sends weak ones back. Returns a verdict the code reads.",
+   "receives": [
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context[:6000]"
+    },
+    {
+     "name": "draft",
+     "sites": 1,
+     "source": "draft[:6000]"
+    },
+    {
+     "name": "language_line",
+     "sites": 1,
+     "source": "language_line"
+    },
+    {
+     "name": "platform_label",
+     "sites": 1,
+     "source": "platform_label"
+    },
+    {
+     "name": "source_content",
+     "sites": 1,
+     "source": "(source_content or '')[:4000]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/critique.py"
+   ]
+  },
+  "text/generate/approved_copy": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Enforces the brand's required phrases, openers and closers, which code also checks.",
+   "receives": [
+    {
+     "name": "closers",
+     "sites": 1,
+     "source": "task.metadata.get('approved_closers', [])"
+    },
+    {
+     "name": "openers",
+     "sites": 1,
+     "source": "task.metadata.get('approved_openers', [])"
+    },
+    {
+     "name": "phrases",
+     "sites": 1,
+     "source": "task.metadata.get('required_phrases', [])"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/approved_vocabulary": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Enforces the brand's vocabulary, which code also checks.",
+   "receives": [
+    {
+     "name": "approved_vocabulary",
+     "sites": 1,
+     "source": "approved_vocabulary"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/banned_words": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Enforces banned words, which code also checks.",
+   "receives": [
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "banned_words"
+    },
+    {
+     "name": "preferred_synonyms",
+     "sites": 1,
+     "source": "preferred_synonyms"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/carousel_format": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "\"Slide 1:\", \"Slide 2:\"",
+    "40 word"
+   ],
+   "reason": "Carousel writing guidance is editable. The slide format the code reads is locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/cta_rules/blog": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/bluesky": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/facebook": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/instagram": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/linkedin": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/newsletter": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/threads": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/twitter": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/twitter_thread": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/cta_rules/youtube": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about calls to action for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/engagement_patterns": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "Craft guidance for hooks. Wording only.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/english_terms": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Language safety for kept English terms. Tests assert its wording.",
+   "receives": [
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "resolve_language_name(language_code)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/brand_context.py"
+   ]
+  },
+  "text/generate/hashtag_banned": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Hashtags a post must not use. Its wording is checked by the code.",
+   "receives": [
+    {
+     "name": "banned_vocab",
+     "sites": 1,
+     "source": "banned_vocab"
+    },
+    {
+     "name": "base_hashtag_rule",
+     "sites": 1,
+     "source": "base_hashtag_rule"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/hashtag_none": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Tells a platform with no hashtags to use none. Tests assert its wording.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/hashtag_rules/blog": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/bluesky": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/facebook": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/instagram": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/linkedin": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/newsletter": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/threads": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/twitter": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/twitter_thread": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/hashtag_rules/youtube": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short rule about hashtags for this platform.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/language_instruction": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Language safety. Tests assert its wording.",
+   "receives": [
+    {
+     "name": "name",
+     "sites": 1,
+     "source": "name"
+    },
+    {
+     "name": "register_note",
+     "sites": 1,
+     "source": "register_note"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/master": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}",
+    "{{ content_brief | untrusted(\"content_brief\") }}"
+   ],
+   "reason": "Writing craft rules are editable. The answer shape, content fence, language lines and variable slots are locked.",
+   "receives": [
+    {
+     "name": "approved_copy_instruction",
+     "sites": 1,
+     "source": "approved_copy_instruction"
+    },
+    {
+     "name": "approved_vocabulary_instruction",
+     "sites": 1,
+     "source": "approved_vocabulary_instruction"
+    },
+    {
+     "name": "banned_instruction",
+     "sites": 1,
+     "source": "banned_instruction"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "task.brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "task.content"
+    },
+    {
+     "name": "content_brief",
+     "sites": 1,
+     "source": "content_brief"
+    },
+    {
+     "name": "cta_instruction",
+     "sites": 1,
+     "source": "cta_instruction"
+    },
+    {
+     "name": "engagement_context",
+     "sites": 1,
+     "source": "engagement_context"
+    },
+    {
+     "name": "engagement_patterns",
+     "sites": 1,
+     "source": "engagement_patterns()"
+    },
+    {
+     "name": "format_instruction",
+     "sites": 1,
+     "source": "format_instruction"
+    },
+    {
+     "name": "goal_context",
+     "sites": 1,
+     "source": "goal_context"
+    },
+    {
+     "name": "hashtag_instruction",
+     "sites": 1,
+     "source": "hashtag_instruction"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "language_instruction"
+    },
+    {
+     "name": "language_short",
+     "sites": 1,
+     "source": "f'Write the whole output in {resolve_language_directive_name(language_"
+    },
+    {
+     "name": "platform",
+     "sites": 1,
+     "source": "task.platform.value"
+    },
+    {
+     "name": "platform_rules",
+     "sites": 1,
+     "source": "platform_rules"
+    },
+    {
+     "name": "retry_block",
+     "sites": 1,
+     "source": "retry_block"
+    },
+    {
+     "name": "specificity_instruction",
+     "sites": 1,
+     "source": "specificity_instruction()"
+    },
+    {
+     "name": "tone_override_text",
+     "sites": 1,
+     "source": "tone_override_text"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": true,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/mixed_language_instruction": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Mixed-language safety (Latin-letter blend). Tests assert its wording.",
+   "receives": [
+    {
+     "name": "blend",
+     "sites": 1,
+     "source": "resolve_language_directive_name(language_code)"
+    },
+    {
+     "name": "lang1",
+     "sites": 1,
+     "source": "resolve_language_name(lang1_code)"
+    },
+    {
+     "name": "lang2",
+     "sites": 1,
+     "source": "resolve_language_name(lang2_code)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/generate/platform_rules/blog": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/bluesky": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/facebook": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/instagram": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/linkedin": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/newsletter": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/threads": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/twitter": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/twitter_thread": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/platform_rules/youtube": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "[LINK]"
+   ],
+   "reason": "Platform guidance is editable. The numbers the code also checks (limits, thread and tweet shape, placeholder text) are locked.",
+   "receives": [],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/generate/specificity": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "Examples and rules are editable. Variable slots are locked.",
+   "receives": [
+    {
+     "name": "good_bad_pairs",
+     "sites": 1,
+     "source": "load_fixture('generator_good_bad_pairs')"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/generator.py"
+   ]
+  },
+  "text/hooks/generate": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "The hook approaches are editable. The answer shape and the fence are locked.",
+   "receives": [
+    {
+     "name": "banned_openings",
+     "sites": 1,
+     "source": "task.metadata.get('banned_openings', [])"
+    },
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "task.metadata.get('banned_words', [])"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "task.brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "task.content[:1500]"
+    },
+    {
+     "name": "hook_count",
+     "sites": 1,
+     "source": "max(1, min(5, int(task.metadata.get('hook_count') or 3)))"
+    },
+    {
+     "name": "language_line",
+     "sites": 1,
+     "source": "build_language_instruction(task.metadata.get('language', 'en'))"
+    },
+    {
+     "name": "platform_label",
+     "sites": 1,
+     "source": "platform_label"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/hook_agent.py"
+   ]
+  },
+  "text/hooks/score": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}",
+    "{{ current_hook | untrusted(\"current_hook\") }}"
+   ],
+   "reason": "Scoring guidance is editable. The answer shape and score ranges are locked.",
+   "receives": [
+    {
+     "name": "approved_openers",
+     "sites": 1,
+     "source": "approved_openers"
+    },
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "banned_words"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content[:1500]"
+    },
+    {
+     "name": "current_hook",
+     "sites": 1,
+     "source": "current_hook"
+    },
+    {
+     "name": "examples",
+     "sites": 1,
+     "source": "load_fixture('scorer_examples')"
+    },
+    {
+     "name": "language_note_active",
+     "sites": 1,
+     "source": "not is_latin_script(content) or inferred_language is not None"
+    },
+    {
+     "name": "platform",
+     "sites": 1,
+     "source": "platform"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/scorer.py"
+   ]
+  },
+  "text/normalize/clean_raw_content": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"raw_content\") }}"
+   ],
+   "reason": "Returns cleaned text inside JSON. Length is checked.",
+   "receives": [
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "head"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/normalizer.py"
+   ]
+  },
+  "text/normalize/content_brief_format": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Formats model output into the next prompt.",
+   "receives": [
+    {
+     "name": "avoid",
+     "sites": 1,
+     "source": "avoid"
+    },
+    {
+     "name": "concrete",
+     "sites": 1,
+     "source": "concrete"
+    },
+    {
+     "name": "sharpest",
+     "sites": 1,
+     "source": "sharpest"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/normalizer.py"
+   ]
+  },
+  "text/normalize/extract_content_brief": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "Returns a brief as JSON.",
+   "receives": [
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content[:2000]"
+    },
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "language_name"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/normalizer.py"
+   ]
+  },
+  "text/normalize/research_topic": {
+   "klass": "ops",
+   "protectedLiterals": [
+    "{{ brand_facts | untrusted(\"brand_facts\") }}",
+    "{{ topic | untrusted(\"topic\") }}"
+   ],
+   "reason": "Turns a topic into a brief. Free text.",
+   "receives": [
+    {
+     "name": "brand_facts",
+     "sites": 1,
+     "source": "brand_facts"
+    },
+    {
+     "name": "language_name",
+     "sites": 1,
+     "source": "resolve_language_directive_name(language)"
+    },
+    {
+     "name": "topic",
+     "sites": 1,
+     "source": "topic"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/normalizer.py"
+   ]
+  },
+  "text/orchestrate/batch_angles": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ topic_cluster | untrusted(\"topic\") }}"
+   ],
+   "reason": "Returns a list of angles as JSON.",
+   "receives": [
+    {
+     "name": "days",
+     "sites": 1,
+     "source": "days"
+    },
+    {
+     "name": "language_line",
+     "sites": 1,
+     "source": "build_language_instruction(language)"
+    },
+    {
+     "name": "topic_cluster",
+     "sites": 1,
+     "source": "topic_cluster"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/orchestrator.py"
+   ]
+  },
+  "text/reader/review": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ brand_context | untrusted(\"brand_context\") }}",
+    "{{ content | untrusted(\"content\") }}"
+   ],
+   "reason": "A reader's check of a draft. Returns notes the code reads.",
+   "receives": [
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context[:6000]"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content[:MAX_CHARS]"
+    },
+    {
+     "name": "language_line",
+     "sites": 1,
+     "source": "language_line"
+    },
+    {
+     "name": "platform_label",
+     "sites": 1,
+     "source": "platform_label"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/reader_review.py"
+   ]
+  },
+  "text/refine/apply_chip": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"original_content\") }}",
+    "{{ instruction | untrusted(\"member_instruction\") }}"
+   ],
+   "reason": "General rules are editable. The two fences and the return-only line are locked.",
+   "receives": [
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "banned_words"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content"
+    },
+    {
+     "name": "instruction",
+     "sites": 1,
+     "source": "instruction"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "build_language_instruction(language)"
+    },
+    {
+     "name": "platform",
+     "sites": 1,
+     "source": "platform"
+    },
+    {
+     "name": "tone_override",
+     "sites": 1,
+     "source": "build_tone_override(default_tone, language)"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py"
+   ]
+  },
+  "text/refine/chips/add_cta": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/add_hashtags": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/add_keywords": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/add_numbers": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/add_story": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/add_timestamps": {
+   "klass": "ops",
+   "protectedLiterals": [
+    "[ADJUST TIMESTAMPS]"
+   ],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/expand": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/fix_weasel_words": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/make_punchier": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/more_casual": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/more_formal": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/shorten": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/simplify_show_notes": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/chips/stronger_hook": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One short instruction behind a quick-action chip.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/chips.py",
+    "app/prompt_library/live.py"
+   ]
+  },
+  "text/refine/system": {
+   "klass": "hybrid",
+   "protectedLiterals": [],
+   "reason": "The chat persona is editable. The fence and safety lines are locked.",
+   "receives": [
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "banned_words"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "build_language_instruction(language)"
+    },
+    {
+     "name": "platform",
+     "sites": 1,
+     "source": "platform"
+    },
+    {
+     "name": "prefix",
+     "sites": 1,
+     "source": "prefix"
+    },
+    {
+     "name": "tone_override",
+     "sites": 1,
+     "source": "build_tone_override(default_tone, language)"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": true,
+   "usedBy": [
+    "app/pipelines/text/refiner.py"
+   ]
+  },
+  "text/refine/system_prefix": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "Style rules for the refine chat.",
+   "receives": [],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/refiner.py"
+   ]
+  },
+  "text/repurpose/fallback": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "One line of guidance.",
+   "receives": [
+    {
+     "name": "target",
+     "sites": 2,
+     "source": "task.platform.value"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/repurpose.py"
+   ]
+  },
+  "text/repurpose/master": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "How to adapt is editable. The answer shape and the source fence are locked.",
+   "receives": [
+    {
+     "name": "approved_copy_instruction",
+     "sites": 1,
+     "source": "approved_copy_instruction"
+    },
+    {
+     "name": "approved_vocabulary_instruction",
+     "sites": 1,
+     "source": "approved_vocabulary_instruction"
+    },
+    {
+     "name": "banned_instruction",
+     "sites": 1,
+     "source": "banned_instruction"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "task.brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "task.content"
+    },
+    {
+     "name": "engagement_context",
+     "sites": 1,
+     "source": "engagement_context"
+    },
+    {
+     "name": "goal_context",
+     "sites": 1,
+     "source": "goal_context"
+    },
+    {
+     "name": "instruction",
+     "sites": 1,
+     "source": "instruction"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "language_instruction"
+    },
+    {
+     "name": "platform",
+     "sites": 1,
+     "source": "task.platform.value"
+    },
+    {
+     "name": "platform_rules",
+     "sites": 1,
+     "source": "platform_rules"
+    },
+    {
+     "name": "retry_block",
+     "sites": 1,
+     "source": "retry_block"
+    },
+    {
+     "name": "source_platform",
+     "sites": 1,
+     "source": "source_platform.value"
+    },
+    {
+     "name": "tone_override",
+     "sites": 1,
+     "source": "tone_override"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": true,
+   "usedBy": [
+    "app/pipelines/text/repurpose.py"
+   ]
+  },
+  "text/repurpose/platform_pairs": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "characters before outputting. If under 200",
+    "characters, maximum 280",
+    "tweet. HARD REQUIREMENT: minimum 200"
+   ],
+   "reason": "Advice per platform pair is editable. The pair keys the code looks up are locked.",
+   "receives": [
+    {
+     "name": "pair",
+     "sites": 2,
+     "source": "pair_key"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/repurpose.py"
+   ]
+  },
+  "text/repurpose/structured": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "Returns sections as JSON against the member's own section rules, which code checks.",
+   "receives": [
+    {
+     "name": "approved_copy_instruction",
+     "sites": 1,
+     "source": "approved_copy_instruction"
+    },
+    {
+     "name": "approved_vocabulary_instruction",
+     "sites": 1,
+     "source": "approved_vocabulary_instruction"
+    },
+    {
+     "name": "banned_instruction",
+     "sites": 1,
+     "source": "banned_instruction"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "task.brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "task.content"
+    },
+    {
+     "name": "engagement_context",
+     "sites": 1,
+     "source": "engagement_context"
+    },
+    {
+     "name": "goal_context",
+     "sites": 1,
+     "source": "goal_context"
+    },
+    {
+     "name": "instruction",
+     "sites": 1,
+     "source": "instruction"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "language_instruction"
+    },
+    {
+     "name": "platform",
+     "sites": 1,
+     "source": "task.platform.value"
+    },
+    {
+     "name": "platform_rules",
+     "sites": 1,
+     "source": "platform_rules"
+    },
+    {
+     "name": "retry_block",
+     "sites": 1,
+     "source": "retry_block"
+    },
+    {
+     "name": "source_platform",
+     "sites": 1,
+     "source": "source_platform.value"
+    },
+    {
+     "name": "structure_rules",
+     "sites": 1,
+     "source": "structure_rules"
+    },
+    {
+     "name": "tone_override",
+     "sites": 1,
+     "source": "tone_override"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/repurpose.py"
+   ]
+  },
+  "text/repurpose/suggest": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "Returns platform suggestions as JSON from a fixed list.",
+   "receives": [
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "candidate_platforms",
+     "sites": 1,
+     "source": "candidates"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content[:3000]"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "language_instruction"
+    },
+    {
+     "name": "source_platform",
+     "sites": 1,
+     "source": "source_platform.value"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/repurpose_suggest.py"
+   ]
+  },
+  "text/seo/master": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "Returns the SEO package as JSON.",
+   "receives": [
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "content[:2000]"
+    },
+    {
+     "name": "language_line",
+     "sites": 1,
+     "source": "build_language_instruction(task.metadata.get('language', 'en'))"
+    },
+    {
+     "name": "platform_instruction",
+     "sites": 1,
+     "source": "platform_instruction"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/seo.py"
+   ]
+  },
+  "text/seo/platform_focus": {
+   "klass": "ops",
+   "protectedLiterals": [],
+   "reason": "Per-platform SEO emphasis.",
+   "receives": [
+    {
+     "name": "platform",
+     "sites": 1,
+     "source": "task.platform.name"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/seo.py"
+   ]
+  },
+  "video/broll_queries": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ beat | untrusted(\"beat\") }}"
+   ],
+   "reason": "Returns stock search terms the code sends on.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/caption_polish": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ words | untrusted(\"words\") }}"
+   ],
+   "reason": "Polishes captions while keeping their timing. Shape is locked.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/cover_text": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ material | untrusted(\"material\") }}"
+   ],
+   "reason": "Cover wording is editable. The length limit is locked.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/dub_translate": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ lines | untrusted(\"lines\") }}"
+   ],
+   "reason": "Translation for dubbing. Timing and placeholders are checked by the code.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/edit_plan": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ silences | untrusted(\"silences\") }}",
+    "{{ transcript | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Returns an edit plan as JSON with frame times.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/filler_judge": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ items_text | untrusted(\"items\") }}"
+   ],
+   "reason": "Decides which words are filler. Returns JSON with times.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/hook_writer": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ clip | untrusted(\"clip\") }}"
+   ],
+   "reason": "Hook craft is editable. The answer shape is locked.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/moments": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ lines | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Returns moments as JSON with exact times.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/outline": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ parts_text | untrusted(\"summaries\") }}"
+   ],
+   "reason": "How an outline is written is editable. The section format is locked.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/qa_critic": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ material | untrusted(\"material\") }}"
+   ],
+   "reason": "Video quality check. Returns a verdict the code reads.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/remy_voice_check": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ lines | untrusted(\"lines\") }}"
+   ],
+   "reason": "Checks a script against the brand voice. Returns a verdict.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/repair": {
+   "klass": "dev",
+   "protectedLiterals": [],
+   "reason": "Fixes a plan that failed a check. Returns JSON the code reads.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    },
+    {
+     "name": "original",
+     "sites": 1,
+     "source": "prompt"
+    },
+    {
+     "name": "problems",
+     "sites": 1,
+     "source": "problems[:8]"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/video/create/generate.py"
+   ]
+  },
+  "video/script_from_images": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ pictures | untrusted(\"pictures\") }}"
+   ],
+   "reason": "How a script is written is editable. The scene format the code reads is locked.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/script_from_text": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ source | untrusted(\"source\") }}"
+   ],
+   "reason": "How a script is written is editable. The scene format the code reads is locked.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/title_description_tags": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ chapters | untrusted(\"chapters\") }}",
+    "{{ transcript | untrusted(\"video\") }}"
+   ],
+   "reason": "Writing guidance is editable. The fields the code reads are locked.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  },
+  "video/understand_window": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ lines | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Reads a stretch of video. Returns JSON the code reads.",
+   "receives": [
+    {
+     "name": "language",
+     "sites": 1,
+     "source": "language"
+    },
+    {
+     "name": "language_rule",
+     "sites": 1,
+     "source": "language_rule(language)"
+    }
+   ],
+   "receivesMore": true,
+   "safetySensitive": false,
+   "usedBy": []
+  }
+ }
+}

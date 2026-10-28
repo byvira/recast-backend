@@ -431,11 +431,16 @@ async def _generate_image_bytes(prompt: str, *, skip_primary: bool = False) -> O
     if skip_primary:
         # The main model just drew writing into a picture, so a second try with it would likely do the same: use the backups.
         tried.append("The main picture model was skipped for this try.")
+    elif time.monotonic() < _cloudflare_skip_until:
+        # its free daily allowance was used up a moment ago (66 refusals in 30 days in production, each one a wasted call);
+        # the backups draw with the same model (FLUX schnell), so the picture is the same kind
+        tried.append("Cloudflare was skipped because today's free pictures are used up.")
     elif settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID:
         try:
             return await _call_cloudflare(prompt)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cloudflare image generation failed, checking Gemini fallback: %s", exc)
+            _skip_cloudflare_for_a_while(exc)
             tried.append(f"Cloudflare did not return a picture ({_brief_error(exc)}).")
     else:
         tried.append("Cloudflare is not set up.")
@@ -521,6 +526,16 @@ async def _generate_text_free(prompt: str) -> Optional[bytes]:
 
 
 _gemini_skip_until = 0.0  # time.monotonic() until which the Gemini picture fallback is not tried (it said no outright)
+_cloudflare_skip_until = 0.0  # the same for Cloudflare, after it said its free daily allowance is used up
+
+
+def _skip_cloudflare_for_a_while(exc: BaseException) -> None:
+    """Cloudflare's free pictures run out for the day (a 429). It is left alone for half an hour, then tried again, so it is
+    used again soon after the allowance comes back. Any other failure is tried again on the next picture, as before."""
+    global _cloudflare_skip_until
+    status = getattr(getattr(exc, "response", None), "status_code", None) or getattr(exc, "status_code", None)
+    if status == 429:
+        _cloudflare_skip_until = time.monotonic() + 1800.0
 
 
 def _skip_gemini_for_a_while(exc: BaseException) -> None:
@@ -532,8 +547,14 @@ def _skip_gemini_for_a_while(exc: BaseException) -> None:
         kind = classify(http_status=_status_of(exc), error_class=exc.__class__.__name__, message=_message_of(exc))
         if kind in ("auth_invalid_key", "billing_or_access", "model_unavailable"):
             _gemini_skip_until = time.monotonic() + 600.0
-        elif kind in ("quota_daily", "quota_exhausted"):
+        elif kind == "quota_daily":
             _gemini_skip_until = time.monotonic() + 3600.0
+        # these are the kinds the classifier really returns for a busy or used-up minute and a passing outage; before, only a
+        # name it never returns was checked, so Gemini was asked again for every picture
+        elif kind in ("quota_tokens", "rate_limit_minute"):
+            _gemini_skip_until = time.monotonic() + 120.0
+        elif kind == "provider_outage":
+            _gemini_skip_until = time.monotonic() + 30.0
     except Exception:  # noqa: BLE001
         pass
 

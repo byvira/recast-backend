@@ -1,3 +1,4 @@
+{# @locked locked_1 #}
 
 {{ language_instruction }}
 
@@ -25,6 +26,8 @@ SOURCE CONTENT:
 
 Generate content for {{ platform }}.
 
+{# @end #}
+{# @editable critical_checklist_before_ou "CRITICAL CHECKLIST BEFORE OUTPUTTING" #}
 CRITICAL CHECKLIST BEFORE OUTPUTTING:
 □ If approved openers are listed above, does it start with exactly one of them? (If none are listed, does it start with a specific, non-generic first line?)
 □ If approved closers are listed above, does it end with one of them? (If none are listed, does it end on one concrete step or one honest question, not a generic motivational line?)
@@ -33,12 +36,19 @@ CRITICAL CHECKLIST BEFORE OUTPUTTING:
 □ Does it include all required phrases in the right placements?
 □ Does it meet the minimum length for this platform?
 □ Does every sentence contain a specific detail — not a generic observation?
+{# @end #}
+{# @locked locked_2 #}
 □ {{ language_short }}
 
+{# @end #}
+{# @editable do_not_explain_output_only_t "Do not explain Output only the" #}
 Do not explain. Output only the final content.
 
+{# @end #}
+{# @locked locked_3 #}
 Return valid JSON in exactly this format:
 {
   "content": "the full generated content here",
   "platform": "{{ platform }}"
 }
+{# @end #}

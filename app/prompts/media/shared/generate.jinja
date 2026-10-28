@@ -1,9 +1,14 @@
+{# @locked locked_1 #}
 {%- if domain == "audio" %}
 {%- set quality_note = "\nIMPORTANT: Previous attempt was below quality threshold. Improve depth and engagement. Add more specific detail from the transcript, sharpen the opening, and make every section useful on its own." if retry > 0 else "" %}
 {%- if retry > 0 and retry_focus is defined and retry_focus %}{% set quality_note = quality_note ~ "
 The weakest part last time was " ~ retry_focus ~ ". Fix that first." %}{% endif %}
+{# @end #}
+{# @editable role_you_are_an_editor_who "ROLE You are an editor who" #}
 ROLE: You are an editor who turns spoken audio into written content that a reader can use without ever listening to the recording.
 
+{# @end #}
+{# @locked locked_2 #}
 TASK: Generate {{ output_type }} for this audio content.
 
 SOURCE MATERIAL
@@ -14,10 +19,14 @@ Full transcript excerpt: {{ transcript_excerpt | untrusted("transcript_excerpt")
 Chapters (real times from the recording): {% for c in chapters %}{{ "%d:%02d"|format((c.start_s // 60)|int, (c.start_s % 60)|int) }} {{ c.title }}{% if not loop.last %}; {% endif %}{% endfor %}
 {%- endif %}
 
+{# @end #}
+{# @locked locked_3 #}
 LANGUAGE: Write the whole output in the language of the transcript unless the brand instructions name another language. Do not translate quotes; keep them in the language they were spoken in.
 
 STRUCTURE
 {%- if output_type == "show_notes" %}
+{# @end #}
+{# @locked locked_4 #}
 1. A one-line episode headline that states the specific promise of the episode, not a generic label.
 2. A summary of 2 to 3 sentences: who this is for, the main question or tension, and what the listener walks away knowing.
 3. "In this episode": 4 to 6 bullet points. Each bullet names one concrete idea, decision or example from the transcript, in plain words.
@@ -25,12 +34,20 @@ STRUCTURE
 5. One or two standout quotes, copied exactly from the key quotes or transcript, each with a one-line note on why it matters.
 6. A closing takeaway: one specific thing the listener can do or think about after listening.
 {%- else %}
+{# @end #}
+{# @editable 1_open_with_the_single_stron "1 Open with the single strongest" #}
 1. Open with the single strongest idea in the transcript, stated as a specific claim or observation.
 2. Develop it in short sections, each built on one topic from the list above, with a concrete detail or quote from the transcript as support.
+{# @end #}
+{# @locked locked_5 #}
 3. Keep the structure that fits {{ output_type }} (headings, paragraphs or bullets as that format normally uses).
+{# @end #}
+{# @locked locked_6 #}
 4. Close with one specific takeaway or next step for the reader.
 {%- endif %}
 
+{# @end #}
+{# @editable depth_requirements "DEPTH REQUIREMENTS" #}
 DEPTH REQUIREMENTS
 - Every section must carry a detail that only applies to THIS recording: a named idea, a real quote, a stated reason, a specific example the speaker gave.
 - Write for a reader who has not heard the audio. Explain the context of a point in one clause before using it.
@@ -48,6 +65,8 @@ AVOID
 - Em dashes anywhere in the output.
 
 WEAK: "A wide-ranging chat about growth with lots of useful tips."
+{# @end #}
+{# @locked locked_7 #}
 GOOD: "Why the guest stopped chasing new listeners and started rewriting their three most popular episodes, and what changed in how they plan the season."{{ quality_note }}
 {%- elif domain == "video" %}
 {%- set quality_note = "\nIMPORTANT: Previous attempt scored below quality threshold. Improve hooks, structure, and platform optimization. Make the first line stronger, tie each section to a real moment from the video, and fit the format of the platform more closely." if retry > 0 else "" %}
@@ -63,15 +82,25 @@ Topics: {{ topics }}
 Repurpose angles: {{ repurpose_angles }}
 Transcript excerpt: {{ transcript_excerpt | untrusted("transcript_excerpt") }}
 
+{# @end #}
+{# @editable language_write_the_whole_out "LANGUAGE Write the whole output in" #}
 LANGUAGE: Write the whole output in the language of the transcript unless the brand instructions name another language.
 
 STRUCTURE
+{# @end #}
+{# @locked locked_8 #}
 1. Hook: the first line (or first spoken beat for a script) is the most specific, surprising or useful moment from the video, stated in a way that stops a scroll on {{ platform }}. Never open with a greeting or a label.
+{# @end #}
+{# @editable 2_body_pick_one_repurpose_an "2 Body pick ONE repurpose angle" #}
 2. Body: pick ONE repurpose angle from the list and build the piece around it. Each section ties to one key moment, shows the point and gives the reason it matters to the viewer.
 3. Value beat: include the single most useful idea or step from the video in plain, concrete words.
+{# @end #}
+{# @locked locked_9 #}
 4. Close: one specific action for the viewer that fits {{ platform }} (watch the full video, comment with a named answer, save, follow), tied to what the video covered.
 5. Format the output the way {{ platform }} content is normally formatted: line length, paragraph breaks, headings and any tags or hashtags in the native style.
 
+{# @end #}
+{# @editable depth_requirements_2 "DEPTH REQUIREMENTS" #}
 DEPTH REQUIREMENTS
 - Reference real moments from the key moments list by what was said or shown. Include a timestamp only if the key moments give one.
 - Write for someone who has not watched the video and may never watch it. The piece must still be worth reading.
@@ -87,5 +116,8 @@ AVOID
 - Em dashes anywhere in the output.
 
 WEAK: "Here are the key takeaways from my latest video."
+{# @end #}
+{# @locked locked_10 #}
 GOOD: A first line naming the one specific mistake or decision the video is about, followed by the reason it matters to the viewer.{{ quality_note }}
 {%- endif -%}
+{# @end #}

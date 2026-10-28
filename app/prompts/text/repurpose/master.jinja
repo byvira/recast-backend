@@ -1,3 +1,4 @@
+{# @locked locked_1 #}
 
 {{ language_instruction }}
 
@@ -19,15 +20,27 @@ ADDITIONAL RULES:
 {{ banned_instruction }}
 {{ approved_vocabulary_instruction }}
 
+{# @end #}
+{# @editable brand_voice_apply_every_rule "BRAND VOICE apply every rule below" #}
 ━━━ BRAND VOICE — apply every rule below to the output ━━━
+{# @end #}
+{# @locked locked_2 #}
 {{ brand_context }}
+{# @end #}
+{# @editable section "Section" #}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 CRITICAL: Do not copy sentences from the source. Rewrite everything in the brand voice above.
+{# @end #}
+{# @locked locked_3 #}
 Output must feel completely native to {{ platform }}.
+{# @end #}
+{# @editable zero_banned_words_use_approv "Zero banned words Use approved vocabulary" #}
 Zero banned words. Use approved vocabulary only.
 Use only facts, numbers, dates and events that appear in the source content or the brand facts. Never invent a statistic, a date or something that happened. If the source has none, write the point without one.
 Never use the em dash character (—) — use a period, comma, or a plain word instead.
+{# @end #}
+{# @locked locked_4 #}
 {{ language_instruction }}
 
 Return valid JSON:
@@ -37,3 +50,4 @@ Return valid JSON:
   "char_count": 0,
   "platform": "{{ platform }}"
 }
+{# @end #}

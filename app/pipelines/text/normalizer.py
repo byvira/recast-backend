@@ -28,6 +28,8 @@ INTENT_PLATFORM_MAP = {
     Platform.LINKEDIN: ContentIntent.POST,
     Platform.TWITTER: ContentIntent.POST,
     Platform.FACEBOOK: ContentIntent.POST,
+    Platform.THREADS: ContentIntent.POST,
+    Platform.BLUESKY: ContentIntent.POST,
 }
 
 

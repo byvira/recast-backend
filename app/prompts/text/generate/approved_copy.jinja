@@ -1,3 +1,4 @@
+{# @locked whole #}
 {%- set valid_phrases = [] %}
 {%- for p in phrases %}
 {%- if p.get("text", "").strip() %}
@@ -38,3 +39,4 @@ words — never insert the English text itself, not even in quotes:
 {% endfor %}
 
 {% endif %}
+{# @end #}

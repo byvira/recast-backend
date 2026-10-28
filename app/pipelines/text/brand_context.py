@@ -34,7 +34,9 @@ def build_goal_context(goal: Optional[str]) -> str:
     Maps to ConfigPanel ContentGoalSelector.
     Injected between brand context and platform rules.
     """
-    GOAL_INSTRUCTIONS = _load_text()["goal_instructions"]
+    from app.prompt_library.ops_lists import goal_instructions
+
+    GOAL_INSTRUCTIONS = goal_instructions()
     if not goal or goal == "brand":
         return ""
     instruction = GOAL_INSTRUCTIONS.get(goal, "")
@@ -110,9 +112,13 @@ def build_tone_override(tone: Optional[str], language_code: str = "en") -> str:
     two fully independent instruction blocks with zero interaction, so every
     non-English tone read the same regardless of which one was picked.
     """
-    TONE_INSTRUCTIONS = _load_text()["tone_instructions"]
+    from app.prompt_library.ops_lists import tone_instructions
+
+    TONE_INSTRUCTIONS = tone_instructions()
     if not tone or tone == "brand":
         return ""
+    # The pickers' "Bold" button is the "punchy" tone. A brand's saved default tone keeps the picker's id.
+    tone = "punchy" if tone == "bold" else tone
     instruction = TONE_INSTRUCTIONS.get(tone, "")
     if not instruction:
         return ""

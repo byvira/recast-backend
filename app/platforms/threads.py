@@ -26,4 +26,7 @@ def _threads() -> PlatformDefinition:
             "(added after initial connect — workspaces connected earlier must reconnect once)."
         ),
         confidence="verified",
+        # posts are written for Threads directly (prompt files under text/generate/*/threads.jinja), not only published there
+        has_text_prompt_rules=True,
+        text_enum_value="Threads",
     )

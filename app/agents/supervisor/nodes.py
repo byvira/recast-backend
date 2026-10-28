@@ -185,6 +185,38 @@ async def _recent_insight_titles(workspace_id: str, limit: int = 8) -> list[str]
     return [str(r.get("title") or "")[:90] for r in rows if r.get("title")]
 
 
+def _text(value, limit: int) -> str:
+    return str(value).strip()[:limit] if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
+
+
+def clean_findings(parsed: dict) -> dict:
+    """The model's briefing in the shape the instructions ask for: at most 3 insights and 2 flags, each an object whose
+    text fields are text. Anything else in the answer is dropped, so a malformed reply can't break saving or reach a
+    member as raw data."""
+    insights = []
+    for item in parsed.get("insights") if isinstance(parsed.get("insights"), list) else []:
+        if not isinstance(item, dict) or not _text(item.get("title"), 200) and not _text(item.get("body"), 2000):
+            continue
+        scope = item.get("pipeline_scope", "all")
+        if isinstance(scope, list):
+            scope = [s for s in scope if isinstance(s, str)][:6] or "all"
+        elif scope != "all":
+            scope = "all"
+        insights.append({
+            "kind": _text(item.get("kind"), 40), "title": _text(item.get("title"), 200), "body": _text(item.get("body"), 2000),
+            "rationale": _text(item.get("rationale"), 1000), "priority": _text(item.get("priority"), 20), "pipeline_scope": scope,
+        })
+    flags = []
+    for item in parsed.get("flags") if isinstance(parsed.get("flags"), list) else []:
+        if not isinstance(item, dict) or not _text(item.get("summary"), 1000):
+            continue
+        detail = item.get("detail")
+        flags.append({"severity": _text(item.get("severity"), 20), "summary": _text(item.get("summary"), 1000),
+                      "detail": detail if isinstance(detail, dict) else {"note": _text(detail, 1000)} if detail else {}})
+    notify = parsed.get("notify")
+    return {"insights": insights[:3], "flags": flags[:2], "notify": notify is True or notify == "true"}
+
+
 async def synthesize_node(state: SupervisorState) -> dict:
     digest = state["digest"]
     if digest_is_quiet(digest):
@@ -220,9 +252,7 @@ async def synthesize_node(state: SupervisorState) -> dict:
                 {"role": "user", "content": "That was not valid JSON in the shape asked for. Return only the JSON object."},
             ]
         if isinstance(parsed, dict):
-            findings["insights"] = parsed.get("insights") or []
-            findings["flags"] = parsed.get("flags") or []
-            findings["notify"] = bool(parsed.get("notify", False))
+            findings = clean_findings(parsed)
     except Exception as exc:  # noqa: BLE001
         logger.error("supervisor synthesize failed: %s", exc)
         return {"findings": findings, "errors": state["errors"] + [f"synthesize: {exc}"]}
