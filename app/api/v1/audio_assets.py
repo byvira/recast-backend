@@ -90,6 +90,7 @@ from app.models.lexicon import MemberLexicon
 from app.models.media import MediaAsset, MediaKind, MediaSource
 from app.models.voice_settings import MemberVoiceSettings
 from app.pipelines.audio.link_fetch import FeedListing, LinkFetchError, fetch_audio, list_feed_episodes
+from app.billing import charges, credits
 from app.pipelines.audio.transcriber import transcribe_audio_bytes
 from app.pipelines.media.audio_assemble import AssembleError, AssemblePlan, assemble_episode
 from app.pipelines.media.audio_cleanup import CleanupError, CleanupSettings, apply_cleanup
@@ -267,9 +268,11 @@ async def fit_script(
     async def ask(prompt: str) -> str:
         return await call_llm(prompt, temperature=0.5, max_tokens=4000)
 
-    return await script_fitting.fit_script(
-        body.script, body.target_seconds, body.words_per_minute, resolve_language_directive_name(language), ask,
-    )
+    # an audio script costs 1 credit
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "audio_script", step="fit_script"):
+        return await script_fitting.fit_script(
+            body.script, body.target_seconds, body.words_per_minute, resolve_language_directive_name(language), ask,
+        )
 
 
 class RenameRequest(BaseModel):
@@ -532,13 +535,18 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
         voice_settings = voice_settings.model_copy(update=narration_delivery.settings_for(body.delivery_style))
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
     language = (body.language or (piece.get("language") if body.source_piece_id else None) or "").strip() or None
-    speech = await synthesize_speech_timed(
-        text=script,
-        voice_settings=voice_settings,
-        lexicon=lexicon,
-        workspace_id=ctx.workspace_id,
-        user_id=ctx.user_id,
-        language=language,
+    # 3 credits a minute of narration, charged on the real length of what came back
+    speech = await charges.voiced(
+        ctx.workspace_id, ctx.user_id, "narration", script,
+        lambda: synthesize_speech_timed(
+            text=script,
+            voice_settings=voice_settings,
+            lexicon=lexicon,
+            workspace_id=ctx.workspace_id,
+            user_id=ctx.user_id,
+            language=language,
+        ),
+        step="narration", wpm=body.words_per_minute,
     )
     if not speech:
         raise HTTPException(
@@ -712,7 +720,25 @@ async def generate_dialogue(
     a non-member voice), then stitches them into one real continuous
     file via concatenate_turns. A named guest speaker's voice_id is saved
     as a real GuestVoiceProfile, scoped to this one AudioAsset, so the
-    same guest can be reused across turns without repeating the id."""
+    same guest can be reused across turns without repeating the id.
+
+    Charged as one piece of work: 3 credits a minute of the finished dialogue, set aside from the script's expected length and
+    charged on the real length once the file is saved."""
+    script = " ".join(t.text for t in body.turns)
+    hold = await credits.reserve(
+        ctx.workspace_id, ctx.user_id, "dialogue", charges.minutes(spoken_length.estimate_seconds(script)), step="dialogue",
+    )
+    try:
+        asset = await _generate_dialogue(body, ctx, run)
+    except BaseException:
+        await asyncio.shield(credits.release(hold))
+        raise
+    media = await media_assets.find_one({"id": asset.media_id}, {"duration_s": 1}) if asset.media_id else None
+    await credits.settle(hold, charges.minutes((media or {}).get("duration_s"), spoken_length.estimate_seconds(script)))
+    return asset
+
+
+async def _generate_dialogue(body: GenerateDialogueRequest, ctx: WorkspaceContext, run: AudioRun) -> AudioAsset:
     await assert_generation_allowed(ctx.workspace_id)
     await _assert_own_brand(body.brand_id, ctx.workspace_id)
     await run.step("Voicing each turn")
@@ -1016,7 +1042,12 @@ async def localize_audio_asset(
 
     brand = await brand_profiles.find_one({"id": source.brand_id, "workspace_id": ctx.workspace_id})
     brand_context = build_brand_context(brand) if brand else ""
-    translated_text, quality_score = await _translate_with_quality_gate(source_text, body.target_language, brand_context)
+    # translating costs 1 credit for each 1,000 words, charged once a translation came back
+    async with credits.spend(
+        ctx.workspace_id, ctx.user_id, "translate", charges.words_in(source_text), step=f"translate:{audio_asset_id}:{body.target_language}",
+    ) as hold:
+        translated_text, quality_score = await _translate_with_quality_gate(source_text, body.target_language, brand_context)
+        hold.nothing_made = not translated_text
     if not translated_text:
         raise HTTPException(status_code=502, detail="Translation failed. Try again.")
     review_note = None
@@ -1030,9 +1061,13 @@ async def localize_audio_asset(
         )
 
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
-    speech = await synthesize_speech_timed(
-        text=translated_text, voice_settings=voice_settings, lexicon=lexicon,
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+    speech = await charges.voiced(
+        ctx.workspace_id, ctx.user_id, "narration", translated_text,
+        lambda: synthesize_speech_timed(
+            text=translated_text, voice_settings=voice_settings, lexicon=lexicon,
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+        ),
+        step=f"narration:{audio_asset_id}:{body.target_language}",
     )
     if not speech:
         raise HTTPException(
@@ -1237,22 +1272,36 @@ async def _ingest_audio(
             logger.warning("DSP enhancement failed, using original upload: %s", exc)
             media_bytes, media_mime, dsp_settings = contents, content_type, {}
 
-    if run:
-        await run.step("Saving the audio")
+    # The transcript is part of every upload and import: 1 credit a minute of audio, set aside before anything is stored and
+    # charged once words came back.
+    length_s = spoken_length.audio_duration_seconds(media_bytes) or spoken_length.audio_duration_seconds(contents)
+    hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "transcription", charges.minutes(length_s), step="transcription")
     try:
-        url = await upload_file(media_bytes, UploadContentType.AUDIO, ctx.user_id)
-    except Exception as exc:  # noqa: BLE001 — same tolerance as media.py's own upload_media
-        logger.error("Audio upload failed for workspace %s: %s", ctx.workspace_id, exc)
-        raise HTTPException(status_code=502, detail="Audio upload failed. Try again.")
+        if run:
+            await run.step("Saving the audio")
+        try:
+            url = await upload_file(media_bytes, UploadContentType.AUDIO, ctx.user_id)
+        except Exception as exc:  # noqa: BLE001 — same tolerance as media.py's own upload_media
+            logger.error("Audio upload failed for workspace %s: %s", ctx.workspace_id, exc)
+            raise HTTPException(status_code=502, detail="Audio upload failed. Try again.")
 
-    if run:
-        await run.step("Transcribing what was said")
-    transcript = await transcribe_audio_bytes(contents, filename=filename, punctuate=True)
+        if run:
+            await run.step("Transcribing what was said")
+        transcript = await transcribe_audio_bytes(contents, filename=filename, punctuate=True)
+    except BaseException:
+        await asyncio.shield(credits.release(hold))
+        raise
     try:
         await assert_speech_ok(transcript_text(transcript), noun="recording", workspace_id=ctx.workspace_id, where="upload")
     except Exception:
+        # a recording the safety check refuses is not kept, and its transcript is not charged: safety never costs credits
+        await credits.release(hold)
         await delete_file_by_url(url)
         raise
+    if transcript:
+        await credits.settle(hold)
+    else:
+        await credits.release(hold)
 
     now = datetime.now(timezone.utc)
     media = MediaAsset(
@@ -1485,10 +1534,14 @@ async def regenerate_audio_asset(
     await run.step("Voicing your script")
     voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
-    speech = await synthesize_speech_timed(
-        text=script, voice_settings=voice_settings, lexicon=lexicon, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
-        # The language the recording was made in, so a translated narration is read by a voice that can read it.
-        language=(doc.get("language") or None),
+    speech = await charges.voiced(
+        ctx.workspace_id, ctx.user_id, "narration", script,
+        lambda: synthesize_speech_timed(
+            text=script, voice_settings=voice_settings, lexicon=lexicon, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+            # The language the recording was made in, so a translated narration is read by a voice that can read it.
+            language=(doc.get("language") or None),
+        ),
+        step=f"narration:{audio_asset_id}",
     )
     if not speech:
         raise HTTPException(
@@ -2402,7 +2455,12 @@ async def transcribe_audio_asset(
     await run.step("Transcribing what was said")
     # "es-ES" is asked for as "es", the form the speech service takes.
     hint = (body.language or "").strip().split("-")[0].lower() or None
-    transcript = await transcribe_audio_bytes(audio_bytes, filename=f"{audio_asset_id}.mp3", language=hint, punctuate=body.punctuate)
+    async with credits.spend(
+        ctx.workspace_id, ctx.user_id, "transcription", charges.minutes(media.get("duration_s") or spoken_length.audio_duration_seconds(audio_bytes)),
+        step=f"transcription:{audio_asset_id}",
+    ) as hold:
+        transcript = await transcribe_audio_bytes(audio_bytes, filename=f"{audio_asset_id}.mp3", language=hint, punctuate=body.punctuate)
+        hold.nothing_made = not transcript
     if not transcript:
         raise HTTPException(
             status_code=503,
@@ -2434,9 +2492,23 @@ async def cleanup_audio_asset(
         raise HTTPException(status_code=409, detail="This recording is already being cleaned up. Wait for it to finish.")
     _EDITING_NOW.add(key)
     try:
-        return await _cleanup_audio_asset(audio_asset_id, body, ctx, run)
+        # 1 credit a minute of the recording, charged once the cleaned version is saved
+        async with credits.spend(
+            ctx.workspace_id, ctx.user_id, "cleanup", charges.minutes(await _audio_seconds(audio_asset_id, ctx.workspace_id)),
+            step=f"cleanup:{audio_asset_id}",
+        ):
+            return await _cleanup_audio_asset(audio_asset_id, body, ctx, run)
     finally:
         _EDITING_NOW.discard(key)
+
+
+async def _audio_seconds(audio_asset_id: str, workspace_id: str) -> Optional[float]:
+    """How long a recording's current audio runs, for charging work measured in minutes."""
+    doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": workspace_id}, {"media_id": 1, "duration_s": 1}) or {}
+    if doc.get("duration_s"):
+        return float(doc["duration_s"])
+    media = await media_assets.find_one({"id": doc.get("media_id"), "workspace_id": workspace_id}, {"duration_s": 1}) if doc.get("media_id") else None
+    return float((media or {}).get("duration_s") or 0) or None
 
 
 async def _cleanup_audio_asset(audio_asset_id: str, body: CleanupSettings, ctx: WorkspaceContext, run: AudioRun) -> AudioAsset:
@@ -2675,9 +2747,13 @@ async def synthesize_sponsor_read(
 
     voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
     lexicon = await _get_lexicon(ctx.workspace_id, ctx.user_id)
-    audio_bytes = await synthesize_speech(
-        text=kit.sponsor_script, voice_settings=voice_settings, lexicon=lexicon,
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+    audio_bytes = await charges.voiced(
+        ctx.workspace_id, ctx.user_id, "narration", kit.sponsor_script,
+        lambda: synthesize_speech(
+            text=kit.sponsor_script, voice_settings=voice_settings, lexicon=lexicon,
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+        ),
+        step=f"sponsor:{brand_id}",
     )
     if not audio_bytes:
         raise HTTPException(status_code=503, detail="The sponsor read couldn't be voiced right now. Nothing was saved.")
@@ -2705,7 +2781,15 @@ async def assemble_audio_asset(
 ) -> AudioAsset:
     """Builds a finished episode into a new file. The recording, its versions
     and its approved master are not touched; the result is listed under
-    `assemblies`."""
+    `assemblies`. Mixing costs 1 credit a minute of the recording."""
+    async with credits.spend(
+        ctx.workspace_id, ctx.user_id, "audio_mix", charges.minutes(await _audio_seconds(audio_asset_id, ctx.workspace_id)),
+        step=f"mix:{audio_asset_id}",
+    ):
+        return await _assemble_audio_asset(audio_asset_id, body, ctx, run)
+
+
+async def _assemble_audio_asset(audio_asset_id: str, body: AssemblePlan, ctx: WorkspaceContext, run: AudioRun) -> AudioAsset:
     doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Audio asset not found.")
@@ -3001,21 +3085,35 @@ async def make_video_from_audio_asset(
             media = MediaAsset(**{k: v for k, v in row.items() if k != "_id"})
 
     if media is None:
-        await run.step("Loading the recording")
-        audio_bytes = await _download_media_bytes(voice["url"])
-        words = [TranscriptWordLike(word=w["word"], start_s=w["start_s"], end_s=w["end_s"]) for w in _master_transcript(doc)]
+        # Made on this server when no render machine is free: the same month's video minutes and the same 5 credits a minute as
+        # a render on the machine, so this path is never a way round either.
+        from app.video import limits as video_limits
 
-        await run.step("Rendering the video")
         try:
-            video_bytes = await render_video(
-                audio_bytes=audio_bytes, words=words, start_s=body.start_s, end_s=end_s,
-                style=body.style, size=body.size,
-                background_hex=colors.get("secondary") or "", accent_hex=colors.get("accent") or "",
-                cover_bytes=cover_bytes, font_name=(visual_identity.get("fonts") or {}).get("heading") or None,
-                primary_hex=colors.get("primary") or "", title=on_screen_title, logo_bytes=logo_bytes, progress=body.show_progress,
-            )
-        except VideoRenderError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            await video_limits.assert_render_room(ctx.workspace_id, wanted_s)
+        except video_limits.OverLimit as exc:
+            raise HTTPException(status_code=429, detail=exc.message)
+        render_hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "render", wanted_s / 60.0, step=f"render:{audio_asset_id}:{body.start_s}:{end_s}")
+        try:
+            await run.step("Loading the recording")
+            audio_bytes = await _download_media_bytes(voice["url"])
+            words = [TranscriptWordLike(word=w["word"], start_s=w["start_s"], end_s=w["end_s"]) for w in _master_transcript(doc)]
+
+            await run.step("Rendering the video")
+            try:
+                video_bytes = await render_video(
+                    audio_bytes=audio_bytes, words=words, start_s=body.start_s, end_s=end_s,
+                    style=body.style, size=body.size,
+                    background_hex=colors.get("secondary") or "", accent_hex=colors.get("accent") or "",
+                    cover_bytes=cover_bytes, font_name=(visual_identity.get("fonts") or {}).get("heading") or None,
+                    primary_hex=colors.get("primary") or "", title=on_screen_title, logo_bytes=logo_bytes, progress=body.show_progress,
+                )
+            except VideoRenderError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+        except BaseException:
+            await asyncio.shield(credits.release(render_hold))
+            raise
+        await credits.settle(render_hold)
 
         max_bytes = await _max_bytes_for(MediaKind.VIDEO, ctx.workspace_id)
         if len(video_bytes) > max_bytes:
@@ -3213,17 +3311,25 @@ async def generate_chapters(
         max_chapters=min(chapter_rules.MAX_CHAPTERS, max(3, int(duration // 120) + 2)),
         language_name=resolve_language_directive_name(language),
     )
+    # 1 credit, charged only when usable chapters came back
+    hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "audio_script", step=f"chapters:{audio_asset_id}")
     try:
         result = await call_llm_structured(prompt)
     except Exception as exc:  # noqa: BLE001
+        await credits.release(hold)
         logger.warning("Chapter generation failed for %s: %s", audio_asset_id, exc)
         raise HTTPException(status_code=502, detail="Couldn't find chapters right now. Try again.")
+    except BaseException:
+        await asyncio.shield(credits.release(hold))
+        raise
 
     chapters = chapter_rules.normalize_chapters(
         (result or {}).get("chapters"), duration, starts=[float(w.get("start_s") or 0) for w in words],
     )
     if len(chapters) < 2:
+        await credits.release(hold)
         return ChaptersResponse(chapters=[], reason="Couldn't find clear chapters in this recording.")
+    await credits.settle(hold)
 
     await audio_assets.update_one(
         {"id": audio_asset_id, "workspace_id": ctx.workspace_id},
@@ -3276,6 +3382,8 @@ async def generate_derivative(
     set_usage_workspace(ctx.workspace_id)
     from app.pipelines.audio.orchestrator import run_audio_analysis
 
+    # 1 credit, charged only when usable writing came back
+    hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "audio_script", step=f"derivative:{audio_asset_id}:{body.output_type}")
     try:
         outputs = await run_audio_analysis(
             user_id=ctx.user_id, workspace_id=ctx.workspace_id, brand=brand, max_retries=1,
@@ -3285,12 +3393,18 @@ async def generate_derivative(
             },
         )
     except Exception as exc:  # noqa: BLE001
+        await credits.release(hold)
         logger.warning("Written version failed for %s: %s", audio_asset_id, exc)
         raise HTTPException(status_code=502, detail="Couldn't write this right now. Try again.")
+    except BaseException:
+        await asyncio.shield(credits.release(hold))
+        raise
 
     content = guard_output(outputs.get("content"), source=transcript)
     if not content:
+        await credits.release(hold)
         raise HTTPException(status_code=502, detail="The writing came back unusable. Try again.")
+    await credits.settle(hold)
     content = content.replace("\u2014", ", ").replace("\u2013", "-")
     scores = [v for v in (outputs.get("quality_scores") or {}).values() if isinstance(v, (int, float))]
     quality = round(sum(scores) / len(scores), 2) if scores else None
@@ -3315,7 +3429,9 @@ async def suggest_clips_for_audio_asset(
     doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Audio asset not found.")
-    suggestions = await _generate_clip_suggestions(doc, ctx.workspace_id, audio_asset_id)
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "audio_script", step=f"clips:{audio_asset_id}") as hold:
+        suggestions = await _generate_clip_suggestions(doc, ctx.workspace_id, audio_asset_id)
+        hold.nothing_made = not suggestions
     return SuggestClipsResponse(suggestions=suggestions)
 
 
@@ -3352,7 +3468,9 @@ async def _extract_soundbites(audio_asset_id: str, ctx: WorkspaceContext) -> lis
     if not doc.get("media_id"):
         raise HTTPException(status_code=400, detail="This recording has no audio file to extract soundbites from.")
 
-    suggestions = await _generate_clip_suggestions(doc, ctx.workspace_id, audio_asset_id)
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "audio_script", step=f"soundbites:{audio_asset_id}") as hold:
+        suggestions = await _generate_clip_suggestions(doc, ctx.workspace_id, audio_asset_id)
+        hold.nothing_made = not suggestions
     if not suggestions:
         # The model answered, but no moment it picked passed the checks: that is about this recording, not a server fault.
         raise HTTPException(status_code=422, detail="No moment in this recording stood on its own as a soundbite. Try again, or try a longer recording.")
@@ -3480,15 +3598,23 @@ async def refine_soundbites(
     await assert_ai_budget_available(ctx.workspace_id)
     set_usage_workspace(ctx.workspace_id)
     prompt = load_prompt("audio/soundbite_refine", instruction=instruction)
+    # 1 credit, charged only when the instruction maps to something that can be done
+    hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "audio_script", step=f"soundbite_refine:{audio_asset_id}")
     try:
         result = await call_llm_structured(prompt)
     except Exception as exc:  # noqa: BLE001
+        await credits.release(hold)
         logger.warning("Soundbite refine mapping failed for %s: %s", audio_asset_id, exc)
         raise HTTPException(status_code=502, detail="Couldn't understand that instruction right now. Try again.")
+    except BaseException:
+        await asyncio.shield(credits.release(hold))
+        raise
 
     actions = [a for a in (result.get("actions") or []) if a in _REFINE_ACTIONS]
     if not actions:
+        await credits.release(hold)
         raise HTTPException(status_code=400, detail="That instruction doesn't match anything real this can do yet.")
+    await credits.settle(hold)
 
     parent_words = doc.get("transcript", [])
     updated: list[SoundbiteOut] = []

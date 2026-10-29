@@ -555,6 +555,14 @@ async def create_indexes() -> None:
     # plans: one saved row per plan, the change log, and the workspaces that share a paid workspace's plan
     await get_db()["billing_plans"].create_index("id", unique=True)
     await get_db()["billing_audit"].create_index([("at", -1)])
+    from app.billing import credits as _credits
+
+    await _credits.create_indexes()
+    from app.health import errors as _errors
+    from app.health import status as _status
+
+    await _errors.create_indexes()
+    await _status.create_indexes()
     # Ops prompt library
     await get_db()["prompt_library_audit"].create_index([("at", -1)])
     await get_db()["prompt_library_audit"].create_index([("subject", 1), ("at", -1)])

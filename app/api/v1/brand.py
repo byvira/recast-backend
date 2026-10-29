@@ -37,6 +37,7 @@ from app.models.brand_profile import (
 from app.pipelines.brand import profile_sections
 from app.pipelines.brand.voice_suggestions import generate_voice_pattern_suggestions
 from app.pipelines.brand.voice_playground import preview_rewrite_in_voice
+from app.billing import costs as credit_costs
 from app.pipelines.brand.trait_extraction import extract_sample_traits
 from app.pipelines.media.image_generation import generate_brand_mascot
 from app.shared import entitlements
@@ -715,7 +716,12 @@ async def suggest_voice_patterns(
             detail="Add a few identity details first — the more Ekavo knows, the better these suggestions will be.",
         )
 
-    suggestions = await generate_voice_pattern_suggestions(doc)
+    from app.billing import credits
+
+    # a voice analysis costs 3 credits, nothing when no suggestion came back
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "voice_analysis", step=f"voice_patterns:{brand_id}") as hold:
+        suggestions = await generate_voice_pattern_suggestions(doc)
+        hold.nothing_made = not suggestions
     if not suggestions:
         raise HTTPException(
             status_code=502,
@@ -746,7 +752,12 @@ async def preview_voice_rewrite(
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
-    result = await preview_rewrite_in_voice(doc, body.sample_text)
+    from app.billing import credits
+
+    # a rewrite in the brand's voice costs 1 credit
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "text_refine", step=f"voice_preview:{brand_id}") as hold:
+        result = await preview_rewrite_in_voice(doc, body.sample_text)
+        hold.nothing_made = not result
     if not result:
         raise HTTPException(
             status_code=502,
@@ -829,7 +840,15 @@ async def add_training_sample(
     content = body.content.strip()
     # PAR-015: was always []. A failed/unusable extraction still saves the
     # sample with an honest empty list — never blocks the save itself.
-    traits = await extract_sample_traits(content, workspace_id=ctx.workspace_id)
+    from app.billing import credits
+
+    # Reading a sample's traits is a voice analysis (3 credits). The sample is always saved; with no credits left it is saved
+    # without its traits, as when the reading fails.
+    traits: list = []
+    if await credits.has_room(ctx.workspace_id, await credit_costs.price("voice_analysis")):
+        async with credits.spend(ctx.workspace_id, ctx.user_id, "voice_analysis", step=f"sample_traits:{brand_id}") as hold:
+            traits = await extract_sample_traits(content, workspace_id=ctx.workspace_id)
+            hold.nothing_made = not traits
     sample = TrainingSample(
         id=str(uuid4()),
         title=body.title.strip() or "Untitled sample",
@@ -1048,6 +1067,10 @@ async def regenerate_brand_mascot(
     if not doc:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
+    from app.billing import credits
+
+    # the first mascot comes free with the brand; making it again is a picture like any other
+    await credits.require_room(ctx.workspace_id, await credit_costs.price("mascot"))
     run = await _register_mascot_run(brand_id, doc, ctx)
     if run is None:
         # Another mascot for this brand is being made, or the workspace is at its limit of running jobs.
@@ -1057,7 +1080,9 @@ async def regenerate_brand_mascot(
 
     async def make(_run: dict) -> dict:
         try:
-            made = await generate_brand_mascot(brand_profile=doc, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+            async with credits.spend(ctx.workspace_id, ctx.user_id, "mascot", step="mascot") as hold:
+                made = await generate_brand_mascot(brand_profile=doc, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+                hold.nothing_made = not made
             if not outcome.done():
                 outcome.set_result(made)
             if not made:

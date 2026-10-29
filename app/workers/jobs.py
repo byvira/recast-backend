@@ -14,6 +14,7 @@ publishing/campaign/token/analytics jobs that used to be added directly in
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
@@ -42,6 +43,8 @@ from app.video.retention import continue_video_transcripts, run_video_retention
 from app.video.jobs import reap_if_due
 
 
+logger = logging.getLogger(__name__)
+
 @dataclass(frozen=True)
 class Job:
     name: str
@@ -62,6 +65,39 @@ def _no_ctx(func: Callable[[], Awaitable[object]]) -> Callable[[dict], Awaitable
 
 def _every(step: int, *, offset: int = 0) -> frozenset[int]:
     return frozenset(m for m in range(60) if m % step == offset % step)
+
+
+async def _status_collect() -> None:
+    from app.health import status
+
+    await status.collect()
+
+
+def _guarded(job: Job) -> Callable[[dict], Awaitable[object]]:
+    """A scheduled job that fails is recorded in the error log and ends quietly, so one failing job never stops the others."""
+    async def _run(ctx: dict) -> object:
+        try:
+            return await job.func(ctx)
+        except Exception as exc:  # noqa: BLE001
+            from app.health import errors
+
+            logger.exception("Scheduled job %s failed", job.name)
+            errors.capture_exception(exc, source="scheduler", where=job.name)
+            return None
+    _run.__name__ = job.name
+    return _run
+
+
+async def _credit_sweep() -> None:
+    from app.billing import credits
+
+    await credits.housekeeping()
+
+
+async def _credit_nightly() -> None:
+    from app.billing import credits
+
+    await credits.nightly()
 
 
 async def _reap_video_jobs() -> None:
@@ -118,6 +154,12 @@ JOBS: list[Job] = [
     Job("invite_sweep", _no_ctx(sweep_invites), minute=frozenset({22})),
     # A short daily note to the team about new leads and waiting messages, at 07:05 UTC.
     Job("lead_digest", _no_ctx(lead_digest), minute=frozenset({5}), hour=frozenset({7})),
+    # The public status: every part's state, its day, and automatic incidents, every minute.
+    Job("status_collect", _no_ctx(_status_collect)),
+    # Credits set aside by work that crashed or never finished go back, every hour at :47.
+    Job("credit_sweep", _no_ctx(_credit_sweep), minute=frozenset({47})),
+    # Credit balances checked against the ledger, nightly at 01:53 UTC.
+    Job("credit_reconcile", _no_ctx(_credit_nightly), minute=frozenset({53}), hour=frozenset({1})),
     # Support tickets — reminders, auto-resolve, auto-close, snooze wake-up, every 5 min.
     Job("support_lifecycle", _no_ctx(support_lifecycle_tick), minute=_every(5, offset=1)),
 ]
@@ -133,7 +175,7 @@ def schedule_inprocess(scheduler, ctx: dict) -> None:
         fields = {k: v for k, v in (("minute", _csv(job.minute)), ("hour", _csv(job.hour))) if v}
         if not fields:
             fields = {"minute": "*"}
-        scheduler.add_job(job.func, "cron", args=[ctx], id=job.name, **fields)
+        scheduler.add_job(_guarded(job), "cron", args=[ctx], id=job.name, **fields)
 
 
 def arq_cron_jobs() -> list:
@@ -141,7 +183,7 @@ def arq_cron_jobs() -> list:
     from arq import cron
 
     return [
-        cron(job.func, name=job.name,
+        cron(_guarded(job), name=job.name,
              minute=set(job.minute) if job.minute else None,
              hour=set(job.hour) if job.hour else None)
         for job in JOBS

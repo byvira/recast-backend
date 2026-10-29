@@ -17,8 +17,6 @@ from app.agents.supervisor.notify import resolve_admin_user_ids
 from app.db.mongo import (
     admin_notifications,
     personal_signals,
-    workspace_ai_budgets,
-    workspace_ai_usage_daily,
     workspace_flags,
     workspace_insights,
     workspace_members,
@@ -221,43 +219,16 @@ async def assert_generation_allowed(workspace_id: str) -> None:
         )
 
 
-#: Same rolling window GET /ops/ai/usage reports (and the Quotas tab shows),
-#: so the number a member sees is the number that's enforced.
-AI_BUDGET_WINDOW_DAYS = 30
-
-
 async def assert_ai_budget_available(workspace_id: str) -> None:
-    """Raises 403 once a workspace has used up its monthly token budget.
+    """Raises 402 when the workspace has no credit left this month: under the owner's monthly limit always, and under the plan's
+    allowance once plans are on. A quick check before a run starts; each action still reserves its own credits. It also marks
+    every model call that follows in this task as this workspace's."""
+    from app.billing import credits
+    from app.shared.llm import set_usage_workspace
 
-    A soft cap, checked when a run starts: usage is written a moment after
-    each LLM call, so one large in-flight run can finish past the cap, but
-    no new run starts once it's reached. No budget set (None) means no cap.
-    Called by the token-consuming entry points only (Text generation incl.
-    repurpose/batch/campaigns, and Audio localization's translation) — Image
-    generation and TTS don't spend LLM tokens, so this budget doesn't apply
-    to them.
-    """
-    budget = await workspace_ai_budgets.find_one(
-        {"workspace_id": workspace_id}, {"monthly_token_budget": 1}
-    )
-    cap = (budget or {}).get("monthly_token_budget")
-    if cap is None:
-        return
-
-    since = (datetime.now(timezone.utc) - timedelta(days=AI_BUDGET_WINDOW_DAYS)).strftime("%Y-%m-%d")
-    rows = await workspace_ai_usage_daily.find(
-        {"workspace_id": workspace_id, "date": {"$gte": since}}
-    ).to_list(AI_BUDGET_WINDOW_DAYS + 1)
-    used = sum(int(r.get("tokens_used", 0) or 0) for r in rows)
-
-    if used >= cap:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"This workspace has used its AI budget ({used:,} of {cap:,} tokens in the last "
-                f"{AI_BUDGET_WINDOW_DAYS} days). An owner can raise it in Odette under Quotas."
-            ),
-        )
+    await credits.require_room(workspace_id, 1)
+    # the run that follows is counted against this workspace in the AI call log
+    set_usage_workspace(workspace_id)
 
 
 # ── notifications ───────────────────────────────────────────────────────────

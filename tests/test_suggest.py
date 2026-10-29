@@ -157,15 +157,14 @@ async def test_the_whole_app_stays_inside_its_per_minute_allowance(signup_user, 
     assert one.json()["completion"] is not None and two.json()["completion"] is None and model["calls"] == 1
 
 
-async def test_a_spent_monthly_budget_gives_no_suggestion(signup_user, model, monkeypatch):
-    from fastapi import HTTPException
+async def test_used_up_credits_still_give_suggestions(signup_user, model, monkeypatch):
+    """Typing suggestions are free: they keep working when the month's credits are used up, under their own daily limit."""
+    from app.billing import credits
 
-    async def spent(workspace_id):
-        raise HTTPException(status_code=403, detail="budget used")
+    async def used_up(*args, **kwargs):
+        raise credits.CreditsExhausted({"code": "limit_reached", "message": "Credits are used up."})
 
-    import app.agents.supervisor.service as service
-
-    monkeypatch.setattr(service, "assert_ai_budget_available", spent)
+    monkeypatch.setattr(credits, "require_room", used_up)
     client, _, ws_id, _ = await _setup(signup_user)
     res = await client.post("/api/v1/suggest/complete", json={"kind": "post_idea", "text": "my parents taught me"}, headers=_h(ws_id))
-    assert res.status_code == 200 and res.json()["completion"] is None and model["calls"] == 0
+    assert res.status_code == 200 and res.json()["completion"] is not None and model["calls"] == 1

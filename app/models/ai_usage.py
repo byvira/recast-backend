@@ -1,9 +1,6 @@
-"""Per-workspace AI processing budget + daily usage rollup — the data layer
-Odette's Quotas tab needs before "AI Processing Budget" can be a real number
-instead of an admitted gap. The budget is settable; the daily usage
-collection is now written by app.shared.llm._record_workspace_usage() for
-call sites wrapped in usage_workspace() (Odette, Remy) — see
-AIUsageDailyRecord's docstring for which call sites still aren't.
+"""The daily AI token rollup per workspace, written by app.shared.llm._record_workspace_usage() for every model call made inside a
+usage_workspace() scope. Tokens are what the AI providers bill; what members spend is credits (app.billing.credits), and the
+owner's monthly credit limit is kept in `workspace_ai_budgets.monthly_credit_limit`.
 """
 
 from datetime import datetime
@@ -11,17 +8,6 @@ from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel
-
-
-class WorkspaceAIBudget(BaseModel):
-    id: str                       # == workspace_id
-    workspace_id: str
-    monthly_token_budget: Optional[int] = None   # None = unmetered / no cap set
-    updated_at: Optional[datetime] = None
-
-
-class WorkspaceAIBudgetWrite(BaseModel):
-    monthly_token_budget: Optional[int] = None
 
 
 class AIUsageDailyRecord(BaseModel):

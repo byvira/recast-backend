@@ -160,9 +160,10 @@ async def complete(request: Request, body: CompleteRequest, ctx: WorkspaceContex
         return {"completion": value, "source": "ai" if value else None}
 
     try:
-        from app.agents.supervisor.service import assert_ai_budget_available
+        from app.shared.llm import set_usage_workspace
 
-        await assert_ai_budget_available(ctx.workspace_id)
+        # typing suggestions are always free and never switch off with the credits; they keep their own daily limit
+        set_usage_workspace(ctx.workspace_id)
         if not await _allowed_today(ctx.user_id) or not _app_has_room():
             return nothing
         brand_hint = ""

@@ -93,10 +93,19 @@ async def send_templated_email(
                 raise
             logger.warning("Email from %s was refused (%s); trying the test sender", sender, first)
             await asyncio.to_thread(resend.Emails.send, {"from": fallback, **payload})
+        _count_email(True)
         return True
     except Exception as exc:
         logger.error("Failed to send templated email '%s' to %s: %s", template_id, to, exc)
+        _count_email(False)
         return False
+
+
+def _count_email(ok: bool) -> None:
+    """Each real send is counted for the public status ("Emails from Ekavo")."""
+    from app.health import signals
+
+    signals.record("email", ok)
 
 
 async def send_otp_email(email: str, otp: str) -> bool:

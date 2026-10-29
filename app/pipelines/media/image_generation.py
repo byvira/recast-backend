@@ -641,6 +641,9 @@ async def generate_brand_mascot(
     if full:
         logger.info("Mascot not made for workspace %s: %s", workspace_id, full)
         return None
+    from app.shared.llm import set_usage_workspace
+
+    set_usage_workspace(workspace_id)
 
     try:
         raw_prompt = _build_mascot_raw_prompt(brand_profile)
@@ -711,6 +714,9 @@ async def generate_image_from_prompt(
     (app.pipelines.media.image_render), not this function's — documented
     rather than silently pretended.
     """
+    from app.shared.llm import set_usage_workspace
+
+    set_usage_workspace(workspace_id)  # the prompt checks and picture checks are counted against this workspace
     _last_failure.set(None)
     if provider == ImageProvider.GEMINI:
         logger.error(
@@ -787,6 +793,8 @@ async def generate_brand_image(
     workspace_id: str,
     user_id: str,
     provider: ImageProvider = ImageProvider.CLOUDFLARE,
+    credit_action: str = "picture",
+    raise_when_out_of_credits: bool = False,
 ) -> Optional[MediaAsset]:
     """The one shared entry point every content-creation surface calls for
     real AI image generation. Never raises — any failure returns None and
@@ -819,6 +827,19 @@ async def generate_brand_image(
         _fail("No image service is set up.")
         return None
 
+    from app.billing import credits
+    from app.shared.llm import set_usage_workspace
+
+    set_usage_workspace(workspace_id)
+    # The picture's credits (`credit_action`) are set aside first and charged only when a picture comes back. Out of credits, the
+    # caller gets None and falls back to its free text card, unless it asked for the refusal itself.
+    try:
+        hold = await credits.reserve(workspace_id, user_id, credit_action, step=credit_action)
+    except credits.CreditsExhausted as exc:
+        if raise_when_out_of_credits:
+            raise
+        _fail(exc.detail.get("message") if isinstance(exc.detail, dict) else "Credits are used up.")
+        return None
     try:
         # The image agent plans the steps, runs the gates and the provider chain, checks the picture against the brand,
         # stamps the logo, stores it and records the library item (flagged AI generated).
@@ -829,7 +850,13 @@ async def generate_brand_image(
         )
         if out.get("asset") is None:
             _last_failure.set(out.get("failure"))
+            await credits.release(hold)
+        else:
+            await credits.settle(hold)
         return out.get("asset")
-    except Exception as exc:  # noqa: BLE001
+    except BaseException as exc:
+        await asyncio.shield(credits.release(hold))
+        if not isinstance(exc, Exception):
+            raise
         logger.error("generate_brand_image failed for workspace %s: %s", workspace_id, exc)
         return None

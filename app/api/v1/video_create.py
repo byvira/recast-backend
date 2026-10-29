@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from app.agents.runtime.decisions import record_decision
+from app.billing import credits
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import get_db, media_assets
@@ -35,8 +36,16 @@ def _records():
 
 async def _budget(ctx: WorkspaceContext) -> None:
     from app.agents.supervisor.service import assert_ai_budget_available
+    from app.shared.llm import set_usage_workspace
 
     await assert_ai_budget_available(ctx.workspace_id)
+    # every model call these tools make is counted against this workspace in the AI call log
+    set_usage_workspace(ctx.workspace_id)
+
+
+def _charged(ctx: WorkspaceContext, action: str, step: str):
+    """The credits for one of these tools: set aside before the model is asked, charged when it answers."""
+    return credits.spend(ctx.workspace_id, ctx.user_id, action, step=step)
 
 
 async def _video(ctx: WorkspaceContext, media_id: str) -> dict:
@@ -135,7 +144,8 @@ class ScriptBody(_Base):
 async def script(request: Request, body: ScriptBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
     await _budget(ctx)
     voice = await voice_mod.load(ctx.workspace_id, body.brand_id)
-    result, meta = await G.script_from_text(body.text, target_seconds=body.target_seconds, language=_language(body.language), voice=voice)
+    async with _charged(ctx, "video_script", "video_script"):
+        result, meta = await G.script_from_text(body.text, target_seconds=body.target_seconds, language=_language(body.language), voice=voice)
     return await _finish(ctx, "script", result, meta, voice)
 
 
@@ -157,7 +167,8 @@ async def script_from_pictures(request: Request, body: PictureScriptBody, ctx: W
         pics.append({"id": mid, "caption": (doc.get("title") or "")[:120], "alt": (doc.get("alt_text") or "")[:300]})
     await _budget(ctx)
     voice = await voice_mod.load(ctx.workspace_id, body.brand_id)
-    result, meta = await G.picture_script(pics, body.goal, language=_language(body.language), voice=voice)
+    async with _charged(ctx, "video_script", "picture_script"):
+        result, meta = await G.picture_script(pics, body.goal, language=_language(body.language), voice=voice)
     return await _finish(ctx, "picture_script", result, meta, voice)
 
 
@@ -212,7 +223,8 @@ async def publish_text(request: Request, body: PublishBody, ctx: WorkspaceContex
     chapters = (analysis or {}).get("chapters") or []
     await _budget(ctx)
     voice = await voice_mod.load(ctx.workspace_id, body.brand_id)
-    result, meta = await G.publish_text(_text(words)[:6000], body.platform, chapters=chapters, language=_language(body.language, tr), voice=voice)
+    async with _charged(ctx, "text_post", f"publish_text:{body.platform}"):
+        result, meta = await G.publish_text(_text(words)[:6000], body.platform, chapters=chapters, language=_language(body.language, tr), voice=voice)
     return await _finish(ctx, "publish_text", result, meta, voice, media_id=body.media_id)
 
 
@@ -233,7 +245,8 @@ async def edit_plan(request: Request, body: EditPlanBody, ctx: WorkspaceContext 
     lines = "\n".join(f"{x['start_ms']} {x['text']}" for x in W.sentences(words)[:1500])
     await _budget(ctx)
     voice = await voice_mod.load(ctx.workspace_id, None)
-    result, meta = await G.edit_plan(lines, pauses, duration_ms, body.style)
+    async with _charged(ctx, "video_plan", "edit_plan"):
+        result, meta = await G.edit_plan(lines, pauses, duration_ms, body.style)
     return await _finish(ctx, "edit_plan", result, meta, voice, media_id=body.media_id,
                          summary=f"Planned {len(result)} edits in a {body.style} style.")
 
@@ -248,7 +261,8 @@ class CritiqueBody(_Base):
 async def critique(request: Request, body: CritiqueBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
     await _budget(ctx)
     voice = await voice_mod.load(ctx.workspace_id, body.brand_id)
-    result, meta = await G.critique(body.material, body.platform, language=_language(body.language), voice=voice)
+    async with _charged(ctx, "draft_feedback", "critique"):
+        result, meta = await G.critique(body.material, body.platform, language=_language(body.language), voice=voice)
     return await _finish(ctx, "critique", result, meta, voice)
 
 
@@ -322,7 +336,11 @@ async def recording_voice_learn(request: Request, ctx: WorkspaceContext = Depend
     from app.agents.personal import recording_voice
     from app.shared.llm import embed_text
 
-    return await recording_voice.learn(ctx.workspace_id, ctx.user_id, embed=embed_text)
+    # learning the member's voice is a calibration: 3 credits, only when something new was learned
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "voice_analysis", step="recording_voice") as hold:
+        out = await recording_voice.learn(ctx.workspace_id, ctx.user_id, embed=embed_text)
+        hold.nothing_made = out.get("result") != "learned"
+    return out
 
 
 @router.delete("/recording-voice")

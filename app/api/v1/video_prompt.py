@@ -2,6 +2,7 @@
 one script request; stock search is free). The member reads it, changes the words or the footage, and only then asks for the video:
 the chosen clips are saved to the library with their licences, each scene is spoken in the member's own voice, and a project opens in the
 editor with the scenes in order. Nothing is spoken or downloaded before that second step."""
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -11,11 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.v1.video_create import _Base, _budget, _finish, _language
+from app.billing import charges, credits
+from app.billing import costs as credit_costs
 from app.core.middleware import limiter
 from app.video.guard import video_spend_guard
 from app.core.workspace import WorkspaceContext, require
 from app.db.mongo import brand_profiles, media_assets
 from app.models.media import ORIGIN_AI, MediaAsset, MediaKind, MediaSource
+from app.pipelines.media.duration import estimate_seconds as spoken_estimate
 from app.shared import pipeline_runs
 from app.video import builders, clipgen, edl, service
 from app.video.create import generate as G
@@ -54,8 +58,11 @@ async def draft(request: Request, body: DraftBody, ctx: WorkspaceContext = Depen
     await _budget(ctx)
     set_usage_workspace(ctx.workspace_id)
     voice = await voice_mod.load(ctx.workspace_id, body.brand_id)
-    result, meta = await G.script_from_text(body.prompt.strip(), target_seconds=body.target_seconds, language=_language(body.language), voice=voice)
-    scenes = result.get("beats") or []
+    # a video script costs 1 credit, nothing when no scene came back
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "video_script", step="prompt_script") as hold:
+        result, meta = await G.script_from_text(body.prompt.strip(), target_seconds=body.target_seconds, language=_language(body.language), voice=voice)
+        scenes = result.get("beats") or []
+        hold.nothing_made = not scenes
     if not scenes:
         raise HTTPException(status_code=502, detail="Couldn't write a script from that. Try describing the video a little differently.")
     connected = providers.configured()
@@ -134,6 +141,10 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
         raise HTTPException(status_code=409, detail=blocker)
     brand = await brand_profiles.find_one({"id": body.brand_id, "workspace_id": ctx.workspace_id}) if body.brand_id else None
     colors = ((brand or {}).get("visual_identity") or {}).get("colors") or {}
+    # The plan costs 3 credits and the narration 3 a minute; both are checked now, so a video that cannot be paid for is refused
+    # before anything is made. The render later costs its own minutes.
+    narration_s = sum(spoken_estimate(sc.narration) for sc in body.scenes)
+    await credits.require_room(ctx.workspace_id, await credit_costs.price("video_plan") + await credit_costs.price("narration", charges.minutes(narration_s)))
     try:
         await pipeline_runs.assert_capacity(ctx.workspace_id)
         run = await pipeline_runs.create_run(
@@ -160,6 +171,9 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
         footage_notes: list[str] = []
         stored: list[str] = []
         voice_ids: list[str] = []
+        plan_hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "video_plan", step="video_plan")
+        voice_hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "narration", charges.minutes(narration_s), step="prompt_voice")
+        spoken_s = 0.0
         try:
             for n, sc in enumerate(body.scenes):
                 clip_info: Optional[dict[str, Any]] = None
@@ -200,6 +214,7 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
                     )
                     await media_assets.insert_one(vm.model_dump())
                     voice_ids.append(vm.id)
+                    spoken_s += length
                     parts.append({"media_id": vm.id, "seconds": length})
                 beats.append({"text": sc.narration, "on_screen": sc.on_screen, "voice": parts, "clip": clip_info})
             await reporter.step("Putting the scenes together")
@@ -213,7 +228,11 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
                 {"kind": "prompt", "scenes": len(beats), "prompt": body.prompt[:300], "origin": ORIGIN_AI},
             )
             stored.clear()  # the voice files now belong to the library
+            await credits.settle(plan_hold)
+            await credits.settle(voice_hold, charges.minutes(spoken_s))
         except BaseException:
+            await asyncio.shield(credits.release(plan_hold))
+            await asyncio.shield(credits.release(voice_hold))
             if voice_ids:
                 await media_assets.delete_many({"workspace_id": ctx.workspace_id, "id": {"$in": voice_ids}})
             raise

@@ -17,7 +17,7 @@ from uuid import uuid4
 
 from app.agents.personal.history import iter_member_content
 from app.api.v1 import media as media_module
-from app.db.mongo import brand_profiles, content_pieces, media_assets, workspace_ai_budgets, workspace_ai_usage_daily
+from app.db.mongo import brand_profiles, content_pieces, media_assets, workspace_ai_budgets
 from app.models.audio_asset import TranscriptWord
 from app.models.media import MediaAsset, MediaChapter, MediaKind, MediaSource, MediaTranscriptWord
 from app.pipelines.media import video_analysis as va
@@ -524,13 +524,9 @@ async def test_only_recordings_can_be_analysed_and_scope_and_budget_hold(signup_
     other_ws = await create_workspace(client, "Analyze Other WS")
     assert (await client.post(f"/api/v1/media/{video_id}/analyze", headers={"X-Workspace-Id": other_ws})).status_code == 404
 
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    await workspace_ai_budgets.insert_one({"id": ws_id, "workspace_id": ws_id, "monthly_token_budget": 5})
-    await workspace_ai_usage_daily.insert_one(
-        {"_id": f"{ws_id}:{today}", "id": f"{ws_id}:{today}", "workspace_id": ws_id, "date": today, "tokens_used": 5}
-    )
+    await workspace_ai_budgets.insert_one({"id": ws_id, "workspace_id": ws_id, "monthly_credit_limit": 0})
     blocked = await client.post(f"/api/v1/media/{video_id}/analyze", headers=headers)
-    assert blocked.status_code == 403 and "AI budget" in blocked.json()["detail"]
+    assert blocked.status_code == 402 and "monthly limit" in blocked.json()["detail"]["message"]
 
 
 async def test_captions_download_as_srt_and_vtt_or_say_there_is_no_transcript(signup_user):

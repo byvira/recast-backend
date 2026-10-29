@@ -185,7 +185,7 @@ async def pick_default_image(
         topic = _scene_topic(piece_content)
         ai_asset = await generate_brand_image(
             topic=topic, brand_profile=brand_profile,
-            workspace_id=workspace_id, user_id=user_id,
+            workspace_id=workspace_id, user_id=user_id, credit_action="default_picture",
         )
         if ai_asset:
             return ai_asset

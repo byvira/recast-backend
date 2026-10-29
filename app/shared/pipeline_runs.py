@@ -324,6 +324,9 @@ class StepReporter:
 
 def _plain(exc: Exception) -> str:
     detail = getattr(exc, "detail", None)
+    # a structured refusal (a plan limit, credits used up) carries its own plain sentence
+    if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+        return detail["message"][:300]
     return str(detail or exc)[:300] or "The work could not be finished."
 
 
@@ -386,6 +389,10 @@ def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]], *, inter
         try:
             await _set(doc["id"], status="running", started_at=_now(), heartbeat_at=_now())
             # Every run is watched for a time limit; a run that honours a cancel at once (interrupt_on_cancel) is also stopped on request.
+            # every credit this run spends belongs to it, so a retried or restarted run is never charged twice for one step
+            from app.billing.credits import bind_run
+
+            bind_run(doc["id"])
             work_task = asyncio.ensure_future(work(doc))
             cancelled_by_member: list = []
             # a kind with no limit of its own (video, text, odette) still has the general one, so no run can hold a slot for ever
@@ -410,6 +417,11 @@ def start(doc: dict, work: Callable[[dict], Awaitable[Optional[dict]]], *, inter
             await _finish(doc, "failed", error=f"This took longer than {minutes} minutes, so it was stopped. Try again.")
         except Exception as exc:  # noqa: BLE001
             logger.error("Run %s (%s) failed: %s", doc["id"], doc["kind"], exc, exc_info=True)
+            from app.health import errors
+
+            if not errors.is_expected(exc):
+                errors.capture_exception(exc, source="job", where=f"run {doc.get('kind')}",
+                                         workspace_id=doc.get("workspace_id"), user_id=doc.get("user_id"))
             await _finish(doc, "failed", error=_plain(exc))
         finally:
             heartbeat.cancel()

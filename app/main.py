@@ -221,10 +221,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await deploy_check.run_once(get_db())
     except Exception as exc:  # noqa: BLE001 - prompts fall back to their files; the app must still start
         logger.error("Published prompt versions were not loaded: %s", exc)
+    try:
+        # a crash or a long restart since the last heartbeat is recorded on the public status as time Ekavo could not be reached
+        from app.health import errors as health_errors
+        from app.health import status as health_status
+
+        # every error the code logs while carrying on goes to the Ops error log too
+        health_errors.install_log_capture()
+        await health_status.on_startup()
+    except Exception as exc:  # noqa: BLE001 - the status must never stop the app from starting
+        logger.error("Could not record the time Ekavo was unreachable: %s", exc)
 
     yield
 
     logger.info("Shutting down application...")
+    from app.health import status as health_status
+
+    await health_status.on_shutdown()
     try:
         from app.shared import pipeline_runs as _runs
 
@@ -422,6 +435,11 @@ from app.api.v1 import developer as developer_router
 app.include_router(developer_router.router, prefix="/api/v1/developer", tags=["Developer"])
 from app.api.v1 import public_video as public_video_router
 app.include_router(public_video_router.router, prefix="/api/v1/public/video", tags=["Public video API"])
+from app.api.v1 import public_status as public_status_router
+app.include_router(public_status_router.router, prefix="/api/v1/public/status", tags=["Status"])
+app.include_router(public_status_router.client_errors_router, prefix="/api/v1/client-errors", tags=["Status"])
+from app.api.v1 import ops_health as ops_health_router
+app.include_router(ops_health_router.router, prefix="/api/v1/ops/health", tags=["Ops"])
 from app.api.v1 import video_projects as video_projects_router
 from app.api.v1 import video_transcripts as video_transcripts_router
 from app.api.v1 import video_analysis as video_analysis_router

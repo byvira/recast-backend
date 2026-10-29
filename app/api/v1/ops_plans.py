@@ -237,3 +237,102 @@ async def audit_log(request: Request, limit: int = Query(50, ge=1, le=200), _: d
     for r in rows:
         r["at"] = r["at"].isoformat()
     return {"changes": rows}
+
+
+# ── credits ──────────────────────────────────────────────────────────────
+
+@router.get("/credits/costs")
+@limiter.limit("60/minute")
+async def credit_costs(request: Request, _: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """The costs table: what each action costs, its default, and whether it is charged or system work."""
+    from app.billing import costs as C
+
+    table = await C.costs()
+    return {"modules": [{"key": k, "label": v} for k, v in C.MODULES.items()], "costs": [C.public_row(k, v) for k, v in table.items()]}
+
+
+class CostChange(BaseModel):
+    credits: int = Field(..., ge=0, le=1000)
+    reason: str = Field(..., min_length=3, max_length=300)
+
+
+@router.put("/credits/costs/{action}")
+@limiter.limit("30/minute")
+async def change_credit_cost(request: Request, action: str, body: CostChange, user: dict = Depends(_ops_owner)) -> dict[str, Any]:
+    """Change what one action costs. New charges use it within a minute; what was charged before stays as it was."""
+    from app.billing import costs as C
+
+    if action not in C.DEFAULT_COSTS:
+        raise HTTPException(status_code=404, detail="No such action.")
+    if C.DEFAULT_COSTS[action]["kind"] == "passive" and body.credits:
+        raise HTTPException(status_code=400, detail="System work is always free.")
+    before = (await C.costs())[action]["credits"]
+    if body.credits == C.DEFAULT_COSTS[action]["credits"]:
+        await get_db()["billing_credit_costs"].delete_one({"id": action})
+    else:
+        await get_db()["billing_credit_costs"].update_one(
+            {"id": action}, {"$set": {"id": action, "credits": body.credits, "updated_at": datetime.now(timezone.utc), "by": user["id"]}},
+            upsert=True,
+        )
+    C.forget()
+    await _audit(user, "credits.cost", action, before, body.credits, body.reason, str(C.DEFAULT_COSTS[action]["label"]))
+    table = await C.costs()
+    return C.public_row(action, table[action])
+
+
+@router.get("/credits/workspaces/{workspace_id}")
+@limiter.limit("60/minute")
+async def workspace_credits(
+    request: Request, workspace_id: str, period: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}$"),
+    before: Optional[str] = Query(None, max_length=40), _: dict = Depends(require_platform_staff),
+) -> dict[str, Any]:
+    """One workspace's credits this month and its ledger, newest first."""
+    from app.billing import credits
+
+    if not await workspaces.find_one({"id": workspace_id}, {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    return {"balance": await credits.summary(workspace_id), "ledger": await credits.ledger(workspace_id, period=period, before=before, for_ops=True)}
+
+
+class CreditGrant(BaseModel):
+    credits: int = Field(..., ge=1, le=1_000_000)
+    reason: str = Field(..., min_length=3, max_length=300)
+
+
+@router.post("/credits/workspaces/{workspace_id}/grant")
+@limiter.limit("30/minute")
+async def grant_credits(request: Request, workspace_id: str, body: CreditGrant, user: dict = Depends(_ops_owner)) -> dict[str, Any]:
+    """Add credits to this month. They are shared by every workspace on the same plan, and end with the month."""
+    from app.billing import credits
+
+    ws = await workspaces.find_one({"id": workspace_id}, {"id": 1, "name": 1})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    balance = await credits.grant(workspace_id, body.credits, by=user["id"], note=body.reason.strip())
+    await _audit(user, "credits.grant", workspace_id, None, body.credits, body.reason, str(ws.get("name") or workspace_id))
+    return {"balance": balance}
+
+
+@router.post("/credits/workspaces/{workspace_id}/refund")
+@limiter.limit("30/minute")
+async def refund_credits(request: Request, workspace_id: str, body: CreditGrant, user: dict = Depends(_ops_owner)) -> dict[str, Any]:
+    """Give back credits charged this month, for work that went wrong on Ekavo's side."""
+    from app.billing import credits
+
+    ws = await workspaces.find_one({"id": workspace_id}, {"id": 1, "name": 1})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    balance = await credits.refund(workspace_id, body.credits, by=user["id"], note=body.reason.strip())
+    await _audit(user, "credits.refund", workspace_id, None, body.credits, body.reason, str(ws.get("name") or workspace_id))
+    return {"balance": balance}
+
+
+@router.get("/credits/report")
+@limiter.limit("30/minute")
+async def credit_report(
+    request: Request, period: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}$"), _: dict = Depends(require_platform_staff),
+) -> dict[str, Any]:
+    """The month's AI and render cost at paid rates, against the credits charged."""
+    from app.billing import report
+
+    return await report.monthly(period)

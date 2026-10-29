@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from app.db.mongo import audio_assets, audio_kits, brand_profiles, image_assets, media_assets
 from app.models.media import MediaAsset, MediaKind, MediaSource
+from app.billing import credits
 from app.video import builders, edl, transcribe
 from app.video.analysis import analyze as A
 from app.video.create import generate as G
@@ -86,8 +87,10 @@ async def moments_for(env: Env, media_id: str, words: list[dict], *, language: s
     moments = [m for m in (doc or {}).get("moments", []) if m.get("state") != "rejected"] if doc and doc.get("status") == "done" else []
     if not moments:
         await env.step("Finding the moments worth clipping")
-        result = await A.analyze(words, language=language, duration_s=duration_s, parts=("moments",), min_s=min_s, max_s=max_s, count=count,
-                                 caller=env.caller)
+        # reading the video costs 1 credit for each 10 minutes, as on the video page
+        async with credits.spend(env.workspace_id, env.user_id, "video_analysis", (duration_s or 60) / 60.0, step=f"analysis:{media_id}"):
+            result = await A.analyze(words, language=language, duration_s=duration_s, parts=("moments",), min_s=min_s, max_s=max_s, count=count,
+                                     caller=env.caller)
         moments = [m for m in result["moments"] if m.get("state") != "rejected"]
     if only_accepted:
         moments = [m for m in moments if m.get("state") == "accepted"]
@@ -221,6 +224,13 @@ async def _speak_beats(env: Env, beats: list[dict], language: str) -> list[dict]
         await speak.prepare([b["narration"] for b in beats])
     out = []
     urls: list[str] = []
+    # narration: 3 credits a minute, set aside from the script's expected length and charged on what was spoken
+    from app.billing import charges
+
+    voice_hold = await credits.reserve(
+        env.workspace_id, env.user_id, "narration", charges.minutes(sum(audio_duration.estimate_seconds(b["narration"]) for b in beats)),
+        step="flow_voice",
+    )
     try:
         for n, b in enumerate(beats, 1):
             await env.step(f"Speaking beat {n} of {len(beats)}")
@@ -236,7 +246,9 @@ async def _speak_beats(env: Env, beats: list[dict], language: str) -> list[dict]
                 source=MediaSource.SYNTHESIZED, created_by=env.user_id, created_at=datetime.now(timezone.utc), size_bytes=stored.get("bytes"),
             ).model_dump())
             out.append({"media_id": mid, "seconds": secs, "text": b["narration"]})
+        await credits.settle(voice_hold, charges.minutes(sum(o["seconds"] for o in out)))
     except BaseException:
+        await asyncio.shield(credits.release(voice_hold))
         # a half-voiced video is not kept: the voice files made so far and their library rows go, so nothing is left behind unused
         try:
             if out:
@@ -260,7 +272,9 @@ async def post_to_video(env: Env, p: dict) -> list[dict]:
     language = p.get("language") or "en"
     voice = await voice_mod.load(env.workspace_id, brand.get("id"))
     await env.step("Writing the script")
-    script, meta = await G.script_from_text(text, target_seconds=p.get("target_seconds"), language=language, voice=voice, caller=env.caller)
+    async with credits.spend(env.workspace_id, env.user_id, "video_script", step="flow_script") as hold:
+        script, meta = await G.script_from_text(text, target_seconds=p.get("target_seconds"), language=language, voice=voice, caller=env.caller)
+        hold.nothing_made = not script.get("beats")   # an empty script is not charged
     beats = script["beats"]
     if not beats:
         raise FlowError("A script could not be written from that post. Try a longer post.")

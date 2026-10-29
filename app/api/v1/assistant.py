@@ -74,14 +74,17 @@ async def assist_with_draft(
 ) -> dict:
     """Given a work-in-progress draft, tell the member whether it matches their
     established voice and how to pull it back if not. User-initiated — makes one
-    Groq call. Never on any pipeline's latency path."""
-    return await service.assist(
-        ctx.workspace_id,
-        ctx.user_id,
-        pipeline_type=body.pipeline_type,
-        draft_text=body.draft_text,
-        target=body.target,
-    )
+    Groq call. Never on any pipeline's latency path. Remy's feedback on a draft costs 1 credit."""
+    from app.billing import credits
+
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "draft_feedback"):
+        return await service.assist(
+            ctx.workspace_id,
+            ctx.user_id,
+            pipeline_type=body.pipeline_type,
+            draft_text=body.draft_text,
+            target=body.target,
+        )
 
 
 def _voice_settings_id(workspace_id: str, user_id: str) -> str:

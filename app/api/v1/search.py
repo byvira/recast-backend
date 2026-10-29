@@ -28,7 +28,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
+from app.agents.supervisor.service import assert_generation_allowed
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import (
@@ -206,7 +206,8 @@ async def agentic_search(
         raise HTTPException(status_code=400, detail="That query is too long.")
 
     await assert_generation_allowed(ctx.workspace_id)
-    await assert_ai_budget_available(ctx.workspace_id)
+    # search is always free and never switches off with the credits
+    set_usage_workspace(ctx.workspace_id)
 
     pattern = _safe_regex(query)
     literal = await _search_pool(ctx.workspace_id, pattern, per_type=10)

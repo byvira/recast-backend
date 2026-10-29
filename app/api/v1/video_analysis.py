@@ -125,13 +125,21 @@ async def start(
             await _analyses().replace_one({"workspace_id": ctx.workspace_id, "media_id": media_id, "id": doc["id"]}, old)
 
     async def work(row: dict) -> dict:
+        from app.billing import credits
+        from app.shared.llm import set_usage_workspace
+
         reporter = pipeline_runs.StepReporter(row["id"])
+        set_usage_workspace(ctx.workspace_id)
         try:
             words = await transcribe.all_words(tr["id"])
-            result = await A.analyze(
-                words, language=doc["language"], duration_s=float(tr["duration_s"]), parts=tuple(body.parts), min_s=body.min_s,
-                max_s=body.max_s, count=body.count, platform=body.platform, reporter=reporter,
-            )
+            # 1 credit for each 10 minutes of video read, charged when the reading is done
+            async with credits.spend(
+                ctx.workspace_id, ctx.user_id, "video_analysis", float(tr["duration_s"] or 60) / 60.0, step=f"analysis:{media_id}",
+            ):
+                result = await A.analyze(
+                    words, language=doc["language"], duration_s=float(tr["duration_s"]), parts=tuple(body.parts), min_s=body.min_s,
+                    max_s=body.max_s, count=body.count, platform=body.platform, reporter=reporter,
+                )
             kept = {m["start_ms"]: m["state"] for m in ((previous or {}).get("moments") or []) if m.get("state") != "suggested"}
             for m in result["moments"]:
                 if m["start_ms"] in kept:
@@ -212,9 +220,12 @@ async def cuts(
         from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
         from app.core.workspace import assert_permission
 
+        from app.shared.llm import set_usage_workspace
+
         assert_permission(ctx.member, "edit_content")
         await assert_generation_allowed(ctx.workspace_id)
         await assert_ai_budget_available(ctx.workspace_id)
+        set_usage_workspace(ctx.workspace_id)
     media = await _media(ctx, media_id)
     tr = await _transcript(ctx, media_id)
     words = await transcribe.all_words(tr["id"])

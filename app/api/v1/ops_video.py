@@ -167,7 +167,7 @@ async def start_test_job(request: Request, body: TestJobBody, ctx: WorkspaceCont
     try:
         return await jobs.enqueue(
             workspace_id=ctx.workspace_id, user_id=ctx.user_id, inputs={"cam": {"url": media["url"], "kind": "video"}},
-            edit=edit, label="Ops test render",
+            edit=edit, label="Ops test render", charge=False,
         )
     except jobs.JobError as exc:
         raise _raise(exc)

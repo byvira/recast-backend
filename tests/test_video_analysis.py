@@ -145,6 +145,7 @@ class FakeModel:
 async def _clean_cache(monkeypatch):
     await get_db()["video_analysis_cache"].delete_many({})
     monkeypatch.setattr(W, "WINDOW_WORDS", 200)           # many small windows from a short fixture
+    monkeypatch.setattr(A.settings, "GROQ_TPM_LIMIT", 10_000_000)  # the stand-in model has no per-minute ceiling to wait for
     for name in ("video_analysis", "video_transcripts", "video_transcript_pages", "video_transcript_chunks"):
         await get_db()[name].delete_many({})
 

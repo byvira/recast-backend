@@ -66,20 +66,27 @@ async def upload_file_detailed(
     Returns {"url", "width", "height", "duration_s", "bytes", "format"};
     a key is None when Cloudinary didn't report it for that file type.
     """
+    from app.health import signals
+
     _ensure_configured()
     # The upload library blocks until Cloudinary answers. In a thread, so the server keeps answering (a cancel, other members)
-    # while a large file goes up.
-    result = await asyncio.to_thread(
-        lambda: cloudinary.uploader.upload(
-            file,
-            upload_preset=content_type.value,       # uses the preset we created
-            folder=f"recast/{content_type.value.replace('recast_', '')}/{user_id}",
-            resource_type=_get_resource_type(content_type),
-            public_id=filename,
-            use_filename=bool(filename),
-            unique_filename=True,
+    # while a large file goes up. Each attempt is counted for the public status ("Uploads and files").
+    try:
+        result = await asyncio.to_thread(
+            lambda: cloudinary.uploader.upload(
+                file,
+                upload_preset=content_type.value,       # uses the preset we created
+                folder=f"recast/{content_type.value.replace('recast_', '')}/{user_id}",
+                resource_type=_get_resource_type(content_type),
+                public_id=filename,
+                use_filename=bool(filename),
+                unique_filename=True,
+            )
         )
-    )
+    except Exception:
+        signals.record("storage", False)
+        raise
+    signals.record("storage", True)
     duration = result.get("duration")
     return {
         "url": result["secure_url"],

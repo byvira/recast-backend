@@ -116,7 +116,8 @@ async def _image_generate(*, state: dict, topic: str, brand_id: str) -> Any:
     brand = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if not brand:
         raise HTTPException(status_code=404, detail="That brand was not found in this workspace.")
-    asset = await ig.generate_brand_image(topic=topic, brand_profile=brand, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+    asset = await ig.generate_brand_image(topic=topic, brand_profile=brand, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+                                          raise_when_out_of_credits=True)
     if asset is None:
         raise HTTPException(status_code=502, detail=ig.last_failure_reason() or "No picture could be made right now.")
     return {"media_id": asset.id, "url": asset.url, "origin": asset.origin, "qa_flagged": asset.qa_flagged}

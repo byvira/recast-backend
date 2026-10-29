@@ -205,7 +205,7 @@ async def analyze_media_asset(
     await assert_ai_budget_available(ctx.workspace_id)
     set_usage_workspace(ctx.workspace_id)
 
-    update = await analyze_media(doc)
+    update = await analyze_media(doc, ctx.user_id)
     await media_assets.update_one({"id": media_id, "workspace_id": ctx.workspace_id}, {"$set": update})
 
     # A video only becomes something Remy and Odette can read once it has been

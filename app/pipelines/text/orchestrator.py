@@ -293,7 +293,58 @@ async def _run_single_platform(
 # MAIN PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def run_text_pipeline(
+def _post_action(platform) -> str:
+    """Long form (blog, newsletter, YouTube description) costs 3 credits; every other platform's post costs 1."""
+    from app.pipelines.text.seo import SEO_PLATFORMS
+
+    return "long_form" if platform in SEO_PLATFORMS else "text_post"
+
+
+async def run_text_pipeline(*args, **kwargs) -> TextPipelineResult:
+    """Every text run, with its credits: each platform's post is set aside before any writing starts (so a run that does not fit
+    is refused whole, before anything is spent), charged when its post is made, and given back when it fails. Each platform of
+    each batch day is its own step, so a retried job is never charged twice for the same post."""
+    from app.billing import credits
+
+    workspace_id, user_id = kwargs["workspace_id"], kwargs["user_id"]
+    platforms = kwargs["platforms"]
+    day = kwargs.get("batch_day_index") or 0
+    holds: dict[str, credits.Hold] = {}
+    started = datetime.now(timezone.utc)
+    try:
+        for platform in platforms:
+            name = _platform_str(platform)
+            holds[name] = await credits.reserve(workspace_id, user_id, _post_action(platform), step=f"text:{day}:{name}")
+        result = await _run_text_pipeline(*args, **kwargs)
+    except BaseException as exc:
+        charged: set[str] = set()
+        if isinstance(exc, asyncio.CancelledError) and holds:
+            # Stopped part-way (the page was closed, the run cancelled): posts the live run already saved were made and are kept,
+            # so they are charged; only the posts never made are given back.
+            try:
+                saved = await asyncio.shield(content_pieces.distinct("platform", {
+                    "workspace_id": workspace_id, "user_id": user_id, "created_at": {"$gte": started}, "content": {"$nin": ["", None]},
+                }))
+                for name in saved:
+                    if name in holds:
+                        await asyncio.shield(credits.settle(holds[name]))
+                        charged.add(name)
+            except Exception as inner:  # noqa: BLE001 - when in doubt nothing is charged
+                logger.warning("Could not check which posts a stopped run saved: %s", inner)
+        for name, hold in holds.items():
+            if name not in charged:
+                await asyncio.shield(credits.release(hold))
+        raise
+    made = {_platform_str(p.platform) for p in result.pieces if (p.content or "").strip()}
+    for name, hold in holds.items():
+        if name in made:
+            await credits.settle(hold)
+        else:
+            await credits.release(hold)
+    return result
+
+
+async def _run_text_pipeline(
     source_type: InputSourceType,
     content: str,
     platforms: list[Platform],
@@ -1093,24 +1144,37 @@ async def run_batch_pipeline(
         day_platforms = (
             platforms_by_day[i] if platforms_by_day and i < len(platforms_by_day) else platforms
         )
-        result = await run_text_pipeline(
-            source_type=InputSourceType.TOPIC,
-            content=angle,
-            platforms=day_platforms,
-            brand_id=brand_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            extras=extras,
-            intent=detected_intent or ContentIntent.AUTO,
-            batch_day_index=i,
-            is_repurpose=is_repurpose,
-            source_platform=source_platform,
-            language=language,
-            tone=tone,
-            emitter=emitter,
-            session_id=str(uuid4()),
-            emit_completion=False,
-        )
+        from app.billing import credits
+
+        try:
+            result = await run_text_pipeline(
+                source_type=InputSourceType.TOPIC,
+                content=angle,
+                platforms=day_platforms,
+                brand_id=brand_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                extras=extras,
+                intent=detected_intent or ContentIntent.AUTO,
+                batch_day_index=i,
+                is_repurpose=is_repurpose,
+                source_platform=source_platform,
+                language=language,
+                tone=tone,
+                emitter=emitter,
+                session_id=str(uuid4()),
+                emit_completion=False,
+            )
+        except Exception as exc:
+            # Out of credits part-way: the days already made are kept and the batch stops here, between days. A campaign (which
+            # saves each day as it goes) is told, so it can pause and carry on later; a plain batch returns what it made.
+            if not credits.is_out_of_credits(exc) or on_day_complete or not results:
+                raise
+            stopped = (exc.detail or {}).get("message") if isinstance(getattr(exc, "detail", None), dict) else None
+            results[-1].stopped_reason = f"Stopped after day {i} of {days}. {stopped or 'Credits are used up.'}"
+            if emitter:
+                await emitter.emit_log(results[-1].stopped_reason)
+            break
         result.batch_mode = True
         result.angle = angle
         # Only the padded tail days (beyond what was actually planned) are

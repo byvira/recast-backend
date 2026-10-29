@@ -21,6 +21,7 @@ from uuid import uuid4
 
 import imageio_ffmpeg
 
+from app.billing import credits
 from app.core.config import settings
 from app.db.mongo import get_db, media_assets
 
@@ -283,6 +284,22 @@ async def run(transcript_id: str, *, reporter: Any = None, source: Optional[str]
             until = _now() + timedelta(seconds=wait)
             await _transcripts().update_one({"id": transcript_id}, {"$set": {"status": "waiting", "waiting_until": until, "lease_until": None, "updated_at": _now()}})
             return _public(await _transcripts().find_one({"id": transcript_id}))
+        # Captions from speech cost 1 credit a minute, piece by piece. Out of credits, the transcript waits (and says so in Activity)
+        # and carries on by itself once credits start again or are added.
+        try:
+            hold = await credits.reserve(
+                doc["workspace_id"], doc.get("user_id"), "captions", ch["length_s"] / 60.0, step=f"vtranscript:{transcript_id}:{ch['index']}",
+            )
+        except credits.CreditsExhausted:
+            await get_db()["video_transcribe_budget"].update_many(
+                {"_id": {"$in": [f"hour:{_now().strftime('%Y-%m-%dT%H')}", f"day:{_now().strftime('%Y-%m-%d')}"]}}, {"$inc": {"used": -ch["length_s"]}},
+            )
+            await _transcripts().update_one({"id": transcript_id}, {"$set": {
+                "status": "waiting", "waiting_until": _now() + timedelta(hours=1), "waiting_for": "credits", "lease_until": None, "updated_at": _now(),
+            }})
+            await credits.pause_notice(doc["workspace_id"], "A video transcript", href=f"/dashboard/pipelines/video?media={doc['media_id']}",
+                                       key=f"transcript:{transcript_id}")
+            return _public(await _transcripts().find_one({"id": transcript_id}))
         if reporter is not None:
             await reporter.step(f"Writing out what was said ({ch['index'] + 1} of {len(doc['chunks'])})")
         error: Optional[str] = None
@@ -301,6 +318,13 @@ async def run(transcript_id: str, *, reporter: Any = None, source: Optional[str]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Transcription piece %s of %s failed: %s", ch["index"], transcript_id, exc)
             error = "This piece could not be transcribed. It will be tried again."
+        except BaseException:
+            await asyncio.shield(credits.release(hold))
+            raise
+        if error:
+            await credits.release(hold)
+        else:
+            await credits.settle(hold)
         if error:
             # the seconds were counted but nothing was transcribed: give them back so a retry is not charged twice
             await get_db()["video_transcribe_budget"].update_many(

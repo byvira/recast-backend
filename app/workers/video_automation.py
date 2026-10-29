@@ -99,7 +99,19 @@ async def run_due_video_recipes() -> None:
                 status="warning", target_id=recipe["id"], target_type="Video Recipe", target_label=recipe.get("name"), href="/dashboard/pipelines/video",
             )
             continue
+        from app.billing import credits
+
+        # At zero credits an automation waits (it is not counted as failing) and says so once in Activity; it carries on when credits
+        # start again or are added.
+        if not await credits.has_room(recipe["workspace_id"], 1):
+            await credits.pause_notice(recipe["workspace_id"], recipe.get("name") or "A video recipe", href="/dashboard/pipelines/video",
+                                       key=f"recipe:{recipe['id']}")
+            continue
         try:
             await run_recipe_once(recipe)
         except Exception as exc:  # noqa: BLE001
+            if credits.is_out_of_credits(exc):
+                await credits.pause_notice(recipe["workspace_id"], recipe.get("name") or "A video recipe", href="/dashboard/pipelines/video",
+                                           key=f"recipe:{recipe['id']}")
+                continue
             logger.error("Automatic recipe %s failed: %s", recipe.get("id"), exc)

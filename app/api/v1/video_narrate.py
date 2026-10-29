@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field, model_validator
 
+from app.billing import charges, credits
 from app.core.middleware import limiter
 from app.video.guard import video_spend_guard
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -334,7 +335,9 @@ async def start_narration(request: Request, body: NarrationBody, ctx: WorkspaceC
                 async with member_footage():
                     return await call_llm(prompt, temperature=0.5, max_tokens=4000)
 
-            fitted = await fitter.fit_script(script, video_s, None, resolve_language_directive_name(code), ask)
+            # fitting the script to the video is a video script: 1 credit
+            async with credits.spend(ctx.workspace_id, ctx.user_id, "video_script", step=f"fit:{body.media_id}"):
+                fitted = await fitter.fit_script(script, video_s, None, resolve_language_directive_name(code), ask)
             script = fitted["script"]
             fit_note = fitted.get("reason") or None
     try:
@@ -417,7 +420,17 @@ async def localize_captions(request: Request, body: CaptionBatchBody, ctx: Works
             segs = P.segments_from_words(words)
             if not segs:
                 continue
-            lines, rep = await D.translate(segs, target_name=name, target_code=code, register_note=body.register_note, glossary=body.glossary, tighten=False)
+            # 1 credit for each 1,000 words of captions translated, one video at a time, so running out stops between videos
+            try:
+                async with credits.spend(
+                    ctx.workspace_id, ctx.user_id, "translate", sum(charges.words_in(str(sg.get("text") or "")) for sg in segs),
+                    step=f"captions:{t.get('transcript_id')}:{code}",
+                ):
+                    lines, rep = await D.translate(segs, target_name=name, target_code=code, register_note=body.register_note, glossary=body.glossary, tighten=False)
+            except credits.CreditsExhausted as exc:
+                if not done:
+                    raise
+                return {"data": {"videos": done, "stopped": exc.detail.get("message")}, "href": "/dashboard/pipelines/video"}
             cues = [{"start_ms": s["start_ms"], "end_ms": s["end_ms"], "text": ln["text"]} for s, ln in zip(segs, lines) if ln["text"]]
             await get_db()["video_caption_tracks"].update_one(
                 {"workspace_id": ctx.workspace_id, "media_id": t["media_id"], "language": code},

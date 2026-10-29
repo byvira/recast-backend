@@ -35,14 +35,6 @@ class SocialAccountResponse(BaseModel):
     connected_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
 
-class UserPlan(str, Enum):
-    """Subscription tier for a user account."""
-
-    FREE = "free"
-    PRO = "pro"
-    SCALE = "scale"
-
-
 class OTPChannel(str, Enum):
     """Delivery channel for one-time passwords."""
 
@@ -148,9 +140,6 @@ class UserProfile(BaseModel):
     timezone: str = "UTC"
     language: str = "en"
     preferred_platforms: list[str] = []
-    plan: UserPlan = UserPlan.FREE
-    credits_used: int = 0
-    credits_limit: int = 100
     onboarding_done: bool = False
     social_accounts: list[SocialAccount] = []
     brand_profiles: list[str] = []
@@ -184,9 +173,6 @@ class UserProfileResponse(BaseModel):
     timezone:            str        = "UTC"
     language:            str        = "en"
     preferred_platforms: list[str]  = []
-    plan:                str        = "free"
-    credits_used:        int        = 0
-    credits_limit:       int        = 100
     onboarding_done:     bool       = False
     brand_profiles:      list[str]  = []
     social_accounts:     list[Any]  = []

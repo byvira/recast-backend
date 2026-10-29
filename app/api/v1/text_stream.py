@@ -159,6 +159,7 @@ async def generate_stream(
     plagiarism_check: Optional[bool] = Query(None),
     avoid_blacklist:  Optional[bool] = Query(None),
     pdf_export:       Optional[bool] = Query(None),
+    default_picture:  Optional[bool] = Query(None, description="Attach a picture to the posts (2 credits a run); off: text only"),
     batch_days:       Optional[int]  = Query(None, ge=1, le=14, description="Days in batch mode (default 7)"),
     # require_stream: EventSource can't send X-Workspace-Id, so the active
     # workspace also arrives as ?workspace_id= (same membership check).
@@ -221,7 +222,7 @@ async def generate_stream(
                 name: value for name, value in {
                     "hook_variations": hook_variations, "hashtags": hashtags, "auto_cta": auto_cta, "seo_meta": seo_meta,
                     "grammar_check": grammar_check, "plagiarism_check": plagiarism_check,
-                    "avoid_blacklist": avoid_blacklist, "pdf_export": pdf_export,
+                    "avoid_blacklist": avoid_blacklist, "pdf_export": pdf_export, "default_picture": default_picture,
                 }.items() if value is not None
             }),
         )

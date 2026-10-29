@@ -457,6 +457,8 @@ class TextPipelineResult(BaseModel):
     # caller (campaigns' batch_runner.py) surface the degradation instead of
     # silently producing near-duplicate content across days.
     angle_planning_degraded: bool = False
+    # Set on the last day of a batch that stopped early because the workspace's credits ran out, in plain words.
+    stopped_reason: Optional[str] = None
     # Set only for repurpose runs — the Platform this content originated
     # from, so it survives the round-trip into content_pieces instead of
     # being dropped after the prompt is built (see save_pipeline_result /

@@ -469,18 +469,33 @@ async def ask_analytics(
     }
 
 
+#: The dashboard's report is written by a model, and the numbers behind it refresh every 6 hours, so one written report serves
+#: every load for a while instead of asking the model again each time the page opens.
+DASHBOARD_REPORT_SECONDS = 30 * 60
+_dashboard_reports: dict[str, tuple[float, dict]] = {}
+
+
 @router.get("/ask")
 @limiter.limit("10/minute")
 async def get_dashboard_report(
     request: Request,
+    refresh: bool = False,
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
+    import time
+
+    hit = _dashboard_reports.get(ctx.workspace_id)
+    if hit and hit[0] > time.monotonic() and not refresh:
+        return hit[1]
+    from app.shared.llm import set_usage_workspace
+
+    set_usage_workspace(ctx.workspace_id)
     result = await run_analytics(
         workspace_id=ctx.workspace_id,
         question=DEFAULT_OVERVIEW_QUESTION,
         user_id=ctx.user_id,
     )
-    return {
+    report = {
         "report":            result["report"],
         "analysis":          result["analysis"],
         "recommendations":   result["recommendations"],
@@ -494,6 +509,9 @@ async def get_dashboard_report(
         "post_metrics":      result["post_metrics"],
         "errors":            result["errors"],
     }
+    if not result["errors"]:
+        _dashboard_reports[ctx.workspace_id] = (time.monotonic() + DASHBOARD_REPORT_SECONDS, report)
+    return report
 
 TOP_PERFORMER_SHARE = 0.05   # the Library tab is labelled "Top Performers (Top 5%)"
 TOP_PERFORMER_CHECKPOINT = "24h"

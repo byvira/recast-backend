@@ -55,6 +55,13 @@ def make_handlers(allowed_origins: Iterable[str]):
 
     async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled error | %s %s", request.method, request.url.path)
+        from app.health import errors
+
+        route = request.scope.get("route")
+        errors.capture_exception(
+            exc, source="server", where=f"{request.method} {getattr(route, 'path', None) or request.url.path}",
+            workspace_id=request.headers.get("x-workspace-id"),
+        )
         return JSONResponse(
             status_code=500,
             content={"detail": "Something went wrong on our side. Please try again.", "code": "server_error"},

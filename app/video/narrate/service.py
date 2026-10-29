@@ -5,12 +5,15 @@ tests with only those leaf calls replaced. Progress goes to `reporter` as plain 
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
+from app.billing import charges, credits
 from app.core.config import settings
 from app.models.media import ORIGIN_AI
 from app.pipelines.media import duration as audio_duration
+from app.pipelines.media.duration import estimate_seconds as spoken_estimate
 from app.video import jobs, service
 from app.video.narrate import dub as D
 from app.video.narrate import plan as P
@@ -45,8 +48,11 @@ async def make_dub(
         raise service.RenderFailed(f"That is longer than the {int(cap // 60)} minute limit for one video.")
 
     await _step(reporter, f"Translating {len(segments)} lines into {target_name}")
-    lines, rep = await D.translate(segments, target_name=target_name, target_code=target_code, register_note=register_note, glossary=glossary,
-                                   caller=caller, tighten=tighten)
+    # the translation costs 1 credit for each 1,000 words, the voices 3 a minute, the render 5 a minute (charged by the render queue)
+    source_words = sum(charges.words_in(str(seg.get("text") or "")) for seg in segments)
+    async with credits.spend(workspace_id, user_id, "translate", source_words, step=f"dub_translate:{media.get('id')}:{target_code}"):
+        lines, rep = await D.translate(segments, target_name=target_name, target_code=target_code, register_note=register_note, glossary=glossary,
+                                       caller=caller, tighten=tighten)
     if len(rep["failed"]) > MAX_FAILED_SHARE * len(segments):
         raise service.RenderFailed(
             f"{len(rep['failed'])} of {len(segments)} lines could not be translated well enough, so no dub was made. Please try again.")
@@ -54,11 +60,15 @@ async def make_dub(
 
     urls: dict[str, str] = {}
     secs: list[Optional[float]] = []
-    prepare = getattr(speak, "prepare", None)
-    if prepare is not None:
-        await _step(reporter, "Making the voices")
-        await prepare([t for t in (text_by_i.get(s["i"]) for s in segments) if t])
+    voice_hold = await credits.reserve(
+        workspace_id, user_id, "narration", charges.minutes(spoken_estimate(" ".join(text_by_i.values()))),
+        step=f"dub_voice:{media.get('id')}:{target_code}",
+    )
     try:
+        prepare = getattr(speak, "prepare", None)
+        if prepare is not None:
+            await _step(reporter, "Making the voices")
+            await prepare([t for t in (text_by_i.get(s["i"]) for s in segments) if t])
         for n, seg in enumerate(segments):
             await _step(reporter, f"Speaking line {n + 1} of {len(segments)}")
             text = text_by_i.get(seg["i"])
@@ -74,6 +84,7 @@ async def make_dub(
             p["text_out"] = text_by_i.get(p["i"]) or ""
         if not any(p.get("flag") != "missing" for p in placed):
             raise service.RenderFailed("No line could be spoken, so no dub was made. Check the voice settings and try again.")
+        await credits.settle(voice_hold, charges.minutes(sum(x for x in secs if x)))
 
         await _step(reporter, "Mixing the voices over the video")
         width, height = int(media.get("width") or 1280), int(media.get("height") or 720)
@@ -92,6 +103,7 @@ async def make_dub(
             raise service.RenderFailed(exc.message)
         done = await service.wait_for_job(workspace_id, job["id"], reporter=reporter)
     finally:
+        await asyncio.shield(credits.release(voice_hold))  # nothing once the voices were charged
         # a render that did not finish (cancelled, timed out) is stopped before its inputs go, so it is not left to fail on a missing file
         started = locals().get("job")
         if started and "done" not in locals():
@@ -143,6 +155,10 @@ async def make_narration(
         await prepare(list(spoken))
     stored: list[str] = []
     audio_parts: list[tuple[bytes, float]] = []
+    voice_hold = await credits.reserve(
+        workspace_id, user_id, "dialogue" if lines else "narration", charges.minutes(spoken_estimate(" ".join(parts), wpm)),
+        step=f"narration:{media.get('id')}",
+    )
     try:
         for n, part in enumerate(parts):
             await _step(reporter, f"Speaking part {n + 1} of {len(parts)}")
@@ -152,6 +168,7 @@ async def make_narration(
                 raise service.RenderFailed("The voice could not read the script. Check the voice settings and try again.")
             audio_parts.append((audio, length))
         total = sum(length for _, length in audio_parts)
+        await credits.settle(voice_hold, charges.minutes(total))
         if fit_to_video and total > duration * 1.15:
             raise service.RenderFailed(
                 f"The narration runs {total:.0f} seconds and the video is {duration:.0f}. Shorten the script, or turn off fitting to the video.")
@@ -185,6 +202,7 @@ async def make_narration(
             raise service.RenderFailed(exc.message)
         done = await service.wait_for_job(workspace_id, job["id"], reporter=reporter)
     finally:
+        await asyncio.shield(credits.release(voice_hold))  # nothing once the voices were charged
         # a render that did not finish (cancelled, timed out) is stopped before its inputs go, so it is not left to fail on a missing file
         started = locals().get("job")
         if started and "done" not in locals():

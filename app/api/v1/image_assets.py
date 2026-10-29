@@ -280,10 +280,15 @@ async def _render_and_upload_slide(
     """Shared generate and draw core for `/generate`, the rest of a pack and `add_slide`. The AI picture is kept clean
     (nothing drawn on it) and the headline, band, logo and so on become editable layers over it; the finished picture is
     drawn from those layers, so the editor and the saved file always agree."""
+    from app.billing import credits
+
     size = LAYOUT_DIMS[layout]
-    background_bytes = await generate_image_from_prompt(
-        prompt=prompt, workspace_id=workspace_id, user_id=user_id, target_size=size, brand_profile=brand, avoid=avoid,
-    )
+    # 2 credits for each AI picture; a slide that ends as a text card because no picture came back costs nothing
+    async with credits.spend(workspace_id, user_id, "picture", step="picture") as hold:
+        background_bytes = await generate_image_from_prompt(
+            prompt=prompt, workspace_id=workspace_id, user_id=user_id, target_size=size, brand_profile=brand, avoid=avoid,
+        )
+        hold.nothing_made = not background_bytes
     visual_identity = brand.get("visual_identity") or {}
     background_media_id: Optional[str] = None
     if background_bytes:
@@ -1426,6 +1431,37 @@ async def _apply_looks_many(
     brand_tokens = _brand_tokens_from(brand)
     many = len(targets) > 1
 
+    # Removing a background costs 1 credit for each picture it is newly switched on for; redrawing a picture that already has it,
+    # or switching it off, is free. Set aside first, charged once the new version is saved, given back if nothing is saved.
+    from app.billing import credits
+
+    holds: list = []
+    if (effects or {}).get("remove_background"):
+        try:
+            for slide in targets:
+                if not (slide.effects or {}).get("remove_background"):
+                    holds.append(await credits.reserve(
+                        ctx.workspace_id, ctx.user_id, "remove_background", step=f"cutout:{asset.id}:{slide.slide_number}:{asset.version_count}",
+                    ))
+        except BaseException:
+            for hold in holds:
+                await credits.release(hold)
+            raise
+    try:
+        saved = await _draw_looks(request, asset, targets, effects, ctx, brand, brand_tokens, many, cutouts, image_asset_id)
+    except BaseException:
+        for hold in holds:
+            await asyncio.shield(credits.release(hold))
+        raise
+    for hold in holds:
+        await credits.settle(hold)
+    return saved
+
+
+async def _draw_looks(
+    request: Request, asset: ImageAsset, targets: list, effects: dict, ctx: WorkspaceContext, brand: dict, brand_tokens: BrandTokens,
+    many: bool, cutouts: Optional[dict[int, bytes]], image_asset_id: str,
+) -> ImageAsset:
     async def draw_all() -> dict[int, tuple[MediaAsset, Optional[str]]]:
         drawn: dict[int, tuple[MediaAsset, Optional[str]]] = {}
         for slide in targets:

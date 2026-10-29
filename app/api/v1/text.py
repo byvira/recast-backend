@@ -641,7 +641,7 @@ async def _timestamps_from_recording(body: ApplyChipRequest, ctx: WorkspaceConte
     if media.get("analysis_status") != "done":
         await assert_ai_budget_available(ws)
         set_usage_workspace(ws)
-        update = await analyze_media(media)
+        update = await analyze_media(media, ctx.user_id)
         await media_assets.update_one({"id": media["id"], "workspace_id": ws}, {"$set": update})
         media = {**media, **update}
         if media.get("analysis_status") != "done":
@@ -700,9 +700,13 @@ async def reader_review(
     language = await _resolve_request_language(None, ctx, content_for_detection=text, brand_id=body.brand_id)
     await assert_ai_budget_available(ctx.workspace_id)
     set_usage_workspace(ctx.workspace_id)
-    result = await reader.review(
-        content=text, platform_label=body.platform, brand_context=brand_context, language_line=build_language_instruction(language),
-    )
+    from app.billing import credits
+
+    async with credits.spend(ctx.workspace_id, ctx.user_id, "reader_review") as hold:
+        result = await reader.review(
+            content=text, platform_label=body.platform, brand_context=brand_context, language_line=build_language_instruction(language),
+        )
+        hold.nothing_made = result is None
     if result is None:
         raise HTTPException(status_code=502, detail="Couldn't get a reader's reaction right now. Try again.")
     return result
@@ -742,16 +746,21 @@ async def refine_content(
         enforcement = await _enforcement_for(brand_profile, ctx)
         language = await _resolve_request_language(None, ctx, content_for_detection=body.content, piece_id=body.piece_id)
 
-        result = await apply_chip(
-            content=body.content,
-            chip_name=body.chip,
-            platform=body.platform,
-            brand_context=brand_context,
-            banned_words=enforcement.get("banned_words", []),
-            custom_instruction=body.custom_instruction,
-            language=language,
-            default_tone=brand_profile.get("default_tone"),
-        )
+        from app.billing import credits
+
+        # a quick action rewrites the post: 1 credit, and nothing when the text came back unchanged
+        async with credits.spend(ctx.workspace_id, ctx.user_id, "text_refine") as hold:
+            result = await apply_chip(
+                content=body.content,
+                chip_name=body.chip,
+                platform=body.platform,
+                brand_context=brand_context,
+                banned_words=enforcement.get("banned_words", []),
+                custom_instruction=body.custom_instruction,
+                language=language,
+                default_tone=brand_profile.get("default_tone"),
+            )
+            hold.nothing_made = not result.get("changed")
 
     # Save version if piece_id provided and content changed
     if body.piece_id and result.get("changed"):
@@ -887,14 +896,22 @@ async def refine_chat(
 
     language = await _resolve_request_language(None, ctx, content_for_detection=messages[-1]["content"], piece_id=body.piece_id)
 
-    refined = await run_refinement_turn(
-        messages=messages,
-        brand_context=brand_context,
-        platform=body.platform,
-        banned_words=enforcement.get("banned_words", []),
-        language=language,
-        default_tone=brand_profile.get("default_tone"),
-    )
+    from app.billing import credits
+
+    # each turn is a rewrite: 1 credit, given back when the answer is unusable and the text stays as it was
+    hold = await credits.reserve(ctx.workspace_id, ctx.user_id, "text_refine")
+    try:
+        refined = await run_refinement_turn(
+            messages=messages,
+            brand_context=brand_context,
+            platform=body.platform,
+            banned_words=enforcement.get("banned_words", []),
+            language=language,
+            default_tone=brand_profile.get("default_tone"),
+        )
+    except BaseException:
+        await credits.release(hold)
+        raise
 
     # The answer must be real text, like a quick edit's: no wrapper or preamble, none of our instructions, no banned word
     # (brand or the member's own). Otherwise the text stays as it was and nothing is saved, instead of a broken answer
@@ -913,6 +930,10 @@ async def refine_chat(
     elif contains_banned(guarded, enforcement.get("banned_words", [])):
         refine_problem = "That change used a word on your banned list. Your text is unchanged. Try asking again."
     refined = (previous if refine_problem else guarded).strip()
+    if refine_problem:
+        await credits.release(hold)
+    else:
+        await credits.settle(hold)
     turn = sum(1 for m in messages if m["role"] == "assistant") + 1
 
     # Save version if piece_id provided

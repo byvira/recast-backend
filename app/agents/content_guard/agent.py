@@ -140,6 +140,10 @@ async def review_text(
     stage: str = "generation",
 ) -> GuardResult:
     """Check `text` and return the version that is safe to use, or a blocked result when none can be made."""
+    if workspace_id:
+        from app.shared.llm import set_usage_workspace
+
+        set_usage_workspace(workspace_id)  # safety checks are free, but their model calls are still counted per workspace
     if not isinstance(text, str) or not text.strip():
         return GuardResult(text=text or "")
     cfg = await guard_config.ensure_fresh()
@@ -232,6 +236,10 @@ async def check_piece_before_send(piece: dict[str, Any], workspace_id: str) -> N
     a model's reading of the text (by its content, so an edit is read again) and a reading of each attached picture,
     recording or video. Results are stored as `safety_check` and `media_safety`, which the publish gate reads. A check
     that cannot run leaves the free rules as the only screen and is logged."""
+    if workspace_id:
+        from app.shared.llm import set_usage_workspace
+
+        set_usage_workspace(workspace_id)  # safety checks are free, but their model calls are still counted per workspace
     cfg = await guard_config.ensure_fresh()
     if not cfg.get("enabled", True):
         return

@@ -524,7 +524,7 @@ async def regenerate_piece_picture(
 
     asset = await generate_brand_image(
         topic=_scene_topic(piece["content"]), brand_profile=brand,
-        workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, raise_when_out_of_credits=True,
     )
     if asset is None:
         return {"state": "failed", "note": last_failure_reason() or "The picture could not be made. Try again in a moment.", "piece": piece}

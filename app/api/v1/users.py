@@ -26,8 +26,6 @@ async def _build_profile_response(
     Returns:
         UserProfileResponse instance.
     """
-    from app.models.user import UserPlan
-
     # brand_profiles used to be read straight off the user document, but
     # nothing ever wrote to that field (brand profiles are workspace-scoped
     # resources created via POST /brand/, keyed by workspace_id — see
@@ -53,9 +51,6 @@ async def _build_profile_response(
         timezone=user.get("timezone", "UTC"),
         language=user.get("language", "en"),
         preferred_platforms=user.get("preferred_platforms", []),
-        plan=user.get("plan", UserPlan.FREE),
-        credits_used=user.get("credits_used", 0),
-        credits_limit=user.get("credits_limit", 100),
         onboarding_done=user.get("onboarding_done", False),
         brand_profiles=brand_profile_ids,
         social_accounts=user.get("social_accounts", []),

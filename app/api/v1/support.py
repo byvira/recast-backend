@@ -407,6 +407,13 @@ async def _create_ticket(request: Request, body: SupportTicketCreate, ctx: Works
         doc["id"], actor_type="member", actor_id=ctx.user_id, actor_name=doc["created_by_name"],
         type="created", data={"category": body.category, "severity": body.severity.value},
     )
+    # a ticket that quotes a crash reference from the crash screen is listed on that error in the Ops error log
+    try:
+        from app.health import errors as error_log
+
+        await error_log.link_ticket(f"{body.subject} {body.description}", doc)
+    except Exception as exc:  # noqa: BLE001 - a link must never stop a ticket
+        logger.warning("Could not link ticket %s to the error log: %s", doc["id"], exc)
     # Receipt to the member, heads-up to staff, and the context snapshot,
     # none of which may slow down or fail the ticket itself.
     await notify_member(

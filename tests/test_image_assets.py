@@ -237,17 +237,12 @@ async def test_a_failed_description_never_blocks_the_upload(signup_user, stubs, 
     assert res.json()["alt_text"] is None
 
 
-async def test_an_exhausted_ai_budget_skips_the_description_but_not_the_upload(signup_user, stubs):
-    from datetime import datetime, timezone
-
-    from app.db.mongo import workspace_ai_budgets, workspace_ai_usage_daily
+async def test_no_credits_left_skips_the_description_but_not_the_upload(signup_user, stubs):
+    from app.db.mongo import workspace_ai_budgets
 
     client, _, ws_id, brand_id = await _setup(signup_user)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    await workspace_ai_budgets.insert_one({"id": ws_id, "workspace_id": ws_id, "monthly_token_budget": 10})
-    await workspace_ai_usage_daily.insert_one(
-        {"_id": f"{ws_id}:{today}", "id": f"{ws_id}:{today}", "workspace_id": ws_id, "date": today, "tokens_used": 10}
-    )
+    # the owner's monthly credit limit is used up (a limit of 0)
+    await workspace_ai_budgets.insert_one({"id": ws_id, "workspace_id": ws_id, "monthly_credit_limit": 0})
 
     res = await client.post(
         "/api/v1/image-assets/upload",

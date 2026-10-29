@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from app.agents.supervisor.service import assert_generation_allowed
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import get_campaigns_collection
+from app.billing import credits
 from app.pipelines.campaigns.batch_runner import generate_campaign_batch
 from app.shared.activity import record_system
 
@@ -104,6 +105,9 @@ async def _start_batch_run(campaign: dict) -> None:
             href="/dashboard/campaigns",
         )
         return
+    if not await credits.has_room(workspace_id, 1):
+        await _pause_for_credits(campaign)
+        return
     await pipeline_runs.assert_capacity(workspace_id)
     days = (campaign.get("cadence") or {}).get("days_per_batch", 7)
     try:
@@ -125,6 +129,10 @@ async def _start_batch_run(campaign: dict) -> None:
         except pipeline_runs.RunCancelled:
             raise
         except Exception as e:  # noqa: BLE001
+            if credits.is_out_of_credits(e):
+                # Not a failure: the days made are kept and the batch carries on from the next one once credits are back.
+                await _pause_for_credits(campaign)
+                return {"new_piece_count": 0, "paused": "credits"}
             # A deliberate rejection (e.g. the AI budget's 403) carries a readable detail; str() of an HTTPException is "403: ...".
             reason = e.detail if isinstance(e, HTTPException) else str(e)
             logger.error("Scheduled batch failed for campaign %s: %s", campaign.get("id"), reason)
@@ -133,6 +141,20 @@ async def _start_batch_run(campaign: dict) -> None:
         return {"new_piece_count": len(result["new_piece_ids"])}
 
     pipeline_runs.start(doc, work)
+
+
+#: How long a campaign waits before looking at the credits again; a grant or a new month lets it carry on at the next look.
+CREDIT_RECHECK = timedelta(hours=6)
+
+
+async def _pause_for_credits(campaign: dict) -> None:
+    await get_campaigns_collection().update_one(
+        {"id": campaign["id"]},
+        {"$set": {"cadence.next_run_at": datetime.now(timezone.utc) + CREDIT_RECHECK, "cadence.last_error": "Waiting for credits."}},
+    )
+    await credits.pause_notice(
+        campaign["workspace_id"], f"Campaign \"{campaign.get('name') or 'Untitled'}\"", href="/dashboard/campaigns", key=f"campaign:{campaign['id']}",
+    )
 
 
 #: A failed run used to leave next_run_at in the past, so this job re-ran the

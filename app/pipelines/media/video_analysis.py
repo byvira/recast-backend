@@ -252,10 +252,34 @@ def chapters_block(chapters: list[MediaChapter]) -> str:
 
 # ── the whole analysis ───────────────────────────────────────────────────────
 
-async def analyze_media(asset: dict) -> dict:
+async def analyze_media(asset: dict, user_id: Optional[str] = None) -> dict:
     """Transcribe a video/audio MediaAsset document and build its chapters.
-    Returns the fields to $set on the media_assets document. Never raises:
-    a failure comes back as analysis_status="failed" with a plain reason."""
+    Returns the fields to $set on the media_assets document. A failure comes
+    back as analysis_status="failed" with a plain reason; the only error raised
+    is the 402 when the workspace has no credits for the transcription
+    (1 credit a minute, charged only when words come back)."""
+    from app.billing import credits
+
+    estimate_min = max(1.0, float(asset.get("duration_s") or 60) / 60.0)
+    hold = await credits.reserve(
+        asset.get("workspace_id") or "", user_id or asset.get("created_by"), "transcription", estimate_min,
+        step=f"transcribe:{asset.get('id')}",
+    )
+    try:
+        update = await _analyze_media(asset)
+    except BaseException:
+        await credits.release(hold)
+        raise
+    if update.get("analysis_status") == MediaAnalysisStatus.FAILED.value or not update.get("transcript"):
+        await credits.release(hold)
+    else:
+        words = update.get("transcript") or []
+        spoken_s = float(update.get("duration_s") or asset.get("duration_s") or (words[-1].get("end_s") if isinstance(words[-1], dict) else 0) or 60)
+        await credits.settle(hold, max(spoken_s, 1.0) / 60.0)
+    return update
+
+
+async def _analyze_media(asset: dict) -> dict:
     url = asset.get("url") or ""
     duration_s: Optional[float] = asset.get("duration_s")
     update: dict[str, Any] = {}

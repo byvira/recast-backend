@@ -159,7 +159,7 @@ async def diagnose(ticket: dict, snapshot: Optional[dict]) -> list[dict]:
 
         await assert_ai_budget_available(ticket["workspace_id"])
     except HTTPException:
-        findings.append({"level": "problem", "text": "The workspace has used up its AI writing limit, so new writing is paused until usage drops."})
+        findings.append({"level": "problem", "text": "The workspace has used up its credits for this month, so new AI work and renders are paused."})
     except Exception:
         logger.debug("Couldn't check the AI limit for the diagnosis", exc_info=True)
 

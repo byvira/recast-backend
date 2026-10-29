@@ -110,7 +110,8 @@ async def generate_thumbnail(
     brand = await brand_profiles.find_one({"id": doc.get("brand_id"), "workspace_id": ctx.workspace_id}) if doc.get("brand_id") else None
     if not brand:
         raise HTTPException(status_code=400, detail="This has no brand voice to make a picture from. Upload one instead.")
-    asset = await generate_brand_image(topic=topic, brand_profile=brand, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+    asset = await generate_brand_image(topic=topic, brand_profile=brand, workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+                                       raise_when_out_of_credits=True)
     if not asset:
         raise HTTPException(status_code=502, detail="The picture couldn't be made right now. Try again in a moment, or upload one.")
     await _save(body.kind, flt, field, asset.url)

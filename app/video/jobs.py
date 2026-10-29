@@ -42,6 +42,8 @@ WORKER_OFFLINE_AFTER = timedelta(minutes=5)
 MAX_FRAMES = 12
 # Failures that can never succeed on a second try, whatever the worker says.
 NEVER_RETRY = ("bad_job", "bad_input", "too_long", "quality_check_failed", "delivery_mismatch")
+#: failures about the member's own material (a file that cannot be read, a video too long) are answers, not faults
+EXPECTED_FAILURES = ("bad_input", "too_long", "content_guard", "cancelled")
 
 
 class JobError(Exception):
@@ -206,9 +208,9 @@ async def _live_job_for_key(workspace_id: str, idem_key: Optional[str]) -> Optio
 async def enqueue(
     *, workspace_id: str, user_id: str, inputs: dict, edit: dict, output: Optional[dict] = None,
     label: str = "", idem_key: Optional[str] = None, origin: Optional[dict] = None, project_id: Optional[str] = None,
-    href: Optional[str] = None, show_in_activity: bool = False,
+    href: Optional[str] = None, show_in_activity: bool = False, charge: bool = True,
 ) -> dict:
-    """Queue one render. The same idempotency key in the same workspace returns the job already made. With
+    """Queue one render. `charge` False is for Ekavo's own checks (an Ops test render), which never cost a workspace credits. The same idempotency key in the same workspace returns the job already made. With
     `show_in_activity` the render also appears in the activity dock, Control Tower and the Activity Log as a run."""
     seconds = _validate_request(inputs, edit)
     await _assert_video_on(workspace_id)
@@ -226,8 +228,15 @@ async def enqueue(
     if existing_job:
         return public(existing_job)
     now = _now()
+    job_id = str(uuid4())
+    # 5 credits for each finished minute, set aside from the length the edit asks for and charged on the length delivered
+    from app.billing import credits
+
+    hold = await credits.reserve(
+        workspace_id, user_id, "render", seconds / 60.0 if charge else 0, step=f"render:{idem_key or job_id}", hold_seconds=24 * 3600, label=label or None,
+    )
     doc = {
-        "id": str(uuid4()), "workspace_id": workspace_id, "user_id": user_id, "label": (label or "")[:120],
+        "id": job_id, "workspace_id": workspace_id, "user_id": user_id, "label": (label or "")[:120],
         "status": "queued", "attempts": 0, "inputs": inputs, "edit": edit,
         "output": {**{k: v for k, v in (output or {}).items() if k in OUTPUT_KEYS}, **({"label": AI_FILE_LABEL} if (origin or {}).get("contains_ai") else {})},
         "duration_s": round(seconds, 3), "created_at": now, "lease_token": None, "lease_expires_at": None,
@@ -244,17 +253,25 @@ async def enqueue(
         doc["target_lufs"] = output["lufs"]
     if idem_key:
         doc["idem_key"] = idem_key
+    if credits.hold_to_doc(hold):
+        doc["credit_hold"] = credits.hold_to_doc(hold)
     if show_in_activity:
-        run = await runs.open_run(
-            workspace_id=workspace_id, user_id=user_id, title=label, project_id=project_id, job_id=doc["id"], href=href,
-        )
+        try:
+            run = await runs.open_run(
+                workspace_id=workspace_id, user_id=user_id, title=label, project_id=project_id, job_id=doc["id"], href=href,
+            )
+        except BaseException:
+            await credits.release(hold)
+            raise
         doc["run_id"] = run["id"]
     try:
         await _jobs().insert_one(dict(doc))
     except DuplicateKeyError:
+        await credits.release(hold)
         await runs.finish_cancelled(doc.get("run_id"))
         return public(await _jobs().find_one({"workspace_id": workspace_id, "idem_key": idem_key}))
     except BaseException:
+        await credits.release(hold)
         # the run holds the project's one active slot, so a job that was never saved must not leave it open
         await runs.finish_failed(doc.get("run_id"), "The video could not be queued. Please try again.")
         raise
@@ -263,6 +280,7 @@ async def enqueue(
         await limits.assert_render_room(workspace_id, 0)
     except limits.OverLimit as exc:
         await _jobs().delete_one({"id": doc["id"]})
+        await credits.release(hold)
         await runs.finish_cancelled(doc.get("run_id"))
         raise JobError(429, exc.message)
     return public(doc)
@@ -403,6 +421,7 @@ async def _close_job(doc: dict, status: str, *, code: Optional[str] = None, mess
     )
     if not changed.modified_count:
         return False
+    await _return_credits(doc)
     if status == "cancelled":
         await runs.finish_cancelled(doc.get("run_id"))
     else:
@@ -639,12 +658,22 @@ def _delivery_problem(doc: dict, video: Optional[dict], report: Any) -> Optional
     return None
 
 
+async def _return_credits(doc: dict) -> None:
+    """A render that ends without a video (failed, cancelled, blocked) costs nothing: its held credits go back."""
+    if doc.get("credit_hold"):
+        from app.billing import credits
+
+        await credits.release_doc(doc["credit_hold"])
+
+
 async def _end(doc: dict, status: str, code: str, message: str, detail: Any = None) -> None:
-    await _jobs().update_one(
+    ended = await _jobs().update_one(
         {"id": doc["id"], "lease_token": doc["lease_token"]},
         {"$set": {"status": status, "error_code": code, "error": message, "error_detail": detail, "finished_at": _now(),
                   "lease_token": None, "lease_expires_at": None}},
     )
+    if ended.modified_count and status != "done":
+        await _return_credits(doc)
     if doc.get("kind") in (None, "render"):
         from app.video import activity
 
@@ -731,6 +760,10 @@ async def complete(job_id: str, lease_token: str, outputs: Any, report: Any) -> 
         # the job was taken from this worker while the checks ran (cancelled, or handed on), so no library row is kept for it
         await media_assets.delete_one({"id": media.id, "workspace_id": doc["workspace_id"]})
         raise LeaseLost()
+    if doc.get("credit_hold"):
+        from app.billing import credits
+
+        await credits.settle_doc(doc["credit_hold"], float(report["duration_s"]) / 60.0)
     if doc.get("project_id"):
         # the project's own record of its latest video, so it can be attached to a post and shows as made
         await get_db()["video_projects"].update_one(
@@ -1041,6 +1074,14 @@ async def fail(job_id: str, lease_token: str, code: str, message: str, retryable
         return {"ok": True, "requeued": True}
     await _end(doc, "failed", code, safe, detail)
     await runs.finish_failed(doc.get("run_id"), safe)
+    if code not in EXPECTED_FAILURES:
+        # a failure that is not about the member's own material is a fault to look at, so it goes to the Ops error log
+        from app.health import errors
+
+        errors.capture(
+            source="worker", kind=code, message=str(detail or message or "")[:500], where=f"render {doc.get('kind') or 'render'}: {code}",
+            workspace_id=doc.get("workspace_id"), user_id=doc.get("user_id"),
+        )
     if doc.get("kind") == "proxy" and doc.get("source_media_id"):
         await media_assets.update_one({"id": doc["source_media_id"], "workspace_id": doc["workspace_id"]},
                                       {"$set": {"preview_status": "failed", "preview_error": safe}})

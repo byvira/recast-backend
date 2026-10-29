@@ -8,6 +8,7 @@ rule failures rather than HTTPException — the route translates that to a
 400, the scheduler just logs and moves on to the next due campaign.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -178,31 +179,46 @@ async def generate_campaign_batch(
     async def remember_angles(angles: list[str]) -> None:
         await get_campaigns_collection().update_one({"id": campaign["id"]}, {"$set": {"cadence.batch_angles": angles}})
 
-    async with tracked_run(
-        workspace_id=workspace_id, run_id=f"campaign:{campaign['id']}", kind="campaign",
-        title=campaign.get("name") or run_label(campaign["topic_cluster"]),
-        project=brand_label(brand), steps_total=days,
-    ):
-        try:
-            await run_batch_pipeline(
-                topic_cluster=campaign["topic_cluster"],
-                platforms=platforms,
-                platforms_by_day=platforms_by_day,
-                brand_id=campaign["brand_id"],
-                workspace_id=workspace_id,
-                user_id=user_id,
-                extras=extras,
-                days=days,
-                language=language,
-                tone=ToneOverride(tone_value),
-                on_day_complete=persist_day,
-                planned_angles=(campaign.get("cadence") or {}).get("batch_angles") if start_day > 0 else None,
-                on_angles=remember_angles,
-                before_day=(lambda _i: pipeline_runs.checkpoint(run_id)) if run_id else None,
-                start_day=start_day,
-            )
-        except pipeline_runs.RunCancelled:
-            cancelled = True
+    # Planning a new batch costs 5 credits; each post and picture is charged as it is made. A batch that carries on from a saved
+    # day is not planned again. Credits running out stop the batch between days: what was made is kept, and the error says why.
+    from app.billing import credits
+
+    plan_hold = (
+        await credits.reserve(workspace_id, user_id, "campaign_plan", step=f"campaign_plan:{campaign['id']}", label=campaign.get("name") or None)
+        if start_day == 0 else None
+    )
+    try:
+        async with tracked_run(
+            workspace_id=workspace_id, run_id=f"campaign:{campaign['id']}", kind="campaign",
+            title=campaign.get("name") or run_label(campaign["topic_cluster"]),
+            project=brand_label(brand), steps_total=days,
+        ):
+            try:
+                await run_batch_pipeline(
+                    topic_cluster=campaign["topic_cluster"],
+                    platforms=platforms,
+                    platforms_by_day=platforms_by_day,
+                    brand_id=campaign["brand_id"],
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    extras=extras,
+                    days=days,
+                    language=language,
+                    tone=ToneOverride(tone_value),
+                    on_day_complete=persist_day,
+                    planned_angles=(campaign.get("cadence") or {}).get("batch_angles") if start_day > 0 else None,
+                    on_angles=remember_angles,
+                    before_day=(lambda _i: pipeline_runs.checkpoint(run_id)) if run_id else None,
+                    start_day=start_day,
+                )
+            except pipeline_runs.RunCancelled:
+                cancelled = True
+    finally:
+        if plan_hold is not None:
+            if new_piece_ids:
+                await asyncio.shield(credits.settle(plan_hold))
+            else:
+                await asyncio.shield(credits.release(plan_hold))
 
     now = datetime.now(timezone.utc)
     frequency = campaign.get("cadence", {}).get("frequency", "manual")

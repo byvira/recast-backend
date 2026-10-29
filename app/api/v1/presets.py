@@ -46,6 +46,9 @@ async def suggest_structure(
 ) -> dict[str, Any]:
     """Suggested sections for a template, from its name, kind and channels. Read-only: nothing is
     saved. An empty list means no usable suggestion, and the member can build by hand as before."""
+    from app.shared.llm import set_usage_workspace
+
+    set_usage_workspace(ctx.workspace_id)  # free (bundled with the post), but counted against this workspace
     sections = await presets_suggest.suggest_structure(
         title=body.title,
         category_label=body.category_label,

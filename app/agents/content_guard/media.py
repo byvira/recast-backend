@@ -102,6 +102,10 @@ def _shrink_for_check(data: bytes, mime_type: str) -> tuple[bytes, str]:
 
 async def assert_image_ok(data: bytes, mime_type: str, *, workspace_id: Optional[str], where: str) -> None:
     """Raise ContentRejected when the picture is unsafe. Never raises for any other reason."""
+    if workspace_id:
+        from app.shared.llm import set_usage_workspace
+
+        set_usage_workspace(workspace_id)  # safety checks are free, but their model calls are still counted per workspace
     if not data or not await _enabled():
         return
     try:
@@ -238,6 +242,10 @@ async def media_problem(item: dict[str, Any], workspace_id: str) -> Optional[dic
     """A verdict record for one attached item: a picture is read by the vision model; a recording by what is said in it
     (transcribed first when it has no transcript); a video by what is said in it, its poster picture and, when Ops turns it
     on, frames spread across it. `unchecked` carries the reason when nothing could be read. None when the guard is off."""
+    if workspace_id:
+        from app.shared.llm import set_usage_workspace
+
+        set_usage_workspace(workspace_id)  # safety checks are free, but their model calls are still counted per workspace
     kind = getattr(item.get("kind"), "value", item.get("kind"))
     media_id = item.get("id")
     if not media_id:
@@ -292,6 +300,10 @@ async def read_upload_speech(contents: bytes, filename: str, *, noun: str, works
     """The words of an uploaded recording or video, read before it is stored. Raises ContentRejected when they fail the rules.
     Files too large to transcribe, files with no speech and a provider that is down are let through here and read again
     (or noted as unchecked) when the post is scheduled or sent."""
+    if workspace_id:
+        from app.shared.llm import set_usage_workspace
+
+        set_usage_workspace(workspace_id)  # safety checks are free, but their model calls are still counted per workspace
     if not contents or len(contents) > MAX_TRANSCRIBE_BYTES or not await _enabled():
         return None
     try:

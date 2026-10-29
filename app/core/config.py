@@ -262,9 +262,6 @@ class Settings(BaseSettings):
     # cap is a config change, not a code change.
     GEMINI_IMAGE_FALLBACK_DAILY_CAP: int = 100
 
-    # Free tier credits limit
-    FREE_CREDITS_LIMIT: int = 100
-
     # CORS — JSON array string in .env, e.g. ALLOWED_ORIGINS=["https://a.com","https://b.com"]
     # In development this is the full origin list. In production it's merged
     # with PRODUCTION_DOMAIN, so use it for any *additional* prod origins
