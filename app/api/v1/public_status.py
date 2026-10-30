@@ -77,6 +77,25 @@ class ClientError(BaseModel):
     digest: Optional[str] = Field(None, max_length=80)
     #: the reference the crash screen shows the member, so a support ticket that quotes it is linked to this error
     ref: Optional[str] = Field(None, pattern=r"^CR-[A-Z0-9]{8}$")
+    #: what went wrong: the screen crashed, a request to the server failed (a server error, a timeout, no connection), or an answer
+    #: came back in a shape the screen could not read
+    category: Literal["crash", "request", "data"] = "crash"
+    #: for a failed request, the server's id for it (so it can be matched with the server's own record) and its status code
+    request_id: Optional[str] = Field(None, max_length=40, pattern=r"^[A-Za-z0-9-]+$")
+    status: Optional[int] = Field(None, ge=0, le=999)
+
+
+def _member_of(request: Request) -> Optional[str]:
+    """Who sent the report, from their sign-in, when they are signed in. A report from a signed-out screen is still recorded."""
+    from app.core.auth import get_token_from_request, verify_token
+
+    token = get_token_from_request(request)
+    if not token:
+        return None
+    try:
+        return str(verify_token(token).get("sub") or "") or None
+    except Exception:  # noqa: BLE001 - an expired or bad token only means the member is not known
+        return None
 
 
 #: browser noise that is not a fault in Ekavo (extensions, a resize loop the browser reports itself)
@@ -92,9 +111,10 @@ async def report_client_error(request: Request, body: ClientError) -> Response:
         where = body.page.split("?")[0]
         if body.component:
             where = f"{where} > {body.component}"
+        extra = {"digest": body.digest, "ref": body.ref, "request_id": body.request_id, "status": body.status, "category": body.category}
         errors.capture(
-            source="browser", kind=body.kind or "Error", message=body.message, where=where, stack=body.stack,
-            workspace_id=request.headers.get("x-workspace-id"), rel=body.release,
-            extra={k: v for k, v in {"digest": body.digest, "ref": body.ref}.items() if v} or None,
+            source="browser" if body.category == "crash" else "request", kind=body.kind or "Error", message=body.message, where=where,
+            stack=body.stack, workspace_id=request.headers.get("x-workspace-id"), user_id=_member_of(request), rel=body.release,
+            extra={k: v for k, v in extra.items() if v not in (None, "")} or None,
         )
     return Response(status_code=204)

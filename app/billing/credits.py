@@ -220,6 +220,15 @@ def bind_run(run_id: Optional[str]) -> None:
     _run.set({"id": run_id, "seen": {}} if run_id else None)
 
 
+_label: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("_credit_label", default=None)
+
+
+def bind_label(label: Optional[str]) -> None:
+    """Charges made from here on in this task show under this label in the credits history, in place of their own (a Fresh
+    Angles picture shows as one, not as a plain picture). None goes back to each charge's own label."""
+    _label.set(label)
+
+
 def _key_for(step: str) -> tuple[str, Optional[str]]:
     run = _run.get()
     if not run:
@@ -264,6 +273,7 @@ async def reserve(
     table = await C.costs()
     if action not in table:
         raise KeyError(f"Unknown credit action: {action}")
+    label = _label.get() or label
     need = C.price_with(table, action, units)
     hold = Hold(action=action, credits=need, units=float(units or 0), workspace_id=workspace_id, user_id=user_id)
     if need <= 0 or not workspace_id:

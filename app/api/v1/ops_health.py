@@ -56,6 +56,110 @@ async def list_errors(
     return {"items": items, "totals": totals, "new_today": new_today, "sources": [{"id": k, "label": v} for k, v in errors.SOURCES.items()]}
 
 
+#: The most rows one export carries.
+EXPORT_MAX = 5000
+
+
+async def _log_query(
+    *, source: Optional[str], workspace: Optional[str], user: Optional[str], q: str, since: Optional[datetime], until: Optional[datetime],
+) -> dict[str, Any]:
+    """The live log's filters as one database query. `user` is an email (any case) or a member id."""
+    query: dict[str, Any] = {}
+    if source in errors.SOURCES:
+        query["source"] = source
+    if workspace:
+        query["workspace_id"] = workspace.strip()
+    if user and user.strip():
+        who = user.strip()
+        found = await users.find_one({"email": {"$regex": f"^{re.escape(who)}$", "$options": "i"}}, {"id": 1}) if "@" in who else None
+        query["user_id"] = (found or {}).get("id") or who
+    if q.strip():
+        pattern = re.escape(q.strip())
+        query["$or"] = [{"title": {"$regex": pattern, "$options": "i"}}, {"where": {"$regex": pattern, "$options": "i"}},
+                        {"message": {"$regex": pattern, "$options": "i"}}, {"request_id": q.strip()}]
+    if since or until:
+        query["at"] = {**({"$gt": since} if since else {}), **({"$lte": until} if until else {})}
+    return query
+
+
+async def _log_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Log rows as Ops reads them: the member's email and the workspace's name beside their ids."""
+    user_ids = list({r["user_id"] for r in rows if r.get("user_id")})
+    ws_ids = list({r["workspace_id"] for r in rows if r.get("workspace_id")})
+    emails = {u["id"]: u.get("email") async for u in users.find({"id": {"$in": user_ids}}, {"id": 1, "email": 1})} if user_ids else {}
+    names = {w["id"]: w.get("name") async for w in workspaces.find({"id": {"$in": ws_ids}}, {"id": 1, "name": 1})} if ws_ids else {}
+    out = []
+    for r in rows:
+        at = r["at"] if r["at"].tzinfo else r["at"].replace(tzinfo=timezone.utc)
+        out.append({
+            "id": str(r["_id"]), "at": at.isoformat(), "number": r.get("number"), "title": r.get("title") or "", "source": r.get("source"),
+            "source_label": errors.SOURCES.get(r.get("source") or "", ""), "kind": r.get("kind"), "where": r.get("where") or "",
+            "message": r.get("message") or "", "status": r.get("status"), "request_id": r.get("request_id"), "release": r.get("release"),
+            "user_id": r.get("user_id"), "user_email": emails.get(r.get("user_id") or ""),
+            "workspace_id": r.get("workspace_id"), "workspace_name": names.get(r.get("workspace_id") or ""),
+        })
+    return out
+
+
+@router.get("/log")
+@limiter.limit("120/minute")
+async def error_log(
+    request: Request,
+    source: Optional[str] = Query(None, max_length=20),
+    workspace: Optional[str] = Query(None, max_length=80),
+    user: Optional[str] = Query(None, max_length=200),
+    q: str = Query("", max_length=100),
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    limit: int = Query(100, ge=1, le=200),
+    _: dict = Depends(require_platform_staff),
+) -> dict[str, Any]:
+    """Every error as it happened, newest first: who it happened to, in which workspace, where, and which issue it belongs to. The
+    screen asks again every few seconds with `since` set to the newest row it has, so only new rows come back."""
+    query = await _log_query(source=source, workspace=workspace, user=user, q=q, since=since, until=until)
+    rows = await errors.log_col().find(query).sort("at", -1).limit(limit).to_list(limit)
+    return {"items": await _log_rows(rows), "sources": [{"id": k, "label": v} for k, v in errors.SOURCES.items()]}
+
+
+@router.get("/log/export")
+@limiter.limit("10/minute")
+async def export_error_log(
+    request: Request,
+    format: Literal["csv", "json"] = "csv",
+    source: Optional[str] = Query(None, max_length=20),
+    workspace: Optional[str] = Query(None, max_length=80),
+    user: Optional[str] = Query(None, max_length=200),
+    q: str = Query("", max_length=100),
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    _: dict = Depends(require_platform_staff),
+):
+    """The log with the same filters as a file, newest first, at most 5,000 rows."""
+    import csv
+    import io
+    import json
+
+    from fastapi import Response
+
+    query = await _log_query(source=source, workspace=workspace, user=user, q=q, since=since, until=until)
+    rows = await _log_rows(await errors.log_col().find(query).sort("at", -1).limit(EXPORT_MAX).to_list(EXPORT_MAX))
+    stamp = _now().strftime("%Y%m%d-%H%M")
+    if format == "json":
+        body = json.dumps(rows, ensure_ascii=False, indent=1)
+        return Response(body, media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="ekavo-error-log-{stamp}.json"'})
+    fields = ["at", "number", "title", "source_label", "kind", "where", "message", "status", "request_id", "user_email", "user_id",
+              "workspace_name", "workspace_id", "release"]
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        # a cell that starts with = + - @ would run as a formula in a spreadsheet, so it is written as text
+        writer.writerow({k: (f"'{v}" if isinstance(v, str) and v[:1] in "=+-@" else v) for k, v in row.items()})
+    return Response(out.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="ekavo-error-log-{stamp}.csv"'})
+
+
 async def _issue_by_number(number: int) -> dict[str, Any]:
     doc = await errors.issues_col().find_one({"number": number})
     if not doc:
@@ -71,6 +175,8 @@ async def get_error(request: Request, number: int, _: dict = Depends(require_pla
     events = await errors.events_col().find({"issue_id": doc["_id"]}).sort("at", -1).limit(30).to_list(30)
     ws_ids = list(dict.fromkeys(doc.get("workspaces") or []))[-20:]
     names = {w["id"]: w.get("name") async for w in workspaces.find({"id": {"$in": ws_ids}}, {"id": 1, "name": 1})}
+    member_ids = list({e["user_id"] for e in events if e.get("user_id")})
+    emails = {u["id"]: u.get("email") async for u in users.find({"id": {"$in": member_ids}}, {"id": 1, "email": 1})} if member_ids else {}
     hours = await errors.by_hour(doc["_id"], _now() - timedelta(hours=24))
     incident = await status.incidents_col().find_one({"_id": doc.get("incident_id")}, {"title": 1, "status": 1, "number": 1}) if doc.get("incident_id") else None
     return {
@@ -81,7 +187,7 @@ async def get_error(request: Request, number: int, _: dict = Depends(require_pla
         "events": [{
             "at": (e["at"] if e["at"].tzinfo else e["at"].replace(tzinfo=timezone.utc)).isoformat(), "message": e.get("message"),
             "stack": e.get("stack"), "where": e.get("where"), "release": e.get("release"), "workspace": names.get(e.get("workspace_id") or ""),
-            "extra": e.get("extra"),
+            "member": emails.get(e.get("user_id") or ""), "extra": e.get("extra"),
         } for e in events],
     }
 

@@ -1,0 +1,33 @@
+{# @locked whole #}
+{{ language_instruction }}
+
+{{ brand_context }}
+
+A brand made a short video clip from a recording. Plan 3 new short cuts of the same recording, each from a clearly different angle:
+a different moment to show and a different opening hook printed on screen. Captions come from the words spoken, so pick moments
+that read well on their own.
+
+Angle 1 (Contrarian): a moment where the speaker challenges a common belief.
+Angle 2 (The why): a moment that explains the reason or belief behind the message.
+Angle 3 (Concrete outcome): a moment that gives a specific result, example or piece of advice.
+
+Rules:
+- Each cut is one continuous span of the recording between 15 and 60 seconds long. The 3 cuts must not overlap.
+- Prefer moments other than the span already used ({{ "%.1f"|format(current_start) }}s to {{ "%.1f"|format(current_end) }}s).
+- Start a cut at the start time of its first word and end it at the end time of its last word. Never invent words.
+- hook: the words printed on screen at the start, at most 10 words, in the brand voice, true to what is said in that moment.
+- Never use em dashes anywhere in the output.
+
+TRANSCRIPT (word [start-end]):
+{% set transcript_text %}{% for w in words %}{{ w.word }} [{{ "%.2f"|format(w.start_s) }}-{{ "%.2f"|format(w.end_s) }}]
+{% endfor %}{% endset %}{{ transcript_text | untrusted("transcript") }}
+
+Return valid JSON only:
+{
+  "cuts": [
+    {"name": "Contrarian", "rationale": "one sentence on why this moment works here", "start_s": 12.4, "end_s": 38.1, "hook": "..."},
+    {"name": "The why", "rationale": "...", "start_s": 0.0, "end_s": 0.0, "hook": "..."},
+    {"name": "Concrete outcome", "rationale": "...", "start_s": 0.0, "end_s": 0.0, "hook": "..."}
+  ]
+}
+{# @end #}

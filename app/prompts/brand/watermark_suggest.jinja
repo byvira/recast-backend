@@ -1,0 +1,19 @@
+{# @locked whole #}
+{{ brand_context }}
+
+Suggest 5 short text watermarks this brand can put in the corner of its pictures, so people know whose picture it is when it is
+shared. Each one is printed small and faint, so it must be very short and easy to read.
+
+Rules:
+- At most 4 words and 28 characters each.
+- Use only names, handles and words the brand details above give (the brand or person's name, a social handle, a website). Never
+  invent a handle, website or claim.
+- Mix the forms: the plain name, a handle such as "@name", "© Name", a short website, and one with a very short tagline.
+- No hashtags, no emoji, no em dashes, no quotation marks.
+{% if existing %}
+The brand already uses this watermark, so suggest other options: {{ existing | untrusted("current_watermark") }}
+{% endif %}
+
+Return valid JSON only:
+{"suggestions": ["...", "...", "...", "...", "..."]}
+{# @end #}

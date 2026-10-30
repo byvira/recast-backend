@@ -330,4 +330,7 @@ def _hex(rgb: tuple[int, int, int]) -> str:
 
 def layer_assets_needed(layers: list[Layer]) -> list[Layer]:
     """The layers that need a picture fetched before drawing."""
-    return [layer for layer in layers if layer.type in ("logo", "mascot", "image") and not layer.hidden]
+    return [
+        layer for layer in layers
+        if not layer.hidden and (layer.type in ("logo", "mascot", "image") or (layer.type == "watermark" and layer.watermark_kind == "image"))
+    ]

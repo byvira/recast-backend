@@ -27,6 +27,7 @@ SOURCES: dict[str, str] = {
     "job": "Background work",
     "scheduler": "Scheduled job",
     "browser": "Member's screen",
+    "request": "Failed request on a screen",
     "worker": "Render machine",
     "logged": "Caught and logged",
 }
@@ -47,6 +48,27 @@ def issues_col():
 
 def events_col():
     return get_db()["error_events"]
+
+
+def log_col():
+    """Every occurrence, in time order, for the live log: who, where, when and which issue. Kept as long as the events. The
+    events above keep the full detail (the stack) but only a sample once an issue is common; this keeps a row for each one."""
+    return get_db()["error_log"]
+
+
+#: At most this many rows a minute for one issue reach the live log, so one storm cannot bury everything else. The issue still
+#: counts every one.
+LOG_ROWS_PER_MINUTE = 60
+_log_minute: dict[str, int] = {}
+
+
+def _log_allowed(fp: str, now: datetime) -> bool:
+    minute = now.strftime("%Y%m%d%H%M")
+    for key in [k for k in _log_minute if not k.startswith(minute)]:
+        _log_minute.pop(key, None)
+    key = f"{minute}:{fp}"
+    _log_minute[key] = _log_minute.get(key, 0) + 1
+    return _log_minute[key] <= LOG_ROWS_PER_MINUTE
 
 
 def _now() -> datetime:
@@ -155,6 +177,12 @@ async def _record(
         await issues_col().update_one({"_id": fp}, {"$push": {"workspaces": {"$each": [], "$slice": -200}, "users": {"$each": [], "$slice": -200}}})
     # Every occurrence is counted per hour (what the list, the chart and "last hour" read), even when not every one is stored, and
     # a burst count over the last few minutes drives the "happening a lot" alert.
+    if _log_allowed(fp, now):
+        await log_col().insert_one({
+            "at": now, "issue_id": fp, "number": after.get("number"), "title": after.get("title"), "source": source, "kind": kind,
+            "where": (where or "")[:300], "message": message[:300], "workspace_id": workspace_id, "user_id": user_id,
+            "request_id": str((extra or {}).get("request_id") or "")[:40] or None, "status": (extra or {}).get("status"), "release": rel,
+        })
     hour = now.replace(minute=0, second=0, microsecond=0)
     await counts_col().update_one({"_id": f"{fp}:{hour:%Y%m%d%H}"}, {"$inc": {"n": 1}, "$setOnInsert": {"issue_id": fp, "hour": hour}}, upsert=True)
     burst_start = after.get("burst_start")
@@ -243,7 +271,17 @@ def capture(
     *, source: str, kind: str, message: str, where: str = "", stack: str = "", workspace_id: Optional[str] = None,
     user_id: Optional[str] = None, extra: Optional[dict[str, Any]] = None, rel: Optional[str] = None,
 ) -> None:
-    """Record one error in the background. Safe to call from anywhere, including an error handler."""
+    """Record one error in the background. Safe to call from anywhere, including an error handler. Inside a request, the member
+    and the request's id are taken from the request when not given, so every error says who it happened to."""
+    try:
+        import structlog
+
+        bound = structlog.contextvars.get_contextvars()
+    except Exception:  # noqa: BLE001
+        bound = {}
+    user_id = user_id or bound.get("user_id")
+    if source != "browser" and bound.get("request_id") and not (extra or {}).get("request_id"):
+        extra = {**(extra or {}), "request_id": bound["request_id"]}
     coro = _capture(
         source=source if source in SOURCES else "server", kind=kind, message=message, where=where, stack=stack,
         workspace_id=workspace_id, user_id=user_id, extra=extra, rel=rel,
@@ -333,6 +371,10 @@ async def create_indexes() -> None:
     await issues_col().create_index([("source", 1), ("last_seen", -1)])
     await events_col().create_index([("issue_id", 1), ("at", -1)])
     await events_col().create_index("at", expireAfterSeconds=KEEP_EVENTS_DAYS * 24 * 3600)
+    await log_col().create_index("at", expireAfterSeconds=KEEP_EVENTS_DAYS * 24 * 3600)
+    await log_col().create_index([("workspace_id", 1), ("at", -1)])
+    await log_col().create_index([("user_id", 1), ("at", -1)])
+    await log_col().create_index([("source", 1), ("at", -1)])
     await counts_col().create_index([("issue_id", 1), ("hour", 1)])
     await counts_col().create_index("hour", expireAfterSeconds=KEEP_EVENTS_DAYS * 24 * 3600)
 

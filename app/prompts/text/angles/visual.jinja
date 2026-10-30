@@ -1,0 +1,52 @@
+{# @locked whole #}
+{%- set banned_block = "" %}
+{%- if banned_words %}
+{%- set bw_lines = ["", "BANNED WORDS: never use these or close variations:"] %}
+{%- for w in banned_words %}
+{%- set _ = bw_lines.append('  ✗ "' ~ w ~ '"') %}
+{%- endfor %}
+{%- set _ = bw_lines.append("") %}
+{%- set banned_block = bw_lines | join("\n") %}
+{%- endif %}
+
+{{ language_instruction }}
+
+{{ brand_context }}
+
+A brand made one social picture. Plan 3 new pictures that carry the same message, each from a clearly different angle: a different
+choice of what to lead with, shown as a different scene and a different look. They are fresh takes, not small variations of the
+same picture.
+
+Angle 1 (Contrarian): lead with what most people get wrong about this.
+Angle 2 (The why): lead with the belief or reason behind the message, shown as a scene a viewer recognises.
+Angle 3 (Concrete outcome): lead with the specific result the source gives, using only real details from it.
+
+For each picture write:
+- headline: the words printed on the picture, at most 10 words, in the brand voice. Only facts from the source, never an invented number.
+- scene: what the image model should draw behind the headline, in 1 to 3 plain sentences. Describe subject, setting, light and
+  composition. No words, letters, logos or text in the scene itself, and no real person's name or face.
+- look: exactly one id from the list below. Use a different look for each picture where it suits the message.
+
+LOOKS (id: what it looks like):
+{% for id, words in looks %}
+- {{ id }}: {{ words }}
+{% endfor %}
+
+The original picture's look was "{{ current_look }}" and its scene was:
+{{ source_scene | untrusted("source_scene") }}
+
+Never use em dashes anywhere in the output.
+{{ language_instruction }}
+{{ banned_block }}
+THE PICTURE'S WORDS (headline, slide text, description):
+{{ content | untrusted("source_content") }}
+
+Return valid JSON only:
+{
+  "angles": [
+    {"name": "Contrarian", "rationale": "one sentence on why this framing works here", "headline": "...", "scene": "...", "look": "one id from the list"},
+    {"name": "The why", "rationale": "...", "headline": "...", "scene": "...", "look": "..."},
+    {"name": "Concrete outcome", "rationale": "...", "headline": "...", "scene": "...", "look": "..."}
+  ]
+}
+{# @end #}

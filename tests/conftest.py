@@ -323,6 +323,8 @@ _LLM_CONSUMER_MODULES = [
     "app.pipelines.text.generator",     # call_llm, call_llm_structured — generate/regenerate
     "app.pipelines.text.hook_agent",    # call_llm_structured — hook variants
     "app.pipelines.text.angles",        # call_llm_structured — angle variants (Feature 8)
+    "app.pipelines.text.media_angles",  # call_llm_structured — picture, recording and video angles
+    "app.pipelines.brand.watermark_tools",  # call_llm_structured — watermark text suggestions
     "app.pipelines.text.seo",           # call_llm_structured — SEO package
     "app.pipelines.text.repurpose",     # call_llm_structured — repurpose
     "app.pipelines.text.repurpose_suggest",  # call_llm_structured — repurpose AI suggestions

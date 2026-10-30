@@ -9,7 +9,7 @@ membership only.
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -53,6 +53,7 @@ from app.pipelines.text.brand_context import build_brand_context
 from app.pipelines.text.chips import apply_chip, get_chips_for_platform, CHIP_PROMPTS
 from app.pipelines.text.angles import run_angles_agent
 from app.pipelines.text.angle_sources import NO_TEXT_MESSAGE, text_for_angles
+from app.pipelines.text.media_angles import MediaAngleIdea, plan_ideas as plan_media_ideas
 from app.pipelines.text.repurpose_suggest import suggest_repurpose_targets
 from app.pipelines.text.storage import discard_generated_piece, save_pipeline_result, update_piece_content
 from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
@@ -852,6 +853,91 @@ async def generate_angles(
         )
 
     return GenerateAnglesResponse(angles=result.output["angles"])
+
+
+class MediaAnglesSource(BaseModel):
+    brand_id: str
+    asset_kind: Literal["image", "audio", "video"]
+    # The picture or recording. For a video, the recording it was cut from, with `clip_id` naming the video.
+    asset_id: str
+    clip_id: Optional[str] = None
+
+
+class MediaAnglesMakeRequest(MediaAnglesSource):
+    ideas: list[MediaAngleIdea] = Field(min_length=1, max_length=3)
+
+
+@router.post("/angles/media/ideas")
+@limiter.limit("15/minute")
+async def plan_media_angles(
+    request: Request,
+    body: MediaAnglesSource,
+    ctx: WorkspaceContext = Depends(_ai_guard),
+) -> dict:
+    """3 fresh angles for a picture, a recording or a video, planned as that kind (a scene and look, a spoken script, a moment
+    and hook). Free, like the written angles: nothing is made or saved until the member picks some and calls /make."""
+    if body.asset_kind == "video" and not body.clip_id:
+        raise HTTPException(status_code=400, detail="Say which video to plan angles for.")
+    # The angles are written in the voice of the brand the item belongs to, the same brand its new pieces are made under. The
+    # brand on screen is only the fallback for an item that names none.
+    from app.pipelines.text.media_angles import source_brand_id
+
+    brand_profile = await _get_owned_brand(
+        await source_brand_id(body.asset_kind, body.asset_id, ctx.workspace_id) or body.brand_id, ctx.workspace_id,
+    )
+    enforcement = await _enforcement_for(brand_profile, ctx)
+    try:
+        ideas, source = await plan_media_ideas(
+            body.asset_kind, body.asset_id, workspace_id=ctx.workspace_id, brand_context=build_brand_context(brand_profile),
+            banned=enforcement.get("banned_words", []), clip_id=body.clip_id,
+        )
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("Fresh Angles ideas failed for %s %s", body.asset_kind, body.asset_id)
+        raise HTTPException(status_code=502, detail="Couldn't come up with fresh angles for this. Try again.")
+    return {"ideas": [i.model_dump() for i in ideas], "title": source["title"]}
+
+
+@router.post("/angles/media/make", status_code=202)
+@limiter.limit("6/minute")
+async def make_media_angles(
+    request: Request,
+    body: MediaAnglesMakeRequest,
+    ctx: WorkspaceContext = Depends(_ai_guard),
+) -> dict:
+    """Make the picked angles as new pictures, recordings or video cuts, in the background. Each is charged like one made in its
+    own pipeline; the total is checked first so a run that cannot be paid for is refused before anything starts."""
+    from app.billing import credits
+    from app.pipelines.text import media_angles
+    from app.shared import pipeline_runs
+
+    kind = body.asset_kind
+    if kind == "image":
+        source = await media_angles._image_source(body.asset_id, ctx.workspace_id)
+        clip = None
+        ideas = media_angles.check_ideas(kind, body.ideas)
+    else:
+        source = await media_angles._audio_source(body.asset_id, ctx.workspace_id)
+        clip = media_angles._clip_of(source, body.clip_id) if kind == "video" else None
+        ideas = media_angles.check_ideas(kind, body.ideas, media_angles._master_words(source) if kind == "video" else None)
+
+    await credits.require_room(ctx.workspace_id, await media_angles.credits_needed(ideas, kind))
+    await pipeline_runs.assert_capacity(ctx.workspace_id)
+    title = source.get("title") or {"image": "a picture", "audio": "a recording", "video": "a video"}[kind]
+    try:
+        doc = await pipeline_runs.create_run(
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, kind=kind, title=f"Fresh angles from \"{title}\"",
+            steps_total=len(ideas), active_key=f"fresh-angles:{kind}:{body.asset_id}:{body.clip_id or ''}",
+        )
+    except pipeline_runs.RunAlreadyActive:
+        raise HTTPException(status_code=409, detail="Fresh angles are already being made for this. They will show in your Library when ready.")
+
+    async def work(run: dict) -> dict:
+        return await media_angles.make_pieces(run["id"], kind, source, clip, ideas, ctx)
+
+    pipeline_runs.start(doc, work, interrupt_on_cancel=True)
+    return pipeline_runs.public(doc)
 
 
 @router.post("/refine-chat", response_model=RefineChatResponse)

@@ -1,0 +1,43 @@
+{# @locked whole #}
+{%- set banned_block = "" %}
+{%- if banned_words %}
+{%- set bw_lines = ["", "BANNED WORDS: never use these or close variations:"] %}
+{%- for w in banned_words %}
+{%- set _ = bw_lines.append('  ✗ "' ~ w ~ '"') %}
+{%- endfor %}
+{%- set _ = bw_lines.append("") %}
+{%- set banned_block = bw_lines | join("\n") %}
+{%- endif %}
+
+{{ language_instruction }}
+
+{{ brand_context }}
+
+Below is the script or transcript of a short recording. Write it again 3 separate times as scripts to be read aloud, each from a
+clearly different angle: a different choice of what to lead with and emphasise, not just a different tone.
+
+Angle 1 (Contrarian): open with what most people get wrong about this.
+Angle 2 (The why): open with the belief or reason behind it, or a short scenario ("Imagine a team that..."). Use a real moment
+  only if the source gives one; never invent one.
+Angle 3 (Concrete outcome): open with the specific result the source gives, using only real details from it.
+
+Rules for all 3 scripts:
+- Written for the ear: short sentences, natural spoken rhythm, no headings, bullet points, hashtags, links, emoji or stage directions.
+- About {{ target_words }} words each, so it runs about as long as the original.
+- Match the brand voice exactly.
+- Never invent facts, numbers, names or claims that are not in the source.
+- Never use em dashes anywhere in the output.
+{{ language_instruction }}
+{{ banned_block }}
+SOURCE SCRIPT OR TRANSCRIPT:
+{{ content | untrusted("source_content") }}
+
+Return valid JSON only:
+{
+  "angles": [
+    {"name": "Contrarian", "rationale": "one sentence on why this framing works here", "script": "the full script to read aloud"},
+    {"name": "The why", "rationale": "...", "script": "..."},
+    {"name": "Concrete outcome", "rationale": "...", "script": "..."}
+  ]
+}
+{# @end #}

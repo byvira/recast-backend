@@ -20,6 +20,7 @@ from app.db.mongo import audio_assets, brand_profiles, content_pieces, get_campa
 from app.models.brand_profile import (
     AddTrainingSampleBody,
     BrandProfile,
+    BrandWatermark,
     AudienceProfile,
     BrandType,
     CreateBrandProfileBody,
@@ -147,6 +148,7 @@ def _doc_to_brand_profile(doc: dict) -> BrandProfile:
         # correct because it echoes its own local draft state after
         # saving, not the server's actual response.
         visual_identity=VisualIdentity(**doc["visual_identity"]) if doc.get("visual_identity") else VisualIdentity(),
+        watermark=BrandWatermark(**doc["watermark"]) if doc.get("watermark") else BrandWatermark(),
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
         completeness=profile_sections.compute_completeness(doc),
@@ -820,6 +822,120 @@ async def update_brand_visual_identity(
     )
     updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     return _doc_to_brand_profile(updated)
+
+
+class SetLogoBody(BaseModel):
+    media_id: str = Field(min_length=1, max_length=80)
+
+
+@router.put("/{brand_id}/logo", response_model=BrandProfile)
+@limiter.limit("20/minute")
+async def set_brand_logo(
+    request: Request,
+    brand_id: str,
+    body: SetLogoBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """Sets only the logo, from a picture just uploaded to this workspace's library (the picture editor's "add your logo").
+    Saved apart from the profile's version, like the mascot, so a Brand Assets form open elsewhere can still save."""
+    from app.db.mongo import media_assets
+
+    if not await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id}, {"id": 1}):
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    media = await media_assets.find_one({"id": body.media_id, "workspace_id": ctx.workspace_id}, {"url": 1, "kind": 1})
+    if not media or media.get("kind") != "image":
+        raise HTTPException(status_code=404, detail="That picture wasn't found. Upload it again.")
+    await brand_profiles.update_one({"id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": {"visual_identity.logo_url": media["url"]}})
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
+
+
+@router.patch("/{brand_id}/watermark", response_model=BrandProfile)
+@limiter.limit("30/minute")
+async def update_brand_watermark(
+    request: Request,
+    brand_id: str,
+    body: BrandWatermark,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> BrandProfile:
+    """The brand's text and picture watermarks and the "on every export" setting, saved whole. The picture mark is named by a
+    file in this workspace's library; its address is taken from that file, never from the request. Saved apart from the
+    profile's version, so a Brand Assets form open elsewhere can still save its colours and logo."""
+    from app.db.mongo import media_assets
+
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id}, {"visual_identity.logo_url": 1, "watermark": 1})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    # An address is only kept when it is the brand's own logo or the picture watermark it already has; any other is dropped.
+    own = {(doc.get("visual_identity") or {}).get("logo_url") or "", (doc.get("watermark") or {}).get("image_url") or ""} - {""}
+    mark = body.model_copy(update={"text": " ".join(body.text.split()), "image_url": body.image_url if body.image_url in own else ""})
+    if body.image_media_id:
+        media = await media_assets.find_one({"id": body.image_media_id, "workspace_id": ctx.workspace_id}, {"url": 1, "kind": 1})
+        if not media or media.get("kind") != "image":
+            raise HTTPException(status_code=404, detail="That picture wasn't found. Upload it again.")
+        mark = mark.model_copy(update={"image_url": media["url"]})
+    if mark.auto_apply and not ((mark.auto_kind == "text" and mark.text) or (mark.auto_kind == "image" and mark.image_url)):
+        raise HTTPException(status_code=422, detail="Set up the watermark you chose before putting it on every export.")
+    await brand_profiles.update_one({"id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": {"watermark": mark.model_dump()}})
+    updated = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    return _doc_to_brand_profile(updated)
+
+
+@router.post("/{brand_id}/watermark/suggestions")
+@limiter.limit("10/minute")
+async def suggest_brand_watermarks(
+    request: Request,
+    brand_id: str,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, list[str]]:
+    """5 short text watermarks from the brand's own name, handles and website. Free, like hooks."""
+    from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
+    from app.pipelines.brand.watermark_tools import suggest_texts
+    from app.shared.llm import set_usage_workspace
+
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    await assert_generation_allowed(ctx.workspace_id)
+    await assert_ai_budget_available(ctx.workspace_id)
+    set_usage_workspace(ctx.workspace_id)
+    try:
+        return {"suggestions": await suggest_texts(doc)}
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        logger.exception("Watermark suggestions failed for brand %s", brand_id)
+        raise HTTPException(status_code=502, detail="Couldn't come up with suggestions right now. Try again, or type your own.")
+
+
+class WatermarkMarkBody(BaseModel):
+    # What the symbol should show, in the member's words. Left empty, the brand's details decide.
+    idea: str = Field("", max_length=300)
+
+
+@router.post("/{brand_id}/watermark/mark", status_code=201)
+@limiter.limit("6/minute")
+async def make_brand_watermark_mark(
+    request: Request,
+    brand_id: str,
+    body: WatermarkMarkBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict:
+    """A picture mark made with AI (a symbol, never words), its background taken away. Returned to look at first: it becomes the
+    brand's picture watermark only when the member saves it. Costs a picture, plus a background removal when that works."""
+    from app.agents.supervisor.service import assert_generation_allowed
+    from app.billing import credits
+    from app.pipelines.brand.watermark_tools import make_mark
+
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    await assert_generation_allowed(ctx.workspace_id)
+    await credits.require_room(
+        ctx.workspace_id, await credit_costs.price("picture") + await credit_costs.price("remove_background"),
+    )
+    asset = await make_mark(brand=doc, idea=body.idea, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
+    return {"media_id": asset.id, "url": asset.url, "note": asset.qa_flag_reason}
 
 
 @router.post("/{brand_id}/training-samples", response_model=BrandProfile, status_code=201)

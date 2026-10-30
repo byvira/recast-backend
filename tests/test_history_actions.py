@@ -186,3 +186,28 @@ async def test_the_video_history_says_whether_each_video_may_be_posted(signup_us
     await _audio(ws, with_clip=True, approval_status="pending")
     items = (await client.get("/api/v1/audio-assets/video-clips", headers=H(ws))).json()["items"]
     assert items[0]["approval_status"] == "pending"
+
+
+async def test_a_picture_post_never_starts_with_the_picture_prompt(signup_user):
+    client, _ = await signup_user()
+    ws = await create_workspace(client, "History Actions caption", tier="large")
+
+    # a picture made with no headline takes the start of its prompt as its title: the post starts empty, not with the prompt
+    prompt_only, _ = await _image(ws)
+    await image_assets.update_one({"id": prompt_only}, {"$set": {"title": "A laptop on a desk with glowing icons", "slides.0.text_content": {},
+                                                                 "prompt": "A laptop on a desk with glowing icons around it, cinematic"}})
+    made = await client.post(f"/api/v1/image-assets/{prompt_only}/send-to-draft", json={}, headers=H(ws))
+    assert made.status_code == 200, made.text
+    assert made.json()["content"] == ""
+
+    # the headline on the picture comes before the title
+    headlined, _ = await _image(ws)
+    await image_assets.update_one({"id": headlined}, {"$set": {"slides.0.text_content": {"headline": "One video, five posts"}}})
+    assert (await client.post(f"/api/v1/image-assets/{headlined}/send-to-draft", json={}, headers=H(ws))).json()["content"] == "One video, five posts"
+
+    # a picture made from a post starts with that post
+    from_post, _ = await _image(ws)
+    piece_id = str(uuid4())
+    await content_pieces.insert_one({"piece_id": piece_id, "workspace_id": ws, "content": "The full post text.", "deleted": False})
+    await image_assets.update_one({"id": from_post}, {"$set": {"source_piece_id": piece_id}})
+    assert (await client.post(f"/api/v1/image-assets/{from_post}/send-to-draft", json={}, headers=H(ws))).json()["content"] == "The full post text."

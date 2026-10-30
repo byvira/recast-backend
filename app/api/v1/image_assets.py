@@ -194,6 +194,8 @@ async def _fetch_layer_assets(layers: list[Layer], brand: dict, workspace_id: st
             return layer.id, await _fetch_logo_bytes(visual_identity.get("logo_url") or "")
         if layer.type == "mascot":
             return layer.id, await _fetch_logo_bytes(visual_identity.get("mascot_url") or "")
+        if layer.type == "watermark":
+            return layer.id, await _fetch_logo_bytes((brand.get("watermark") or {}).get("image_url") or "")
         return layer.id, await _media_bytes(layer.media_id, workspace_id)
 
     return {lid: data for lid, data in await asyncio.gather(*(one(layer) for layer in wanted)) if data}
@@ -222,7 +224,12 @@ async def _draw_and_store(
     *, size: tuple[int, int], background_bytes: Optional[bytes], layers: list[Layer], brand: dict, brand_tokens: BrandTokens,
     workspace_id: str, user_id: str, effects: Optional[dict] = None, cutout_bytes: Optional[bytes] = None,
 ) -> MediaAsset:
+    from app.pipelines.media import watermark as watermark_mod
+
     assets = await _fetch_layer_assets(layers, brand, workspace_id)
+    # a watermark layer draws the brand's current mark: its words as a text layer, or its picture (fetched above) as an image layer
+    asked_for = layers
+    layers = watermark_mod.resolve_layers(layers, brand.get("watermark"))
     if background_bytes and (effects or {}).get("remove_background"):
         # The subject stands on the brand colour. The stored picture is never changed, so switching this off again brings the
         # original background back. The cutout is normally made in the member's browser (it needs no server memory); this
@@ -255,9 +262,15 @@ async def _draw_and_store(
         note = f"{note} {shaping_note}" if note else shaping_note
     # A layer that needed a picture (the brand logo, the mascot, an uploaded image) that could not be loaded was left off the
     # picture. That is worth a look, so it is noted on the picture and not just logged.
-    missing = [layer for layer in layers if layer.type in ("logo", "mascot", "image") and not layer.hidden and layer.id not in assets]
+    missing = [
+        layer for layer in asked_for
+        if not layer.hidden and layer.id not in assets
+        and (layer.type in ("logo", "mascot", "image") or (layer.type == "watermark" and layer.watermark_kind == "image"
+                                                            and watermark_mod.has_mark(brand.get("watermark"), "image")))
+    ]
     if missing:
-        names = ", ".join(sorted({"the brand logo" if layer.type == "logo" else "the mascot" if layer.type == "mascot" else "an added picture" for layer in missing}))
+        label = {"logo": "the brand logo", "mascot": "the mascot", "watermark": "your picture watermark"}
+        names = ", ".join(sorted({label.get(layer.type, "an added picture") for layer in missing}))
         gap = f"{names[0].upper()}{names[1:]} couldn't be loaded, so it is missing from this picture."
         note = f"{note} {gap}" if note else gap
     return await _store_image(png, workspace_id=workspace_id, user_id=user_id, size=size, mime="image/png", source=MediaSource.RENDERED, flagged_reason=note)
@@ -933,6 +946,32 @@ class ExportImageAssetRequest(BaseModel):
     optimize: bool = True
     # Which slide a single-picture export is of. Left out, it is the first slide.
     slide_number: Optional[int] = None
+    # Put the brand's watermark on it. Left out, the brand's own "on every export" setting decides.
+    watermark: Optional[bool] = None
+
+
+async def _export_stamper(asset: ImageAsset, workspace_id: str, wanted: Optional[bool]):
+    """A function that puts the brand's watermark on an exported picture, or None when no watermark goes on this export (switched
+    off, or the brand has none set)."""
+    from app.pipelines.media import watermark as watermark_mod
+
+    brand = await brand_profiles.find_one({"id": asset.brand_id, "workspace_id": workspace_id}, {"watermark": 1, "visual_identity.fonts": 1})
+    mark = (brand or {}).get("watermark") or {}
+    apply = bool(mark.get("auto_apply")) if wanted is None else wanted
+    kind = mark.get("auto_kind") or "text"
+    if not apply or not watermark_mod.has_mark(mark, kind):
+        return None
+    mark_bytes = await _fetch_logo_bytes(mark.get("image_url") or "") if kind == "image" else None
+    if kind == "image" and not mark_bytes:
+        raise HTTPException(status_code=502, detail="Your picture watermark couldn't be loaded. Try again, or export without it.")
+    fonts = ((brand or {}).get("visual_identity") or {}).get("fonts") or {}
+    tokens = BrandTokens(heading_font=fonts.get("heading") or None, body_font=fonts.get("body") or None)
+    return lambda data: watermark_mod.stamp(data, mark, tokens, mark_bytes)
+
+
+def _has_watermark_layer(slide) -> bool:
+    """A slide whose design already shows the brand's watermark gets no second one on export."""
+    return any(layer.type == "watermark" and not layer.hidden for layer in (slide.layers or []))
 
 
 async def _download_slide_bytes(url: str) -> bytes:
@@ -972,6 +1011,11 @@ async def export_image_asset(
             slide_bytes = [await _download_slide_bytes(m["url"]) for m in ordered]
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="Couldn't fetch one of this asset's slides. Try again.") from exc
+        stamper = await _export_stamper(asset, ctx.workspace_id, body.watermark)
+        if stamper:
+            marked = {s.media_id for s in asset.slides if s.media_id and _has_watermark_layer(s)}
+            skip = [m["id"] in marked for m in ordered]
+            slide_bytes = await run_heavy(lambda: [data if done else stamper(data) for data, done in zip(slide_bytes, skip)])
 
         if body.export_format == "pdf":
             # Heavy picture work runs in a thread so the server keeps answering other requests meanwhile.
@@ -1009,12 +1053,15 @@ async def export_image_asset(
     if body.export_format not in ("png", "webp", "jpg", "jpeg"):
         raise HTTPException(status_code=400, detail="That format isn't available for a single picture.")
 
-    if not is_default_export(body.upscale, body.dpi, body.optimize):
-        # A chosen size, resolution or file-size setting: the picture is made here and saved as its own file.
+    stamper = None if _has_watermark_layer(chosen) else await _export_stamper(asset, ctx.workspace_id, body.watermark)
+    if stamper or not is_default_export(body.upscale, body.dpi, body.optimize):
+        # A chosen size, resolution or file-size setting, or a watermark: the picture is made here and saved as its own file.
         try:
             source_bytes = await _download_slide_bytes(source.url)
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="Couldn't fetch this picture. Try again.") from exc
+        if stamper:
+            source_bytes = await run_heavy(stamper, source_bytes)
         try:
             data = await run_heavy(render_export, source_bytes, export_format=body.export_format, upscale=body.upscale, dpi=body.dpi, optimize=body.optimize)
         except ValueError as exc:
@@ -1884,6 +1931,31 @@ class ImageDraftRequest(BaseModel):
     slide_number: Optional[int] = None
 
 
+async def _caption_for(doc: dict, workspace_id: str) -> str:
+    """The text a post made from this picture starts with: the post the picture was made from, its link preview description, the
+    headline on it, or its title. Never the prompt it was drawn from: that is an instruction to the picture service, not words for
+    readers, and a picture made without a headline takes the start of its prompt as its title. With none of these the draft starts
+    empty for the member to write."""
+    if doc.get("source_piece_id"):
+        piece = await content_pieces.find_one(
+            {"piece_id": doc["source_piece_id"], "workspace_id": workspace_id, "deleted": {"$ne": True}}, {"content": 1},
+        )
+        if (piece or {}).get("content", "").strip():
+            return piece["content"].strip()
+    if (doc.get("og_description") or "").strip():
+        return doc["og_description"].strip()
+    for slide in doc.get("slides") or []:
+        words = (slide or {}).get("text_content") or {}
+        headline = words.get("headline") if isinstance(words, dict) else None
+        if isinstance(headline, str) and headline.strip():
+            return headline.strip()
+    title = (doc.get("title") or "").strip()
+    prompt = " ".join((doc.get("prompt") or "").split())
+    if title and title.lower() != "untitled" and not (prompt and prompt.startswith(" ".join(title.split()))):
+        return title
+    return ""
+
+
 @router.post("/{image_asset_id}/send-to-draft")
 @limiter.limit("20/minute")
 async def send_image_to_draft(
@@ -1906,9 +1978,7 @@ async def send_image_to_draft(
         platform = Platform((body.platform or "").strip() or "Instagram").value
     except ValueError:
         raise HTTPException(status_code=400, detail="That platform isn't supported for posts.")
-    caption = (body.caption or "").strip() or (doc.get("title") or "").strip()
-    if not caption:
-        raise HTTPException(status_code=400, detail="Add some text for the post.")
+    caption = (body.caption or "").strip() or await _caption_for(doc, ctx.workspace_id)
     return await draft_from_asset(
         workspace_id=ctx.workspace_id, user_id=ctx.user_id, brand_id=doc["brand_id"], platform=platform, caption=caption,
         origin={"image_asset_id": image_asset_id, "platform": platform}, group_by=image_asset_id,

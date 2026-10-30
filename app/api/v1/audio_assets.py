@@ -493,9 +493,11 @@ async def _assert_own_brand(brand_id: str, workspace_id: str) -> None:
         raise HTTPException(status_code=404, detail="Brand profile not found.")
 
 
-async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: WorkspaceContext, run) -> AudioAsset:
+async def create_audio_from_script(
+    body: GenerateAudioAssetRequest, ctx: WorkspaceContext, run, *, voice: Optional[MemberVoiceSettings] = None,
+) -> AudioAsset:
     """The work behind POST /generate, callable without a request (campaign runs use it).
-    `run` only needs an async `step(label)`."""
+    `run` only needs an async `step(label)`. `voice` speaks it in that voice (another recording's) instead of the member's own."""
     await assert_generation_allowed(ctx.workspace_id)
     await _assert_own_brand(body.brand_id, ctx.workspace_id)
     await run.step("Voicing your script")
@@ -524,7 +526,7 @@ async def create_audio_from_script(body: GenerateAudioAssetRequest, ctx: Workspa
             detail=f"That script is too long to narrate in one go ({len(script):,} characters; the limit is {settings.AUDIO_SCRIPT_MAX_CHARS:,}). Split it into parts.",
         )
 
-    voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
+    voice_settings = voice or await _get_voice_settings(ctx.workspace_id, ctx.user_id)
     if body.words_per_minute:
         # The pace control is real: 150 words a minute is normal speed, and the provider
         # accepts 0.8x to 1.5x, so the chosen pace maps onto that range.
@@ -3008,6 +3010,13 @@ async def make_video_from_audio_asset(
     run: AudioRun = Depends(audio_run("Rendering video", 3)),
     _guard: None = Depends(_video_render_guard),
 ) -> AudioAsset:
+    asset, _clip = await make_clip(audio_asset_id, body, ctx, run)
+    return asset
+
+
+async def make_clip(audio_asset_id: str, body: MakeVideoRequest, ctx: WorkspaceContext, run) -> tuple[AudioAsset, VideoClip]:
+    """The work behind POST /{id}/video, callable without a request (Fresh Angles uses it). Returns the recording and the new
+    clip. `run` only needs an async `step(label)`."""
     doc = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
     if not doc:
         raise HTTPException(status_code=404, detail="Audio asset not found.")
@@ -3146,7 +3155,7 @@ async def make_video_from_audio_asset(
         {"$push": {"video_clips": {"$each": [clip.model_dump()], "$slice": -20}}, "$set": {"updated_at": now}},
     )
     updated = await audio_assets.find_one({"id": audio_asset_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
-    return AudioAsset(**updated)
+    return AudioAsset(**updated), clip
 
 
 class SendToDraftRequest(BaseModel):

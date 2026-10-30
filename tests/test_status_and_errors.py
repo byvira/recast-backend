@@ -386,3 +386,62 @@ async def test_a_notice_posted_from_an_error_links_both_ways_and_takes_a_write_u
         assert public["writeup"].startswith("A missing brand")
     finally:
         await users.update_one({"id": staff_profile["id"]}, {"$unset": {"is_platform_staff": ""}})
+
+
+# ── the live log: every error, who it happened to, filters and export ────
+
+async def test_a_failed_request_on_a_screen_is_logged_with_the_member_and_its_request(signup_user):
+    member, profile = await signup_user()
+    res = await member.post("/api/v1/client-errors", json={
+        "kind": "ServerError", "message": "GET /api/v1/users/me answered 503", "page": "/dashboard", "component": "request GET /api/v1/users/me",
+        "category": "request", "request_id": "ab12cd34", "status": 503,
+    })
+    assert res.status_code == 204
+    await _settle()
+    row = await errors.log_col().find_one({"request_id": "ab12cd34"})
+    assert row and row["source"] == "request" and row["user_id"] == profile["id"] and row["status"] == 503
+    assert row["number"] and row["title"]
+
+
+async def test_a_server_error_takes_the_member_and_request_from_the_request():
+    import structlog
+
+    structlog.contextvars.bind_contextvars(user_id="member-9", request_id="req99")
+    try:
+        errors.capture(source="server", kind="KeyError", message="'x'", where="GET /api/v1/things")
+    finally:
+        structlog.contextvars.clear_contextvars()
+    await _settle()
+    row = await errors.log_col().find_one({"request_id": "req99"})
+    assert row and row["user_id"] == "member-9"
+
+
+def test_one_storm_cannot_bury_the_log():
+    now = datetime.now(timezone.utc)
+    allowed = [errors._log_allowed("storm-issue", now) for _ in range(errors.LOG_ROWS_PER_MINUTE + 5)]
+    assert allowed.count(True) == errors.LOG_ROWS_PER_MINUTE
+    assert errors._log_allowed("another-issue", now)
+
+
+async def test_staff_read_the_log_by_member_newest_first_and_export_it(signup_user):
+    member, member_profile = await signup_user()
+    staff, staff_profile = await signup_user()
+    await users.update_one({"id": staff_profile["id"]}, {"$set": {"is_platform_staff": True}})
+    try:
+        assert (await member.get("/api/v1/ops/health/log")).status_code == 403
+        errors.capture(source="server", kind="ValueError", message="=cmd|' /C calc'!A0", where="POST /api/v1/a", user_id=member_profile["id"])
+        errors.capture(source="server", kind="ValueError", message="someone else", where="POST /api/v1/b", user_id="other-member")
+        await _settle()
+        listed = (await staff.get("/api/v1/ops/health/log", params={"user": member_profile["email"].upper()})).json()["items"]
+        assert listed and all(r["user_id"] == member_profile["id"] for r in listed)
+        assert listed[0]["user_email"] == member_profile["email"]
+        newest = listed[0]["at"]
+        assert (await staff.get("/api/v1/ops/health/log", params={"since": newest, "user": member_profile["id"]})).json()["items"] == []
+
+        csv_res = await staff.get("/api/v1/ops/health/log/export", params={"format": "csv", "user": member_profile["id"]})
+        assert csv_res.status_code == 200 and csv_res.headers["content-type"].startswith("text/csv")
+        assert "'=cmd" in csv_res.text and member_profile["email"] in csv_res.text
+        json_res = await staff.get("/api/v1/ops/health/log/export", params={"format": "json", "user": member_profile["id"]})
+        assert json_res.json()[0]["user_email"] == member_profile["email"]
+    finally:
+        await users.update_one({"id": staff_profile["id"]}, {"$unset": {"is_platform_staff": ""}})

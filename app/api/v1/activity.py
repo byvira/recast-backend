@@ -210,13 +210,20 @@ def _completed_card(doc: dict) -> dict:
     metadata = doc.get("metadata") or {}
     if doc.get("category") == "content_generated":
         pieces = metadata.get("branchesCount") or 0
+        title = _tidy_title(doc.get("subject") or doc.get("title", ""))
+        # A finished background run does not count its posts here, so it says what its own note says ("Your work is ready to
+        # review", "2 of 3 made…"). A run's title already ends in "finished", so it is never followed by "Finished" again.
+        note = " ".join((doc.get("description") or "").split())
+        subtitle = (
+            f"{pieces} {'post' if pieces == 1 else 'posts'} made" if pieces
+            else note or ("" if title.lower().rstrip(".").endswith("finished") else "Finished")
+        )
         return {
             "id": doc["_id"],
             "kind": "generated",
-            "title": _tidy_title(doc.get("subject") or doc.get("title", "")),
+            "title": title,
             "project": ", ".join(doc.get("platforms") or []),
-            # A finished background run does not count its posts here, so it says it finished rather than "0".
-            "subtitle": f"{pieces} {'post' if pieces == 1 else 'posts'} made" if pieces else "Finished",
+            "subtitle": subtitle,
             "occurredAt": _iso(doc.get("occurred_at")),
             "href": doc.get("href"),
         }

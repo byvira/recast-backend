@@ -139,6 +139,28 @@ class VisualIdentity(BaseModel):
     social_links: dict[str, str] = Field(default_factory=dict)
 
 
+class BrandWatermark(BaseModel):
+    """A brand's own marks for its pictures: one in words and one picture. Kept apart from VisualIdentity, which is saved
+    whole by the Brand Assets form, so saving colours or a logo can never wipe them.
+
+    A watermark layer in the editor always draws the brand's current one, and `auto_apply` puts one on every exported picture."""
+
+    text: str = Field("", max_length=80)
+    # A bundled font family; empty uses the brand's heading font.
+    text_font: str = Field("", max_length=60)
+    text_color: str = Field("#FFFFFF", pattern=r"^#[0-9a-fA-F]{6}$")
+    text_bold: bool = True
+    # The picture mark: a file in this workspace's library. The address is set by the server from the file, never sent in.
+    image_media_id: str = Field("", max_length=80)
+    image_url: str = ""
+    auto_apply: bool = False
+    auto_kind: Literal["text", "image"] = "text"
+    position: Literal["bottom_right", "bottom_left", "top_right", "top_left", "center"] = "bottom_right"
+    # Width of the mark as a fraction of the picture's width, and how see-through it is.
+    size: float = Field(0.2, ge=0.05, le=0.6)
+    opacity: float = Field(0.6, ge=0.1, le=1.0)
+
+
 class ExtractionData(BaseModel):
     """Data collected during the AI extraction onboarding path."""
 
@@ -393,6 +415,7 @@ class BrandProfile(BaseModel):
     calibration: VoiceCalibration = Field(default_factory=VoiceCalibration)
     training_samples: list[TrainingSample] = Field(default_factory=list)
     visual_identity: VisualIdentity = Field(default_factory=VisualIdentity)
+    watermark: BrandWatermark = Field(default_factory=BrandWatermark)
     created_at: datetime
     updated_at: datetime
     # Worked out by the server on every read: how filled in each section is (see profile_sections).

@@ -57,7 +57,7 @@ class Layer(BaseModel):
     is range checked here, so a bad value from the browser can never reach the drawing code."""
 
     id: str = Field(min_length=1, max_length=40)
-    type: Literal["text", "shape", "image", "logo", "mascot", "icon"]
+    type: Literal["text", "shape", "image", "logo", "mascot", "icon", "watermark"]
     name: str = Field("", max_length=60)
     x: float = Field(0.0, ge=-1.0, le=2.0)
     y: float = Field(0.0, ge=-1.0, le=2.0)
@@ -92,6 +92,8 @@ class Layer(BaseModel):
     fit: Literal["contain", "cover"] = "contain"
     # icon
     icon: Optional[str] = Field(None, max_length=60)
+    # watermark: which of the brand's two marks it draws (always the brand's current one, like logo and mascot)
+    watermark_kind: Literal["text", "image"] = "text"
 
 
 class Slide(BaseModel):

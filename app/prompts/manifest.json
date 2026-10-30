@@ -394,6 +394,30 @@
     "app/pipelines/brand/voice_suggestions.py"
    ]
   },
+  "brand/watermark_suggest": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ existing | untrusted(\"current_watermark\") }}"
+   ],
+   "reason": "Returns short watermark texts as JSON.",
+   "receives": [
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "existing",
+     "sites": 1,
+     "source": "existing"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/brand/watermark_tools.py"
+   ]
+  },
   "campaigns/suggest_topics": {
    "klass": "dev",
    "protectedLiterals": [
@@ -1526,6 +1550,45 @@
    "safetySensitive": true,
    "usedBy": []
   },
+  "text/angles/audio": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}"
+   ],
+   "reason": "Returns spoken scripts as JSON.",
+   "receives": [
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "banned"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "words[:12000]"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "build_language_instruction(source_language(words, doc.get('language'))"
+    },
+    {
+     "name": "target_words",
+     "sites": 1,
+     "source": "target"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/media_angles.py"
+   ]
+  },
   "text/angles/generate": {
    "klass": "dev",
    "protectedLiterals": [
@@ -1563,6 +1626,95 @@
    "safetySensitive": false,
    "usedBy": [
     "app/pipelines/text/angles.py"
+   ]
+  },
+  "text/angles/video_cuts": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ transcript_text | untrusted(\"transcript\") }}"
+   ],
+   "reason": "Returns cuts as JSON with exact times.",
+   "receives": [
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "current_end",
+     "sites": 1,
+     "source": "float(clip.get('end_s') or 0)"
+    },
+    {
+     "name": "current_start",
+     "sites": 1,
+     "source": "float(clip.get('start_s') or 0)"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "build_language_instruction(source_language(spoken, doc.get('language')"
+    },
+    {
+     "name": "words",
+     "sites": 1,
+     "source": "words[:CUT_SEARCH_WORDS]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/media_angles.py"
+   ]
+  },
+  "text/angles/visual": {
+   "klass": "dev",
+   "protectedLiterals": [
+    "{{ content | untrusted(\"source_content\") }}",
+    "{{ source_scene | untrusted(\"source_scene\") }}"
+   ],
+   "reason": "Returns picture plans as JSON, with a look from a fixed list.",
+   "receives": [
+    {
+     "name": "banned_words",
+     "sites": 1,
+     "source": "banned"
+    },
+    {
+     "name": "brand_context",
+     "sites": 1,
+     "source": "brand_context"
+    },
+    {
+     "name": "content",
+     "sites": 1,
+     "source": "words[:4000]"
+    },
+    {
+     "name": "current_look",
+     "sites": 1,
+     "source": "current_look"
+    },
+    {
+     "name": "language_instruction",
+     "sites": 1,
+     "source": "build_language_instruction(source_language(words))"
+    },
+    {
+     "name": "looks",
+     "sites": 1,
+     "source": "list(VISUAL_PROFILE_STYLE.items())"
+    },
+    {
+     "name": "source_scene",
+     "sites": 1,
+     "source": "(doc.get('prompt') or '')[:1500]"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/text/media_angles.py"
    ]
   },
   "text/critique/judge": {

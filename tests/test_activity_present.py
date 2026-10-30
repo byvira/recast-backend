@@ -22,3 +22,15 @@ def test_a_row_with_empty_metadata_values_presents_with_clean_metadata():
         "description": "Sent.", "metadata": {"event": "connection.reconnect_requested", "before": None, "after": None, "reason": ""},
     })
     assert row["metadata"] == {"event": "connection.reconnect_requested", "reason": ""}
+
+
+def test_a_finished_run_is_never_called_finished_twice():
+    from app.api.v1.activity import _completed_card
+
+    base = {"_id": "a1", "category": "content_generated", "occurred_at": None, "metadata": {}}
+    card = _completed_card({**base, "title": "Odette review finished", "description": ""})
+    assert card["title"] == "Odette review finished" and card["subtitle"] == ""
+    card = _completed_card({**base, "title": "Fresh angles finished", "description": "2 of 3 made. Not made: B: Down."})
+    assert card["subtitle"] == "2 of 3 made. Not made: B: Down."
+    assert _completed_card({**base, "title": "Weekly digest", "description": ""})["subtitle"] == "Finished"
+    assert _completed_card({**base, "title": "Posts", "metadata": {"branchesCount": 3}})["subtitle"] == "3 posts made"

@@ -300,8 +300,9 @@ async def _finish(doc: dict, status: str, *, result: Optional[dict] = None, erro
             workspace_id=doc["workspace_id"], key=f"run:{doc['id']}", actor_name="Ekavo",
             actor_user_id=doc.get("created_by"), category="content_generated",
             title=f"{doc['title']} {wording[status]}",
-            description=error or ("Your work is ready to review." if status == "done" else "Nothing more was made."),
-            status={"done": "success", "cancelled": "warning"}.get(status, "failed"),
+            # a run that made only part of what was asked says so in its result's summary
+            description=error or (result or {}).get("summary") or ("Your work is ready to review." if status == "done" else "Nothing more was made."),
+            status="warning" if status == "done" and (result or {}).get("summary") else {"done": "success", "cancelled": "warning"}.get(status, "failed"),
             target_id=doc["id"], target_type="Run", href=doc.get("href"),
         )
     except Exception as exc:  # noqa: BLE001

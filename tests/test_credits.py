@@ -454,6 +454,8 @@ AI_FILES: dict[str, str] = {
     "pipelines/presets_suggest.py": "free: preset suggestions are bundled",
     "pipelines/publish/youtube/metadata.py": "free: details made at publish are system work",
     "pipelines/text/angles.py": "free: hooks and angles are bundled",
+    "pipelines/brand/watermark_tools.py": "here; the text suggestions are free like hooks",
+    "pipelines/text/media_angles.py": "free: the 3 ideas are bundled like the written angles; each piece made is charged by its own pipeline",
     "pipelines/text/chips.py": "charged by /text/refine and /text/refine-chat",
     "pipelines/text/critique.py": "part of the post, charged by run_text_pipeline",
     "pipelines/text/generator.py": "part of the post, charged by run_text_pipeline",
@@ -581,3 +583,15 @@ async def test_search_and_typing_help_stay_on_at_zero_credits(signup_user, mock_
     await _limit(ws, 0)
     res = await client.post("/api/v1/search/agentic", json={"query": "hello"}, headers={"X-Workspace-Id": ws})
     assert res.status_code == 200, res.text
+
+
+async def test_a_bound_label_names_every_charge_made_under_it():
+    ws = await _ws()
+    credits.bind_label("Fresh Angles picture")
+    try:
+        await credits.charge(ws, "u1", "picture", label="Picture")
+    finally:
+        credits.bind_label(None)
+    await credits.charge(ws, "u1", "picture")
+    rows = (await credits.ledger(ws))["items"]
+    assert [r["label"] for r in rows] == [C.DEFAULT_COSTS["picture"]["label"], "Fresh Angles picture"]
