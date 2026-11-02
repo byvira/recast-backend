@@ -61,3 +61,16 @@ async def test_team_only_odette_rules_are_left_out_for_a_workspace_of_one(api_cl
     team_flags = {f["flag_type"] for f in await evaluate_rules(team)}
     assert "tier_seat_exceeded" not in solo_flags
     assert "tier_seat_exceeded" in team_flags
+
+
+async def test_a_flagged_post_waits_for_a_person_even_without_a_review_step(signup_user):
+    """Turning the review step off approves new posts at once, except one its quality checks flagged: that one always waits."""
+    from app.shared.tier_policy import default_approval
+    from tests.conftest import create_workspace
+
+    client, _ = await signup_user()
+    solo = await create_workspace(client, "Solo flagged", tier="single")
+    team = await create_workspace(client, "Team flagged", tier="large")
+    assert await default_approval(solo) == "approved"
+    assert await default_approval(solo, flagged=True) == "pending"
+    assert await default_approval(team) == "pending"

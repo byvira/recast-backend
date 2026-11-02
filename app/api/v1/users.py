@@ -155,6 +155,12 @@ async def update_my_profile(
     updated = await users.find_one({"id": current_user["id"]})
     if not updated:
         raise HTTPException(status_code=404, detail="User not found.")
+    if "language" in update_fields and update_fields["language"] != current_user.get("language"):
+        # this member's own recent rows (Remy's, theirs alone) are written again in their new language, in the background
+        from app.shared.activity.i18n import relocalize_soon
+
+        async for m in workspace_members.find({"user_id": current_user["id"], "status": "active"}, {"workspace_id": 1}):
+            relocalize_soon(m["workspace_id"], member_user_id=current_user["id"])
 
     return await _build_profile_response(updated, x_workspace_id)
 

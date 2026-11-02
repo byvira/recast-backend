@@ -597,3 +597,22 @@ async def test_backfill_projects_history_idempotently_without_suggestions(api_cl
     await backfill(execute=True, workspace_id=ws_id)                              # re-run is safe
     rows = await activity_entries.find({"workspace_id": ws_id}).to_list(10)
     assert [r["_id"] for r in rows] == [f"event:{event_id}"]                      # no next-step row
+
+
+async def test_control_tower_says_which_failures_can_be_started_again(api_client):
+    """A failed campaign batch or Odette review can be retried from Control Tower; other work is opened instead."""
+    from app.db.mongo import pipeline_runs
+
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Tower Retry", tier="large")
+    now = datetime.now(timezone.utc)
+    base = {"workspace_id": ws_id, "status": "failed", "error": "It stopped.", "finished_at": now, "created_at": now}
+    await pipeline_runs.insert_many([
+        {**base, "id": uuid4().hex, "kind": "campaign", "title": "Campaign \"Launch\"", "ref": {"campaign_id": "camp-1"}},
+        {**base, "id": uuid4().hex, "kind": "odette", "title": "Odette review", "ref": {}},
+        {**base, "id": uuid4().hex, "kind": "image", "title": "A picture", "ref": {}},
+    ])
+    failed = {f["kind"]: f for f in (await api_client.get("/api/v1/activity/control-tower", headers={"X-Workspace-Id": ws_id})).json()["failed"]}
+    assert failed["campaign"]["retry"] == {"kind": "campaign", "campaign_id": "camp-1"}
+    assert failed["odette"]["retry"] == {"kind": "odette"}
+    assert failed["image"]["retry"] is None and failed["image"]["href"]

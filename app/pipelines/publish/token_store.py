@@ -217,6 +217,9 @@ async def get_all_tokens(workspace_id: str) -> list[dict]:
             "health": (a.get("health") or {}).get("state", "healthy"),
             # Whether the automatic renewal has given up: the screen warns about this, not about an expiry date that is renewed on time.
             "needs_reconnect": bool((a.get("health") or {}).get("escalated")) or int((a.get("health") or {}).get("failures") or 0) >= 2,
+            # A working connection that still needs one reconnect for something it cannot do yet: Threads connected before the
+            # insights permission posts fine but cannot read how posts are doing.
+            "reconnect_for": "insights" if a["platform"] == "threads" and "threads_manage_insights" not in (a.get("scopes") or []) else None,
             # The Facebook Pages this sign-in can post to (names only, never their tokens), and which one is in use.
             "pages": [
                 {"id": p["id"], "name": p.get("name", ""), "selected": p["id"] == a.get("platform_user_id")}

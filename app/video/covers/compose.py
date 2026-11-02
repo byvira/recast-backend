@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from PIL import Image
 
 from app.core.workspace import WorkspaceContext
+from app.shared.tier_policy import default_approval
 from app.db.mongo import image_assets, media_assets
 from app.models.image_asset import ImageApprovalStatus, ImageAsset, ImageSourceType, Slide
 from app.models.media import ORIGIN_OWN, ORIGIN_TEMPLATE, MediaSource
@@ -97,7 +98,7 @@ async def make_cover(
         title=f"{label[:60]} · {row['label']}", source_type=ImageSourceType.UPLOADED, brand_tokens=tokens.model_dump(),
         slides=[Slide(slide_number=1, title=label[:80], slide_type="cover", media_id=finished.id, background_media_id=backdrop_media.id,
                       layers=layers, width=size[0], height=size[1])],
-        approval_status=ImageApprovalStatus.PENDING,
+        approval_status=ImageApprovalStatus(await default_approval(ctx.workspace_id)),
     )
     doc = asset.model_dump()
     doc["cover_for"] = {"platform": platform_id, **(link or {})}

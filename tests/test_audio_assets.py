@@ -104,9 +104,9 @@ async def _brand(client, ws_id: str) -> str:
     return res.json()["brand_profile_id"]
 
 
-async def _setup(signup_user):
+async def _setup(signup_user, tier: str = "duo"):
     client, profile = await signup_user()
-    ws_id = await create_workspace(client, "Audio WS")
+    ws_id = await create_workspace(client, "Audio WS", tier=tier)
     return client, profile, ws_id, await _brand(client, ws_id)
 
 
@@ -155,7 +155,7 @@ async def test_generate_persists_a_real_synthesized_asset(signup_user, stubs):
 
     assert asset["source_type"] == "script_tts"
     assert asset["script"] == "Welcome to the show."
-    assert asset["approval_status"] == "pending"
+    assert asset["approval_status"] == "approved"  # no review step on Duo, the same as a new post
     assert asset["created_by"] == profile["id"]
     assert asset["voice_settings_snapshot"]["speech_speed"] == 1.0
 
@@ -432,7 +432,7 @@ async def test_localize_translates_resynthesizes_and_links_back(signup_user, stu
     assert localized["script"] == "Bonjour tout le monde."
     assert localized["source_audio_asset_id"] == source["id"]
     assert localized["title"] == "Episode 1 (French)"
-    assert localized["approval_status"] == "pending"  # its own approval gate
+    assert localized["approval_status"] == "approved"  # follows the workspace's review step, like any new audio
     assert stubs["synth"][-1]["text"] == "Bonjour tout le monde."
 
     versions = (await client.get(f"/api/v1/audio-assets/{localized['id']}/versions", headers=_h(ws_id))).json()

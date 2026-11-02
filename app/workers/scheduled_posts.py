@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.core.config import settings
+from app.shared.activity.i18n import phrase, words
 from app.core.notifications import send_templated_email
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import content_pieces, users, workspaces
@@ -41,7 +42,7 @@ async def _notify_publish_failure(
         key=f"publish:{piece_id}",
         actor_name="Publishing scheduler",
         category="post_published",
-        title=f"Scheduled post to {platform_name(platform)} failed",
+        title=phrase("Scheduled post to {platform} failed", platform=platform_name(platform)),
         description=error_message,
         status="failed",
         channel=platform,
@@ -135,7 +136,7 @@ async def reap_stuck_publishing() -> int:
                 key=f"publish:{piece['piece_id']}",
                 actor_name="Publishing scheduler",
                 category="post_published",
-                title=f"Post to {platform_name(platform)} was interrupted",
+                title=phrase("Post to {platform} was interrupted", platform=platform_name(platform)),
                 description=INTERRUPTED_MESSAGE,
                 status="failed",
                 channel=platform,
@@ -183,7 +184,7 @@ async def _return_unapproved(piece: dict, message: str) -> None:
             key=f"publish:{piece['piece_id']}",
             actor_name="Publishing scheduler",
             category="post_published",
-            title=f"Scheduled post to {platform_name(platform)} was held back",
+            title=phrase("Scheduled post to {platform} was held back", platform=platform_name(platform)),
             description=message,
             status="warning",
             channel=platform,
@@ -311,7 +312,7 @@ async def _hold_for_manual_post(piece: dict, platform: str, workspace_id: str, r
             key=f"publish:{piece['piece_id']}",
             actor_name="Publishing scheduler",
             category="post_published",
-            title=f"Time to post on {name} yourself",
+            title=phrase("Time to post on {platform} yourself", platform=name),
             description=note,
             status="warning",
             channel=platform,
@@ -494,9 +495,11 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 key=f"publish:{piece_id}",
                 actor_name="Publishing scheduler",
                 category="post_published",
-                title=f"Recovered: scheduled post to {platform_name(platform)} published",
-                description=f"Went live after {piece['publish_attempts']} automatic "
-                            f"{'retry' if piece['publish_attempts'] == 1 else 'retries'}.",
+                title=phrase("Recovered: scheduled post to {platform} published", platform=platform_name(platform)),
+                description=phrase(
+                    "Went live after 1 automatic retry." if piece["publish_attempts"] == 1 else "Went live after {count} automatic retries.",
+                    count=piece["publish_attempts"],
+                ),
                 channel=platform,
                 target_id=piece_id,
                 target_type="Live Post",
@@ -534,9 +537,8 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                     key=f"publish:{piece_id}",
                     actor_name="Publishing scheduler",
                     category="post_published",
-                    title=f"Renewed {platform_name(platform)} access — retrying scheduled post",
-                    description="The platform rejected the old access token; Ekavo renewed it "
-                                "automatically and queued the post again.",
+                    title=phrase("Renewed {platform} access, retrying the scheduled post", platform=platform_name(platform)),
+                    description=phrase("The platform refused the old sign-in, so Ekavo renewed it by itself and queued the post again."),
                     status="warning",
                     channel=platform,
                     target_id=piece_id,
@@ -598,9 +600,9 @@ async def _publish_scheduled_piece(piece: dict) -> None:
                 key=f"publish:{piece_id}",
                 actor_name="Publishing scheduler",
                 category="post_published",
-                title=f"Retrying scheduled post to {platform_name(platform)}",
-                description=f"{result.error_message or 'Platform error'} — retrying automatically "
-                            f"in {max(delay // 60, 1)} min.",
+                title=phrase("Retrying scheduled post to {platform}", platform=platform_name(platform)),
+                description=phrase("{reason} Trying again by itself in {minutes} min.", reason=words(result.error_message or "The platform had a problem."),
+                                   minutes=max(delay // 60, 1)),
                 status="warning",
                 channel=platform,
                 target_id=piece_id,

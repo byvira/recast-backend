@@ -160,6 +160,46 @@ async def video_sources(request: Request, ctx: WorkspaceContext = Depends(get_cu
     return {"items": items}
 
 
+@router.get("/recording-sources")
+@limiter.limit("60/minute")
+async def recording_sources(
+    request: Request, q: Optional[str] = Query(None, max_length=80), ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The recordings in this workspace a campaign can start from, each with its length, how many words it has and whether it can
+    be used now (it needs a transcript, and a campaign takes up to an hour). Most recent first; the database works out the words
+    and length, so a long transcript is never read here."""
+    import re
+
+    from app.db.mongo import audio_assets
+    from app.pipelines.campaigns.sources import MAX_SOURCE_SECONDS
+
+    match: dict[str, Any] = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
+    if q and q.strip():
+        match["title"] = {"$regex": re.escape(q.strip()), "$options": "i"}
+    rows = await audio_assets.aggregate([
+        {"$match": match},
+        {"$sort": {"created_at": -1}},
+        {"$limit": 40},
+        {"$project": {
+            "_id": 0, "id": 1, "title": 1, "created_at": 1,
+            "words": {"$size": {"$ifNull": ["$transcript", []]}},
+            "seconds": {"$ifNull": [{"$max": "$transcript.end_s"}, 0]},
+        }},
+    ]).to_list(length=40)
+    items = []
+    for r in rows:
+        seconds = float(r.get("seconds") or 0)
+        if not r.get("words"):
+            usable, why = False, "Add a transcript in Audio first."
+        elif seconds > MAX_SOURCE_SECONDS:
+            usable, why = False, "Longer than an hour."
+        else:
+            usable, why = True, None
+        items.append({"id": r["id"], "title": r.get("title") or "Untitled recording", "duration_s": round(seconds, 1),
+                      "words": int(r.get("words") or 0), "usable": usable, "reason": why})
+    return {"items": items}
+
+
 @router.post("/source-file")
 @limiter.limit("20/minute")
 async def read_source_file_route(

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 import httpx
+from app.shared.activity.i18n import phrase
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.pipelines.publish.registry import get_publisher
@@ -214,6 +215,10 @@ def _oauth_popup_response(success: bool, message: str) -> HTMLResponse:
 # ─────────────────────────────────────────────────────────────────────────────
 # SPECIFIC ROUTES FIRST — before any /{platform} wildcards
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Threads permissions. threads_manage_insights came later: connections saved before it cannot read post stats until reconnected.
+THREADS_SCOPES = "threads_basic,threads_content_publish,threads_manage_insights"
+
 
 @router.get("/accounts")
 @limiter.limit("30/minute")
@@ -545,7 +550,7 @@ async def connect_threads(
         # threads_manage_insights — without it, the analytics fetcher's
         # /threads_insights calls 4xx for every workspace connected before
         # this scope was added (they need to reconnect for it to apply).
-        "scope":         "threads_basic,threads_content_publish,threads_manage_insights",
+        "scope":         THREADS_SCOPES,
         "response_type": "code",
         "state":         state,
     }
@@ -646,6 +651,8 @@ async def threads_callback(
         username=username,
         connected_by=user_id,
         profile_url=_derive_profile_url("threads", username),
+        # what this sign-in asked for and was given; a connection saved before the insights permission has none, and is asked to reconnect
+        scopes=THREADS_SCOPES.split(","),
     )
 
     return _oauth_popup_response(True, "Threads connected successfully.")
@@ -935,9 +942,10 @@ async def disconnect_platform(
 
         await record_system(
             workspace_id=ctx.workspace_id, key=f"disconnect:{ctx.workspace_id}:{platform}", actor_name=ctx.user.get("name") or "A member",
-            actor_user_id=ctx.user_id, category="account_connected", title=f"{platform.capitalize()} was disconnected",
-            description=(f"{waiting} scheduled post{'s' if waiting != 1 else ''} for it will not go out until it is connected again."
-                         if waiting else "No posts were waiting for it."),
+            actor_user_id=ctx.user_id, category="account_connected", title=phrase("{platform} was disconnected", platform=platform.capitalize()),
+            description=(phrase("1 scheduled post for it will not go out until it is connected again." if waiting == 1 else
+                                "{count} scheduled posts for it will not go out until it is connected again.", count=waiting)
+                         if waiting else phrase("No posts were waiting for it.")),
             status="warning" if waiting else "success", channel=platform, href="/dashboard/settings",
         )
     except Exception as exc:  # noqa: BLE001 - the disconnect itself is done

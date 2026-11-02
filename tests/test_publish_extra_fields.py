@@ -461,3 +461,27 @@ async def test_anyone_can_reply_writes_no_record_and_a_failed_record_is_only_a_n
     result = await bluesky_module.BlueSkyPublisher().publish(_request("bluesky", reply_control="followers"), "token")
     assert result.success and "reply limit could not be set" in result.media_dropped_reason
     assert len(_Recorder.calls) > calls_before
+
+
+async def test_a_new_youtube_playlist_is_made_private_by_default(signup_user, monkeypatch):
+    """The playlist choice can make a new playlist on the channel; it is private unless chosen otherwise, and a name with < or > is
+    refused before YouTube is asked."""
+    sent = []
+
+    class _Maker(_Recorder):
+        async def post(self, url, **kwargs):
+            sent.append((url, kwargs.get("json")))
+            body = {"id": "PLnew", "snippet": {"title": kwargs["json"]["snippet"]["title"]}}
+            return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+    client, _ = await signup_user()
+    ws_id = await create_workspace(client, "Playlist Maker WS")
+    await save_token(workspace_id=ws_id, platform="youtube", access_token="t", refresh_token=None, expires_at=None, platform_user_id="acct", username="u", connected_by="")
+    monkeypatch.setattr("httpx.AsyncClient", _Maker)
+
+    made = await client.post("/api/v1/publish/youtube/playlists", json={"title": "  Weekly   tips "}, headers=H(ws_id))
+    assert made.status_code == 200, made.text
+    assert made.json() == {"id": "PLnew", "title": "Weekly tips"}
+    assert sent[0][1] == {"snippet": {"title": "Weekly tips"}, "status": {"privacyStatus": "private"}}
+    bad = await client.post("/api/v1/publish/youtube/playlists", json={"title": "<script>"}, headers=H(ws_id))
+    assert bad.status_code == 400 and len(sent) == 1

@@ -262,9 +262,15 @@ async def update_workspace(
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update.")
+    before = await workspaces.find_one({"id": workspace_id}, {"language": 1}) if "language" in updates else None
     updates["updated_at"] = datetime.now(timezone.utc)
     await workspaces.update_one({"id": workspace_id}, {"$set": updates})
     updates.pop("updated_at")
+    if before is not None and (before or {}).get("language") != updates.get("language"):
+        # recent Activity, Inbox and Odette rows are written again in the new language, in the background
+        from app.shared.activity.i18n import relocalize_soon
+
+        relocalize_soon(workspace_id)
     fresh = await workspaces.find_one({"id": workspace_id}, {"tier": 1, "require_review": 1})
     return {"workspace_id": workspace_id, **updates, "policy": policy_for(fresh)}
 

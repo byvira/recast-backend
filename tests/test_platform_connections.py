@@ -507,3 +507,35 @@ async def test_a_workspace_saves_its_own_webhook_address_and_it_is_never_shown_a
 
     assert (await client.put("/api/v1/platforms/linkedin/connection", json={"webhook_url": "https://8.8.8.8/x"}, headers=H(ws_id))).status_code == 400
     assert await activity_entries.find_one({"metadata.event": "connection.webhook_saved", "metadata.subject_workspace_id": ws_id})
+
+
+async def test_the_activity_summary_counts_every_connection_in_the_database(make_client, signup_user):
+    """Connected, broken and expiring are counted by the database, not by reading a capped list, so they stay right however
+    many workspaces connect a platform."""
+    import re
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from app.db.mongo import workspace_connections
+
+    staff, _ = await _staff(make_client)
+
+    async def counts() -> tuple[int, int, int]:
+        summary = (await staff.get(f"{B}/linkedin/activity")).json()["summary"]
+        connected = int(re.search(r"(\d+) connected", summary).group(1))
+        broken, expiring = (int(n) for n in re.search(r"(\d+) broken connections?, (\d+) expiring", summary).groups())
+        return connected, broken, expiring
+
+    before = await counts()
+    now = datetime.now(timezone.utc)
+    # one LinkedIn connection per workspace, so each test connection gets its own workspace
+    def base() -> dict:
+        return {"workspace_id": f"ws-{uuid4().hex}", "platform": "linkedin", "is_active": True, "connected_at": now, "id": uuid4().hex}
+
+    await workspace_connections.insert_one({**base(), "health": {"state": "broken"}, "expires_at": now + timedelta(days=60)})
+    await workspace_connections.insert_one({**base(), "health": {"state": "ok"}, "expires_at": now + timedelta(days=3)})
+    await workspace_connections.insert_one({**base(), "is_active": False, "health": {"state": "broken"}})
+    after = await counts()
+    assert after == (before[0] + 2, before[1] + 1, before[2] + 1)
+    weeks = (await staff.get(f"{B}/linkedin/usage", params={"days": 14})).json()["connected_over_time"]
+    assert weeks[-1]["connected"] >= 2 and all(a["connected"] <= b["connected"] for a, b in zip(weeks, weeks[1:]))

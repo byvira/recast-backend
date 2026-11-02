@@ -28,6 +28,8 @@ from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core import limits
 from app.agents.content_guard.rules import content_hash
 from app.shared.heavy_work import run_heavy
+# new audio waits for review only where the workspace has a review step, the same as a new post
+from app.shared.tier_policy import default_approval
 from app.shared.safe_fetch import ResponseTooLarge, get_limited
 from app.core.config import settings
 from app.core.middleware import limiter
@@ -611,7 +613,7 @@ async def create_audio_from_script(
                 "This was voiced with the backup voice, which gives no word timing and ignores the pace and delivery style you chose. "
                 "Use Transcribe to get word timing, or voice it again when the main voice is available."
             ),
-            approval_status=AudioApprovalStatus.PENDING,
+            approval_status=AudioApprovalStatus(await default_approval(ctx.workspace_id)),
             source_piece_id=body.source_piece_id,
             source_content_hash=source_content_hash,
             language=language or "en",
@@ -840,7 +842,7 @@ async def _generate_dialogue(body: GenerateDialogueRequest, ctx: WorkspaceContex
         # Deepgram fallback has no timing to offer, so it's honestly skipped
         # rather than guessed — the rest of the transcript is still real.
         transcript=transcript,
-        approval_status=AudioApprovalStatus.PENDING,
+        approval_status=AudioApprovalStatus(await default_approval(ctx.workspace_id)),
         source_piece_id=body.source_piece_id,
     )
     await audio_assets.insert_one(asset.model_dump())
@@ -1110,7 +1112,7 @@ async def localize_audio_asset(
         script=translated_text,
         media_id=media.id,
         transcript=speech.words or [],
-        approval_status=AudioApprovalStatus.PENDING,
+        approval_status=AudioApprovalStatus(await default_approval(ctx.workspace_id)),
         language=body.target_language,
         source_audio_asset_id=audio_asset_id,
         translation_review=review_note,
@@ -1358,7 +1360,7 @@ async def _ingest_audio(
         transcript=transcript,
         transcript_note=None if transcript else "No transcript could be made when this was uploaded. Use Transcribe to try again.",
         dsp_settings=dsp_settings,
-        approval_status=AudioApprovalStatus.PENDING,
+        approval_status=AudioApprovalStatus(await default_approval(ctx.workspace_id)),
     )
     await audio_assets.insert_one(asset.model_dump())
     await _record_initial_version(asset)
@@ -3513,7 +3515,7 @@ async def _extract_soundbites(audio_asset_id: str, ctx: WorkspaceContext) -> lis
             start_s=suggestion.start_s, end_s=suggestion.end_s,
             duration_s=round(suggestion.end_s - suggestion.start_s, 2),
             status=status, flag_message=flag_message, confidence=confidence, measured_lufs=measured_lufs,
-            created_by=ctx.user_id, created_at=now,
+            created_by=ctx.user_id, created_at=now, approval_status=AudioApprovalStatus(await default_approval(ctx.workspace_id)),
         )
         await soundbites.insert_one(soundbite.model_dump())
         created.append(SoundbiteOut(**soundbite.model_dump(), url=url))

@@ -25,6 +25,7 @@ from app.core.exports import csv_response
 from app.core.middleware import limiter
 from app.core.staff import require_action
 from app.db.mongo import get_db, users, workspace_members, workspaces
+from app.shared.brand_name import brand_display_name
 
 router = APIRouter()
 # the person view: the same area, from a person instead of a workspace
@@ -73,8 +74,7 @@ async def _last_active(ids: list[str]) -> dict[str, datetime]:
 
 
 def _brand_name(b: dict) -> str:
-    identity = b.get("identity") or {}
-    return str(identity.get("name") or identity.get("brand_name") or b.get("name") or "Unnamed brand")
+    return brand_display_name(b, "Unnamed brand")
 
 
 # ── the list ─────────────────────────────────────────────────────────────
@@ -290,7 +290,7 @@ async def content(
     async for e in db["safety_events"].find({"workspace_id": workspace_id, "piece_id": {"$in": ids}}, {"piece_id": 1, "outcome": 1, "categories": 1}):
         safety.setdefault(e.get("piece_id"), []).append(str(e.get("outcome") or ""))
     names = {u["id"]: u.get("name") or u.get("email") async for u in users.find({"id": {"$in": list({r.get("user_id") for r in rows})}}, {"id": 1, "name": 1, "email": 1})}
-    brand_names = {b["id"]: _brand_name(b) async for b in db["brand_profiles"].find({"id": {"$in": list({r.get("brand_id") for r in rows})}}, {"id": 1, "identity": 1, "name": 1})}
+    brand_names = {b["id"]: _brand_name(b) async for b in db["brand_profiles"].find({"id": {"$in": list({r.get("brand_id") for r in rows})}}, {"id": 1, "identity": 1, "name": 1, "brand_type": 1})}
     return {
         "posts": [{
             "id": r["piece_id"], "platform": r.get("platform"), "excerpt": str(r.get("content") or "")[:240],

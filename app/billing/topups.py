@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app.shared.activity.i18n import phrase
 from app.billing import credits, invoices
 from app.billing import prices as PR
 from app.billing import subscriptions as S
@@ -202,7 +203,7 @@ async def _tell(topup: dict[str, Any]) -> None:
     try:
         await record_system(
             workspace_id=topup["workspace_id"], key=f"topup:{topup['id']}", actor_name="Ekavo", category="billing",
-            title=f"{int(topup['credits']):,} credits added", description="They are used once this month's credits run out, and last 12 months.",
+            title=phrase("{count} credits added", count=f"{int(topup['credits']):,}"), description="They are used once this month's credits run out, and last 12 months.",
             status="success", href="/dashboard/settings?tab=billing",
         )
     except Exception as exc:  # noqa: BLE001 - a missed note never undoes the purchase

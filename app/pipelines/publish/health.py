@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
+from app.shared.activity.i18n import phrase, words
 from app.core.config import settings
 from app.core.notifications import send_templated_email
 from app.db.mongo import users, workspace_connections, workspace_flags, workspaces
@@ -83,8 +84,8 @@ async def note_recovered(workspace_id: str, platform: str, *, previous_state: st
             key=f"health:{workspace_id}:{platform}:{now.isoformat()}",
             actor_name="Connection monitor",
             category="account_connected",
-            title=f"{_label(platform)} connection recovered",
-            description=f"Back to normal after {via}.",
+            title=phrase("{platform} connection recovered", platform=_label(platform)),
+            description=phrase("Back to normal after {how}.", how=words(via)),
             channel=platform,
             href="/dashboard/settings",
         )
@@ -135,15 +136,15 @@ async def record_failure(
             key=f"health:{workspace_id}:{platform}:{now.isoformat()}",
             actor_name="Connection monitor",
             category="account_connected",
-            title=(
-                f"{_label(platform)} connection needs reconnecting"
-                if escalate else f"{_label(platform)} connection renewal failed — retrying"
+            title=phrase(
+                "{platform} connection needs reconnecting" if escalate else "{platform} connection renewal failed, trying again",
+                platform=_label(platform),
             ),
             description=(
-                f"Automatic recovery failed {failures} times in a row. Reconnect it in Settings "
-                f"— scheduled posts to {_label(platform)} will fail until then."
+                phrase("Automatic recovery failed {count} times in a row. Reconnect it in Settings: scheduled posts to {platform} will fail until then.",
+                       count=failures, platform=_label(platform))
                 if escalate else
-                "Ekavo will try again automatically in about an hour. Nothing to do yet."
+                phrase("Ekavo will try again by itself in about an hour. Nothing to do yet.")
             ),
             status="failed" if escalate else "warning",
             channel=platform,

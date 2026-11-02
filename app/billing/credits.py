@@ -34,6 +34,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pymongo.errors import DuplicateKeyError
 
+from app.shared.activity.i18n import phrase, words
 from app.billing import costs as C
 from app.db.mongo import get_db, workspace_ai_budgets, workspace_members, workspaces
 
@@ -991,9 +992,9 @@ async def pause_notice(workspace_id: str, what: str, *, href: Optional[str] = No
     try:
         await record_system(
             workspace_id=workspace_id, key=f"credits_paused:{workspace_id}:{period}:{key or what}", actor_name="Ekavo", category="credits",
-            title=f"{what} paused: credits are used up",
-            description=f"It carries on by itself when credits start again on {day_label(resets_at(period))}, or sooner if more are added. "
-                        "Posts already made still publish.",
+            title=phrase("{what} paused: credits are used up", what=words(what)),
+            description=phrase("It carries on by itself when credits start again on {day}, or sooner if more are added. Posts already made still publish.",
+                               day=day_label(resets_at(period))),
             status="warning", href=href or "/dashboard/settings?tab=billing",
         )
     except Exception as exc:  # noqa: BLE001

@@ -224,6 +224,24 @@ def _fetch_and_preview(url: str) -> dict:
     }
 
 
+CAPTIONS_WAIT_SECONDS = 15
+
+
+async def _youtube_words(url: str) -> str | None:
+    """A YouTube link's spoken words from its captions, or None (not YouTube, no captions, or YouTube did not answer in time)."""
+    from app.pipelines.text import youtube_captions
+
+    vid = youtube_captions.video_id(url)
+    if not vid:
+        return None
+    loop = asyncio.get_running_loop()
+    try:
+        text = await asyncio.wait_for(loop.run_in_executor(_executor, youtube_captions.captions_text, vid), CAPTIONS_WAIT_SECONDS)
+    except asyncio.TimeoutError:
+        return None
+    return text if text and len(text) >= MIN_READABLE_CHARS else None
+
+
 async def preview_url(url: str) -> dict:
     """Fetch a URL and return {title, snippet, word_count, readable, problem, will_trim} for a live "what will be scraped" preview
     before the user commits to running the pipeline.
@@ -235,6 +253,13 @@ async def preview_url(url: str) -> dict:
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc or parsed.scheme not in ("http", "https"):
         raise ValueError(NOT_A_WEB_ADDRESS)
+
+    words = await _youtube_words(url)
+    if words:
+        # a YouTube video is written from what is said in it, not from its page
+        snippet = words[:220].strip() + ("…" if len(words) > 220 else "")
+        return {"title": "Words spoken in this YouTube video", "snippet": snippet, "word_count": len(words.split()), "readable": True,
+                "problem": None, "will_trim": len(words) > RUN_KEEPS_CHARS}
 
     loop = asyncio.get_running_loop()
     try:
@@ -252,7 +277,7 @@ async def scrape_url(url: str) -> str:
     Works for blogs, news, Medium, Substack, documentation, LinkedIn articles.
     Social platform post URLs (Instagram, Facebook, Twitter, TikTok) will return
     empty or garbage — those are handled via OAuth account connections, not scraping.
-    YouTube URLs work partially — description only if page is not JS-gated.
+    A YouTube link gives the words spoken in the video, from its captions; without captions it falls back to the page text.
 
     Raises UrlFetchError, whose message is written for the member, when the page cannot be read.
     """
@@ -260,6 +285,11 @@ async def scrape_url(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.scheme or not parsed.netloc or parsed.scheme not in ("http", "https"):
         raise UrlFetchError(NOT_A_WEB_ADDRESS)
+
+    words = await _youtube_words(url)
+    if words:
+        logger.info("Read %d chars of captions from %s", len(words), url)
+        return words
 
     loop = asyncio.get_running_loop()
     try:

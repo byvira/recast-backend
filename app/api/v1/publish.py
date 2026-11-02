@@ -12,13 +12,14 @@ permission; reading status requires membership.
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pymongo import ReturnDocument
 
 from app.core.middleware import limiter
+from app.shared.activity.i18n import phrase, words
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
 from app.db.mongo import brand_profiles, content_pieces, post_metric_checkpoints
 from app.pipelines.publish import executor
@@ -206,7 +207,7 @@ async def _record_publish_failure(ws: str, user_id: str, piece_id: str, platform
         actor_name="",
         actor_user_id=user_id,
         category="post_published",
-        title=f"Publishing to {platform_name(platform)} failed",
+        title=phrase("Publishing to {platform} failed", platform=platform_name(platform)),
         description=reason or "The platform rejected the post.",
         status="failed",
         channel=platform,
@@ -518,12 +519,9 @@ async def _publish_now(body: PublishNowRequest, ctx: WorkspaceContext) -> dict:
         actor_name="",
         actor_user_id=ctx.user_id,
         category="post_published",
-        title=f"{platform_name(platform)} is busy — retrying in the background",
-        description=(
-            f"{result.error_message or 'The platform is temporarily unavailable.'} "
-            f"Ekavo will keep retrying automatically, starting "
-            f"{retry_at.strftime('%H:%M')} UTC."
-        ),
+        title=phrase("{platform} is busy, retrying in the background", platform=platform_name(platform)),
+        description=phrase("{reason} Ekavo keeps trying by itself, starting {time} UTC.",
+                           reason=words(result.error_message or "The platform is not answering right now."), time=retry_at.strftime("%H:%M")),
         status="warning",
         channel=platform,
         target_id=body.piece_id,
@@ -597,30 +595,23 @@ async def suggest_times(
     return rank_slots(platform=slug, label=piece["platform"], samples=samples, planned=planned, tz_name=zone_name)
 
 
-@router.get("/youtube/playlists")
-@limiter.limit("20/minute")
-async def youtube_playlists(
-    request: Request,
-    ctx: WorkspaceContext = Depends(get_current_workspace),
-) -> dict:
-    """The connected channel's playlists, for the playlist choice on a YouTube post."""
+async def _youtube(ctx: WorkspaceContext, method: str, url: str, **kwargs) -> "httpx.Response":
+    """One call to YouTube for this workspace's channel. A lapsed sign-in (YouTube's last an hour) is renewed quietly once before
+    the member is asked to reconnect."""
     import httpx
 
     token = await get_token(ctx.workspace_id, "youtube")
     if not token:
         raise HTTPException(status_code=400, detail="YouTube is not connected. Connect it to choose a playlist.")
+
     async def ask(access_token: str) -> "httpx.Response":
         async with httpx.AsyncClient(timeout=15.0) as client:
-            return await client.get(
-                "https://www.googleapis.com/youtube/v3/playlists",
-                params={"part": "snippet", "mine": "true", "maxResults": 50},
-                headers={"Authorization": f"Bearer {access_token}"},
-            )
+            call = client.post if method == "POST" else client.get
+            return await call(url, headers={"Authorization": f"Bearer {access_token}"}, **kwargs)
 
     try:
         response = await ask(token["access_token"])
         if response.status_code == 401:
-            # The sign-in lapsed (YouTube's last an hour): renew it quietly once before asking the member to reconnect.
             from app.workers.token_refresh import recover_connection
 
             if await recover_connection(ctx.workspace_id, "youtube"):
@@ -630,11 +621,45 @@ async def youtube_playlists(
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Couldn't reach YouTube. Try again.")
     if response.status_code in (401, 403):
-        raise HTTPException(status_code=409, detail={"code": "platform_reconnect_required", "platform": "youtube", "message": "Reconnect YouTube to see your playlists."})
+        raise HTTPException(status_code=409, detail={"code": "platform_reconnect_required", "platform": "youtube", "message": "Reconnect YouTube to manage your playlists."})
     if not response.is_success:
         raise HTTPException(status_code=502, detail="YouTube didn't answer. Try again.")
+    return response
+
+
+@router.get("/youtube/playlists")
+@limiter.limit("20/minute")
+async def youtube_playlists(
+    request: Request,
+    ctx: WorkspaceContext = Depends(get_current_workspace),
+) -> dict:
+    """The connected channel's playlists, for the playlist choice on a YouTube post."""
+    response = await _youtube(ctx, "GET", "https://www.googleapis.com/youtube/v3/playlists",
+                              params={"part": "snippet", "mine": "true", "maxResults": 50})
     items = [{"id": i["id"], "title": (i.get("snippet") or {}).get("title", "")} for i in response.json().get("items", []) if i.get("id")]
     return {"items": items}
+
+
+class NewPlaylist(BaseModel):
+    title: str = Field(..., min_length=1, max_length=150)
+    privacy: Literal["private", "unlisted", "public"] = "private"
+
+
+@router.post("/youtube/playlists")
+@limiter.limit("10/minute")
+async def create_youtube_playlist(
+    request: Request,
+    body: NewPlaylist,
+    ctx: WorkspaceContext = Depends(require("publish_content")),
+) -> dict:
+    """A new playlist on the connected channel, made from the playlist choice on a YouTube post. Private unless chosen otherwise."""
+    title = " ".join(body.title.split())
+    if not title or any(c in title for c in "<>"):
+        raise HTTPException(status_code=400, detail="Give the playlist a name without < or >.")
+    response = await _youtube(ctx, "POST", "https://www.googleapis.com/youtube/v3/playlists", params={"part": "snippet,status"},
+                              json={"snippet": {"title": title}, "status": {"privacyStatus": body.privacy}})
+    made = response.json()
+    return {"id": made.get("id"), "title": (made.get("snippet") or {}).get("title", title)}
 
 
 @router.get("/instagram/locations")

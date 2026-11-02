@@ -530,3 +530,19 @@ async def test_ops_list_saves_never_lose_a_publish(signup_user):
     assert sum(r.status_code == 200 for r in results) == 1
     versions = (await admin.get(f"{API}/ops-data/content_goals")).json()["versions"]
     assert [v["number"] for v in versions] == [1]
+
+
+async def test_many_prompts_are_signed_off_at_once_and_each_one_left_says_why(signup_user):
+    admin, _ = await _person(signup_user, master=True)
+    proposed = await admin.post(f"{API}/classification/propose", json={"path": MASTER, "klass": "hybrid", "note": "Ops should tune it"})
+    assert proposed.status_code == 200, proposed.text
+    res = await admin.post(f"{API}/classification/sign-off-many", json={"paths": [CHIP, MASTER, "no/such/prompt", CHIP]})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [r["path"] for r in body["signed"]] == [CHIP] and body["signed"][0]["signedOffBy"]
+    reasons = {s["path"]: s["reason"] for s in body["skipped"]}
+    assert set(reasons) == {MASTER, "no/such/prompt"} and "proposed" in reasons[MASTER]
+    again = (await admin.post(f"{API}/classification/sign-off-many", json={"paths": [CHIP]})).json()
+    assert again["signed"] == [] and again["skipped"][0]["reason"] == "Already signed off."
+    staff, _ = await _person(signup_user, staff=True)
+    assert (await staff.post(f"{API}/classification/sign-off-many", json={"paths": [CHIP]})).status_code == 403

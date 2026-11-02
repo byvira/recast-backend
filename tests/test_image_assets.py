@@ -110,7 +110,7 @@ async def test_generate_persists_a_real_rendered_asset(signup_user, stubs):
     assert res.status_code == 201, res.text
     asset = res.json()
 
-    assert asset["approval_status"] == "pending"
+    assert asset["approval_status"] == "approved"  # no review step on Duo, the same as a new post
     assert asset["source_type"] == "ai_generated"
     assert asset["prompt"] == "a calm sunrise over hills"
     assert asset["created_by"] == profile["id"]
@@ -581,3 +581,87 @@ async def test_an_added_slide_keeps_the_mascot_choice_of_the_first_slide(signup_
     )
     assert res.status_code == 201, res.text
     assert res.json()["slides"][1]["text_content"]["show_mascot"] is True
+
+
+async def test_new_pictures_wait_for_approval_only_where_there_is_a_review_step(signup_user, stubs):
+    """Solo and Duo workspaces have no review step: a new picture is approved at once, so it can be sent to a draft straight away.
+    A Large workspace reviews first, so the picture waits."""
+    client, _ = await signup_user()
+    for tier, expected in (("single", "approved"), ("large", "pending")):
+        ws_id = await create_workspace(client, f"Image {tier}", tier=tier)
+        brand_id = await _brand(client, ws_id)
+        res = await _generate(client, ws_id, brand_id)
+        assert res.status_code == 201, res.text
+        assert res.json()["approval_status"] == expected, tier
+
+
+async def test_pictures_and_audio_left_waiting_without_a_review_step_are_approved_once(signup_user):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from app.db import migrations
+    from app.db.mongo import audio_assets, get_db, image_assets
+
+    client, _ = await signup_user()
+    solo = await create_workspace(client, "Solo stuck", tier="single")
+    team = await create_workspace(client, "Team waits", tier="large")
+    now = datetime.now(timezone.utc)
+    ids = {}
+    for ws, label in ((solo, "solo"), (team, "team")):
+        for coll in (image_assets, audio_assets):
+            ids[(label, coll.name)] = uuid4().hex
+            await coll.insert_one({"id": ids[(label, coll.name)], "workspace_id": ws, "approval_status": "pending", "created_at": now})
+    rejected = uuid4().hex
+    await image_assets.insert_one({"id": rejected, "workspace_id": solo, "approval_status": "rejected", "created_at": now})
+    db = get_db()
+    await db["migrations"].delete_one({"_id": "2026-11-02_approve_waiting_media_without_review"})
+
+    await migrations._approve_waiting_media_without_review(db)
+
+    for coll in (image_assets, audio_assets):
+        assert (await coll.find_one({"id": ids[("solo", coll.name)]}))["approval_status"] == "approved"
+        assert (await coll.find_one({"id": ids[("team", coll.name)]}))["approval_status"] == "pending"
+    assert (await image_assets.find_one({"id": rejected}))["approval_status"] == "rejected"
+
+
+async def test_a_picture_from_a_post_can_have_its_words_rewritten_for_each_platform(signup_user, stubs, monkeypatch):
+    """Rewriting runs only when asked, only when the source post was for another platform, and only once per platform: sending
+    again gives the same draft without writing or charging again. A failed rewrite keeps the post's own words."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from app.db.mongo import content_pieces, image_assets
+    from app.models.text import AgentResult
+    from app.pipelines.text import repurpose
+
+    client, profile, ws_id, brand_id = await _setup(signup_user)
+    piece_id = uuid4().hex
+    original = "A long LinkedIn post about how our team plans one week at a time and why it works for us."
+    await content_pieces.insert_one({"piece_id": piece_id, "workspace_id": ws_id, "user_id": profile["id"], "platform": "LinkedIn",
+                                     "content": original, "created_at": datetime.now(timezone.utc)})
+    made = await _generate(client, ws_id, brand_id)
+    assert made.status_code == 201, made.text
+    image_id = made.json()["id"]
+    await image_assets.update_one({"id": image_id}, {"$set": {"approval_status": "approved", "source_piece_id": piece_id}})
+    calls = []
+
+    async def fake_repurpose(task, source):
+        calls.append((source.value, task.platform.value))
+        if task.platform.value == "Threads":
+            return AgentResult(agent="repurpose", platform=task.platform, output={}, success=False)
+        return AgentResult(agent="repurpose", platform=task.platform, output={"content": f"Short take for {task.platform.value}"}, success=True)
+
+    monkeypatch.setattr(repurpose, "run_repurpose_agent", fake_repurpose)
+    url = f"/api/v1/image-assets/{image_id}/send-to-draft"
+
+    x = await client.post(url, json={"platform": "Twitter/X", "rewrite_for_platform": True}, headers=_h(ws_id))
+    assert x.status_code == 200, x.text
+    assert x.json()["content"] == "Short take for Twitter/X" and calls == [("LinkedIn", "Twitter/X")]
+    again = await client.post(url, json={"platform": "Twitter/X", "rewrite_for_platform": True}, headers=_h(ws_id))
+    assert again.json()["piece_id"] == x.json()["piece_id"] and len(calls) == 1, "sending again neither rewrites nor charges"
+    same = await client.post(url, json={"platform": "LinkedIn", "rewrite_for_platform": True}, headers=_h(ws_id))
+    assert same.json()["content"] == original and len(calls) == 1, "a post already for this platform is left as it is"
+    failed = await client.post(url, json={"platform": "Threads", "rewrite_for_platform": True}, headers=_h(ws_id))
+    assert failed.status_code == 200 and failed.json()["content"] == original
+    plain = await client.post(url, json={"platform": "Facebook"}, headers=_h(ws_id))
+    assert plain.json()["content"] == original and len(calls) == 2, "nothing is rewritten unless asked"

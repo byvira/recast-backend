@@ -12,7 +12,13 @@ from app.api.v1 import audio_assets as audio_module
 from app.db.mongo import media_assets, soundbites
 from app.models.audio_asset import SoundbiteStatus
 from app.pipelines.media.soundbite_extraction import SoundbiteExtractionError, evaluate_quality, trim_span
-from tests.test_audio_assets import _generate, _h, _setup, stubs  # noqa: F401 — fixture reuse
+from tests.test_audio_assets import _generate, _h, stubs  # noqa: F401 — fixture reuse
+from tests.test_audio_assets import _setup as _audio_setup
+
+
+async def _setup(signup_user):
+    """Soundbites wait for approval only where the workspace has a review step, so these tests use a Large workspace."""
+    return await _audio_setup(signup_user, tier="large")
 
 SR = 16000
 

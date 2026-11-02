@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
+from app.shared.activity.i18n import phrase, words
 from app.db.mongo import pipeline_runs
 
 logger = logging.getLogger(__name__)
@@ -295,13 +296,13 @@ async def _finish(doc: dict, status: str, *, result: Optional[dict] = None, erro
     try:
         from app.shared.activity import record_system
 
-        wording = {"done": "finished", "failed": "failed", "cancelled": "was cancelled"}
+        wording = {"done": "{title} finished", "failed": "{title} failed", "cancelled": "{title} was cancelled"}
         await record_system(
             workspace_id=doc["workspace_id"], key=f"run:{doc['id']}", actor_name="Ekavo",
             actor_user_id=doc.get("created_by"), category="content_generated",
-            title=f"{doc['title']} {wording[status]}",
+            title=phrase(wording[status], title=doc["title"]),
             # a run that made only part of what was asked says so in its result's summary
-            description=error or (result or {}).get("summary") or ("Your work is ready to review." if status == "done" else "Nothing more was made."),
+            description=words(error or (result or {}).get("summary") or ("Your work is ready to review." if status == "done" else "Nothing more was made.")),
             status="warning" if status == "done" and (result or {}).get("summary") else {"done": "success", "cancelled": "warning"}.get(status, "failed"),
             target_id=doc["id"], target_type="Run", href=doc.get("href"),
         )

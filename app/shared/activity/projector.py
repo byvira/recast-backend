@@ -74,6 +74,9 @@ _INSIGHT_DECIDED = {"actioned": "accepted", "dismissed": "dismissed"}
 _FLAG_DECIDED = {"resolved": "accepted", "muted": "dismissed"}
 
 
+from app.shared.activity.i18n import as_written, phrase  # noqa: E402 - the projector's text forms
+
+
 async def localized_title(kind: str, key: str, english: str, language: Optional[str]) -> str:
     """`english` translated into `language` (cached per title and language), so a
     row's title reads in the same language as its description. English, an
@@ -228,16 +231,16 @@ async def _event_entry(event: dict) -> Optional[dict]:
         actor = actors.system_actor("Campaign scheduler") if by_campaign else await member()
         topic = (p.get("title") or "").strip()
         if pieces == 0:
-            title = "Pipeline run produced no content"
+            title = phrase("Pipeline run produced no content")
             status = "failed"
         else:
-            title = f"Pipeline finished {pieces} {'output' if pieces == 1 else 'outputs'}"
+            title = phrase("Pipeline finished 1 output" if pieces == 1 else "Pipeline finished {count} outputs", count=pieces)
             status = "warning" if failed else "success"
-        description = (
-            f"Generated {', '.join(platforms)}" if platforms else f"Generated {pieces} pieces"
-        ) + (f" for \"{topic}\"." if topic else ".")
+        made = "Generated {platforms}" if platforms else "Generated {count} pieces"
+        made += " for \"{topic}\"." if topic else "."
         if failed:
-            description += f" {failed} {'output' if failed == 1 else 'outputs'} failed."
+            made += " 1 output failed." if failed == 1 else " {failed} outputs failed."
+        description = phrase(made, platforms=", ".join(platforms), count=pieces, topic=topic, failed=failed)
         metadata = {"branchesCount": pieces}
         if p.get("duration_ms"):
             metadata["durationSeconds"] = round(int(p["duration_ms"]) / 1000)
@@ -266,25 +269,21 @@ async def _event_entry(event: dict) -> Optional[dict]:
         if p.get("external_url"):
             metadata["publishedUrl"] = p["external_url"]
         media_dropped_reason = p.get("media_dropped_reason")
-        base_description = (
-            f"Scheduled post went live on {target or 'the platform'}."
-            if scheduled else f"Post went live on {target or 'the platform'}."
-        )
+        live_on = "Scheduled post went live on {platform}." if scheduled else "Post went live on {platform}."
         return {
             **base,
             "actor": actor,
             "category": "post_published",
             # PAR-016: never silent — the same "published, but a caveat"
             # marker PAR-014 uses for campaign day-angle fallbacks.
-            "title": (
-                f"Published to {target or 'platform'}"
-                + (" ⚠ media not included" if media_dropped_reason else "")
+            "title": phrase(
+                "Published to {platform}, without its media" if media_dropped_reason else "Published to {platform}", platform=target or "the platform",
             ),
             # The link lives in href / metadata.publishedUrl (rendered as a
             # real link), not pasted into the sentence.
             "description": (
-                f"{base_description} {media_dropped_reason}."
-                if media_dropped_reason else base_description
+                f"{live_on.format(platform=target or 'the platform')} {media_dropped_reason}."
+                if media_dropped_reason else phrase(live_on, platform=target or "the platform")
             ),
             "channel": (p.get("target") or "").lower() or None,
             "target_id": p.get("content_id"),
@@ -301,10 +300,10 @@ async def _event_entry(event: dict) -> Optional[dict]:
             **base,
             "actor": await member(),
             "category": "security_event",
-            "title": "Member joined the workspace" if added else "Member removed from the workspace",
+            "title": phrase("Member joined the workspace" if added else "Member removed from the workspace"),
             "description": (
-                f"{subject['name']} joined as {subject.get('role', p.get('role') or 'member')}."
-                if added else f"{subject['name']} no longer has access to this workspace."
+                phrase("{name} joined as {role}.", name=subject["name"], role=subject.get("role", p.get("role") or "member"))
+                if added else phrase("{name} no longer has access to this workspace.", name=subject["name"])
             ),
             "target_type": "Workspace Member",
         }
@@ -315,8 +314,8 @@ async def _event_entry(event: dict) -> Optional[dict]:
             **base,
             "actor": await member(),
             "category": "security_event",
-            "title": "Member role changed",
-            "description": f"{subject['name']}: {_humanize(p.get('from_role'))} → {_humanize(p.get('to_role'))}.",
+            "title": phrase("Member role changed"),
+            "description": phrase("{name}: {before} to {after}.", name=subject["name"], before=_humanize(p.get("from_role")), after=_humanize(p.get("to_role"))),
             "target_type": "Workspace Member",
             "diff": {
                 "field": "Role",
@@ -331,9 +330,9 @@ async def _event_entry(event: dict) -> Optional[dict]:
             **base,
             "actor": await member(),
             "category": "voice_calibrated",
-            "title": "Brand voice updated",
+            "title": phrase("Brand voice updated"),
             "description": p.get("diff_summary") or (
-                f"Changed {', '.join(_humanize(f).lower() for f in fields)}." if fields else "Brand voice settings changed."
+                phrase("Changed {fields}.", fields=", ".join(_humanize(f).lower() for f in fields)) if fields else phrase("Brand voice settings changed.")
             ),
             "target_id": p.get("brand_id"),
             "target_type": "Voice Model",
@@ -345,8 +344,8 @@ async def _event_entry(event: dict) -> Optional[dict]:
             "visibility": "admins",
             "actor": await member(),
             "category": "security_event",
-            "title": "Workspace plan changed",
-            "description": f"{_humanize(p.get('from_tier'))} → {_humanize(p.get('to_tier'))}.",
+            "title": phrase("Workspace plan changed"),
+            "description": phrase("{before} to {after}.", before=_humanize(p.get("from_tier")), after=_humanize(p.get("to_tier"))),
             "diff": {
                 "field": "Plan",
                 "before": _humanize(p.get("from_tier")),
@@ -386,11 +385,8 @@ async def project_remy_signal(signal: dict) -> None:
             "source": {"kind": "remy_signal", "id": signal["_id"], "type": signal.get("signal_type")},
             "actor": dict(actors.REMY),
             "category": CATEGORY_RECOMMENDATION,
-            "title": await remy_title(
-                signal.get("signal_type"),
-                signal.get("language") or await member_language(signal.get("user_id"), signal.get("workspace_id")),
-            ),
-            "description": signal.get("member_message") or "",
+            "title": phrase(_REMY_TITLES.get(signal.get("signal_type"), "Remy flagged something on your content")),
+            "description": as_written(signal.get("member_message") or ""),
             "target_id": target_id,
             "target_type": "Draft Post" if target_id else None,
             "target_label": await piece_label(target_id),
@@ -424,9 +420,11 @@ async def project_odette_insight(insight: dict) -> None:
         metadata: dict[str, Any] = {"priority": _humanize(insight.get("priority"))}
         if outcome:
             metadata["decision"] = outcome.capitalize()
-        description = insight.get("body_persona") or ""
+        body = insight.get("body_persona") or ""
         if insight.get("rationale"):
-            description = f"{description}\n\nWhy: {insight['rationale']}" if description else insight["rationale"]
+            description = phrase("{body}\n\nWhy: {why}", body=body, why=insight["rationale"]) if body else as_written(insight["rationale"])
+        else:
+            description = as_written(body)
         await upsert_entry({
             "_id": odette_insight_entry_id(insight["_id"]),
             "workspace_id": insight["workspace_id"],
@@ -435,7 +433,7 @@ async def project_odette_insight(insight: dict) -> None:
             "source": {"kind": "odette_insight", "id": insight["_id"], "type": insight.get("kind")},
             "actor": dict(actors.ODETTE),
             "category": CATEGORY_RECOMMENDATION,
-            "title": insight.get("title") or "Workspace recommendation",
+            "title": as_written(insight["title"]) if insight.get("title") else phrase("Workspace recommendation"),
             "href": "/dashboard/odette",
             "description": description,
             "status": "success" if outcome else "warning",
@@ -471,12 +469,8 @@ async def project_odette_flag(flag: dict) -> None:
             "source": {"kind": "odette_flag", "id": flag["_id"], "type": flag.get("flag_type")},
             "actor": dict(actors.ODETTE),
             "category": CATEGORY_WORKSPACE_ALERT,
-            "title": await localized_title(
-                "flag", flag.get("flag_type") or "__fallback__",
-                _FLAG_TITLES.get(flag.get("flag_type"), _humanize(flag.get("flag_type")) or "Workspace alert"),
-                flag.get("language") or await workspace_admin_language(flag.get("workspace_id")),
-            ),
-            "description": flag.get("summary_persona") or "",
+            "title": phrase(_FLAG_TITLES.get(flag.get("flag_type"), _humanize(flag.get("flag_type")) or "Workspace alert")),
+            "description": as_written(flag.get("summary_persona") or ""),
             "href": "/dashboard/odette",
             "status": "success" if outcome else ("failed" if flag.get("severity") == "critical" else "warning"),
             "metadata": metadata,

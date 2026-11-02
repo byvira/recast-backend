@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from app.shared.activity.i18n import phrase
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import pipeline_runs
 from app.shared.activity import record_system
@@ -53,7 +54,7 @@ async def remind_about_paused_runs() -> int:
             await record_system(
                 workspace_id=run["workspace_id"], key=f"run-reminder:{run['id']}:{number}", actor_name="Ekavo",
                 actor_user_id=run.get("created_by"), category="content_generated",
-                title=f"{run['title']} is still paused",
+                title=phrase("{title} is still paused", title=run["title"]),
                 description="You paused this a while ago. Open it to resume or cancel it.",
                 status="warning", target_id=run["id"], target_type="Run", href=run.get("href"),
             )

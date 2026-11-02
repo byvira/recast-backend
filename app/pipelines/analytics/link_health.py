@@ -11,6 +11,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.shared.activity.i18n import phrase
 from app.db.mongo import content_pieces
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ async def _tell_the_member(workspace_id: str, piece: dict) -> None:
         await record_system(
             workspace_id=workspace_id, key=f"post-removed:{piece.get('piece_id')}", actor_name="Ekavo",
             actor_user_id=piece.get("created_by"), category="content_generated",
-            title=f"A {platform} post is no longer there",
+            title=phrase("A {platform} post is no longer there", platform=platform),
             description="It was removed on the platform. Ekavo keeps your copy and its history, and has stopped tracking its numbers.",
             status="success", target_id=piece.get("piece_id"), target_type="Post", href="/dashboard/drafts",
         )

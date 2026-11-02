@@ -270,6 +270,41 @@ async def sign_off(body: PathOnly, actor: Actor = Depends(_actor)) -> dict:
     return _classification_row(prompt, await db.prompt_classification.find_one({"_id": body.path}))
 
 
+class ManyPaths(BaseModel):
+    paths: list[str] = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/classification/sign-off-many")
+async def sign_off_many(body: ManyPaths, actor: Actor = Depends(_actor)) -> dict:
+    """Signs off every listed prompt that can be, and says why for each one that can't: a proposed change still needs its own review."""
+    db = get_db()
+    service.require(actor, "sign_off")
+    paths = list(dict.fromkeys(body.paths))
+    existing = {d["_id"]: d async for d in db.prompt_classification.find({"_id": {"$in": paths}})}
+    signed, skipped = [], []
+    for path in paths:
+        try:
+            prompt = await service.find(db, path)
+        except LibraryError as exc:
+            skipped.append({"path": path, "reason": exc.message})
+            continue
+        cls = existing.get(path) or {}
+        if cls.get("proposedKlass"):
+            skipped.append({"path": path, "reason": "A change is proposed. Review it on its own."})
+            continue
+        if cls.get("signedOffBy"):
+            skipped.append({"path": path, "reason": "Already signed off."})
+            continue
+        await db.prompt_classification.update_one(
+            {"_id": path},
+            {"$set": {"signedOffBy": actor.name, "signedOffById": actor.id, "signedOffAt": service.now_iso(), "signedOffKlass": prompt.klass}},
+            upsert=True,
+        )
+        await service.audit(db, actor, "classification.signoff", path, prompt.klass)
+        signed.append(_classification_row(prompt, await db.prompt_classification.find_one({"_id": path})))
+    return {"signed": signed, "skipped": skipped}
+
+
 @router.get("/audit")
 async def list_audit(path: str | None = Query(None, max_length=300), actor: Actor = Depends(_actor)) -> list[dict]:
     return await service.list_audit(get_db(), path)

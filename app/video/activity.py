@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.shared.activity.i18n import phrase
 from app.db.mongo import get_db
 
 logger = logging.getLogger(__name__)
@@ -47,10 +48,10 @@ async def video_made(workspace_id: str, user_id: Optional[str], project_id: Opti
         from app.shared.activity import record_system
 
         title = await _title_of(workspace_id, project_id)
-        length = f" ({round(float(duration_s))} seconds)" if duration_s else ""
+        ready = phrase("The finished video is ready ({seconds} seconds).", seconds=round(float(duration_s))) if duration_s else phrase("The finished video is ready.")
         await record_system(
             workspace_id=workspace_id, key=f"video_made:{job_id}", actor_name="Video editor", actor_user_id=user_id,
-            category="content_generated", title=f"Made the video {title}", description=f"The finished video is ready{length}.",
+            category="content_generated", title=phrase("Made the video {title}", title=title), description=ready,
             target_id=project_id, target_type="Video Project", target_label=title, href=f"{HREF}?project={project_id}",
             metadata={"jobId": job_id, "origin": origin} if origin else {"jobId": job_id},
         )
@@ -131,8 +132,8 @@ async def version_restored(workspace_id: str, user_id: Optional[str], project_id
         title = await _title_of(workspace_id, project_id)
         await record_system(
             workspace_id=workspace_id, key=f"video_restore:{project_id}:{new_version}", actor_name="Video editor", actor_user_id=user_id,
-            category="content_edited", title=f"Restored {title} to version {version}",
-            description=f"Saved as version {new_version}. Nothing was lost: the versions in between are still there.",
+            category="content_edited", title=phrase("Restored {title} to version {version}", title=title, version=version),
+            description=phrase("Saved as version {version}. Nothing was lost: the versions in between are still there.", version=new_version),
             target_id=project_id, target_type="Video Project", target_label=title, href=f"{HREF}?project={project_id}",
         )
     except Exception as exc:  # noqa: BLE001

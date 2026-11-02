@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from app.core.scheduler_lock import distributed_job_lock
+from app.shared.activity.i18n import phrase
 from app.db.mongo import workspace_connections
 from app.pipelines.publish import health
 from app.pipelines.publish.registry import get_publisher
@@ -174,9 +175,9 @@ async def refresh_expiring_tokens() -> None:
                 key=f"token_refresh:{workspace_id}:{platform}:{now.date().isoformat()}",
                 actor_name="Connection monitor",
                 category="account_connected",
-                title=f"{platform.capitalize()} connection renewed automatically",
-                description=f"Access for {account.get('username') or platform} was about to expire and was "
-                            f"renewed before any post could fail.",
+                title=phrase("{platform} connection renewed automatically", platform=platform.capitalize()),
+                description=phrase("Access for {account} was about to expire and was renewed before any post could fail.",
+                                   account=account.get("username") or platform),
                 channel=platform,
                 href="/dashboard/settings",
             )

@@ -99,3 +99,16 @@ async def test_only_staff_with_the_area_see_workspaces_and_people(signup_user):
     await users.update_one({"id": profile["id"]}, {"$set": {"staff.status": "deactivated", "is_platform_staff": False}})
     ST.forget()
     assert (await agent.get(f"/api/v1/ops/workspaces/{ws_id}")).status_code == 403
+
+
+async def test_a_brand_shows_its_name_whatever_its_type(signup_user):
+    from app.db.mongo import get_db
+
+    master, _ = await _master(signup_user)
+    _, _, ws_id = await _customer(signup_user, "Meera")
+    await get_db()["brand_profiles"].insert_many([
+        {"id": uuid4().hex, "workspace_id": ws_id, "brand_type": "Business", "identity": {"company_name": "Vira Studio"}},
+        {"id": uuid4().hex, "workspace_id": ws_id, "brand_type": "Product", "identity": {"product_name": "Ekavo"}},
+    ])
+    names = {b["name"] for b in (await master.get(f"/api/v1/ops/workspaces/{ws_id}/brands")).json()["brands"]}
+    assert {"Vira Studio", "Ekavo"} <= names

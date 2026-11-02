@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException
 
+from app.shared.activity.i18n import phrase
 from app.billing import plans as P
 from app.billing import prices as PR
 from app.billing import subscriptions as S
@@ -327,7 +328,7 @@ async def reminder_tick() -> int:
         try:
             await record_system(
                 workspace_id=sub["workspace_id"], key=f"billing_renews:{sub['id']}:{renews.date().isoformat()}", actor_name="Ekavo",
-                category="billing", title=f"Your plan renews on {when} for {amount}",
+                category="billing", title=phrase("Your plan renews on {date} for {amount}", date=when, amount=amount),
                 description="It renews by itself. Change or cancel any time in Billing.", status="info", href="/dashboard/settings?tab=billing",
             )
             owner = await users.find_one({"id": sub.get("owner_user_id")}, {"email": 1, "name": 1})

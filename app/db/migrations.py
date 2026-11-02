@@ -148,6 +148,28 @@ async def _approve_waiting_posts_without_review(db) -> None:
     await _mark_applied(db, migration_id, {"approved": approved, "workspaces": workspace_count})
 
 
+async def _approve_waiting_media_without_review(db) -> None:
+    """Pictures, audio and soundbites were made "waiting for approval" even in workspaces whose plan has no review step, where
+    nobody is asked to approve them. They are marked approved here, the same as a new one now is. A rejected one stays rejected."""
+    migration_id = "2026-11-02_approve_waiting_media_without_review"
+    if await _already_applied(db, migration_id):
+        return
+    from app.shared.tier_policy import policy_for
+
+    counts = {"image_assets": 0, "audio_assets": 0, "soundbites": 0}
+    async for ws in workspaces.find({}, {"id": 1, "tier": 1, "require_review": 1}):
+        if not ws.get("id") or policy_for(ws)["review_required"]:
+            continue
+        for name in counts:
+            res = await db[name].update_many(
+                {"workspace_id": ws["id"], "approval_status": "pending", "deleted": {"$ne": True}},
+                {"$set": {"approval_status": "approved", "updated_at": datetime.now(timezone.utc)}},
+            )
+            counts[name] += res.modified_count
+    logger.info("migration %s: approved waiting media in workspaces with no review step: %s", migration_id, counts)
+    await _mark_applied(db, migration_id, counts)
+
+
 async def _em_dash_setting_matches_behaviour(db) -> None:
     """Brands were saved with allow_em_dashes=True while em dashes were always removed from generated text. The stored value
     is set to what actually happens, so the setting never claims something the product does not do. No output changes."""
@@ -168,6 +190,7 @@ async def run_startup_migrations() -> None:
         _backfill_workspace_is_personal_and_language,
         _purge_bad_localized_strings,
         _approve_waiting_posts_without_review,
+        _approve_waiting_media_without_review,
         _em_dash_setting_matches_behaviour,
     ):
         try:

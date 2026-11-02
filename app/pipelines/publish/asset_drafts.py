@@ -65,3 +65,40 @@ async def draft_from_asset(
     except piece_attachments.AttachmentError as exc:
         raise HTTPException(status_code=exc.status, detail=exc.message)
     return {"piece_id": piece_id, "platform": piece["platform"], "content": piece["content"], "created": created, "attachment": attachment}
+
+
+async def words_for_platform(
+    *, workspace_id: str, user_id: str, brand_id: str, text: str, source_platform: str, target_platform: str,
+) -> str:
+    """The post's words rewritten for another platform in the brand's voice, through the same repurpose step the writing pipeline
+    uses. Costs one post's credits (long form for a blog, newsletter or YouTube description), set aside first and given back when
+    the rewrite fails; then the words come back as they were, so the draft is never lost."""
+    from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
+    from app.billing import credits
+    from app.db.mongo import brand_profiles
+    from app.models.text import AgentTask, Platform
+    from app.pipelines.text.brand_context import build_brand_context
+    from app.pipelines.text.orchestrator import _post_action
+    from app.pipelines.text.repurpose import run_repurpose_agent
+
+    try:
+        source, target = Platform(source_platform), Platform(target_platform)
+    except ValueError:
+        return text
+    if source == target or not text.strip():
+        return text
+    brand = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id}, {"_id": 0}) or {}
+    hold = await credits.reserve(workspace_id, user_id, _post_action(target), step=f"draft-words:{uuid4().hex}")
+    try:
+        enforcement = await merge_member_lexicon_enforcement(_extract_enforcement_data(brand), workspace_id=workspace_id, user_id=user_id)
+        task = AgentTask(agent="repurpose", platform=target, content=text, brand_context=build_brand_context(brand),
+                         session_id=uuid4().hex, metadata={**enforcement, "language": brand.get("language") or "en"})
+        result = await run_repurpose_agent(task, source)
+        words = (result.output or {}).get("content", "").strip() if result.success else ""
+    except Exception:  # noqa: BLE001 - the original words are kept; the credits go back below
+        words = ""
+    if words:
+        await credits.settle(hold)
+        return words
+    await credits.release(hold)
+    return text

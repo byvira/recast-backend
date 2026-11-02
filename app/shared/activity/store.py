@@ -121,13 +121,18 @@ def is_visible_to(entry: dict, user_id: str, role: str) -> bool:
 
 def _search_text(entry: dict) -> str:
     actor = entry.get("actor") or {}
+    from app.shared.activity.i18n import english
+
+    sources = (entry.get("i18n") or {}).get("sources") or {}
     parts = [
         entry.get("title", ""),
         entry.get("description", ""),
         actor.get("name", ""),
         entry.get("channel") or "",
+        # the English too, so a search in English finds a row shown in another language
+        *(english(sources[f]) for f in ("title", "description") if f in sources),
     ]
-    return " ".join(p for p in parts if p).lower()
+    return " ".join(dict.fromkeys(p for p in parts if p)).lower()
 
 
 async def upsert_entry(entry: dict) -> Optional[dict]:
@@ -138,8 +143,10 @@ async def upsert_entry(entry: dict) -> Optional[dict]:
     Returns the stored row, or ``None`` on failure. Never raises.
     """
     try:
+        from app.shared.activity.i18n import localize
+
         now = _now()
-        doc = dict(entry)
+        doc = await localize(dict(entry))
         doc["updated_at"] = now
         doc["search_text"] = _search_text(doc)
         if doc["lane"] == LANE_PASSIVE:
@@ -179,6 +186,14 @@ async def patch_entry(entry_id: str, fields: dict) -> Optional[dict]:
             return None
         # Only the fields that change are written. Writing the whole row back from this read would undo a "mark as read" or a hide made
         # by someone else in between.
+        fields = dict(fields)
+        decision = ((fields.get("metadata") or {}) if isinstance(fields.get("metadata"), dict) else {}).get("decision")
+        if decision is not None and current.get("i18n"):
+            # a new decision label is written in the row's language, like the rest of it
+            from app.shared.activity.i18n import render
+
+            fields["metadata"] = {**fields["metadata"], "decision": await render(decision, current["i18n"].get("language"))}
+            fields["i18n"] = {**current["i18n"], "sources": {**(current["i18n"].get("sources") or {}), "meta_decision": decision}}
         merged = {**current, **fields}
         changes = {k: v for k, v in fields.items() if k != "_id"}
         changes["updated_at"] = _now()

@@ -123,13 +123,15 @@ async def activity(
     events = events[:60]
     names = await _workspace_names({e["workspace_id"] for e in events if e["workspace_id"]})
 
-    connections = await workspace_connections.find({"platform": key, "is_active": True}, {"health": 1, "expires_at": 1}).to_list(length=5000)
-    broken = sum(1 for c in connections if (c.get("health") or {}).get("state") == "broken")
+    # counted by the database, so the numbers stay right however many workspaces connect this platform
+    live = {"platform": key, "is_active": True}
+    connected = await workspace_connections.count_documents(live)
+    broken = await workspace_connections.count_documents({**live, "health.state": "broken"})
     soon = now + timedelta(days=7)
-    expiring = sum(1 for c in connections if _aware(c.get("expires_at")) and now < _aware(c["expires_at"]) <= soon)
+    expiring = await workspace_connections.count_documents({**live, "expires_at": {"$gt": now, "$lte": soon}})
     failures = sum(1 for e in events if e["kind"] == "failure")
     summary = [
-        f"{definition.label} | {now:%b} {now.day} | {len(connections)} connected",
+        f"{definition.label} | {now:%b} {now.day} | {connected} connected",
         f"{broken} broken connection{'s' if broken != 1 else ''}, {expiring} expiring within 7 days",
         f"{failures} failed post{'s' if failures != 1 else ''} in the last 30 days",
         f"Odette flags: {sum(1 for e in events if e['kind'] == 'odette')}",
@@ -179,22 +181,19 @@ async def usage(
         {"published_manually": True, "platform": {"$in": _names(definition)}, "updated_at": {"$gte": month_ago}}
     )
 
-    fetches = await post_metrics.find({"platform": key, "fetched_at": {"$gte": now - timedelta(days=7)}}, {"fetch_ok": 1}).to_list(length=500)
-    if not fetches:
+    recent = {"platform": key, "fetched_at": {"$gte": now - timedelta(days=7)}}
+    if not await post_metrics.count_documents(recent, limit=1):
         analytics = "none"
-    elif any(f.get("fetch_ok") is not False for f in fetches):
+    elif await post_metrics.count_documents({**recent, "fetch_ok": {"$ne": False}}, limit=1):
         analytics = "ok"
     else:
         analytics = "blocked"
 
     weeks = []
-    connected_dates = [
-        _aware(c.get("connected_at")) for c in await workspace_connections.find({"platform": key, "is_active": True}, {"connected_at": 1}).to_list(length=5000)
-    ]
-    connected_dates = [d for d in connected_dates if d]
     for back in range(7, -1, -1):
         edge = now - timedelta(weeks=back)
-        weeks.append({"week_ending": edge.strftime("%Y-%m-%d"), "connected": sum(1 for d in connected_dates if d <= edge)})
+        n = await workspace_connections.count_documents({"platform": key, "is_active": True, "connected_at": {"$lte": edge}})
+        weeks.append({"week_ending": edge.strftime("%Y-%m-%d"), "connected": n})
 
     return {
         "days": days,

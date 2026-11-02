@@ -108,3 +108,32 @@ async def test_a_campaign_from_a_recording_with_no_transcript_is_a_clear_400(api
 
     assert res.status_code == 400
     assert "use Transcribe first" in res.json()["detail"]
+
+
+async def test_the_campaign_form_lists_recordings_already_in_the_workspace(api_client):
+    """A recording uploaded or made earlier can be chosen as the source instead of uploading it again; one without a transcript or
+    over an hour says why it can't be used, and another workspace's recordings never show."""
+    from datetime import datetime, timedelta, timezone
+
+    await signup_new_user(api_client)
+    brand_id = await _create_brand(api_client)
+    ws_id = (await brand_profiles.find_one({"id": brand_id}))["workspace_id"]
+    now = datetime.now(timezone.utc)
+    ready, bare, long_one = (f"a-{uuid4()}" for _ in range(3))
+    await audio_assets.insert_one({"id": ready, "workspace_id": ws_id, "title": "Founder talk", "created_at": now,
+                                   "transcript": _words("We cut stand-ups from five hours to thirty minutes.")})
+    await audio_assets.insert_one({"id": bare, "workspace_id": ws_id, "title": "Raw voice memo", "created_at": now - timedelta(minutes=1), "transcript": []})
+    await audio_assets.insert_one({"id": long_one, "workspace_id": ws_id, "title": "Full workshop", "created_at": now - timedelta(minutes=2),
+                                   "transcript": [{"word": "hello", "start_s": 0, "end_s": 4000}]})
+    await audio_assets.insert_one({"id": f"a-{uuid4()}", "workspace_id": "someone-else", "title": "Founder talk elsewhere", "created_at": now,
+                                   "transcript": _words("Not yours.")})
+    await audio_assets.insert_one({"id": f"a-{uuid4()}", "workspace_id": ws_id, "title": "Deleted one", "created_at": now, "deleted": True,
+                                   "transcript": _words("Gone.")})
+
+    items = {r["id"]: r for r in (await api_client.get("/api/v1/campaigns/recording-sources")).json()["items"]}
+    assert set(items) == {ready, bare, long_one}
+    assert items[ready]["usable"] is True and items[ready]["words"] == 9 and items[ready]["duration_s"] == 3.6
+    assert items[bare]["usable"] is False and "transcript" in items[bare]["reason"]
+    assert items[long_one]["usable"] is False and "hour" in items[long_one]["reason"]
+    found = (await api_client.get("/api/v1/campaigns/recording-sources", params={"q": "founder"})).json()["items"]
+    assert [r["id"] for r in found] == [ready]

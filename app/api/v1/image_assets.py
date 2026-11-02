@@ -75,6 +75,8 @@ from app.shared.safe_fetch import get_limited
 from app.shared.llm import call_vision, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
 from app.shared.storage import ContentType as UploadContentType, upload_file
+# a new picture waits for review only where the workspace has a review step, the same as a new post
+from app.shared.tier_policy import default_approval
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -723,7 +725,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 ).model_dump(),
             )
         ],
-        approval_status=ImageApprovalStatus.PENDING,
+        approval_status=ImageApprovalStatus(await default_approval(ctx.workspace_id)),
         source_piece_id=body.source_piece_id,
         source_content_hash=source_content_hash,
         # A text card made because the AI picture failed carries that note on the picture; it is also kept on the asset, where
@@ -915,7 +917,7 @@ async def upload_image_asset(
                 height=canvas_size[1],
             )
         ],
-        approval_status=ImageApprovalStatus.PENDING,
+        approval_status=ImageApprovalStatus(await default_approval(ctx.workspace_id)),
     )
     await image_assets.insert_one(asset.model_dump())
     await _record_first_version(asset)
@@ -1929,6 +1931,8 @@ class ImageDraftRequest(BaseModel):
     caption: Optional[str] = None
     # Which slide to attach. Left empty, the first one with a picture.
     slide_number: Optional[int] = None
+    # When the picture was made from a post for another platform, rewrite that post's words for this platform (costs one post).
+    rewrite_for_platform: bool = False
 
 
 async def _caption_for(doc: dict, workspace_id: str) -> str:
@@ -1956,6 +1960,28 @@ async def _caption_for(doc: dict, workspace_id: str) -> str:
     return ""
 
 
+async def _rewritten_caption(doc: dict, caption: str, platform: str, ctx: WorkspaceContext) -> str:
+    """The source post's words rewritten for this platform, only when the post was for another platform and this picture has no draft
+    for this platform yet (sending again gives back the same draft, so nothing is written or charged twice)."""
+    from app.pipelines.publish.asset_drafts import words_for_platform
+
+    already = await content_pieces.find_one({
+        "workspace_id": ctx.workspace_id, "deleted": {"$ne": True},
+        "send_origin.image_asset_id": doc["id"], "send_origin.platform": platform,
+    }, {"_id": 1})
+    if already:
+        return caption
+    source = await content_pieces.find_one(
+        {"piece_id": doc["source_piece_id"], "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, {"platform": 1, "content": 1},
+    )
+    if not source or not (source.get("content") or "").strip() or source.get("platform") == platform:
+        return caption
+    return await words_for_platform(
+        workspace_id=ctx.workspace_id, user_id=ctx.user_id, brand_id=doc["brand_id"], text=caption,
+        source_platform=str(source.get("platform")), target_platform=platform,
+    )
+
+
 @router.post("/{image_asset_id}/send-to-draft")
 @limiter.limit("20/minute")
 async def send_image_to_draft(
@@ -1979,6 +2005,8 @@ async def send_image_to_draft(
     except ValueError:
         raise HTTPException(status_code=400, detail="That platform isn't supported for posts.")
     caption = (body.caption or "").strip() or await _caption_for(doc, ctx.workspace_id)
+    if body.rewrite_for_platform and not (body.caption or "").strip() and doc.get("source_piece_id"):
+        caption = await _rewritten_caption(doc, caption, platform, ctx)
     return await draft_from_asset(
         workspace_id=ctx.workspace_id, user_id=ctx.user_id, brand_id=doc["brand_id"], platform=platform, caption=caption,
         origin={"image_asset_id": image_asset_id, "platform": platform}, group_by=image_asset_id,

@@ -62,3 +62,23 @@ async def test_list_accounts_requires_workspace_membership(api_client, make_clie
     await signup_new_user(outsider)
     res = await outsider.get("/api/v1/oauth/accounts", headers={"X-Workspace-Id": ws_id})
     assert res.status_code == 403
+
+
+async def test_an_older_threads_connection_is_asked_to_reconnect_once(api_client):
+    """Threads connected before the insights permission posts fine but cannot read stats: the list says to reconnect it once. A
+    connection with the permission, and every other platform, are never flagged."""
+    from app.api.v1.oauth import THREADS_SCOPES
+
+    profile = await signup_new_user(api_client, name="Threads Person")
+    old_ws = await create_workspace(api_client, "Old Threads Space")
+    new_ws = await create_workspace(api_client, "New Threads Space")
+    now = datetime.now(timezone.utc)
+    base = {"platform_user_id": "th-1", "username": "poster", "is_active": True, "connected_by": profile["id"], "connected_at": now}
+    await workspace_connections.insert_one({**base, "id": "th-old", "workspace_id": old_ws, "platform": "threads"})
+    await workspace_connections.insert_one({**base, "id": "li-old", "workspace_id": old_ws, "platform": "linkedin"})
+    await workspace_connections.insert_one({**base, "id": "th-new", "workspace_id": new_ws, "platform": "threads", "scopes": THREADS_SCOPES.split(",")})
+
+    old = {a["platform"]: a for a in (await api_client.get("/api/v1/oauth/accounts", headers={"X-Workspace-Id": old_ws})).json()["accounts"]}
+    assert old["threads"]["reconnect_for"] == "insights" and old["linkedin"]["reconnect_for"] is None
+    new = (await api_client.get("/api/v1/oauth/accounts", headers={"X-Workspace-Id": new_ws})).json()["accounts"]
+    assert new[0]["reconnect_for"] is None

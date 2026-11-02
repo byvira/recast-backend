@@ -54,8 +54,11 @@ async def review_required(workspace_id: str) -> bool:
     return (await workspace_policy(workspace_id))["review_required"]
 
 
-async def default_approval(workspace_id: str) -> str:
-    """The approval a new post starts with: waiting for review, or approved at once when the workspace has no review step."""
+async def default_approval(workspace_id: str, *, flagged: bool = False) -> str:
+    """The approval a new post starts with: waiting for review, or approved at once when the workspace has no review step. A post
+    flagged by its quality checks always waits for a person, review step or not; the owner can approve it themselves."""
+    if flagged:
+        return "pending"
     return "pending" if await review_required(workspace_id) else "approved"
 
 

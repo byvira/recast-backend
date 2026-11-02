@@ -308,9 +308,20 @@ async def _recent_failures(workspace_id: str) -> list[dict]:
             "error": (r.get("error") or "It stopped without saying why. Try starting it again.")[:300],
             "finishedAt": _iso(r.get("finished_at")),
             "href": r.get("href") or _RUN_PAGES.get(r["kind"]),
+            "retry": _retry_for(r),
         }
         for r in kept
     ]
+
+
+def _retry_for(run: dict) -> dict | None:
+    """How a failed run can be started again from Control Tower, when everything it needs was saved with it: a campaign batch (its
+    campaign) and an Odette review. Other work was started from a page with what the member typed there, so it is opened instead."""
+    if run["kind"] == "campaign" and (run.get("ref") or {}).get("campaign_id"):
+        return {"kind": "campaign", "campaign_id": run["ref"]["campaign_id"]}
+    if run["kind"] == "odette":
+        return {"kind": "odette"}
+    return None
 
 
 _RUN_PAGES = {

@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
+from app.shared.activity.i18n import phrase, words
 from app.agents.supervisor.service import assert_generation_allowed
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import get_campaigns_collection
@@ -62,7 +63,7 @@ async def run_due_campaign_batches() -> None:
             await record_system(
                 workspace_id=campaign["workspace_id"], key=f"campaign_held:{campaign['id']}:{now.strftime('%Y-%m-%d')}",
                 actor_name="Campaign scheduler", category="content_generated",
-                title=f"Campaign \"{campaign.get('name') or 'Untitled'}\" is waiting",
+                title=phrase("Campaign \"{name}\" is waiting", name=campaign.get("name") or "Untitled"),
                 description="Writing is switched off for this workspace, so the next posts were not made. They are made once it is switched back on.",
                 status="warning", target_id=campaign["id"], target_type="Campaign", target_label=campaign.get("name") or None,
                 href="/dashboard/campaigns",
@@ -100,7 +101,7 @@ async def _start_batch_run(campaign: dict) -> None:
         )
         await record_system(
             workspace_id=workspace_id, key=f"campaign_run:{campaign['id']}", actor_name="Campaign scheduler",
-            category="content_generated", title=f"Campaign \"{campaign.get('name') or 'Untitled'}\" was paused", description=reason,
+            category="content_generated", title=phrase("Campaign \"{name}\" was paused", name=campaign.get("name") or "Untitled"), description=words(reason),
             status="warning", target_id=campaign["id"], target_type="Campaign", target_label=campaign.get("name") or None,
             href="/dashboard/campaigns",
         )
@@ -178,8 +179,9 @@ async def _back_off(campaign: dict, error: str) -> None:
         key=f"campaign_run:{campaign['id']}",
         actor_name="Campaign scheduler",
         category="content_generated",
-        title=f"Campaign \"{campaign.get('name') or 'Untitled'}\" couldn't generate",
-        description=f"{error} Ekavo will try again in {hours} hour{'s' if hours != 1 else ''}.",
+        title=phrase("Campaign \"{name}\" couldn't generate", name=campaign.get("name") or "Untitled"),
+        description=phrase("{error} Ekavo will try again in 1 hour." if hours == 1 else "{error} Ekavo will try again in {hours} hours.",
+                           error=words(error), hours=hours),
         status="failed",
         target_id=campaign["id"],
         target_type="Campaign",
