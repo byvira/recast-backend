@@ -29,9 +29,10 @@ class RazorpayProvider:
     name = "razorpay"
 
     def __init__(self, key_id: Optional[str] = None, key_secret: Optional[str] = None, webhook_secret: Optional[str] = None) -> None:
-        self._key_id = key_id if key_id is not None else settings.RAZORPAY_KEY_ID
-        self._key_secret = key_secret if key_secret is not None else settings.RAZORPAY_KEY_SECRET
-        self._webhook_secret = webhook_secret if webhook_secret is not None else settings.RAZORPAY_WEBHOOK_SECRET
+        # a space or line break pasted into the dashboard with a key makes Razorpay answer "Authentication failed"
+        self._key_id = (key_id if key_id is not None else settings.RAZORPAY_KEY_ID or "").strip()
+        self._key_secret = (key_secret if key_secret is not None else settings.RAZORPAY_KEY_SECRET or "").strip()
+        self._webhook_secret = (webhook_secret if webhook_secret is not None else settings.RAZORPAY_WEBHOOK_SECRET or "").strip()
 
     @property
     def mode(self) -> str:
@@ -59,6 +60,11 @@ class RazorpayProvider:
             data = {}
         if res.status_code >= 400:
             err = (data or {}).get("error") or {}
+            if res.status_code == 401:
+                # the keys in the server settings are wrong; the member can't fix that, so they get plain words and Ops gets the log
+                logger.error("Razorpay %s %s refused the keys (401, %s mode): check RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET", method, path, self.mode)
+                raise ProviderError("Payments aren't working right now. We've been told and are fixing it. Try again later.",
+                                    status=401, code="auth_failed")
             logger.warning("Razorpay %s %s refused (%s): %s", method, path, res.status_code, err)
             raise ProviderError(
                 str(err.get("description") or "The payment service refused this. Try again."), status=res.status_code, code=err.get("code"),

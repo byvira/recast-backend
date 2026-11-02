@@ -2,7 +2,8 @@
 
 Deleting a workspace only hides it (see app.api.v1.workspace.delete_workspace) and keeps it for DELETE_HOLD_DAYS so a mistake can be
 undone. This daily job then removes everything the workspace owned: its stored files, and every record in every collection that is
-keyed by its id. Support tickets are kept (they are a record of what the person asked for and what staff answered).
+keyed by its id. Support tickets are kept (they are a record of what the person asked for and what staff answered), and so are
+receipts and payment records, which tax law requires.
 """
 from __future__ import annotations
 
@@ -15,8 +16,10 @@ from app.shared.storage import delete_file_by_url
 
 logger = logging.getLogger(__name__)
 
-#: Collections that keep their rows when a workspace is purged.
+#: Collections that keep their rows when a workspace is purged: support history, and receipts and payment records, which tax law
+#: requires to be kept for years after the workspace is gone.
 KEEP_PREFIXES = ("support_",)
+KEEP = {"billing_invoices", "billing_payments", "billing_audit"}
 #: At most this many workspaces are purged per run, so one run is never long.
 MAX_PER_RUN = 3
 
@@ -35,7 +38,7 @@ async def purge_workspace(workspace_id: str) -> dict[str, int]:
     db = get_db()
     removed: dict[str, int] = {}
     for name in await db.list_collection_names():
-        if name in ("workspaces", "users") or name.startswith(KEEP_PREFIXES):
+        if name in ("workspaces", "users") or name in KEEP or name.startswith(KEEP_PREFIXES):
             continue
         result = await db[name].delete_many({"workspace_id": workspace_id})
         if result.deleted_count:

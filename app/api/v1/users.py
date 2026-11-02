@@ -2,7 +2,8 @@
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from app.core.auth import get_current_user, is_username_taken
@@ -82,6 +83,26 @@ async def get_my_profile(
         UserProfileResponse with all non-sensitive fields.
     """
     return await _build_profile_response(current_user, x_workspace_id)
+
+
+class DeleteAccountBody(BaseModel):
+    confirm: str = Field(..., max_length=20)
+
+
+@router.delete("/me")
+@limiter.limit("3/minute")
+async def delete_my_account(
+    request: Request, response: Response, body: DeleteAccountBody, current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Delete this account and its data for good (see app.shared.account_erase). The person types DELETE to confirm."""
+    from app.core.auth import clear_auth_cookies
+    from app.shared.account_erase import erase_account
+
+    if body.confirm.strip().upper() != "DELETE":
+        raise HTTPException(status_code=400, detail="Type DELETE to confirm.")
+    result = await erase_account(current_user)
+    clear_auth_cookies(response)
+    return {"deleted": True, **result}
 
 
 @router.put("/me", response_model=UserProfileResponse)

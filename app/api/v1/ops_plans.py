@@ -210,7 +210,10 @@ async def set_override(request: Request, workspace_id: str, body: OverrideBody, 
         **({"plan": body.plan} if body.plan else {}), **({"seats": body.seats} if body.seats else {}), "limits": limits,
         "note": body.note.strip(), "expires_at": expires, "set_by": user["id"], "set_at": datetime.now(timezone.utc),
     }
-    await workspaces.update_one({"id": workspace_id}, {"$set": {"entitlement_overrides": override}})
+    from app.billing.subscriptions import _size_for
+
+    # the team size follows the plan given, as it does after a payment
+    await workspaces.update_one({"id": workspace_id}, {"$set": {"entitlement_overrides": override, **_size_for(override.get("plan") or "free")}})
     entitlements.forget(workspace_id)
     await _audit(user, "workspace.override", workspace_id, ws.get("entitlement_overrides"), {**override, "set_at": None}, body.note,
                  str(ws.get("name") or workspace_id))
@@ -223,7 +226,11 @@ async def clear_override(request: Request, workspace_id: str, body: Reason, user
     ws = await workspaces.find_one({"id": workspace_id}, {"id": 1, "name": 1, "entitlement_overrides": 1})
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found.")
-    await workspaces.update_one({"id": workspace_id}, {"$unset": {"entitlement_overrides": ""}})
+    from app.billing.subscriptions import _size_for
+
+    paid = (await workspaces.find_one({"id": workspace_id}, {"plan": 1}) or {}).get("plan") or "free"
+    # back to the size of the plan it pays for
+    await workspaces.update_one({"id": workspace_id}, {"$unset": {"entitlement_overrides": ""}, "$set": _size_for(paid)})
     entitlements.forget(workspace_id)
     await _audit(user, "workspace.override_cleared", workspace_id, ws.get("entitlement_overrides"), None, body.reason,
                  str(ws.get("name") or workspace_id))
