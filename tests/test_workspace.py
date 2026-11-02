@@ -11,12 +11,12 @@ from tests.conftest import create_workspace, invite_and_accept, signup_new_user
 async def test_create_workspace_adds_owner_membership(api_client):
     profile = await signup_new_user(api_client)
     res = await api_client.post(
-        "/api/v1/workspaces/", json={"name": "Acme Media Lab", "tier": "duo"}
+        "/api/v1/workspaces/", json={"name": "Acme Media Lab", "tier": "single"}
     )
     assert res.status_code == 201
     body = res.json()
-    assert body["tier"] == "duo"
-    assert body["tier_config"]["seats"] == 2
+    assert body["tier"] == "single"
+    assert body["tier_config"]["seats"] == 1
     workspace_id = body["workspace_id"]
 
     res = await api_client.get(f"/api/v1/workspaces/{workspace_id}/members")
@@ -129,11 +129,14 @@ async def test_a_persons_only_workspace_cannot_be_deleted(api_client):
 async def test_onboarding_sets_up_the_first_workspace_instead_of_making_a_second(api_client, make_client):
     profile = await signup_new_user(api_client)
     first = profile["default_workspace_id"]
-    res = await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Asha Studio", "tier": "duo", "purpose": "work"})
+    # Duo is a paid plan: choosing it before paying is refused, and the workspace is set up as Single
+    refused = await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Asha Studio", "tier": "duo", "purpose": "work"})
+    assert refused.status_code == 402 and refused.json()["detail"]["code"] == "plan_needed"
+    res = await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Asha Studio", "tier": "single", "purpose": "work"})
     assert res.status_code == 200, res.text
     items = (await api_client.get("/api/v1/workspaces/")).json()["items"]
     assert len(items) == 1
-    assert items[0]["name"] == "Asha Studio" and items[0]["tier"] == "duo" and items[0]["setup_pending"] is False
+    assert items[0]["name"] == "Asha Studio" and items[0]["tier"] == "single" and items[0]["setup_pending"] is False
     assert items[0]["purpose"] == "work"
     # the label can change any time
     assert (await api_client.patch(f"/api/v1/workspaces/{first}", json={"purpose": "personal"})).status_code == 200
@@ -141,7 +144,7 @@ async def test_onboarding_sets_up_the_first_workspace_instead_of_making_a_second
     # a setup without the choice is refused
     assert (await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "x", "tier": "single"})).status_code in (409, 422)
     detail = (await api_client.get(f"/api/v1/workspaces/{first}")).json()
-    assert detail["tier_config"]["seats"] == 2
+    assert detail["tier_config"]["seats"] == 1
     # once only, and only by its owner
     assert (await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Again", "tier": "single", "purpose": "work"})).status_code == 409
     other = make_client()
@@ -246,3 +249,48 @@ async def test_non_member_cannot_list_members(api_client, make_client):
     await signup_new_user(outsider)
     res = await outsider.get(f"/api/v1/workspaces/{ws_id}/members")
     assert res.status_code == 403
+
+
+
+async def test_a_team_size_comes_only_with_the_plan_paid_for(api_client):
+    from app.billing import subscriptions as S
+    from app.db.mongo import workspaces
+
+    await signup_new_user(api_client)
+    for tier in ("duo", "large"):
+        res = await api_client.post("/api/v1/workspaces/", json={"name": f"Team {tier}", "tier": tier})
+        assert res.status_code == 402 and res.json()["detail"]["plan"] == tier
+    paid = (await api_client.post("/api/v1/workspaces/", json={"name": "Paid", "tier": "single"})).json()["workspace_id"]
+    # once a plan is paid for, the size follows it; a workspace sharing that plan may take the size too
+    assert S._size_for("duo")["tier"] == "duo" and S._size_for("free")["tier"] == "single"
+    await workspaces.update_one({"id": paid}, {"$set": {"plan": "duo"}})
+    shared = await api_client.post("/api/v1/workspaces/", json={"name": "Client", "tier": "duo", "billing_group_id": paid})
+    assert shared.status_code == 201, shared.text
+    assert (await api_client.post("/api/v1/workspaces/", json={"name": "Too big", "tier": "large", "billing_group_id": paid})).status_code == 402
+
+
+
+async def test_another_workspace_needs_a_paid_plan_even_with_plan_limits_off(api_client, monkeypatch):
+    from app.api.v1 import workspace as workspace_routes
+    from app.db.mongo import workspaces
+
+    monkeypatch.setattr(workspace_routes, "EXTRA_WORKSPACES_NEED_PLAN", True)
+    profile = await signup_new_user(api_client)
+    first = profile["default_workspace_id"]
+    # the free workspace made at sign-up is the one free workspace
+    res = await api_client.post("/api/v1/workspaces/", json={"name": "Second", "tier": "single"})
+    assert res.status_code == 402 and res.json()["detail"]["limit"] == "owned_workspaces"
+    cover = (await api_client.get("/api/v1/billing/coverage")).json()
+    assert cover["free_available"] is False and cover["plans"] == []
+    # on a paid plan, more workspaces join it up to what it covers (Single covers 3)
+    await workspaces.update_one({"id": first}, {"$set": {"plan": "single"}})
+    from app.shared import entitlements
+
+    entitlements.forget()
+    cover = (await api_client.get("/api/v1/billing/coverage")).json()
+    assert cover["plans"][0]["allowed"] == 3 and cover["free_available"] is True
+    for n in range(2):
+        ok = await api_client.post("/api/v1/workspaces/", json={"name": f"Client {n}", "tier": "single", "billing_group_id": first})
+        assert ok.status_code == 201, ok.text
+    full = await api_client.post("/api/v1/workspaces/", json={"name": "One more", "tier": "single", "billing_group_id": first})
+    assert full.status_code == 402

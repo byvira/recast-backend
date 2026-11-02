@@ -292,3 +292,38 @@ def compute_completeness(doc: dict) -> dict:
 def onboarding_field_for(brand_type: str) -> Optional[str]:
     """Which stored field holds this brand type's onboarding answers (pillars, customer, positioning)."""
     return {"Personal Brand": "pillars_data", "Business": "icp_data", "Product": "positioning_data"}.get(brand_type)
+
+
+def _text(value: Any, limit: int) -> str:
+    return " ".join(str(value or "").split())[:limit].strip()
+
+
+def identity_from_answers(doc: dict) -> dict[str, Any]:
+    """Profile fields the setup answers already cover, for the ones still empty: a Business's ideal customer is its target market, a
+    Product's value proposition its one-liner, a Personal Brand's pillars its content pillars. Nothing the member typed is replaced."""
+    identity = doc.get("identity") or {}
+    brand_type = doc.get("brand_type")
+    out: dict[str, Any] = {}
+
+    def empty(key: str) -> bool:
+        value = identity.get(key)
+        return value in (None, "", []) or (isinstance(value, str) and not value.strip())
+
+    if brand_type == "Business":
+        icp = doc.get("icp_data") or {}
+        size = _text(icp.get("companySize") or icp.get("company_size"), SHORT_MAX)
+        roles = _text(icp.get("jobTitles") or icp.get("job_titles"), LONG_MAX)
+        market = ": ".join(part for part in (size, roles) if part)
+        if market and empty("target_market"):
+            out["target_market"] = market[:LONG_MAX]
+    elif brand_type == "Product":
+        pos = doc.get("positioning_data") or {}
+        uvp = _text(pos.get("uvp"), SHORT_MAX)
+        if uvp and empty("one_liner"):
+            out["one_liner"] = uvp
+    elif brand_type == "Personal Brand":
+        pillars = [_text(p, LIST_ITEM_MAX) for p in ((doc.get("pillars_data") or {}).get("pillars") or []) if _text(p, LIST_ITEM_MAX)]
+        if pillars and empty("content_pillars"):
+            out["content_pillars"] = pillars[:LIST_MAX_ITEMS]
+    return out
+

@@ -616,3 +616,22 @@ async def test_control_tower_says_which_failures_can_be_started_again(api_client
     assert failed["campaign"]["retry"] == {"kind": "campaign", "campaign_id": "camp-1"}
     assert failed["odette"]["retry"] == {"kind": "odette"}
     assert failed["image"]["retry"] is None and failed["image"]["href"]
+
+
+
+async def test_staff_ops_work_never_shows_in_the_workspace_activity(signup_user):
+    from app.db.mongo import activity_entries
+    from app.shared.activity import record_system
+    from app.shared.activity.store import is_visible_to
+    from tests.conftest import create_workspace
+
+    client, profile = await signup_user()
+    ws = await create_workspace(client, "Staff home")
+    client.headers["X-Workspace-Id"] = ws
+    await record_system(workspace_id=ws, key="platformops:test", actor_name="Ekavo staff", actor_user_id=profile["id"],
+                        category="platform_ops", title="YouTube: stage changed", description="Moved on.", visibility="admins")
+    assert await activity_entries.count_documents({"workspace_id": ws, "category": "platform_ops"}) == 1, "kept for the Ops screens"
+    items = (await client.get("/api/v1/activity")).json()
+    rows = items.get("items") or items.get("completed") or []
+    assert not any("stage changed" in str(r.get("title")) for r in rows)
+    assert is_visible_to({"category": "platform_ops", "visibility": "workspace"}, profile["id"], "owner") is False

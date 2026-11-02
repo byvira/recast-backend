@@ -453,6 +453,8 @@ def _functions_with_upload_params(path: pathlib.Path):
 _NOT_STORED = {
     ("campaigns.py", "read_source_file_route"), ("video_projects.py", "import_timeline"), ("support.py", "upload_attachment"),
     ("ops_support.py", "upload_staff_attachment"),
+    # pictures Ekavo staff add to the public website's posts and pages; no workspace's storage
+    ("ops_content.py", "upload_media"),
 }
 
 

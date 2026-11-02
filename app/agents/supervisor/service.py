@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 
+from app.agents.supervisor import thresholds as T
 from app.agents.supervisor.notify import resolve_admin_user_ids
 from app.db.mongo import (
     admin_notifications,
@@ -137,6 +138,28 @@ async def _sync_flag_activity(flag_id: str) -> None:
 
 # ── dashboard ───────────────────────────────────────────────────────────────
 
+# Every rule Odette checks every minute (app/agents/supervisor/rules.py), as the Odette screen lists them.
+RULES = [
+    {"id": "tier_seat_exceeded", "name": "Tier Seat Limit", "level": "Critical", "scope": "Workspace"},
+    {"id": "daily_publish_cap", "name": "Busy publishing day", "level": "Warning", "scope": "Publish"},
+    {"id": "rbac_violation", "name": "Permission Violation", "level": "Critical", "scope": "Workspace"},
+    {"id": "brand_voice_instability", "name": "Brand Voice Instability", "level": "Warning", "scope": "Text"},
+    {"id": "member_churn", "name": "Member Churn / Role Elevation", "level": "Warning", "scope": "Workspace"},
+    {"id": "assistant_signal_storm", "name": "Assistant Signal Storm", "level": "Warning", "scope": "All"},
+    {"id": "platform_capability_drift", "name": "Platform Capability Drift", "level": "Warning", "scope": "Publish"},
+    {"id": "platform_delivery_failing", "name": "Platform Delivery Failing", "level": "Warning", "scope": "Publish"},
+]
+
+
+def rule_catalog(ws: dict) -> list[dict]:
+    """The rules that apply to this workspace: the ones its team size leaves out (a one-person workspace has no seat rule) are left
+    out here too, as they are when the rules run."""
+    from app.shared.tier_policy import policy_for
+
+    hidden = set(policy_for(ws)["hidden_rules"])
+    return [r for r in RULES if r["id"] not in hidden]
+
+
 async def dashboard(workspace_id: str) -> dict:
     now = datetime.now(timezone.utc)
     ws = await workspaces.find_one({"id": workspace_id}) or {}
@@ -189,6 +212,9 @@ async def dashboard(workspace_id: str) -> dict:
         "assistant_signals_7d_by_member": sig_by_member,
         "notifications_total": unread_notifs,
         "generated_at": now.isoformat(),
+        # the rules this workspace is checked against and its publishing alert line, so the screen shows what Odette really uses
+        "rules": rule_catalog(ws),
+        "daily_publish_cap": T.DAILY_PUBLISH_CAP.get(str(ws.get("tier") or ""), T.DEFAULT_PUBLISH_CAP),
     }
 
 

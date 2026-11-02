@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from app.billing import invoices
@@ -261,15 +262,148 @@ async def list_subscriptions(
     return {"subscriptions": rows}
 
 
-@router.get("/payments")
-@limiter.limit("60/minute")
-async def list_payments(request: Request, status: Optional[str] = Query(default=None, max_length=20), user: dict = Depends(require_platform_staff)) -> dict:
-    flt = {"status": status} if status else {}
-    rows = [r async for r in S.payments_col().find(flt, {"_id": 0}).sort("at", -1).limit(200)]
+PAYMENTS_MAX = 500
+_PAY_STATUS = {
+    "paid": {"status": "captured", "refund_status": {"$nin": ["refunded", "partly_refunded"]}},
+    "failed": {"status": "failed"},
+    "refunded": {"refund_status": {"$in": ["refunded", "partly_refunded"]}},
+}
+
+
+class PaymentFilters:
+    def __init__(
+        self,
+        status: Optional[str] = Query(default=None, pattern="^(paid|failed|refunded|captured)$"),
+        kind: Optional[str] = Query(default=None, pattern="^(plan|credits)$"),
+        q: Optional[str] = Query(default=None, max_length=100),
+        days: Optional[int] = Query(default=None, ge=1, le=3650),
+    ) -> None:
+        self.status, self.kind, self.q, self.days = status, kind, (q or "").strip(), days
+
+
+async def _payments(f: PaymentFilters, limit: int) -> list[dict]:
+    """Payments, newest first, with the workspace's name and whether each paid for a plan or for credits."""
+    import re
+
+    from app.db.mongo import workspaces
+
+    flt: dict = {}
+    if f.status:
+        flt.update(_PAY_STATUS["paid" if f.status == "captured" else f.status])
+    if f.kind == "credits":
+        flt["topup_id"] = {"$nin": [None, ""]}
+    elif f.kind == "plan":
+        flt["topup_id"] = {"$in": [None, ""]}
+    if f.days:
+        flt["at"] = {"$gte": datetime.now(timezone.utc) - timedelta(days=f.days)}
+    if f.q:
+        pattern = re.escape(f.q)
+        ids = [w["id"] async for w in workspaces.find({"name": {"$regex": pattern, "$options": "i"}}, {"id": 1}).limit(200)]
+        flt["$or"] = [{"workspace_id": {"$in": ids}}, {"id": {"$regex": pattern, "$options": "i"}}, {"workspace_id": f.q}]
+    rows = [r async for r in S.payments_col().find(flt, {"_id": 0}).sort("at", -1).limit(limit)]
     names = await _names([r["workspace_id"] for r in rows if r.get("workspace_id")])
     for r in rows:
         r["workspace"] = names.get(r.get("workspace_id") or "", "")
-    return {"payments": rows}
+        r["kind"] = "credits" if r.get("topup_id") else "plan"
+    return rows
+
+
+@router.get("/payments")
+@limiter.limit("60/minute")
+async def list_payments(request: Request, f: PaymentFilters = Depends(), user: dict = Depends(require_platform_staff)) -> dict:
+    return {"payments": await _payments(f, PAYMENTS_MAX)}
+
+
+@router.get("/payments/export.csv")
+@limiter.limit("10/minute")
+async def export_payments(request: Request, f: PaymentFilters = Depends(), staff: dict = Depends(require_action("billing", "approve"))) -> Response:
+    """The payments as they are filtered, as a spreadsheet file. Holds what customers paid, so it needs Approve and is kept in the Team
+    history."""
+    from app.core import staff as ST
+    from app.core.exports import csv_response
+
+    rows = await _payments(f, 5_000)
+    await ST.audit(staff, "export", "billing", after={"what": "payments", "rows": len(rows)})
+    return csv_response(
+        "ekavo-payments",
+        ["Date", "Workspace", "Workspace id", "For", "Amount", "Currency", "Refunded", "Status", "Payment id", "Mode"],
+        [[r.get("at"), r["workspace"], r.get("workspace_id") or "", "Credits" if r["kind"] == "credits" else "Plan", (r.get("amount") or 0) / 100,
+          r.get("currency") or "", (r.get("refunded") or 0) / 100, r.get("refund_status") or r.get("status") or "", r.get("id") or "",
+          r.get("mode") or ""] for r in rows],
+    )
+
+
+_RANGES = {"30d": (30, "day"), "90d": (91, "week"), "12m": (365, "month")}
+
+
+def _buckets(start: datetime, now: datetime, unit: str) -> list[datetime]:
+    """Every day, week (from Monday) or month in the range, so a quiet stretch shows as zero instead of disappearing."""
+    if unit == "month":
+        cur = datetime(start.year, start.month, 1, tzinfo=timezone.utc)
+    else:
+        cur = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
+        if unit == "week":
+            cur -= timedelta(days=cur.weekday())
+    out = []
+    while cur <= now:
+        out.append(cur)
+        if unit == "month":
+            cur = datetime(cur.year + (cur.month == 12), cur.month % 12 + 1, 1, tzinfo=timezone.utc)
+        else:
+            cur += timedelta(days=7 if unit == "week" else 1)
+    return out
+
+
+def _utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+
+
+@router.get("/charts")
+@limiter.limit("30/minute")
+async def charts(request: Request, range: str = Query("90d", pattern="^(30d|90d|12m)$"), user: dict = Depends(require_platform_staff)) -> dict:
+    """Money in (plans and credits, after refunds), payments that went through and failed, workspaces that paid, and money by plan, for
+    the payment mode in use."""
+    days, unit = _RANGES[range]
+    now = datetime.now(timezone.utc)
+    keys = _buckets(now - timedelta(days=days), now, unit)
+    start = keys[0]
+    mode = get_provider().mode
+    trunc = {"$dateTrunc": {"date": "$at", "unit": unit, **({"startOfWeek": "monday"} if unit == "week" else {})}}
+    is_credits = {"$gt": [{"$strLenCP": {"$ifNull": ["$topup_id", ""]}}, 0]}
+    paid_inr = {"$and": [{"$eq": ["$status", "captured"]}, {"$eq": ["$currency", "INR"]}]}
+    net = {"$subtract": ["$amount", {"$ifNull": ["$refunded", 0]}]}
+    rows = await S.payments_col().aggregate([
+        {"$match": {"mode": mode, "at": {"$gte": start}, "status": {"$in": ["captured", "failed"]}}},
+        {"$group": {
+            "_id": trunc,
+            "plans": {"$sum": {"$cond": [{"$and": [paid_inr, {"$not": [is_credits]}]}, net, 0]}},
+            "credits": {"$sum": {"$cond": [{"$and": [paid_inr, is_credits]}, net, 0]}},
+            "paid": {"$sum": {"$cond": [{"$eq": ["$status", "captured"]}, 1, 0]}},
+            "failed": {"$sum": {"$cond": [{"$eq": ["$status", "failed"]}, 1, 0]}},
+            "workspaces": {"$addToSet": {"$cond": [{"$eq": ["$status", "captured"]}, "$workspace_id", "$$REMOVE"]}},
+        }},
+    ]).to_list(400)
+    by_key = {_utc(r["_id"]): r for r in rows}
+    series = []
+    for k in keys:
+        r = by_key.get(k) or {}
+        series.append({
+            "at": k.isoformat(), "plans": int(r.get("plans") or 0), "credits": int(r.get("credits") or 0),
+            "paid": int(r.get("paid") or 0), "failed": int(r.get("failed") or 0),
+            "workspaces": len([w for w in r.get("workspaces") or [] if w]),
+        })
+
+    by_plan: dict[str, int] = {}
+    async for r in S.payments_col().aggregate([
+        {"$match": {"mode": mode, "at": {"$gte": start}, "status": "captured", "currency": "INR", "subscription_id": {"$nin": [None, ""]}}},
+        {"$lookup": {"from": S.subs_col().name, "localField": "subscription_id", "foreignField": "id", "as": "sub"}},
+        {"$group": {"_id": {"$ifNull": [{"$first": "$sub.plan"}, "other"]}, "n": {"$sum": net}}},
+    ]):
+        by_plan[str(r["_id"])] = int(r["n"])
+    return {
+        "range": range, "unit": unit, "currency": "INR", "series": series,
+        "by_plan": [{"plan": k, "amount": v} for k, v in sorted(by_plan.items(), key=lambda kv: -kv[1])],
+    }
 
 
 @router.get("/watch")

@@ -285,8 +285,10 @@ async def run_director(ctx: Any, payload: Any, reporter: Any) -> dict:
     failed = [o for o in outcomes if o.status in ("failed", "stopped")]
     asset_id = state["asset_id"]
     fresh = (await audio_assets.find_one({"id": asset_id, "workspace_id": ctx.workspace_id}) or {}) if asset_id else {}
-    needs_signoff = (settings.goal in ("make_episode", "publish_ready") and bool(asset_id) and not failed
-                     and fresh.get("approval_status") != "approved")
+    # signed off means a person approved it (approving records the master file); starting approved in a workspace with no review
+    # step is not a sign-off for something about to go out
+    signed_off = fresh.get("approval_status") == "approved" and bool(fresh.get("approved_master_media_id"))
+    needs_signoff = settings.goal in ("make_episode", "publish_ready") and bool(asset_id) and not failed and not signed_off
     if needs_signoff:
         await record_decision(
             workspace_id=ctx.workspace_id, user_id=ctx.user_id, agent=AGENT, step="signoff",

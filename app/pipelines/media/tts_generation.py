@@ -64,6 +64,9 @@ _DEEPGRAM_DEFAULT_VOICE = "aura-2-thalia-en"
 # is a brand-new account, so guessing one of those IDs could be simply
 # wrong on this specific account. Fails clearly instead of guessing.
 _PLACEHOLDER_VOICE_IDS = {"piper_lessac", ""}
+# names the Remy screen once offered for voices that don't exist yet (a cloned voice, an adaptive one); a member who saved one
+# gets the default voice instead of a failed narration
+_PLACEHOLDER_VOICE_IDS |= {"eleven_clone", "whisper_custom"}
 
 # Real, confirmed-live language coverage per provider (2026-09-26, WebFetch
 # against each provider's own current docs, not assumed) — used by

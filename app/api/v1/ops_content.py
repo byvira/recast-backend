@@ -196,6 +196,44 @@ async def delete(request: Request, content_id: str, user: dict = Depends(require
     return {"ok": True}
 
 
+class BulkBody(BaseModel):
+    ids: list[str] = Field(..., min_length=1, max_length=200)
+    action: Literal["review", "publish", "unpublish", "delete"]
+    note: str = Field("", max_length=500)
+
+
+@router.post("/bulk")
+@limiter.limit("10/minute")
+async def bulk(request: Request, body: BulkBody, user: dict = Depends(get_current_user)) -> dict:
+    """The same action on many items, each with the checks it has on its own: one that can't take it is left as it was, with the
+    reason. Sending for review needs Edit; putting live, taking down and deleting need Approve."""
+    access = await ST.access_for(user)
+    if not ST.can(access, "content", "edit" if body.action == "review" else "approve"):
+        raise HTTPException(status_code=403, detail="Your role can't do that here.")
+    done: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for content_id in dict.fromkeys(body.ids):
+        try:
+            if body.action == "review":
+                await C.send_for_review(content_id, body.note, user)
+            elif body.action == "publish":
+                doc = await C.get(content_id)
+                await _legal_check(doc, user)
+                await C.publish(content_id, None, body.note, user)
+                await ST.audit(user, "content.published", content_id, after={"kind": doc["kind"], "key": doc["key"], "at": None}, reason=body.note)
+            elif body.action == "unpublish":
+                out = await C.unpublish(content_id)
+                await ST.audit(user, "content.unpublished", content_id, after={"kind": out["kind"], "key": out["key"]}, reason=body.note)
+            else:
+                await C.remove(content_id)
+                await ST.audit(user, "content.deleted", content_id)
+            done.append(content_id)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else (exc.detail or {}).get("message", "This one can't take that action.")
+            skipped.append({"id": content_id, "reason": str(detail)})
+    return {"done": done, "skipped": skipped}
+
+
 @router.get("/{content_id}/versions")
 @limiter.limit("60/minute")
 async def versions(request: Request, content_id: str) -> dict:

@@ -1943,8 +1943,13 @@ def _escape_xml(text: str) -> str:
     )
 
 
+# The public feed lists only episodes a person approved (approving records the master file). Starting approved, as audio does in a
+# workspace with no review step, is enough to use it in drafts but never puts it on a public feed by itself.
+_FEED_READY = {"approval_status": AudioApprovalStatus.APPROVED.value, "approved_master_media_id": {"$nin": [None, ""]}}
+
+
 async def _feed_episode_count(brand_id: str) -> int:
-    return await audio_assets.count_documents({"brand_id": brand_id, "approval_status": AudioApprovalStatus.APPROVED.value})
+    return await audio_assets.count_documents(_FEED_READY | {"brand_id": brand_id})
 
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -2135,7 +2140,7 @@ async def get_podcast_feed_xml(request: Request, token: str) -> Response:
         raise HTTPException(status_code=404, detail="This feed doesn't exist or isn't enabled.")
 
     episodes = await audio_assets.find(
-        {"workspace_id": settings_doc["workspace_id"], "brand_id": settings_doc["brand_id"], "approval_status": AudioApprovalStatus.APPROVED.value, "deleted": {"$ne": True}},
+        _FEED_READY | {"workspace_id": settings_doc["workspace_id"], "brand_id": settings_doc["brand_id"], "deleted": {"$ne": True}},
     ).sort("created_at", -1).limit(200).to_list(length=200)
 
     media_ids = [e.get("approved_master_media_id") or e.get("media_id") for e in episodes]

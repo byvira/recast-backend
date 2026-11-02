@@ -47,6 +47,11 @@ DEFAULT_BOOK: dict[str, Any] = {
         {"id": "credits-1000", "credits": 1_000, "prices": {"INR": 44_900}, "active": True},
         {"id": "credits-2500", "credits": 2_500, "prices": {"INR": 99_900}, "active": True},
     ],
+    # any number of credits a member types, priced by bands: `per_1000` is the price of 1,000 credits in paise, from `from` credits up
+    "custom_credits": {
+        "on": True, "min": 100, "max": 50_000,
+        "bands": [{"from": 1, "per_1000": 50_000}, {"from": 1_000, "per_1000": 45_000}, {"from": 2_500, "per_1000": 40_000}],
+    },
 }
 
 BOOK_CACHE_SECONDS = 10
@@ -73,6 +78,8 @@ def _merge(saved: dict[str, Any]) -> dict[str, Any]:
             out[key] = saved[key]
     if isinstance(saved.get("packs"), list):
         out["packs"] = saved["packs"]
+    if isinstance(saved.get("custom_credits"), dict):
+        out["custom_credits"] = {**out["custom_credits"], **saved["custom_credits"]}
     return out
 
 
@@ -136,7 +143,77 @@ def validate_book(candidate: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"Pack {pid}: the price in INR must be at least {format_amount(MIN_AMOUNT, 'INR')}.")
         clean.append({"id": pid, "credits": credits, "prices": amounts, "active": bool(item.get("active", True))})
     merged["packs"] = clean
+    merged["custom_credits"] = _check_custom(merged["custom_credits"])
     return merged
+
+
+MAX_BANDS = 6
+MAX_CUSTOM_CREDITS = 1_000_000
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_custom(raw: dict[str, Any]) -> dict[str, Any]:
+    """Typed credit amounts: on or off, the smallest and largest amount, and price bands that start at 1 credit, rise in order, and
+    never charge more for each credit as the amount grows."""
+    lo, hi = raw.get("min"), raw.get("max")
+    if not (_whole(lo) and _whole(hi) and 1 <= lo <= hi <= MAX_CUSTOM_CREDITS):
+        raise ValueError(f"Typed credit amounts: the smallest and largest must be whole numbers from 1 to {MAX_CUSTOM_CREDITS:,}, smallest first.")
+    bands = raw.get("bands")
+    if not isinstance(bands, list) or not 1 <= len(bands) <= MAX_BANDS:
+        raise ValueError(f"Typed credit amounts need from 1 to {MAX_BANDS} price bands.")
+    clean = []
+    for band in bands:
+        band = band if isinstance(band, dict) else {}
+        start, rate = band.get("from"), band.get("per_1000")
+        if not (_whole(start) and _whole(rate) and start >= 1 and rate >= MIN_AMOUNT):
+            raise ValueError("Each price band starts at a whole number of credits and has a price of at least Rs 1 for 1,000 credits.")
+        clean.append({"from": start, "per_1000": rate})
+    if clean[0]["from"] != 1:
+        raise ValueError("The first price band starts at 1 credit.")
+    for prev, nxt in zip(clean, clean[1:]):
+        if nxt["from"] <= prev["from"]:
+            raise ValueError("Price bands go from the smallest amount up, each starting above the one before.")
+        if nxt["per_1000"] > prev["per_1000"]:
+            raise ValueError("A larger amount can't cost more for each credit than a smaller one.")
+    if custom_price_raw(lo, clean) < MIN_AMOUNT:
+        raise ValueError("The smallest amount must cost at least Rs 1.")
+    return {"on": bool(raw.get("on", True)), "min": lo, "max": hi, "bands": clean}
+
+
+def custom_price_raw(credits_n: int, bands: list[dict[str, Any]]) -> int:
+    """The price in paise for this many credits at its band's rate, rounded up to a whole rupee, and never above what the next band
+    would charge for its smallest amount (so buying fewer credits never costs more)."""
+    def at(n: int, rate: int) -> int:
+        return -(-n * rate // 100_000) * 100
+
+    band = [b for b in bands if b["from"] <= credits_n][-1]
+    price = at(credits_n, band["per_1000"])
+    for higher in (b for b in bands if b["from"] > credits_n):
+        price = min(price, at(higher["from"], higher["per_1000"]))
+    return max(price, MIN_AMOUNT)
+
+
+def custom_credits() -> dict[str, Any]:
+    return _book["custom_credits"]
+
+
+def quote_credits(credits_n: int) -> dict[str, Any]:
+    """The price for a typed amount, and the next band up when it would give more credits for little more (or the same) money."""
+    cfg = custom_credits()
+    if not cfg["on"]:
+        raise ValueError("Typed credit amounts aren't on sale right now. Pick a pack instead.")
+    if not _whole(credits_n) or not cfg["min"] <= credits_n <= cfg["max"]:
+        raise ValueError(f"Choose from {cfg['min']:,} to {cfg['max']:,} credits.")
+    amount = custom_price_raw(credits_n, cfg["bands"])
+    nxt = next((b for b in cfg["bands"] if b["from"] > credits_n and b["from"] <= cfg["max"]), None)
+    better = None
+    if nxt:
+        nxt_amount = custom_price_raw(nxt["from"], cfg["bands"])
+        better = {"credits": nxt["from"], "amount": nxt_amount, "extra": nxt_amount - amount}
+    return {"credits": credits_n, "amount": amount, "currency": "INR", "label": format_amount(amount, "INR"), "next": better}
 
 
 async def save_book(candidate: dict[str, Any], *, by: str, reason: str) -> dict[str, Any]:

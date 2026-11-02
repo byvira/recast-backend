@@ -317,7 +317,7 @@ async def test_a_cancelled_run_is_written_to_the_activity_log_as_a_warning_not_a
     try:
         run = await runs.create_run(workspace_id="w-act", user_id="u", kind="image", title="Picture")
         await runs._finish(run, "cancelled")
-        assert seen["status"] == "warning" and "cancelled" in seen["title"]
+        assert seen["status"] == "warning" and "cancelled" in seen["title"]["$t"]
     finally:
         activity.record_system = original
         await pipeline_runs.delete_many({"workspace_id": "w-act"})

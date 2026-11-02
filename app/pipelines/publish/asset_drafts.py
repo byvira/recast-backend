@@ -88,7 +88,8 @@ async def words_for_platform(
     if source == target or not text.strip():
         return text
     brand = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id}, {"_id": 0}) or {}
-    hold = await credits.reserve(workspace_id, user_id, _post_action(target), step=f"draft-words:{uuid4().hex}")
+    platform = target
+    hold = await credits.reserve(workspace_id, user_id, _post_action(platform), step=f"draft-words:{uuid4().hex}")
     try:
         enforcement = await merge_member_lexicon_enforcement(_extract_enforcement_data(brand), workspace_id=workspace_id, user_id=user_id)
         task = AgentTask(agent="repurpose", platform=target, content=text, brand_context=build_brand_context(brand),

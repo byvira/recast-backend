@@ -60,6 +60,11 @@ def can_see_admin_rows(role: str) -> bool:
     return _ADMIN_PERMISSION in ROLE_PERMISSIONS.get(role or "", set())
 
 
+# Ekavo staff's own Ops work (platform changes, safety settings) is kept on the staff member's workspace for the Ops screens to
+# read back; it is never part of what that workspace's members see.
+STAFF_ONLY_CATEGORIES = ("platform_ops",)
+
+
 def visibility_filter(workspace_id: str, user_id: str, role: str) -> dict:
     """Rows this member may see — minus the ones they deleted from their own
     log (``hidden_by``; per-member, the audit trail itself is untouched)."""
@@ -69,7 +74,7 @@ def visibility_filter(workspace_id: str, user_id: str, role: str) -> dict:
     ]
     if can_see_admin_rows(role):
         clauses.append({"visibility": "admins"})
-    return {"workspace_id": workspace_id, "$or": clauses, "hidden_by": {"$ne": user_id}}
+    return {"workspace_id": workspace_id, "$or": clauses, "hidden_by": {"$ne": user_id}, "category": {"$nin": list(STAFF_ONLY_CATEGORIES)}}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -109,6 +114,8 @@ def is_unread(doc: dict, user_id: str, read_before: Optional[datetime]) -> bool:
 
 
 def is_visible_to(entry: dict, user_id: str, role: str) -> bool:
+    if entry.get("category") in STAFF_ONLY_CATEGORIES:
+        return False
     vis = entry.get("visibility")
     if vis == "workspace":
         return True

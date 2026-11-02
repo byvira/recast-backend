@@ -112,3 +112,15 @@ def test_the_default_platform_is_always_one_of_the_brands_platforms():
     assert ps.resolve_default_platform(["LinkedIn", "X"], "Nope", "X") == "X"
     assert ps.resolve_default_platform(["LinkedIn", "X"], None, "Gone") == "LinkedIn"
     assert ps.resolve_default_platform([], "X", "X") is None
+
+
+def test_setup_answers_fill_the_matching_profile_fields_only_when_empty():
+    from app.pipelines.brand.profile_sections import identity_from_answers
+
+    business = {"brand_type": "Business", "identity": {}, "icp_data": {"companySize": "SMBs (10-100)", "jobTitles": "Founder, CEO"}}
+    assert identity_from_answers(business) == {"target_market": "SMBs (10-100): Founder, CEO"}
+    assert identity_from_answers({**business, "identity": {"target_market": "Mine"}}) == {}
+    product = {"brand_type": "Product", "identity": {}, "positioning_data": {"uvp": "Ship in weeks"}}
+    assert identity_from_answers(product) == {"one_liner": "Ship in weeks"}
+    personal = {"brand_type": "Personal Brand", "identity": {}, "pillars_data": {"pillars": ["Design", "", "Startups"]}}
+    assert identity_from_answers(personal) == {"content_pillars": ["Design", "Startups"]}

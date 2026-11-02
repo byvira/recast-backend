@@ -256,9 +256,21 @@ async def signup_new_user(
 async def create_workspace(client: httpx.AsyncClient, name: str, tier: str = "duo") -> str:
     """Create a workspace as the given (already-authenticated) client's user.
     Returns the new workspace_id."""
-    res = await client.post("/api/v1/workspaces/", json={"name": name, "tier": tier})
+    # a bigger team comes with a paid plan, so the workspace is made as Single and given its size here, as a test shortcut for a
+    # workspace whose plan covers it
+    res = await client.post("/api/v1/workspaces/", json={"name": name, "tier": "single"})
     assert res.status_code == 201, res.text
-    return res.json()["workspace_id"]
+    workspace_id = res.json()["workspace_id"]
+    if tier != "single":
+        from app.core.tiers import TIER_DEFAULTS
+        from app.db.mongo import workspaces as _workspaces
+        from app.models.workspace import WorkspaceTier
+        from app.shared import entitlements as _entitlements
+
+        size = WorkspaceTier(tier)
+        await _workspaces.update_one({"id": workspace_id}, {"$set": {"tier": size.value, "tier_config": TIER_DEFAULTS[size].model_dump()}})
+        _entitlements.forget(workspace_id)
+    return workspace_id
 
 
 async def invite_and_accept(
@@ -398,3 +410,12 @@ def _no_live_content_guard_checks(monkeypatch):
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "CONTENT_GUARD_LIVE_CHECKS", False)
+
+
+
+@pytest.fixture(autouse=True)
+def _many_workspaces_for_setup(monkeypatch):
+    """Tests make extra workspaces as a setup step; the rule that more workspaces need a paid plan is tested on its own."""
+    from app.api.v1 import workspace as workspace_routes
+
+    monkeypatch.setattr(workspace_routes, "EXTRA_WORKSPACES_NEED_PLAN", False)

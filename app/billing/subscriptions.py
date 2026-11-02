@@ -511,6 +511,15 @@ async def apply_to_workspace(sub: dict[str, Any]) -> None:
     await apply_for_workspace(sub["workspace_id"])
 
 
+def _size_for(plan: str) -> dict[str, Any]:
+    """The team size a plan gives (Free and Single one person, Duo two, Large a team), so the size always follows what is paid for."""
+    from app.core.tiers import TIER_DEFAULTS
+    from app.models.workspace import WorkspaceTier
+
+    tier = WorkspaceTier({"duo": "duo", "large": "large"}.get(plan, "single"))
+    return {"tier": tier.value, "tier_config": TIER_DEFAULTS[tier].model_dump()}
+
+
 async def apply_for_workspace(workspace_id: str) -> None:
     """Put the workspace on the plan it pays for now. A workspace can hold two subscriptions for a while (one ending at the renewal and
     the change taking over), so every one of them is looked at and the newest one in force wins. With none in force it is on Free:
@@ -528,13 +537,13 @@ async def apply_for_workspace(workspace_id: str) -> None:
         values: dict[str, Any] = {
             "plan": sub["plan"], "plan_seats": int(sub.get("seats") or 1), "billing_status": billing_status_of(sub, now),
             "billing_day": int(sub.get("billing_day") or 1) if sub.get("anchored") else 1, "subscription_id": sub["id"],
-            "billing_period": sub.get("period"),
+            "billing_period": sub.get("period"), **_size_for(sub["plan"]),
         }
     else:
         sub = subs[0]
         values = {
             "plan": "free", "plan_seats": None, "billing_status": "paused" if sub.get("status") == "paused" else "ended",
-            "billing_day": 1, "subscription_id": sub["id"], "billing_period": None,
+            "billing_day": 1, "subscription_id": sub["id"], "billing_period": None, **_size_for("free"),
         }
     ws = await workspaces.find_one({"id": workspace_id}, {k: 1 for k in values})
     if ws and all(ws.get(k) == v for k, v in values.items()):

@@ -433,6 +433,14 @@ async def save_brand_step(
     await brand_profiles.update_one(
         {"id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": step_update}
     )
+    # setup answers that match a profile field fill it when it is still empty, so they show in the profile too
+    from app.pipelines.brand.profile_sections import identity_from_answers
+
+    extras = identity_from_answers({**doc, **step_update})
+    if extras:
+        await brand_profiles.update_one(
+            {"id": brand_id, "workspace_id": ctx.workspace_id}, {"$set": {f"identity.{k}": v for k, v in extras.items()}}
+        )
 
     if "voice_tone" in step_update:
         from app.shared.governance_events import emit_brand_voice_updated

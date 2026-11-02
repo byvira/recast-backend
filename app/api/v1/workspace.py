@@ -53,9 +53,14 @@ FREE_WORKSPACE_MESSAGE = (
 )
 
 
+# More workspaces come with a paid plan, whether or not plan limits are on: a free account has one workspace, and each paid plan
+# covers a set number. Off only for tests that make many workspaces as a setup step.
+EXTRA_WORKSPACES_NEED_PLAN = True
+
+
 async def _room_for_new_workspace(user_id: str, billing_group_id: Optional[str]) -> Optional[str]:
-    """The paid workspace a new workspace joins, after checking there is room on its plan. While plans are off the link is kept
-    for later and nothing more is checked; once they are on, a workspace that joins no paid plan is the owner's one free one."""
+    """The paid workspace a new workspace joins, after checking there is room on its plan; a workspace that joins no paid plan is
+    the owner's one free one."""
     if billing_group_id:
         group = await workspaces.find_one(
             {"id": billing_group_id, "owner_id": user_id, "deleted_at": {"$exists": False}}, {"id": 1, "billing_group_id": 1, "tier_config": 1}
@@ -63,9 +68,20 @@ async def _room_for_new_workspace(user_id: str, billing_group_id: Optional[str])
         if not group or group.get("billing_group_id"):
             raise HTTPException(status_code=400, detail="Choose one of your own workspaces that pays for its plan.")
         ent = await entitlements.entitlements_for(billing_group_id)
-        await entitlements.require_room(ent, "owned_workspaces", len(await entitlements.group_ids(billing_group_id)))
+        used = len(await entitlements.group_ids(billing_group_id))
+        if EXTRA_WORKSPACES_NEED_PLAN and not ent.enforced:
+            # the plan's own allowance, even while plan limits are off
+            allowed = ent.plan_limits.get("owned_workspaces")
+            if ent.plan == "free" or (allowed is not None and used >= allowed):
+                raise HTTPException(status_code=402, detail={
+                    "code": "limit_reached", "limit": "owned_workspaces", "allowed": allowed if ent.plan != "free" else 1, "used": used,
+                    "plan": ent.plan, "enforced": False,
+                    "message": f"The {ent.plan_name} plan covers {allowed} workspaces and they are all in use. Move to a bigger plan to add more.",
+                })
+        else:
+            await entitlements.require_room(ent, "owned_workspaces", used)
         return billing_group_id
-    if settings.BILLING_ENFORCED:
+    if settings.BILLING_ENFORCED or EXTRA_WORKSPACES_NEED_PLAN:
         standalone_free = 0
         async for w in workspaces.find(
             {"owner_id": user_id, "deleted_at": {"$exists": False}, "billing_group_id": {"$exists": False}}, {"id": 1}
@@ -95,6 +111,8 @@ async def create_workspace(
     if owned >= MAX_OWNED_WORKSPACES:
         raise HTTPException(status_code=400, detail=f"You already own {MAX_OWNED_WORKSPACES} workspaces, which is the most one person can have.")
     group_id = await _room_for_new_workspace(current_user["id"], body.billing_group_id)
+    if not await size_allowed(group_id, body.tier.value):
+        raise _plan_needed(body.tier.value)
     now = datetime.now(timezone.utc)
     workspace_id = str(uuid4())
     tier_config = TIER_DEFAULTS[body.tier]
@@ -135,6 +153,32 @@ async def create_workspace(
         "tier": body.tier.value,
         "tier_config": tier_config.model_dump(),
     }
+
+
+# A team size beyond one person is part of a paid plan: Duo for two, Large for a team. The size follows the plan the workspace pays
+# for (or shares, or was given free from Ops); choosing a bigger one is choosing that plan, which goes through payment first.
+_SIZE_RANK = {"single": 0, "duo": 1, "large": 2}
+_PLAN_SIZE = {"free": "single", "single": "single", "duo": "duo", "large": "large"}
+
+
+async def size_allowed(payer_id: Optional[str], tier: str) -> bool:
+    """Whether the plan of the workspace that pays (its own, or the one whose plan it shares) covers this team size."""
+    if _SIZE_RANK.get(tier, 0) == 0:
+        return True
+    if not payer_id:
+        return False
+    payer = await workspaces.find_one({"id": payer_id, "deleted_at": {"$exists": False}}, {"plan": 1, "entitlement_overrides": 1}) or {}
+    override = entitlements._active_override(payer)
+    plan = override.get("plan") or payer.get("plan") or "free"
+    return _SIZE_RANK[_PLAN_SIZE.get(plan, "single")] >= _SIZE_RANK[tier]
+
+
+def _plan_needed(tier: str) -> HTTPException:
+    name = "Duo" if tier == "duo" else "Large"
+    return HTTPException(status_code=402, detail={
+        "code": "plan_needed", "plan": tier,
+        "message": f"A {name} workspace comes with the {name} plan. Start as Single, then pay for {name} to add your team.",
+    })
 
 
 @router.get("/")
@@ -291,13 +335,15 @@ async def setup_workspace(
 ) -> dict[str, Any]:
     """Onboarding's "set up your workspace": names and sizes the workspace made at signup, instead of making a second one. Only its
     owner, and only once; after that the name is changed in Settings."""
-    ws = await workspaces.find_one({"id": workspace_id, "deleted_at": {"$exists": False}}, {"owner_id": 1, "setup_pending": 1})
+    ws = await workspaces.find_one({"id": workspace_id, "deleted_at": {"$exists": False}}, {"owner_id": 1, "setup_pending": 1, "billing_group_id": 1})
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found.")
     if ws.get("owner_id") != current_user["id"]:
         raise HTTPException(status_code=403, detail="Only the owner can set up this workspace.")
     if not ws.get("setup_pending"):
         raise HTTPException(status_code=409, detail="This workspace is already set up. Change its name in Settings.")
+    if not await size_allowed(ws.get("billing_group_id") or workspace_id, body.tier.value):
+        raise _plan_needed(body.tier.value)
     now = datetime.now(timezone.utc)
     await workspaces.update_one(
         {"id": workspace_id, "setup_pending": True},

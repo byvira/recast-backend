@@ -181,3 +181,26 @@ def test_what_the_editor_writes_comes_back_the_same_after_cleaning():
                  '<pre>', '<blockquote>', '<hr>', 'target="_blank"', 'mailto:a@b.co', '<u>', '<s>', '<sup>', '<sub>'):
         assert kept in out, kept
     assert "<input" not in out and "color: inherit" not in out and "nofollow" not in out
+
+
+async def test_many_posts_take_one_action_and_each_one_left_says_why(signup_user):
+    master, _ = await _master(signup_user)
+    writer, _ = await _writer(master, signup_user)
+    ids = []
+    for n in range(3):
+        res = await writer.post("/api/v1/ops/content", json={"kind": "post", "data": _post(f"Batch post {n} {uuid4().hex[:5]}")})
+        ids.append(res.json()["item"]["id"])
+    # a writer sends for review in one go, but can't put live
+    res = await writer.post("/api/v1/ops/content/bulk", json={"ids": ids, "action": "review"})
+    assert res.status_code == 200 and sorted(res.json()["done"]) == sorted(ids)
+    assert (await writer.post("/api/v1/ops/content/bulk", json={"ids": ids, "action": "publish"})).status_code == 403
+    res = await master.post("/api/v1/ops/content/bulk", json={"ids": ids[:2], "action": "publish", "note": "Batch"})
+    assert sorted(res.json()["done"]) == sorted(ids[:2])
+    # a live post isn't deleted; the others are, and the reason comes back
+    res = (await master.post("/api/v1/ops/content/bulk", json={"ids": ids, "action": "delete"})).json()
+    assert res["done"] == [ids[2]] and {s["id"] for s in res["skipped"]} == set(ids[:2])
+    assert "Take it off the website first" in res["skipped"][0]["reason"]
+    res = (await master.post("/api/v1/ops/content/bulk", json={"ids": ids[:2], "action": "unpublish"})).json()
+    assert sorted(res["done"]) == sorted(ids[:2])
+    listed = (await master.get("/api/v1/ops/content", params={"kind": "post", "status": "live"})).json()["items"]
+    assert not any(r["id"] in ids for r in listed)

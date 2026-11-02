@@ -140,7 +140,40 @@ async def get_summary(
     previous_totals = await get_previous_totals(ctx.workspace_id)
     summary["previous_totals"] = previous_totals
     summary["deltas"] = compute_deltas(summary["totals"], previous_totals)
+    summary["trend"] = await _reach_trend(db, ctx.workspace_id)
     return summary
+
+
+TREND_DAYS = 14
+
+
+async def _reach_trend(db, workspace_id: str) -> list[dict]:
+    """The last two weeks, one point a day: reach and impressions from the daily snapshots (a day with no snapshot keeps the day
+    before's numbers, as totals only grow), and how many posts went out that day."""
+    from datetime import date, timedelta as _td
+
+    today = datetime.now(timezone.utc).date()
+    days = [today - _td(days=n) for n in range(TREND_DAYS - 1, -1, -1)]
+    start = days[0].isoformat()
+    snaps = {d["date"]: d.get("totals") or {} async for d in db["analytics_daily_snapshots"].find(
+        {"workspace_id": workspace_id, "date": {"$gte": start}}, {"_id": 0, "date": 1, "totals": 1})}
+    before = await db["analytics_daily_snapshots"].find_one(
+        {"workspace_id": workspace_id, "date": {"$lt": start}}, {"_id": 0, "totals": 1}, sort=[("date", -1)])
+    posted: dict[str, int] = {}
+    since = datetime.combine(days[0], datetime.min.time(), tzinfo=timezone.utc)
+    async for row in db["content_pieces"].aggregate([
+        # counted the way the Home page's "Total published" counts them: published posts, dated by when they went out
+        {"$match": {"workspace_id": workspace_id, "stage": "published", "updated_at": {"$gte": since}}},
+        {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%d", "date": {"$ifNull": ["$published_at", "$updated_at"]}}}, "n": {"$sum": 1}}},
+    ]):
+        posted[row["_id"]] = int(row["n"])
+    last = (before or {}).get("totals") or {}
+    out = []
+    for d in days:
+        key = d.isoformat() if isinstance(d, date) else str(d)
+        last = snaps.get(key) or last
+        out.append({"date": key, "reach": int(last.get("reach") or 0), "impressions": int(last.get("impressions") or 0), "posts": posted.get(key, 0)})
+    return out
 
 
 async def _window_counts(coll, base: dict, since_week: datetime, since_prior: datetime, field: str = "created_at") -> dict:

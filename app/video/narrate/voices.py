@@ -37,7 +37,7 @@ Forget = Callable[[str], Awaitable[None]]
 def premium_ready(voice_settings: Any) -> bool:
     """True when ElevenLabs is switched on and the member picked a real voice, so the shared speech code will use it first."""
     voice_id = (getattr(voice_settings, "tts_voice", "") or "").strip().lower()
-    return bool(settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED and voice_id and voice_id not in ("piper_lessac",)
+    return bool(settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED and voice_id and voice_id not in ("piper_lessac", "eleven_clone", "whisper_custom")
                 and not voice_id.startswith("aura-"))
 
 

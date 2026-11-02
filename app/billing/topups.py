@@ -73,13 +73,18 @@ async def offer(workspace: dict[str, Any]) -> dict[str, Any]:
              "label": PR.format_amount(p["prices"]["INR"], "INR")}
             for p in PR.packs() if p["prices"].get("INR")
         ],
+        "custom": PR.custom_credits() if PR.custom_credits()["on"] else None,
         "can_buy": ok, "reason": why, "bought_left": left, "bought_until": until.isoformat() if until else None,
         "lasts_months": credits.BOUGHT_MONTHS,
     }
 
 
-async def start(*, workspace: dict[str, Any], user: dict[str, Any], pack_id: str, provider: Optional[PaymentProvider] = None) -> dict[str, Any]:
-    """Open the provider's order for one pack and return what the browser's payment window needs."""
+async def start(
+    *, workspace: dict[str, Any], user: dict[str, Any], pack_id: Optional[str] = None, credits_n: Optional[int] = None,
+    provider: Optional[PaymentProvider] = None,
+) -> dict[str, Any]:
+    """Open the provider's order for one pack, or for a typed number of credits priced on the server, and return what the browser's
+    payment window needs."""
     provider = provider or get_provider()
     await PR.load_book()
     cfg = await invoices.load_settings()
@@ -92,10 +97,18 @@ async def start(*, workspace: dict[str, Any], user: dict[str, Any], pack_id: str
     ok, why = await can_buy(workspace)
     if not ok:
         raise _refuse(403, why or "Credit packs can't be bought right now.")
-    pack = PR.pack(pack_id)
-    if not pack or not pack["prices"].get("INR"):
-        raise _refuse(404, "That pack is no longer on sale. Pick another.")
-    amount = int(pack["prices"]["INR"])
+    if credits_n is not None:
+        try:
+            quote = PR.quote_credits(credits_n)
+        except ValueError as exc:
+            raise _refuse(400, str(exc)) from exc
+        pack = {"id": "custom", "credits": credits_n}
+        amount = int(quote["amount"])
+    else:
+        pack = PR.pack(pack_id or "")
+        if not pack or not pack["prices"].get("INR"):
+            raise _refuse(404, "That pack is no longer on sale. Pick another.")
+        amount = int(pack["prices"]["INR"])
     pool = await credits.pool_for(workspace["id"])
     topup_id = uuid4().hex
     try:

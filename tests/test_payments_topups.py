@@ -242,3 +242,40 @@ def test_a_price_book_with_mistakes_is_refused():
     ):
         with pytest.raises(ValueError, match=words):
             PR.validate_book(broken)
+
+
+def test_a_typed_amount_is_priced_by_its_band_and_fewer_credits_never_cost_more():
+    bands = PR.DEFAULT_BOOK["custom_credits"]["bands"]
+    price = {n: PR.custom_price_raw(n, bands) for n in (100, 999, 1_000, 2_499, 2_500, 3_001)}
+    assert price[100] == 5_000 and price[1_000] == 45_000 and price[2_500] == 100_000
+    assert price[999] <= price[1_000] and price[2_499] <= price[2_500]
+    assert price[3_001] == 120_100   # rounded up to a whole rupee
+    for broken, words in (
+        ({"on": True, "min": 100, "max": 50, "bands": bands}, "smallest first"),
+        ({"on": True, "min": 100, "max": 500, "bands": [{"from": 10, "per_1000": 50_000}]}, "starts at 1 credit"),
+        ({"on": True, "min": 100, "max": 500, "bands": [{"from": 1, "per_1000": 40_000}, {"from": 50, "per_1000": 50_000}]}, "cost more"),
+    ):
+        with pytest.raises(ValueError, match=words):
+            PR.validate_book({**PR.DEFAULT_BOOK, "custom_credits": broken})
+
+
+async def test_a_member_buys_the_number_of_credits_they_type(signup_user, standin):  # noqa: F811
+    client, ws_id, _ = await _paid(signup_user, standin, plan="single")
+    offer = (await client.get("/api/v1/billing/topups")).json()
+    assert offer["custom"]["min"] == 100 and offer["custom"]["max"] == 50_000
+    quote = (await client.get("/api/v1/billing/topup/quote", params={"credits": 999})).json()
+    assert quote["amount"] == 45_000 and quote["next"] == {"credits": 1_000, "amount": 45_000, "extra": 0}
+    assert (await client.get("/api/v1/billing/topup/quote", params={"credits": 50})).status_code == 400
+    assert (await client.post("/api/v1/billing/topup", json={"credits": 60_000})).status_code == 400
+    assert (await client.post("/api/v1/billing/topup", json={"pack_id": "credits-500", "credits": 700})).status_code == 422
+    res = await client.post("/api/v1/billing/topup", json={"credits": 700})
+    assert res.status_code == 200, res.text
+    assert res.json()["topup"]["amount"] == 35_000 and res.json()["topup"]["credits"] == 700
+    order_id = res.json()["checkout"]["order_id"]
+    payment = standin.pay_order(order_id, status="captured")
+    done = await client.post("/api/v1/billing/topup/confirm", json={
+        "razorpay_payment_id": payment["id"], "razorpay_order_id": order_id, "razorpay_signature": _sig(order_id, payment["id"]),
+    })
+    assert done.status_code == 200 and done.json()["topup"]["status"] == "paid"
+    pool = await credits.pool_for(ws_id)
+    assert (await credits.bought_left(pool.id))[0] == 700

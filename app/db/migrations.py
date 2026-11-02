@@ -183,6 +183,25 @@ async def _em_dash_setting_matches_behaviour(db) -> None:
     await _mark_applied(db, migration_id, {"modified": res.modified_count})
 
 
+async def _identity_from_setup_answers(db) -> None:
+    """Setup answers that match a profile field (a Business's ideal customer, a Product's value proposition, a Personal Brand's
+    pillars) were kept only with the answers, so the profile's matching field stayed empty. Each empty one is filled from them."""
+    migration_id = "2026-11-02_identity_from_setup_answers"
+    if await _already_applied(db, migration_id):
+        return
+    from app.db.mongo import brand_profiles
+    from app.pipelines.brand.profile_sections import identity_from_answers
+
+    filled = 0
+    async for doc in brand_profiles.find({"brand_type": {"$in": ["Business", "Product", "Personal Brand"]}}, {"_id": 0}):
+        extras = identity_from_answers(doc)
+        if extras:
+            await brand_profiles.update_one({"id": doc["id"]}, {"$set": {f"identity.{k}": v for k, v in extras.items()}})
+            filled += 1
+    logger.info("migration %s: filled profile fields from setup answers on %d brands", migration_id, filled)
+    await _mark_applied(db, migration_id, {"brands": filled})
+
+
 async def run_startup_migrations() -> None:
     db = get_db()
     for migration in (
@@ -192,6 +211,7 @@ async def run_startup_migrations() -> None:
         _approve_waiting_posts_without_review,
         _approve_waiting_media_without_review,
         _em_dash_setting_matches_behaviour,
+        _identity_from_setup_answers,
     ):
         try:
             await migration(db)

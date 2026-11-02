@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, model_validator
 
 from app.billing import invoices
 from app.billing import plans as P
@@ -207,10 +207,11 @@ async def coverage(request: Request, user: dict = Depends(get_current_user)) -> 
     for w in owned:
         if w.get("billing_group_id"):
             continue
-        if (w.get("plan") or "free") == "free":
+        # a plan given free from Ops counts the same as one paid for
+        ent = await entitlements.entitlements_for(w["id"])
+        if ent.plan == "free":
             free_used_by = free_used_by or w.get("name") or "a workspace"
             continue
-        ent = await entitlements.entitlements_for(w["id"])
         used = len(await entitlements.group_ids(w["id"]))
         plans.append({
             "workspace_id": w["id"], "name": w.get("name") or "", "plan": ent.plan, "plan_name": ent.plan_name,
@@ -308,7 +309,28 @@ async def topup_offer(request: Request, ctx: WorkspaceContext = Depends(get_curr
 
 
 class TopUpRequest(BaseModel):
-    pack_id: str = Field(..., min_length=3, max_length=40)
+    """A pack by its name, or a typed number of credits (priced here, never by the browser)."""
+    pack_id: Optional[str] = Field(default=None, min_length=3, max_length=40)
+    credits: Optional[int] = Field(default=None, ge=1, le=1_000_000)
+
+    @model_validator(mode="after")
+    def _one(self) -> "TopUpRequest":
+        if (self.pack_id is None) == (self.credits is None):
+            raise ValueError("Choose a pack or a number of credits.")
+        return self
+
+
+@router.get("/topup/quote")
+@limiter.limit("120/minute")
+async def topup_quote(request: Request, credits: int = Query(..., ge=1, le=1_000_000), ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict:
+    """What a typed number of credits costs, and the next band up, so the price shows while the member types."""
+    from app.billing import prices as PR
+
+    await PR.load_book()
+    try:
+        return PR.quote_credits(credits)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/topup")
@@ -317,7 +339,7 @@ async def topup_start(request: Request, body: TopUpRequest, ctx: WorkspaceContex
     """Open the payment for one credit pack."""
     from app.billing import topups
 
-    return await topups.start(workspace=ctx.workspace, user=ctx.user, pack_id=body.pack_id)
+    return await topups.start(workspace=ctx.workspace, user=ctx.user, pack_id=body.pack_id, credits_n=body.credits)
 
 
 class TopUpConfirm(BaseModel):

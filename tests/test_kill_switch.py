@@ -232,3 +232,20 @@ async def test_scheduler_says_so_once_a_day_when_a_halted_workspace_holds_a_camp
     rows = await activity_entries.find({"workspace_id": ws_id, "_id": {"$regex": "^system:campaign_held:"}}).to_list(10)
     assert len(rows) == 1
     assert "waiting" in rows[0]["title"] and "Held campaign" in rows[0]["title"]
+
+
+async def test_odette_lists_the_rules_and_alert_line_it_really_uses(signup_user):
+    import pathlib
+
+    from app.agents.supervisor import thresholds as T
+    from app.agents.supervisor.service import RULES
+
+    client, _ = await signup_user()
+    team = await create_workspace(client, "Team rules", tier="large")
+    dash = (await client.get("/api/v1/supervisor/dashboard", headers={"X-Workspace-Id": team})).json()
+    assert dash["daily_publish_cap"] == T.DAILY_PUBLISH_CAP["large"]
+    assert dash["rules"] and {r["id"] for r in dash["rules"]} <= {r["id"] for r in RULES}
+    # every rule the screen names is one the rules code raises, so the list can't name a rule that doesn't run
+    folder = pathlib.Path(__file__).parents[1] / "app" / "agents" / "supervisor"
+    code = "".join(f.read_text(encoding="utf-8") for f in folder.glob("*.py") if f.name != "service.py")
+    assert all(f'"{r["id"]}"' in code for r in RULES)

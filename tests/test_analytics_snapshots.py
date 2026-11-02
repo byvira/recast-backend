@@ -146,6 +146,25 @@ async def test_summary_endpoint_includes_real_delta_when_week_old_snapshot_exist
     assert body["deltas"]["reach"] == 50.0  # (750 - 500) / 500 * 100
 
 
+
+async def test_summary_carries_two_weeks_of_reach_and_the_days_posts_went_out(api_client):
+    from app.db.mongo import content_pieces
+
+    await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Trend WS")
+    today = datetime.now(timezone.utc)
+    # a snapshot from before the window carries into its first days; a day without one keeps the day before's numbers
+    await analytics_daily_snapshots.insert_many([
+        {"workspace_id": ws_id, "date": (today - timedelta(days=20)).date().isoformat(), "totals": {"reach": 100, "impressions": 300}},
+        {"workspace_id": ws_id, "date": (today - timedelta(days=3)).date().isoformat(), "totals": {"reach": 400, "impressions": 900}},
+    ])
+    await content_pieces.insert_one({"piece_id": "p-trend", "workspace_id": ws_id, "stage": "published", "updated_at": today - timedelta(days=3)})
+    trend = (await api_client.get("/api/v1/analytics/summary", headers={"X-Workspace-Id": ws_id})).json()["trend"]
+    assert len(trend) == 14 and trend[-1]["date"] == today.date().isoformat()
+    assert trend[0]["reach"] == 100 and trend[-1]["reach"] == 400 and trend[-4]["reach"] == 400 and trend[-5]["reach"] == 100
+    assert trend[-4]["posts"] == 1 and sum(p["posts"] for p in trend) == 1
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Top performers (Library "Top Performers (Top 5%)" tab, PAR-013)
 # ─────────────────────────────────────────────────────────────────────────────
