@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import field_validator, BaseModel, Field
 
@@ -43,9 +43,15 @@ class MediaUploadLimits(BaseModel):
     audio_mb: int = Field(20, ge=1, le=100)
 
 
+# What a workspace is for, chosen in onboarding and when making one: the person's own content, or a business, brand or clients. A
+# label for people and for Ops; it changes no limits.
+WorkspacePurpose = Literal["personal", "work"]
+
+
 class CreateWorkspaceBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     tier: WorkspaceTier
+    purpose: WorkspacePurpose = "work"
     # A paid workspace the caller owns whose plan this new workspace shares (see app.shared.entitlements). Empty: it stands alone.
     billing_group_id: Optional[str] = Field(None, max_length=64)
 

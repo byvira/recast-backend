@@ -30,8 +30,8 @@ async def test_create_workspace_adds_owner_membership(api_client):
     assert members[0]["email"] == profile["email"]
 
 
-async def test_list_workspaces_includes_personal_and_created(api_client):
-    await signup_new_user(api_client)
+async def test_list_workspaces_includes_the_first_one_and_created(api_client):
+    profile = await signup_new_user(api_client)
     ws_id = await create_workspace(api_client, "Team Space")
 
     res = await api_client.get("/api/v1/workspaces/")
@@ -39,9 +39,9 @@ async def test_list_workspaces_includes_personal_and_created(api_client):
     items = res.json()["items"]
     ws_ids = {i["workspace_id"] for i in items}
     assert ws_id in ws_ids
-    # Personal workspace auto-created at signup should also be listed.
-    assert len(items) >= 2
-    assert any(i["is_personal"] for i in items)
+    # the workspace made at signup is an ordinary one, waiting to be set up
+    first = next(i for i in items if i["workspace_id"] == profile["default_workspace_id"])
+    assert first["is_personal"] is False and first["setup_pending"] is True
 
 
 async def test_get_workspace_requires_membership(api_client, make_client):
@@ -116,11 +116,53 @@ async def test_delete_workspace_owner_only(api_client, make_client):
     assert res.status_code == 404
 
 
-async def test_delete_personal_workspace_rejected(api_client):
+async def test_a_persons_only_workspace_cannot_be_deleted(api_client):
     profile = await signup_new_user(api_client)
-    personal_ws_id = profile["default_workspace_id"]
-    res = await api_client.delete(f"/api/v1/workspaces/{personal_ws_id}")
-    assert res.status_code == 400
+    first = profile["default_workspace_id"]
+    res = await api_client.delete(f"/api/v1/workspaces/{first}")
+    assert res.status_code == 400 and "only workspace" in res.json()["detail"]
+    # with another one, the first can go
+    await create_workspace(api_client, "Second")
+    assert (await api_client.delete(f"/api/v1/workspaces/{first}")).status_code == 200
+
+
+async def test_onboarding_sets_up_the_first_workspace_instead_of_making_a_second(api_client, make_client):
+    profile = await signup_new_user(api_client)
+    first = profile["default_workspace_id"]
+    res = await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Asha Studio", "tier": "duo", "purpose": "work"})
+    assert res.status_code == 200, res.text
+    items = (await api_client.get("/api/v1/workspaces/")).json()["items"]
+    assert len(items) == 1
+    assert items[0]["name"] == "Asha Studio" and items[0]["tier"] == "duo" and items[0]["setup_pending"] is False
+    assert items[0]["purpose"] == "work"
+    # the label can change any time
+    assert (await api_client.patch(f"/api/v1/workspaces/{first}", json={"purpose": "personal"})).status_code == 200
+    assert (await api_client.get("/api/v1/workspaces/")).json()["items"][0]["purpose"] == "personal"
+    # a setup without the choice is refused
+    assert (await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "x", "tier": "single"})).status_code in (409, 422)
+    detail = (await api_client.get(f"/api/v1/workspaces/{first}")).json()
+    assert detail["tier_config"]["seats"] == 2
+    # once only, and only by its owner
+    assert (await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Again", "tier": "single", "purpose": "work"})).status_code == 409
+    other = make_client()
+    await signup_new_user(other)
+    assert (await other.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Mine", "tier": "single", "purpose": "personal"})).status_code in (403, 404)
+
+
+async def test_with_plans_on_a_free_person_sets_up_their_workspace_and_a_second_waits_for_a_plan(api_client, monkeypatch):
+    from app.core.config import settings
+    from app.shared import entitlements
+
+    monkeypatch.setattr(settings, "BILLING_ENFORCED", True)
+    entitlements.forget()
+    profile = await signup_new_user(api_client)
+    first = profile["default_workspace_id"]
+    # onboarding never runs into the one-workspace limit
+    assert (await api_client.post(f"/api/v1/workspaces/{first}/setup", json={"name": "Solo", "tier": "single", "purpose": "personal"})).status_code == 200
+    # a second one on Free is the upgrade moment
+    res = await api_client.post("/api/v1/workspaces/", json={"name": "Second brand", "tier": "single"})
+    assert res.status_code == 402 and res.json()["detail"]["limit"] == "owned_workspaces"
+    entitlements.forget()
 
 
 async def test_set_member_role_owner_only(api_client, make_client):

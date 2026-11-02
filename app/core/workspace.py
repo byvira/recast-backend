@@ -110,9 +110,9 @@ async def _resolve_workspace(
     if not workspace_id and not requested:
         workspace_id = await usable_workspace_id(current_user["id"])
         if not workspace_id:
-            # An account made while the first save failed has no workspace at all. Its personal one is made now, so the person is not
+            # An account made while the first save failed has no workspace at all. Its first one is made now, so the person is not
             # left with every page refused.
-            workspace_id = await create_personal_workspace(
+            workspace_id = await create_first_workspace(
                 current_user["id"], name=f"{current_user.get('name') or 'My'}'s Workspace"
             )
         if workspace_id:
@@ -230,11 +230,12 @@ def require_stream(permission: str):
     return _dep
 
 
-async def create_personal_workspace(user_id: str, name: str) -> str:
-    """Create a user's personal workspace + owner membership. Returns the workspace id.
+async def create_first_workspace(user_id: str, name: str) -> str:
+    """Create a person's first workspace and their owner membership. Returns the workspace id.
 
-    Called from signup. Personal workspaces are ``is_personal=True`` (single seat,
-    non-deletable) and snapshot the ``single`` tier config.
+    Called from signup. It is an ordinary workspace (it can have a team and a plan), marked ``setup_pending`` until onboarding gives
+    it its real name and size, so onboarding sets up this one instead of making a second. Everyone has one workspace to start with;
+    more come from "New workspace", on a plan with room for them.
     """
     now = datetime.now(timezone.utc)
     workspace_id = str(uuid4())
@@ -247,7 +248,8 @@ async def create_personal_workspace(user_id: str, name: str) -> str:
             "tier": WorkspaceTier.SINGLE.value,
             "tier_config": tier_config.model_dump(),
             "owner_id": user_id,
-            "is_personal": True,
+            "is_personal": False,
+            "setup_pending": True,
             "language": None,
             "created_at": now,
             "updated_at": now,

@@ -191,6 +191,10 @@ async def list_my_workspaces(
                 "name": w["name"],
                 "tier": w.get("tier"),
                 "is_personal": w.get("is_personal", False),
+                # made at signup and not set up by onboarding yet
+                "setup_pending": bool(w.get("setup_pending")) and w.get("owner_id") == current_user["id"],
+                # personal or work, as chosen in onboarding (None for one made before the choice existed)
+                "purpose": w.get("purpose"),
                 "role": m["role"],
                 "is_default": w["id"] == default_id,
             }

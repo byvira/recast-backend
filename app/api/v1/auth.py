@@ -35,7 +35,7 @@ from app.core.otp import (
     normalize_identifier,
     verify_otp,
 )
-from app.core.workspace import create_personal_workspace
+from app.core.workspace import create_first_workspace
 from app.db.mongo import brand_profiles, users
 from app.shared import invites
 from app.db.redis import get_redis
@@ -323,10 +323,9 @@ async def signup(
     if invite:
         await invites.use_invite(invite, user_id)
 
-    # Every user gets a personal workspace — the default scope for all per-account
-    # resources until they create or join another. Non-deletable, single seat.
+    # Every person starts with one workspace, which onboarding sets up (name and size). More come later from "New workspace".
     workspace_name = f"{body.name}'s Workspace"
-    personal_ws_id = await create_personal_workspace(user_id, name=workspace_name)
+    personal_ws_id = await create_first_workspace(user_id, name=workspace_name)
     await users.update_one(
         {"id": user_id}, {"$set": {"default_workspace_id": personal_ws_id}}
     )

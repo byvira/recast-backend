@@ -15,7 +15,7 @@ from app.core.notifications import send_templated_email
 from app.core.rbac import require_permission
 from app.core.tiers import TIER_DEFAULTS
 from app.db.mongo import users, workspaces, workspace_members
-from app.models.workspace import CreateWorkspaceBody, MediaUploadLimits, WorkspaceRole
+from app.models.workspace import CreateWorkspaceBody, MediaUploadLimits, WorkspacePurpose, WorkspaceRole, WorkspaceTier
 from app.shared import entitlements
 
 #: How long a deleted workspace is kept before everything in it is removed for good.
@@ -28,6 +28,8 @@ router = APIRouter()
 
 class UpdateWorkspaceBody(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
+    # personal or work: a label, changeable any time
+    purpose: Optional[WorkspacePurpose] = None
     # Workspace-wide default language — see app.shared.language for the
     # precedence chain that consumes this. Opaque string, no validation
     # against any fixed set; omit the field (not empty string) to leave the
@@ -104,6 +106,7 @@ async def create_workspace(
         "tier_config": tier_config.model_dump(),
         "owner_id": current_user["id"],
         "is_personal": False,
+        "purpose": body.purpose,
         "language": None,
         **({"billing_group_id": group_id} if group_id else {}),
         "created_at": now,
@@ -160,6 +163,10 @@ async def list_my_workspaces(
             "name": w["name"],
             "tier": w.get("tier"),
             "is_personal": w.get("is_personal", False),
+            # made at signup and not set up by onboarding yet (only its owner is asked to)
+            "setup_pending": bool(w.get("setup_pending")) and w.get("owner_id") == current_user["id"],
+            # personal or work, as chosen in onboarding (None for one made before the choice existed)
+            "purpose": w.get("purpose"),
             "role": m["role"],
             "is_default": w["id"] == default_id,
             "policy": policy_for(w),
@@ -262,6 +269,39 @@ async def update_workspace(
     return {"workspace_id": workspace_id, **updates, "policy": policy_for(fresh)}
 
 
+class SetupWorkspaceBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    tier: WorkspaceTier
+    purpose: WorkspacePurpose
+
+
+@router.post("/{workspace_id}/setup")
+@limiter.limit("10/minute")
+async def setup_workspace(
+    request: Request,
+    workspace_id: str,
+    body: SetupWorkspaceBody,
+    current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Onboarding's "set up your workspace": names and sizes the workspace made at signup, instead of making a second one. Only its
+    owner, and only once; after that the name is changed in Settings."""
+    ws = await workspaces.find_one({"id": workspace_id, "deleted_at": {"$exists": False}}, {"owner_id": 1, "setup_pending": 1})
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    if ws.get("owner_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Only the owner can set up this workspace.")
+    if not ws.get("setup_pending"):
+        raise HTTPException(status_code=409, detail="This workspace is already set up. Change its name in Settings.")
+    now = datetime.now(timezone.utc)
+    await workspaces.update_one(
+        {"id": workspace_id, "setup_pending": True},
+        {"$set": {"name": body.name.strip(), "tier": body.tier.value, "tier_config": TIER_DEFAULTS[body.tier].model_dump(),
+                  "purpose": body.purpose, "setup_pending": False, "updated_at": now}},
+    )
+    entitlements.forget(workspace_id)
+    return {"workspace_id": workspace_id, "name": body.name.strip(), "tier": body.tier.value, "purpose": body.purpose}
+
+
 @router.delete("/{workspace_id}")
 @limiter.limit("10/minute")
 async def delete_workspace(
@@ -269,7 +309,7 @@ async def delete_workspace(
     workspace_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Delete a workspace — owner only, and personal workspaces cannot be deleted."""
+    """Delete a workspace: owner only. A person's only workspace cannot be deleted, so nobody is ever left without one."""
     ws = await workspaces.find_one({"id": workspace_id})
     if not ws:
         raise HTTPException(status_code=404, detail="Workspace not found.")
@@ -277,6 +317,11 @@ async def delete_workspace(
         raise HTTPException(status_code=403, detail="Only the owner can delete a workspace.")
     if ws.get("is_personal"):
         raise HTTPException(status_code=400, detail="Personal workspaces cannot be deleted.")
+    others = await workspaces.count_documents(
+        {"owner_id": current_user["id"], "id": {"$ne": workspace_id}, "deleted_at": {"$exists": False}}
+    )
+    if not others:
+        raise HTTPException(status_code=400, detail="This is your only workspace, so it can't be deleted. Make another one first if you want to start fresh.")
     # a deleted workspace can be restored, so its plan is not cancelled for the owner: they cancel it first, and it is never
     # charged for a workspace nobody can open
     from app.billing import subscriptions as billing_subs
