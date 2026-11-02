@@ -44,8 +44,20 @@ def frontend(path: str) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}{path}"
 
 
-def invite_url(code: str) -> str:
-    return frontend(f"/signup?invite={code}")
+_PAID_PLANS = ("single", "duo", "large")
+
+
+def invite_url(code: str, plan: Optional[str] = None) -> str:
+    """The sign-up link in an invite. Someone who chose a paid plan on the pricing page before joining the waitlist gets it in the
+    link, so after setting up their workspace they land on paying for that plan."""
+    tail = f"&plan={plan}" if plan in _PAID_PLANS else ""
+    return frontend(f"/signup?invite={code}{tail}")
+
+
+def plan_from_source(source: Optional[str]) -> Optional[str]:
+    """The plan a waitlist sign-up came from (its source is "pricing-duo" and so on), or None."""
+    plan = (source or "").removeprefix("pricing-")
+    return plan if (source or "").startswith("pricing-") and plan in _PAID_PLANS else None
 
 
 def invite_state(invite: dict[str, Any], now: Optional[datetime] = None) -> str:
@@ -133,7 +145,7 @@ async def send_invite(lead: dict[str, Any], invite: dict[str, Any], code: str, *
     """Send the invite (or the reminder) email. The invite is marked sent only when the email went."""
     variables = {
         "NAME": _display_name(lead["email"]),
-        "INVITE_URL": invite_url(code),
+        "INVITE_URL": invite_url(code, plan_from_source(lead.get("source"))),
         "EXPIRES": _expires_text(_aware(invite["expires_at"])),
         "UNSUBSCRIBE_URL": unsubscribe_url(lead["id"]),
     }

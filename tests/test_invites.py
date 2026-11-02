@@ -480,3 +480,11 @@ async def test_create_invite_reports_email_delivery_failure(api_client, monkeypa
     # The invite itself was still created and is usable.
     res = await api_client.get(f"/api/v1/invites/{ws_id}")
     assert len(res.json()["items"]) == 1
+
+
+def test_an_invite_carries_the_plan_chosen_on_the_pricing_page():
+    from app.shared.invites import invite_url, plan_from_source
+
+    assert invite_url("abc", plan_from_source("pricing-large")).endswith("/signup?invite=abc&plan=large")
+    assert invite_url("abc", plan_from_source("waitlist-page")).endswith("/signup?invite=abc")
+    assert plan_from_source("pricing-free") is None and plan_from_source(None) is None
