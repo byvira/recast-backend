@@ -17,6 +17,7 @@ from app.billing import subscriptions as S
 from app.billing import watch
 from app.billing.provider import ProviderError, get_provider
 from app.core.auth import require_platform_staff
+from app.core.staff import require_action
 from app.core.middleware import limiter
 from app.db.mongo import get_db
 
@@ -125,7 +126,7 @@ class RefundIn(BaseModel):
 
 @router.post("/workspace/{workspace_id}/refund")
 @limiter.limit("10/minute")
-async def refund(request: Request, workspace_id: str, body: RefundIn, user: dict = Depends(_ops_owner)) -> dict:
+async def refund(request: Request, workspace_id: str, body: RefundIn, user: dict = Depends(require_action("billing", "approve"))) -> dict:
     """Give money back through Razorpay (it lands in a few days). The receipt shows it once Razorpay confirms."""
     pay = await S.payments_col().find_one({"id": body.payment_id, "workspace_id": workspace_id[:80], "status": "captured"}, {"_id": 0})
     if not pay:
@@ -135,6 +136,11 @@ async def refund(request: Request, workspace_id: str, body: RefundIn, user: dict
         raise HTTPException(status_code=400, detail="This payment was already refunded in full.")
     if body.amount is not None and body.amount > left:
         raise HTTPException(status_code=400, detail=f"That is more than is left to refund ({PR.format_amount(left, pay.get('currency') or 'INR')}).")
+    limit = int((await invoices.load_settings()).get("refund_limit") or 0)
+    if not user.get("is_master_admin") and (body.amount or left) > limit:
+        raise HTTPException(status_code=403, detail=(
+            f"Refunds above {PR.format_amount(limit, pay.get('currency') or 'INR')} need the Master Admin. Refund less, or ask them."
+        ))
     try:
         result = await get_provider().refund(body.payment_id, amount=body.amount, notes={"reason": body.reason[:200], "by": user["id"]})
     except ProviderError as exc:
@@ -151,7 +157,7 @@ class ExtendIn(BaseModel):
 
 @router.post("/workspace/{workspace_id}/extend")
 @limiter.limit("10/minute")
-async def extend(request: Request, workspace_id: str, body: ExtendIn, user: dict = Depends(_ops_owner)) -> dict:
+async def extend(request: Request, workspace_id: str, body: ExtendIn, user: dict = Depends(require_action("billing", "approve"))) -> dict:
     """More days of grace after a failed payment, for a bank outage or a customer who asked; everything keeps working meanwhile."""
     sub = await S.subs_col().find_one({"workspace_id": workspace_id[:80], "status": {"$in": ["pending", "halted"]}}, {"_id": 0})
     if not sub:
@@ -195,6 +201,7 @@ class SettingsIn(BaseModel):
     gst_registered: Optional[bool] = None
     checkout_open: Optional[bool] = None
     invoice_prefix: Optional[str] = Field(default=None, min_length=2, max_length=8, pattern=r"^[A-Z0-9]+$")
+    refund_limit: Optional[int] = Field(default=None, ge=0, le=100_000_000)
     reason: str = Field(..., min_length=3, max_length=300)
 
 

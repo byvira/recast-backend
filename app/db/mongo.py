@@ -571,6 +571,15 @@ async def create_indexes() -> None:
     from app.shared import push as _push
 
     await _push.create_indexes()
+    from app.core import staff as _staff
+
+    await _staff.create_indexes()
+    from app.api.v1 import ops_workspaces as _ops_workspaces
+
+    await _ops_workspaces.create_indexes()
+    from app.site_content import store as _site_content
+
+    await _site_content.create_indexes()
     await _billing_watch.create_indexes()
     await _billing_lifecycle.create_indexes()
     from app.health import errors as _errors

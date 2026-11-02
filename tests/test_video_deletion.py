@@ -11,6 +11,15 @@ from app.db.mongo import content_pieces, get_db, media_assets
 from app.video import deletion
 from tests.conftest import create_workspace
 
+
+async def _make_master(profile: dict) -> None:
+    """The signed-in person becomes the Master Admin, so Ops video routes (Team area Video, Approve for takedowns) let them in."""
+    from app.core import staff as ST
+    from app.db.mongo import users
+
+    await users.update_one({"id": profile["id"]}, {"$set": {"is_master_admin": True, "is_platform_staff": True}})
+    ST.forget()
+
 M = "/api/v1/video-media"
 
 
@@ -197,7 +206,8 @@ async def _review_link(client, ws, h):
 async def test_a_report_from_a_review_link_switches_the_link_off_and_staff_can_remove_the_video(signup_user, storage):
     from app.main import app
 
-    client, _ = await signup_user()
+    client, profile = await signup_user()
+    await _make_master(profile)
     ws = await create_workspace(client, f"Rep {uuid4().hex[:6]}")
     h = {"X-Workspace-Id": ws}
     mid, token = await _review_link(client, ws, h)
@@ -226,7 +236,8 @@ async def test_a_report_from_a_review_link_switches_the_link_off_and_staff_can_r
 async def test_a_bot_report_is_ignored_and_a_dismissed_report_leaves_the_video(signup_user, storage):
     from app.main import app
 
-    client, _ = await signup_user()
+    client, profile = await signup_user()
+    await _make_master(profile)
     ws = await create_workspace(client, f"Rep {uuid4().hex[:6]}")
     h = {"X-Workspace-Id": ws}
     mid, token = await _review_link(client, ws, h)

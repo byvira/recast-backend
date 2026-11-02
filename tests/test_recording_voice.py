@@ -121,10 +121,15 @@ async def test_ops_shows_an_estimated_cost_only_when_a_rate_is_set(signup_user, 
     async def staff():
         return {"id": "staff"}
 
+    from app.core import staff as ST
+    from app.db.mongo import users
     from app.main import app
     app.dependency_overrides[auth.require_platform_staff] = staff
     try:
-        client, _ = await signup_user()
+        client, profile = await signup_user()
+        # Ops video pages need the Video area in Team; the Master Admin has every area
+        await users.update_one({"id": profile["id"]}, {"$set": {"is_master_admin": True, "is_platform_staff": True}})
+        ST.forget()
         free = (await client.get("/api/v1/ops/video/usage")).json()
         mine = next(w for w in free["workspaces"] if w["workspace_id"] == ws)
         assert free["cost_per_minute_usd"] == 0 and mine["estimated_cost_usd"] == 0

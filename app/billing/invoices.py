@@ -31,6 +31,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "gst_registered": False,
     "invoice_prefix": "EKV",
     "checkout_open": False,
+    # refunds above this (paise) need the Master Admin; staff with Approve on billing refund up to it
+    "refund_limit": 500_000,
 }
 
 

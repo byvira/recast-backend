@@ -695,6 +695,9 @@ async def list_staff(actor: Actor = Depends(_actor)) -> list[dict]:
     return await service.list_staff(get_db())
 
 
+TEAM_MANAGES_ACCESS = "Prompt library access is set in Ops, Team now: Approve on Prompts lets someone publish."
+
+
 class StaffBody(BaseModel):
     email: str = Field(..., max_length=200)
     name: str = Field("", max_length=120)
@@ -703,18 +706,9 @@ class StaffBody(BaseModel):
 
 @router.post("/staff")
 async def add_staff(body: StaffBody, actor: Actor = Depends(_actor)) -> list[dict]:
-    db = get_db()
+    """Who may draft or publish prompts is set in Ops, Team, so access lives in one place."""
     service.require(actor, "manage_access")
-    staff = await service.list_staff(db)
-    problem = rules.check_add_staff(staff, body.email, body.role)
-    if problem:
-        raise LibraryError("invalid", problem)
-    mail = body.email.strip().lower()
-    await db.prompt_library_staff.insert_one({"_id": mail, "id": uuid.uuid4().hex[:12], "email": mail,
-                                              "name": body.name.strip() or mail.split("@")[0], "role": body.role,
-                                              "addedAt": service.now_iso()})
-    await service.audit(db, actor, "access.add", "access", mail, body.role)
-    return await service.list_staff(db)
+    raise LibraryError("invalid", TEAM_MANAGES_ACCESS)
 
 
 class RoleBody(BaseModel):
@@ -723,16 +717,9 @@ class RoleBody(BaseModel):
 
 @router.put("/staff/{member_id}")
 async def change_staff_role(member_id: str, body: RoleBody, actor: Actor = Depends(_actor)) -> list[dict]:
-    db = get_db()
+    """Set in Ops, Team: Approve on Prompts lets someone publish."""
     service.require(actor, "manage_access")
-    staff = await service.list_staff(db)
-    problem = rules.check_set_role(staff, member_id, body.role)
-    if problem:
-        raise LibraryError("invalid", problem)
-    who = next(s for s in staff if s["id"] == member_id)
-    await db.prompt_library_staff.update_one({"id": member_id}, {"$set": {"role": body.role}})
-    await service.audit(db, actor, "access.role", "access", f"{who['name']} is now {body.role}")
-    return await service.list_staff(db)
+    raise LibraryError("invalid", TEAM_MANAGES_ACCESS)
 
 
 @router.delete("/staff/{member_id}")

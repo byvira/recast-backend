@@ -307,22 +307,14 @@ async def test_proposed_prompts_and_folders_live_in_the_library_until_a_file_exi
     assert await db.prompt_proposed.find_one({"_id": CHIP}) is None
 
 
-async def test_the_access_list_keeps_an_admin_and_roles_take_effect(signup_user):
+async def test_library_access_is_read_here_and_given_in_team(signup_user):
+    """The access list still shows who can do what, but access is given in Ops, Team (tests/test_ops_team.py checks the roles)."""
     admin, _ = await _person(signup_user, master=True)
-    staff, profile = await _person(signup_user, staff=True)
+    _, profile = await _person(signup_user, staff=True)
     listed = (await admin.get(f"{API}/staff")).json()
     assert any(s["role"] == "admin" for s in listed)
     added = await admin.post(f"{API}/staff", json={"email": profile["email"], "name": "Pat", "role": "publisher"})
-    assert added.status_code == 200
-    assert (await staff.get(f"{API}/session")).json()["role"] == "publisher"
-    me = next(s for s in added.json() if s["role"] == "admin")
-    admins = [s for s in added.json() if s["role"] == "admin"]
-    if len(admins) == 1:
-        assert (await admin.delete(f"{API}/staff/{me['id']}")).status_code == 400
-        assert (await admin.put(f"{API}/staff/{me['id']}", json={"role": "editor"})).status_code == 400
-    pat = next(s for s in added.json() if s["email"] == profile["email"])
-    assert (await admin.delete(f"{API}/staff/{pat['id']}")).status_code == 200
-    assert (await staff.get(f"{API}/session")).json()["role"] == "editor"
+    assert added.status_code == 400 and "Team" in added.json()["detail"]["message"]
 
 
 async def test_comments_notify_the_others_and_dismissing_keeps_them_gone(signup_user):

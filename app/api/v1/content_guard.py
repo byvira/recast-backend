@@ -18,6 +18,7 @@ from app.agents.content_guard import config as guard_config
 from app.agents.content_guard.agent import review_text, rule_screen
 from app.agents.content_guard.rules import CATEGORIES, ai_phrases_in, clean_text
 from app.core.auth import require_platform_staff
+from app.core.staff import require_action
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, require
 from app.db.mongo import safety_events
@@ -202,7 +203,7 @@ class ReviewBody(BaseModel):
 
 @ops_router.patch("/events/{event_id}/review")
 @limiter.limit("60/minute")
-async def review_event(request: Request, event_id: str, body: ReviewBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+async def review_event(request: Request, event_id: str, body: ReviewBody, user: dict = Depends(require_action("safety", "approve"))) -> dict[str, Any]:
     """Mark a caught item as looked at, with an optional note."""
     from bson import ObjectId
     from bson.errors import InvalidId

@@ -21,6 +21,9 @@ from app.api.v1 import brand as brand_router
 from app.api.v1 import onboarding_draft as drafts_router
 from app.api.v1 import users as users_router
 from app.api.v1 import push as push_router
+from app.api.v1 import ops_team as ops_team_router
+from app.api.v1 import ops_workspaces as ops_workspaces_router
+from app.core.staff import area_guard
 from app.api.v1 import audio_assets, content, post_targets, suggest, destinations, image_assets, media, oauth, publish
 from app.api.v1 import presets as presets_router
 from app.api.v1 import campaigns as campaigns_router
@@ -403,9 +406,9 @@ app.include_router(waitlist_router.router, prefix="/api/v1/waitlist", tags=["Wai
 from app.api.v1 import contact as contact_router
 app.include_router(contact_router.router, prefix="/api/v1/contact", tags=["Contact"])
 from app.api.v1 import ops_leads as ops_leads_router
-app.include_router(ops_leads_router.router, prefix="/api/v1/ops/leads", tags=["Ops Leads"])
+app.include_router(ops_leads_router.router, prefix="/api/v1/ops/leads", tags=["Ops Leads"], dependencies=[Depends(area_guard("leads"))])
 from app.api.v1 import ops_invites as ops_invites_router
-app.include_router(ops_invites_router.router, prefix="/api/v1/ops/leads", tags=["Ops Leads"])
+app.include_router(ops_invites_router.router, prefix="/api/v1/ops/leads", tags=["Ops Leads"], dependencies=[Depends(area_guard("leads"))])
 from app.api.v1 import jobs as jobs_router
 app.include_router(jobs_router.router, prefix="/api/v1/jobs", tags=["Jobs"])
 app.include_router(invites.router, prefix="/api/v1/invites", tags=["Invites"])
@@ -440,9 +443,13 @@ from app.api.v1 import public_video as public_video_router
 app.include_router(public_video_router.router, prefix="/api/v1/public/video", tags=["Public video API"])
 from app.api.v1 import public_status as public_status_router
 app.include_router(public_status_router.router, prefix="/api/v1/public/status", tags=["Status"])
+from app.api.v1 import public_pricing as public_pricing_router
+app.include_router(public_pricing_router.router, prefix="/api/v1/public/pricing", tags=["Billing"])
+from app.api.v1 import public_content as public_content_router
+app.include_router(public_content_router.router, prefix="/api/v1/public/content", tags=["Website"])
 app.include_router(public_status_router.client_errors_router, prefix="/api/v1/client-errors", tags=["Status"])
 from app.api.v1 import ops_health as ops_health_router
-app.include_router(ops_health_router.router, prefix="/api/v1/ops/health", tags=["Ops"])
+app.include_router(ops_health_router.router, prefix="/api/v1/ops/health", tags=["Ops"], dependencies=[Depends(area_guard("health"))])
 from app.api.v1 import video_projects as video_projects_router
 from app.api.v1 import video_transcripts as video_transcripts_router
 from app.api.v1 import video_analysis as video_analysis_router
@@ -470,7 +477,7 @@ app.include_router(video_fonts_router.router, prefix="/api/v1/video-fonts", tags
 from app.api.v1 import lineage as lineage_router
 app.include_router(lineage_router.router, prefix="/api/v1/lineage", tags=["Lineage"])
 app.include_router(worker_router.router, prefix="/api/v1/worker", tags=["Video worker"])
-app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["Ops"])
+app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["Ops"], dependencies=[Depends(area_guard("video"))])
 # The old app.api.v1.image decoy (every handler was a placeholder — see
 # pow/audio_image_pipeline/00-overview.md Finding #1) was never registered
 # here and its files (app/api/v1/image.py, app/pipelines/image/*,
@@ -488,26 +495,31 @@ app.include_router(supervisor_router.router, prefix="/api/v1/supervisor", tags=[
 app.include_router(platforms_router.router, prefix="/api/v1/platforms", tags=["Platforms"])
 # The settings routes come first: their fixed paths ("/configs", "/{key}/config") must be matched before the
 # overview router's "/{key}" detail route would take them.
-app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
-app.include_router(ops_platform_lifecycle_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
-app.include_router(ops_platform_connections_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
-app.include_router(ops_platform_insights_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"])
+app.include_router(ops_platforms_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"], dependencies=[Depends(area_guard("platforms"))])
+app.include_router(ops_platform_lifecycle_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"], dependencies=[Depends(area_guard("platforms"))])
+app.include_router(ops_platform_connections_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"], dependencies=[Depends(area_guard("platforms"))])
+app.include_router(ops_platform_insights_router.router, prefix="/api/v1/ops/platforms", tags=["Ops"], dependencies=[Depends(area_guard("platforms"))])
 app.include_router(content_guard_module.router, prefix="/api/v1/content-guard", tags=["Content Guard"])
-app.include_router(content_guard_module.ops_router, prefix="/api/v1/ops/content-safety", tags=["Ops"])
-app.include_router(ops_banners_module.router, prefix="/api/v1/ops/banners", tags=["Ops"])
+app.include_router(content_guard_module.ops_router, prefix="/api/v1/ops/content-safety", tags=["Ops"], dependencies=[Depends(area_guard("safety"))])
+app.include_router(ops_banners_module.router, prefix="/api/v1/ops/banners", tags=["Ops"], dependencies=[Depends(area_guard("banners"))])
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
-app.include_router(ops_plans_router.router, prefix="/api/v1/ops/plans", tags=["Ops"])
+app.include_router(ops_plans_router.router, prefix="/api/v1/ops/plans", tags=["Ops"], dependencies=[Depends(area_guard("plans"))])
 app.include_router(billing_router.router, prefix="/api/v1/billing", tags=["Billing"])
-app.include_router(ops_billing_router.router, prefix="/api/v1/ops/billing", tags=["Ops"])
-app.include_router(ops_prompts_router.router, prefix="/api/v1/ops/prompt-library", tags=["Ops"])
+app.include_router(ops_billing_router.router, prefix="/api/v1/ops/billing", tags=["Ops"], dependencies=[Depends(area_guard("billing"))])
+app.include_router(ops_team_router.router, prefix="/api/v1/ops/team", tags=["Ops"])
+app.include_router(ops_workspaces_router.router, prefix="/api/v1/ops/workspaces", tags=["Ops"], dependencies=[Depends(area_guard("workspaces"))])
+app.include_router(ops_workspaces_router.people_router, prefix="/api/v1/ops/people", tags=["Ops"], dependencies=[Depends(area_guard("workspaces"))])
+from app.api.v1 import ops_content as ops_content_router
+app.include_router(ops_content_router.router, prefix="/api/v1/ops/content", tags=["Ops"], dependencies=[Depends(area_guard("content"))])
+app.include_router(ops_prompts_router.router, prefix="/api/v1/ops/prompt-library", tags=["Ops"], dependencies=[Depends(area_guard("prompts"))])
 app.include_router(ops_prompts_router.lists_router, prefix="/api/v1/prompt-lists", tags=["Content"])
-app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"])
+app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"], dependencies=[Depends(area_guard("ai"))])
 app.include_router(support_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(support_assistant_router.router, prefix="/api/v1/support", tags=["Support"])
-app.include_router(ops_support_router.router, prefix="/api/v1/ops/support", tags=["Ops"])
-app.include_router(ops_support_tools_router.router, prefix="/api/v1/ops/support", tags=["Ops"])
-app.include_router(ops_support_incidents_router.router, prefix="/api/v1/ops/support", tags=["Ops"])
+app.include_router(ops_support_router.router, prefix="/api/v1/ops/support", tags=["Ops"], dependencies=[Depends(area_guard("support"))])
+app.include_router(ops_support_tools_router.router, prefix="/api/v1/ops/support", tags=["Ops"], dependencies=[Depends(area_guard("support"))])
+app.include_router(ops_support_incidents_router.router, prefix="/api/v1/ops/support", tags=["Ops"], dependencies=[Depends(area_guard("support"))])
 app.include_router(activity_router.router, prefix="/api/v1/activity", tags=["Activity"])
 app.include_router(push_router.router, prefix="/api/v1/push", tags=["Device notifications"])
 app.include_router(

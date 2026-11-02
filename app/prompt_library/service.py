@@ -238,9 +238,15 @@ async def ensure_staff_seeded(db) -> None:
 async def actor_for(db, user: dict) -> Actor:
     """Who is acting, and their library role. Master admins are always admin. Platform staff who are not on the access
     list are editors: they can draft and test, and nothing they do goes live without a publisher."""
+    from app.core import staff as ST
+
     email = str(user.get("email") or "").lower()
     if user.get("is_master_admin"):
         role = "admin"
+    elif ST.team_record(user):
+        # set in Ops, Team: Admins run the library, Approve on Prompts publishes, anyone else drafts
+        access = await ST.access_for(user)
+        role = "admin" if access.get("level") == "admin" else "publisher" if ST.can(access, "prompts", "approve") else "editor"
     else:
         member = await db.prompt_library_staff.find_one({"_id": email}) if email else None
         role = member["role"] if member else "editor"

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.core.auth import require_platform_staff
+from app.core.staff import require_action
 from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, require_ops_admin
@@ -84,7 +85,7 @@ class TakedownBody(BaseModel):
 
 @router.post("/takedown")
 @limiter.limit("20/minute")
-async def takedown(request: Request, body: TakedownBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+async def takedown(request: Request, body: TakedownBody, user: dict = Depends(require_action("video", "approve"))) -> dict[str, Any]:
     """Take a video down at once: the file, everything made from it, every review link that shows it. The reason is recorded."""
     from app.video import deletion
 
@@ -112,7 +113,7 @@ class ResolveBody(BaseModel):
 
 @router.post("/takedowns/{request_id}/resolve")
 @limiter.limit("30/minute")
-async def resolve_takedown(request: Request, request_id: str, body: ResolveBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+async def resolve_takedown(request: Request, request_id: str, body: ResolveBody, user: dict = Depends(require_action("video", "approve"))) -> dict[str, Any]:
     from datetime import datetime, timezone
 
     from app.db.mongo import get_db

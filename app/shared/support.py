@@ -151,7 +151,8 @@ _ROLE_RANK = {SupportStaffRole.AGENT.value: 1, SupportStaffRole.LEAD.value: 2, S
 
 
 def staff_role(user: dict) -> str:
-    """A master admin is a support admin; otherwise the stored role, default agent."""
+    """A master admin is a support admin; otherwise the stored role, default agent. For people on Team the stored role is written
+    by Team from their access (app.core.staff.sync_module_roles), so it is set in one place."""
     if user.get("is_master_admin"):
         return SupportStaffRole.ADMIN.value
     role = user.get("support_role")

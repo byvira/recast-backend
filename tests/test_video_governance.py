@@ -21,10 +21,20 @@ def _staff_on(app):
     app.dependency_overrides[auth.require_platform_staff] = staff
 
 
+async def _make_master(profile: dict) -> None:
+    """The signed-in person becomes the Master Admin, so Ops video routes (Team area Video, Approve for takedowns) let them in."""
+    from app.core import staff as ST
+    from app.db.mongo import users
+
+    await users.update_one({"id": profile["id"]}, {"$set": {"is_master_admin": True, "is_platform_staff": True}})
+    ST.forget()
+
+
 async def test_video_is_on_by_default_and_staff_can_switch_it_off_and_on_for_one_workspace(signup_user):
     from app.main import app
 
-    client, _ = await signup_user()
+    client, profile = await signup_user()
+    await _make_master(profile)
     ws = await create_workspace(client, f"Access {uuid4().hex[:6]}")
     other = await create_workspace(client, f"Other {uuid4().hex[:6]}")
     assert await governance.video_enabled(ws) is True

@@ -30,6 +30,7 @@ async def plans(request: Request, ctx: WorkspaceContext = Depends(get_current_wo
     from app.billing import plans as P
     from app.shared import entitlements
 
+    await PR.load_book()
     left = await S.founding_left()
     cfg = await invoices.load_settings()
     provider = get_provider()
