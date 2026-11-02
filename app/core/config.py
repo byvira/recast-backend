@@ -252,6 +252,10 @@ class Settings(BaseSettings):
     RAZORPAY_KEY_ID: str = ""
     RAZORPAY_KEY_SECRET: str = ""
     RAZORPAY_WEBHOOK_SECRET: str = ""
+    # Device notifications (web push). Without the key pair, nothing is sent and Settings says so.
+    VAPID_PUBLIC_KEY: str = ""
+    VAPID_PRIVATE_KEY: str = ""
+    VAPID_SUBJECT: str = "mailto:hello@mail.byvirastudio.com"
 
     # Gemini Nano Banana (gemini-2.5-flash-image) as a PAID fallback for
     # image generation, only used once Cloudflare's free ~173/day is

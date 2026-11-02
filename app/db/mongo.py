@@ -568,6 +568,9 @@ async def create_indexes() -> None:
     from app.billing import topups as _topups
 
     await _topups.create_indexes()
+    from app.shared import push as _push
+
+    await _push.create_indexes()
     await _billing_watch.create_indexes()
     await _billing_lifecycle.create_indexes()
     from app.health import errors as _errors

@@ -159,6 +159,11 @@ async def upsert_entry(entry: dict) -> Optional[dict]:
         await activity_entries.update_one({"_id": entry_id}, change, upsert=True)
         doc["_id"] = entry_id
         await _publish_live(doc)
+        # a new notice, or one whose outcome changed, may also go to members' devices
+        if previous is None or previous.get("status") != doc.get("status"):
+            from app.shared import push
+
+            push.notify_soon(doc)
         return doc
     except Exception as exc:  # noqa: BLE001
         logger.error("activity upsert failed for %s: %s", entry.get("_id"), exc)
