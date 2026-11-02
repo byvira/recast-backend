@@ -98,10 +98,17 @@ async def refresh_connection(account: dict) -> tuple[bool, str]:
 
 async def _refresh_connection_locked(account: dict) -> tuple[bool, str]:
     platform = account["platform"]
-    try:
-        publisher = get_publisher(platform)
-    except ValueError:
-        return False, f"No publisher for {platform}"
+    if platform == "google":
+        # The Google sign-in link has no publisher of its own. It is renewed like YouTube, through Google's token address with the same
+        # client; without this every renewal failed and the link quietly expired.
+        from app.pipelines.publish.google.oauth import refresh_google_token
+
+        renew = refresh_google_token
+    else:
+        try:
+            renew = get_publisher(platform).refresh_token
+        except ValueError:
+            return False, f"No publisher for {platform}"
     encrypted_refresh = account.get("refresh_token")
     # Meta's login has no refresh token: it is renewed by exchanging the current access token for a new one, and the
     # Meta publishers' refresh_token() takes that access token. These connections used to be skipped here (no refresh
@@ -111,7 +118,7 @@ async def _refresh_connection_locked(account: dict) -> tuple[bool, str]:
         return False, "No refresh token on file — this platform needs a manual reconnect."
     try:
         refresh_token_value = decrypt_token(account["access_token"] if renews_with_access_token else encrypted_refresh)
-        new_token = await publisher.refresh_token(refresh_token_value)
+        new_token = await renew(refresh_token_value)
         await save_token(
             workspace_id=account["workspace_id"],
             platform=platform,

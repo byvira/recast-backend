@@ -175,6 +175,9 @@ async def generate_campaign_batch(
         await update_run(workspace_id, f"campaign:{campaign['id']}", steps_done=day_index + 1)
         if run_id:
             await pipeline_runs.mark_progress(run_id, day_index + 1, days)
+            # the next day's writing starts now; without this the run kept saying it was making pictures
+            if day_index + 1 < days:
+                await pipeline_runs.set_stage(run_id, f"Writing day {day_index + 2} of {days}", media_kinds=[])
 
     async def remember_angles(angles: list[str]) -> None:
         await get_campaigns_collection().update_one({"id": campaign["id"]}, {"$set": {"cadence.batch_angles": angles}})

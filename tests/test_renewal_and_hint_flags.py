@@ -72,6 +72,42 @@ async def test_a_failed_renewal_is_reported_not_raised(monkeypatch):
     assert not ok and error == "Meta said no"
 
 
+async def test_the_google_sign_in_link_is_renewed_through_google_with_no_publisher(monkeypatch):
+    from app.pipelines.publish.google import oauth as google_oauth
+
+    _, saved = _patch_renewal(monkeypatch)
+    got: list[str] = []
+
+    async def _google(value):
+        got.append(value)
+        return {"access_token": "google-access", "expires_at": datetime.now(timezone.utc) + timedelta(hours=1)}
+
+    def _no_publisher(platform):
+        raise ValueError(platform)
+
+    monkeypatch.setattr(token_refresh, "get_publisher", _no_publisher)
+    monkeypatch.setattr(google_oauth, "refresh_google_token", _google)
+    ok, error = await token_refresh.refresh_connection(_account("google", refresh_token="enc-refresh"))
+
+    assert ok and error == ""
+    assert got == ["plain:enc-refresh"]
+    assert saved[0]["platform"] == "google" and saved[0]["access_token"] == "google-access"
+
+
+def test_every_signal_the_assistants_send_is_an_allowed_type():
+    import re
+    from pathlib import Path
+
+    from app.models.agent_events import SignalType
+
+    allowed = {s.value for s in SignalType}
+    sent: set[str] = set()
+    for path in Path("app").rglob("*.py"):
+        sent |= set(re.findall(r'signal_type="([a-z_]+)"', path.read_text(encoding="utf-8")))
+    sent |= set(re.findall(r'SIGNAL_TYPE = "([a-z_]+)"', Path("app/agents/feedback/sweep.py").read_text(encoding="utf-8")))
+    assert sent and sent <= allowed, f"signal types sent but not allowed: {sorted(sent - allowed)}"
+
+
 def test_the_performance_hint_is_off_by_default():
     assert settings.PERFORMANCE_HINT_IN_PROMPTS is False
 

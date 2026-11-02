@@ -969,16 +969,18 @@ async def delete_piece(piece_id: str, workspace_id: str) -> bool:
 
 async def get_versions(piece_id: str, workspace_id: str) -> list[dict]:
     """
-    List all versions of a piece ordered by version_number ascending.
+    The newest 100 versions of a piece, ordered by version_number ascending.
     Returns empty list if piece not found or outside the workspace.
     """
     piece = await content_pieces.find_one({"piece_id": piece_id})
     if not piece or piece.get("workspace_id") != workspace_id:
         return []
 
+    # autosave adds a version at every pause, so a long session passes 100 quickly; the newest are the ones worth going back to
     versions = await content_piece_versions.find(
         {"piece_id": piece_id}
-    ).sort("version_number", 1).to_list(length=100)
+    ).sort("version_number", -1).to_list(length=100)
+    versions.reverse()
 
     for v in versions:
         v.pop("_id", None)

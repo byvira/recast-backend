@@ -90,6 +90,7 @@ class SignalType(str, Enum):
     VOICE_DRIFT_TREND = "voice_drift_trend"
     VOLUME_SPIKE = "volume_spike"
     VOLUME_DROP = "volume_drop"
+    PLATFORM_VOLUME_DROP = "platform_volume_drop"  # app.agents.supervisor.ticks: one platform's posting fell off
     TOPIC_SHIFT = "topic_shift"
     QUALITY_REGRESSION = "quality_regression"
     VIDEO_CHECK_FAILED = "video_check_failed"     # app.agents.personal.video_handlers: a video or recipe stopped on a check

@@ -75,7 +75,8 @@ ALLOWED_MIME_TYPES: dict[MediaKind, set[str]] = {
         "video/x-flv",
     },
     # audio/ogg is what Firefox records in; it is read the same way as the others (soundfile and the speech service both take Ogg).
-    MediaKind.AUDIO: {"audio/mpeg", "audio/wav", "audio/mp4", "audio/webm", "audio/ogg"},
+    # Browsers and phones label the same WAV and M4A files differently (audio/x-wav, audio/wave, audio/x-m4a); each is the same file.
+    MediaKind.AUDIO: {"audio/mpeg", "audio/wav", "audio/x-wav", "audio/wave", "audio/mp4", "audio/x-m4a", "audio/m4a", "audio/webm", "audio/ogg"},
 }
 
 _MIME_TO_UPLOAD_TYPE: dict[MediaKind, UploadContentType] = {

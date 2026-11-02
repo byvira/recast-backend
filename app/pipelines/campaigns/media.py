@@ -263,6 +263,7 @@ async def generate_media_for_pieces(
                 what = " and ".join(w for w, k in (("pictures", "image"), ("audio", "audio"), ("videos", "video")) if k in kinds) or "media"
                 await pipeline_runs.set_stage(
                     run_id, f"Making {what}: post {started} of {len(batch)}", media_done=finished, media_total=len(batch),
+                    media_kinds=list(kinds),
                 )
             states = await _make_for_piece(campaign, piece, kinds, ctx)
             await _record_status(workspace_id, piece["piece_id"], states)
