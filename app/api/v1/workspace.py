@@ -277,6 +277,15 @@ async def delete_workspace(
         raise HTTPException(status_code=403, detail="Only the owner can delete a workspace.")
     if ws.get("is_personal"):
         raise HTTPException(status_code=400, detail="Personal workspaces cannot be deleted.")
+    # a deleted workspace can be restored, so its plan is not cancelled for the owner: they cancel it first, and it is never
+    # charged for a workspace nobody can open
+    from app.billing import subscriptions as billing_subs
+
+    if await billing_subs.renewing(workspace_id):
+        raise HTTPException(
+            status_code=409,
+            detail="This workspace has a paid plan that renews. Cancel the plan in Billing first, then delete the workspace.",
+        )
 
     members = await workspace_members.find(
         {"workspace_id": workspace_id}, {"user_id": 1}

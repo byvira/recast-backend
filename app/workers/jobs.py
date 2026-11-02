@@ -100,6 +100,36 @@ async def _credit_nightly() -> None:
     await credits.nightly()
 
 
+async def _billing_webhooks() -> None:
+    from app.billing import watch
+
+    await watch.webhooks_tick()
+
+
+async def _billing_watch() -> None:
+    from app.billing import watch
+
+    await watch.watch_tick()
+
+
+async def _billing_reconcile() -> None:
+    from app.billing import watch
+
+    await watch.reconcile_tick()
+
+
+async def _billing_lifecycle() -> None:
+    from app.billing import lifecycle
+
+    await lifecycle.lifecycle_tick()
+
+
+async def _billing_reminders() -> None:
+    from app.billing import lifecycle
+
+    await lifecycle.reminders_tick()
+
+
 async def _reap_video_jobs() -> None:
     await reap_if_due(force=True)
 
@@ -160,6 +190,15 @@ JOBS: list[Job] = [
     Job("credit_sweep", _no_ctx(_credit_sweep), minute=frozenset({47})),
     # Credit balances checked against the ledger, nightly at 01:53 UTC.
     Job("credit_reconcile", _no_ctx(_credit_nightly), minute=frozenset({53}), hour=frozenset({1})),
+    # Payment messages from Razorpay that were stored but not applied yet (a restart, or a failure to retry), every minute.
+    Job("billing_webhooks", _no_ctx(_billing_webhooks)),
+    # The payments watch, every quarter hour; its check of every subscription against Razorpay, nightly at 02:37 UTC.
+    Job("billing_watch", _no_ctx(_billing_watch), minute=_every(15, offset=6)),
+    Job("billing_reconcile", _no_ctx(_billing_reconcile), minute=frozenset({37}), hour=frozenset({2})),
+    # Pauses that are due go to Razorpay before the charge, finished pauses resume, and a failed payment's grace ends: every 15 minutes.
+    Job("billing_lifecycle", _no_ctx(_billing_lifecycle), minute=_every(15, offset=9)),
+    # The reminder three days before each renewal, hourly.
+    Job("billing_reminders", _no_ctx(_billing_reminders), minute=frozenset({29})),
     # Support tickets — reminders, auto-resolve, auto-close, snooze wake-up, every 5 min.
     Job("support_lifecycle", _no_ctx(support_lifecycle_tick), minute=_every(5, offset=1)),
 ]

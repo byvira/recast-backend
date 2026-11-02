@@ -558,6 +558,18 @@ async def create_indexes() -> None:
     from app.billing import credits as _credits
 
     await _credits.create_indexes()
+    # payments: subscriptions, payments, invoices, Razorpay's messages, and the payments watch
+    from app.billing import subscriptions as _subscriptions
+    from app.billing import watch as _billing_watch
+
+    from app.billing import lifecycle as _billing_lifecycle
+
+    await _subscriptions.create_indexes()
+    from app.billing import topups as _topups
+
+    await _topups.create_indexes()
+    await _billing_watch.create_indexes()
+    await _billing_lifecycle.create_indexes()
     from app.health import errors as _errors
     from app.health import status as _status
 

@@ -53,6 +53,8 @@ from app.api.v1 import ops_banners as ops_banners_module
 from app.api.v1 import ops_cohorts as ops_cohorts_router
 from app.api.v1 import ops_ai_budget as ops_ai_budget_router
 from app.api.v1 import ops_plans as ops_plans_router
+from app.api.v1 import billing as billing_router
+from app.api.v1 import ops_billing as ops_billing_router
 from app.api.v1 import ops_prompts as ops_prompts_router
 from app.api.v1 import ops_llm_health as ops_llm_health_router
 from app.api.v1 import support as support_router
@@ -495,6 +497,8 @@ app.include_router(ops_banners_module.router, prefix="/api/v1/ops/banners", tags
 app.include_router(ops_cohorts_router.router, prefix="/api/v1/ops/cohorts", tags=["Ops"])
 app.include_router(ops_ai_budget_router.router, prefix="/api/v1/ops/ai", tags=["Ops"])
 app.include_router(ops_plans_router.router, prefix="/api/v1/ops/plans", tags=["Ops"])
+app.include_router(billing_router.router, prefix="/api/v1/billing", tags=["Billing"])
+app.include_router(ops_billing_router.router, prefix="/api/v1/ops/billing", tags=["Ops"])
 app.include_router(ops_prompts_router.router, prefix="/api/v1/ops/prompt-library", tags=["Ops"])
 app.include_router(ops_prompts_router.lists_router, prefix="/api/v1/prompt-lists", tags=["Content"])
 app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"])

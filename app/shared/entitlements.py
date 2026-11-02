@@ -33,7 +33,8 @@ _LEGACY_FIXED: dict[str, int] = {"brand_voices": 10, "api_keys": 10, "review_lin
 
 _WS_FIELDS = {
     "id": 1, "tier": 1, "tier_config": 1, "plan": 1, "plan_seats": 1, "billing_group_id": 1, "entitlement_overrides": 1,
-    "owner_id": 1, "is_personal": 1, "deleted_at": 1,
+    "owner_id": 1, "is_personal": 1, "deleted_at": 1, "billing_day": 1, "billing_status": 1,
+    "billing_period": 1,
 }
 
 
@@ -53,6 +54,12 @@ class Entitlements:
     override_expires_at: Optional[datetime] = None
     tier: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
+    # the day of the month this workspace's credits start again: its paid plan's billing day, or the 1st
+    billing_day: int = 1
+    # "limited" once a failed payment's grace period has run out: no new AI work until it is paid
+    billing_status: str = ""
+    # "monthly" or "yearly" for a paid plan, "" otherwise
+    billing_period: str = ""
 
     def limit(self, key: str) -> Optional[int]:
         return self.limits.get(key)
@@ -136,6 +143,10 @@ def legacy_limits(ws: dict) -> dict[str, Optional[int]]:
     return out
 
 
+def _billing_day(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 28 else 1
+
+
 async def group_ids(group_id: str) -> list[str]:
     ids = [group_id]
     async for w in workspaces.find({"billing_group_id": group_id, "deleted_at": {"$exists": False}}, {"id": 1}):
@@ -194,6 +205,9 @@ async def entitlements_for(workspace: dict | str) -> Entitlements:
         seats_billed=seats, group_id=group_id, scope_ids=scope, limits=limits, plan_limits=plan_limits,
         comp=bool(override.get("plan")), override_note=override.get("note") or own_override.get("note"),
         override_expires_at=override.get("expires_at") or own_override.get("expires_at"), tier=str(ws.get("tier") or ""),
+        billing_day=_billing_day((payer if enforced else ws).get("billing_day")),
+        billing_status=str(payer.get("billing_status") or ""),
+        billing_period=str(payer.get("billing_period") or "") if not override.get("plan") else "",
     )
     _cache[ws["id"]] = (now + ENTITLEMENT_CACHE_SECONDS, ent)
     return ent

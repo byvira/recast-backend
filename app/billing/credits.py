@@ -9,7 +9,10 @@ Where things live:
   sent, and what was spent per action and per member). A check is one read.
 - `credit_holds`: one record per reservation, keyed by the run and step that made it. A retried job finds its earlier hold and is
   never charged twice. Holds a crash left open are returned by `sweep`.
-- `credit_ledger`: append-only. Every charge, grant and refund is a new row, never an edit, so every balance can be explained;
+- `credit_wallets`: credits bought in packs, one record per pool, each pack kept apart with its own end date (12 months, or the
+  end of the paid plan). The month's own credits are spent first; when they run short, bought credits are moved into the month as
+  needed (`bought_in`), and what was moved but not used goes back to its pack when the next month starts.
+- `credit_ledger`: append-only. Every charge, grant, refund, carry-over and movement of bought credits is a new row, never an edit, so every balance can be explained;
   `reconcile` compares the two every night.
 
 The pool is the plan's billing group once plans are on (linked workspaces share one), and the workspace itself before that. The
@@ -55,22 +58,45 @@ def ledger_col():
     return get_db()["credit_ledger"]
 
 
+def wallets_col():
+    return get_db()["credit_wallets"]
+
+
+# Bought credits last this long, or until the paid plan ends.
+BOUGHT_MONTHS = 12
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 # ── the month ────────────────────────────────────────────────────────────
 
-def period_of(when: Optional[datetime] = None) -> str:
+def period_of(when: Optional[datetime] = None, billing_day: int = 1) -> str:
+    """The credit month `when` falls in. Most pools start a month on the 1st and the month is named "2026-11". A paid plan that renews
+    on another day (2 to 28) starts its month on that day, and the month is named by its first day, "2026-11-15", so it never mixes
+    with a calendar month."""
     when = when or _now()
-    return f"{when.year:04d}-{when.month:02d}"
+    day = billing_day if 1 < billing_day <= 28 else 1
+    year, month = when.year, when.month
+    if when.day < day:
+        year, month = (year - 1, 12) if month == 1 else (year, month - 1)
+    return f"{year:04d}-{month:02d}" if day == 1 else f"{year:04d}-{month:02d}-{day:02d}"
 
 
 def resets_at(period: str) -> datetime:
-    """The moment this month's credits start again: the 1st of the next month, midnight UTC."""
-    year, month = (int(p) for p in period.split("-"))
+    """The moment this month's credits start again: the same day of the next month (the 1st for a calendar month), midnight UTC."""
+    parts = [int(p) for p in period.split("-")]
+    year, month = parts[0], parts[1]
+    day = parts[2] if len(parts) > 2 else 1
     year, month = (year + 1, 1) if month == 12 else (year, month + 1)
-    return datetime(year, month, 1, tzinfo=timezone.utc)
+    return datetime(year, month, day, tzinfo=timezone.utc)
+
+
+def starts_at(period: str) -> datetime:
+    """The first moment of a credit month."""
+    parts = [int(p) for p in period.split("-")]
+    return datetime(parts[0], parts[1], parts[2] if len(parts) > 2 else 1, tzinfo=timezone.utc)
 
 
 def day_label(when: datetime) -> str:
@@ -88,6 +114,15 @@ class Pool:
     allowance: Optional[int]
     plan_name: str
     workspace_ids: list[str]
+    # the day of the month the pool's credits start again: the paid plan's billing day, or the 1st
+    billing_day: int = 1
+    # a failed payment's grace period ran out: new AI work waits until it is paid
+    limited: bool = False
+    # on a yearly paid plan: up to one month of unused credits carries into the next month
+    yearly: bool = False
+
+    def period(self, when: Optional[datetime] = None) -> str:
+        return period_of(when, self.billing_day)
 
 
 async def pool_for(workspace_id: str) -> Pool:
@@ -98,7 +133,19 @@ async def pool_for(workspace_id: str) -> Pool:
     return Pool(
         id=pool_id, workspace_id=ent.workspace_id, enforced=ent.enforced, allowance=ent.plan_limits.get("credits_month"),
         plan_name=ent.plan_name, workspace_ids=list(ent.scope_ids) if ent.enforced else [ent.workspace_id],
+        billing_day=ent.billing_day, limited=ent.billing_status == "limited",
+        yearly=ent.enforced and ent.billing_period == "yearly" and ent.plan != "free",
     )
+
+
+LIMITED_MESSAGE = (
+    "Your plan is on hold because the payment didn't go through. You can still edit, schedule and publish what is ready. "
+    "New AI work is paused."
+)
+
+
+def _limited_refusal() -> CreditsExhausted:
+    return CreditsExhausted({"code": "billing_limited", "limit": "credits_month", "message": LIMITED_MESSAGE, "href": "/dashboard/settings?tab=billing"})
 
 
 _limit_cache: dict[str, tuple[float, Optional[int]]] = {}
@@ -122,8 +169,8 @@ async def set_owner_limit(workspace_id: str, limit: Optional[int]) -> Optional[i
     if limit is not None:
         if limit < 0:
             raise HTTPException(status_code=400, detail="A limit cannot be below zero.")
-        doc = await balances_col().find_one({"_id": _balance_id(pool.id, period_of())}, {"granted": 1}) or {}
-        ceiling = (pool.allowance or 0) + int(doc.get("granted") or 0) if pool.allowance is not None else None
+        doc = await balances_col().find_one({"_id": _balance_id(pool.id, pool.period())}, {"granted": 1, "carried": 1}) or {}
+        ceiling = (pool.allowance or 0) + _extra(doc) if pool.allowance is not None else None
         if ceiling is not None and limit > ceiling:
             raise HTTPException(status_code=400, detail=f"The limit can be at most {ceiling:,} credits, what the plan gives this month.")
     await workspace_ai_budgets.update_one(
@@ -149,31 +196,79 @@ def _balance_id(pool_id: str, period: str) -> str:
     return f"{pool_id}:{period}"
 
 
+def _extra(doc: dict) -> int:
+    """Credits on top of the plan's allowance this month: those staff granted, those carried over from last month, and bought
+    credits moved into it."""
+    return int(doc.get("granted") or 0) + int(doc.get("carried") or 0) + int(doc.get("bought_in") or 0)
+
+
+def previous_period(period: str, billing_day: int = 1) -> str:
+    """The credit month just before this one."""
+    return period_of(starts_at(period) - timedelta(seconds=1), billing_day)
+
+
+def carry_amount(prev: Optional[dict], allowance: Optional[int]) -> int:
+    """What last month leaves for this one on a yearly plan: what was not used, never more than one month's allowance. Only a month
+    that was itself on a yearly plan carries anything."""
+    if not prev or not prev.get("yearly") or not allowance or prev.get("allowance") is None:
+        return 0
+    # bought credits are spent last and go back to their pack, so only the month's own credits count here
+    own = int(prev["allowance"]) + int(prev.get("granted") or 0) + int(prev.get("carried") or 0)
+    unused = own - int(prev.get("used") or 0)
+    return max(0, min(int(allowance), unused))
+
+
 _ensured: dict[str, tuple[float, Optional[int]]] = {}
 
 
 async def _ensure_balance(pool: Pool, period: str) -> None:
     """Create this month's record on first use. The allowance only ever goes up within a month, so a plan change never takes away
-    credits a member was already given."""
+    credits a member was already given. On a yearly plan the new month starts with last month's unused credits added."""
     bid = _balance_id(pool.id, period)
     hit = _ensured.get(bid)
     if hit and hit[0] > time.monotonic() and hit[1] == pool.allowance:
         return
     update: dict[str, Any] = {
         "$setOnInsert": {
-            "pool_id": pool.id, "period": period, "used": 0, "reserved": 0, "granted": 0, "notices": [],
-            "created_at": _now(),
+            "pool_id": pool.id, "period": period, "used": 0, "reserved": 0, "granted": 0, "carried": 0, "bought_in": 0, "notices": [],
+            "yearly": pool.yearly, "created_at": _now(),
         },
     }
     if pool.allowance is not None:
         update["$max"] = {"allowance": int(pool.allowance)}
     else:
         update["$setOnInsert"]["allowance"] = None
+    created = False
     try:
-        await balances_col().update_one({"_id": bid}, update, upsert=True)
+        result = await balances_col().update_one({"_id": bid}, update, upsert=True)
+        created = result.upserted_id is not None
     except DuplicateKeyError:  # two first spends at once: the other one made it
         pass
+    if created and pool.yearly:
+        await _carry_over(pool, period)
+    if created:
+        await _return_bought(pool.id, period)
     _ensured[bid] = (time.monotonic() + 60, pool.allowance)
+
+
+async def _carry_over(pool: Pool, period: str) -> None:
+    """Add last month's unused credits to this month, once. The ledger row's key is unique to the month, so it can never be added
+    twice."""
+    try:
+        prev = await balances_col().find_one({"_id": _balance_id(pool.id, previous_period(period, pool.billing_day))})
+        amount = carry_amount(prev, pool.allowance)
+        if amount <= 0:
+            return
+        await ledger_col().insert_one({
+            "_id": uuid4().hex, "key": f"carry:{pool.id}:{period}", "kind": "carry", "pool_id": pool.id, "period": period,
+            "workspace_id": pool.workspace_id, "user_id": None, "by": "system", "action": None, "units": None, "credits": amount,
+            "note": f"Unused from {prev['period']}", "at": _now(),
+        })
+        await balances_col().update_one({"_id": _balance_id(pool.id, period)}, {"$inc": {"carried": amount}})
+    except DuplicateKeyError:
+        pass
+    except Exception:  # noqa: BLE001 - a missed carry never stops the month from starting
+        logger.exception("Couldn't carry unused credits into %s for pool %s", period, pool.id)
 
 
 # ── refusing, in plain words ─────────────────────────────────────────────
@@ -196,7 +291,7 @@ def refusal_message(*, need: int, left: int, limit: int, by_owner: bool, period:
 
 
 def _refusal(pool: Pool, doc: dict, cap: Optional[int], need: int, period: str) -> CreditsExhausted:
-    granted = int(doc.get("granted") or 0)
+    granted = _extra(doc)
     limit = effective_limit(enforced=pool.enforced, allowance=doc.get("allowance"), granted=granted, cap=cap) or 0
     spent = int(doc.get("used") or 0) + int(doc.get("reserved") or 0)
     left = max(0, limit - spent)
@@ -281,7 +376,9 @@ async def reserve(
         return hold
 
     pool = await pool_for(workspace_id)
-    period = period_of()
+    if pool.limited:
+        raise _limited_refusal()
+    period = pool.period()
     await _ensure_balance(pool, period)
     key, run_id = _key_for(step or action)
     hold.pool_id, hold.period, hold.key, hold.run_id = pool.id, period, key, run_id
@@ -314,12 +411,15 @@ async def reserve(
     match: dict[str, Any] = {"_id": bid}
     limit_expr: Any = None
     if pool.enforced:
-        limit_expr = {"$add": [{"$ifNull": ["$allowance", 0]}, "$granted"]}
+        limit_expr = {"$add": [{"$ifNull": ["$allowance", 0]}, "$granted", {"$ifNull": ["$carried", 0]}, {"$ifNull": ["$bought_in", 0]}]}
     if cap is not None:
         limit_expr = cap if limit_expr is None else {"$min": [limit_expr, cap]}
     if limit_expr is not None:
         match["$expr"] = {"$lte": [{"$add": ["$used", "$reserved", need]}, limit_expr]}
     result = await balances_col().update_one(match, {"$inc": {"reserved": need}})
+    if result.matched_count == 0 and pool.enforced and await _draw_for(pool, period, need, cap):
+        # the month's own credits ran short: bought credits were moved in, so try once more
+        result = await balances_col().update_one(match, {"$inc": {"reserved": need}})
     if result.matched_count == 0:
         await holds_col().update_one({"_id": hold_id, "status": "pending"}, {"$set": {"status": "released", "released_at": _now()}})
         doc = await balances_col().find_one({"_id": bid}) or {}
@@ -425,13 +525,16 @@ async def require_room(workspace_id: str, credits: int = 1) -> None:
     if credits <= 0 or not workspace_id:
         return
     pool = await pool_for(workspace_id)
+    if pool.limited:
+        raise _limited_refusal()
     cap = await owner_limit(pool.id)
     if not pool.enforced and cap is None:
         return
-    period = period_of()
+    period = pool.period()
     await _ensure_balance(pool, period)
     doc = await balances_col().find_one({"_id": _balance_id(pool.id, period)}) or {}
-    limit = effective_limit(enforced=pool.enforced, allowance=doc.get("allowance"), granted=int(doc.get("granted") or 0), cap=cap)
+    wallet = (await bought_left(pool.id))[0] if pool.enforced else 0
+    limit = effective_limit(enforced=pool.enforced, allowance=doc.get("allowance"), granted=_extra(doc) + wallet, cap=cap)
     if limit is None:
         return
     if int(doc.get("used") or 0) + credits > limit:
@@ -450,6 +553,153 @@ def is_out_of_credits(exc: BaseException) -> bool:
     return isinstance(exc, CreditsExhausted) or (
         isinstance(exc, HTTPException) and isinstance(exc.detail, dict) and exc.detail.get("limit") == "credits_month"
     )
+
+
+# ── bought credits ───────────────────────────────────────────────────────
+
+def _ledger_row(kind: str, pool_id: str, period: str, credits: int, *, key: Optional[str] = None, workspace_id: Optional[str] = None,
+                note: Optional[str] = None, by: str = "system") -> dict[str, Any]:
+    return {
+        "_id": uuid4().hex, "key": key or f"{kind}:{uuid4().hex}", "kind": kind, "pool_id": pool_id, "period": period,
+        "workspace_id": workspace_id, "user_id": None, "by": by, "action": None, "units": None, "credits": int(credits),
+        "note": note, "at": _now(),
+    }
+
+
+async def add_bought(workspace_id: str, *, topup_id: str, credits: int, label: str) -> bool:
+    """Put a bought pack's credits in the pool's wallet. Once per purchase: telling it twice adds nothing. Returns True when added."""
+    pool = await pool_for(workspace_id)
+    now = _now()
+    lot = {"id": topup_id, "credits": int(credits), "left": int(credits), "bought_at": now,
+           "expires_at": _add_months(now, BOUGHT_MONTHS), "label": label}
+    try:
+        await ledger_col().insert_one(_ledger_row("purchase", pool.id, pool.period(), credits, key=f"purchase:{topup_id}",
+                                                  workspace_id=workspace_id, note=label))
+    except DuplicateKeyError:
+        return False
+    await wallets_col().update_one(
+        {"_id": pool.id, "lots.id": {"$ne": topup_id}}, {"$push": {"lots": lot}, "$set": {"pool_id": pool.id}}, upsert=True,
+    )
+    forget(pool.id)
+    return True
+
+
+def _add_months(when: datetime, months: int) -> datetime:
+    index = when.year * 12 + when.month - 1 + months
+    return when.replace(year=index // 12, month=index % 12 + 1, day=min(when.day, 28))
+
+
+def _live_lots(wallet: Optional[dict], now: datetime) -> list[dict]:
+    lots = [lot for lot in (wallet or {}).get("lots") or [] if int(lot.get("left") or 0) > 0]
+    live = [lot for lot in lots if (lot["expires_at"] if lot["expires_at"].tzinfo else lot["expires_at"].replace(tzinfo=timezone.utc)) > now]
+    return sorted(live, key=lambda lot: lot["expires_at"])
+
+
+async def bought_left(pool_id: str) -> tuple[int, Optional[datetime]]:
+    """Bought credits not used yet, and when the first of them ends."""
+    lots = _live_lots(await wallets_col().find_one({"_id": pool_id}), _now())
+    first = lots[0]["expires_at"] if lots else None
+    if first is not None and first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    return sum(int(lot["left"]) for lot in lots), first
+
+
+async def _draw_for(pool: Pool, period: str, need: int, cap: Optional[int]) -> bool:
+    """Move just enough bought credits into this month for `need` more, the packs ending soonest first. The owner's own limit is
+    never passed by buying credits. Returns True when enough was moved."""
+    bid = _balance_id(pool.id, period)
+    doc = await balances_col().find_one({"_id": bid}) or {}
+    if doc.get("allowance") is None:
+        return False
+    wanted = int(doc.get("used") or 0) + int(doc.get("reserved") or 0) + need
+    if cap is not None and wanted > cap:
+        return False
+    short = wanted - (int(doc["allowance"]) + _extra(doc))
+    if short <= 0:
+        return True
+    now = _now()
+    moved = 0
+    for lot in _live_lots(await wallets_col().find_one({"_id": pool.id}), now):
+        take = min(int(lot["left"]), short - moved)
+        res = await wallets_col().update_one(
+            {"_id": pool.id, "lots": {"$elemMatch": {"id": lot["id"], "left": {"$gte": take}, "expires_at": {"$gt": now}}}},
+            {"$inc": {"lots.$.left": -take}},
+        )
+        if not res.modified_count:
+            continue  # another spend took it first; the next pack is tried
+        await balances_col().update_one({"_id": bid}, {"$inc": {"bought_in": take, f"bought_lots.{lot['id']}": take}})
+        await ledger_col().insert_one(_ledger_row("bought_in", pool.id, period, take, workspace_id=pool.workspace_id, note=lot["id"]))
+        moved += take
+        if moved >= short:
+            break
+    if moved:
+        forget(pool.id)
+    return moved >= short
+
+
+async def _return_bought(pool_id: str, period: str) -> None:
+    """A new month started: bought credits moved into an earlier month and not used there go back to their packs. Each month is
+    settled once."""
+    try:
+        async for doc in balances_col().find({"pool_id": pool_id, "period": {"$ne": period}, "bought_in": {"$gt": 0},
+                                              "bought_returned": {"$ne": True}}):
+            claimed = await balances_col().find_one_and_update(
+                {"_id": doc["_id"], "bought_returned": {"$ne": True}}, {"$set": {"bought_returned": True}},
+            )
+            if not claimed:
+                continue
+            room = int(doc.get("allowance") or 0) + _extra(doc) - int(doc.get("used") or 0) - int(doc.get("reserved") or 0)
+            back = max(0, min(int(doc.get("bought_in") or 0), room))
+            # given back to the packs it came from, the one ending last first
+            lots = await wallets_col().find_one({"_id": pool_id}) or {}
+            ends = {lot["id"]: lot["expires_at"] for lot in lots.get("lots") or []}
+            for lot_id, n in sorted((doc.get("bought_lots") or {}).items(), key=lambda kv: ends.get(kv[0]) or _now(), reverse=True):
+                give = min(int(n), back)
+                if give <= 0:
+                    break
+                await wallets_col().update_one({"_id": pool_id, "lots.id": lot_id}, {"$inc": {"lots.$.left": give}})
+                await balances_col().update_one({"_id": doc["_id"]}, {"$inc": {"bought_in": -give, f"bought_lots.{lot_id}": -give}})
+                await ledger_col().insert_one(_ledger_row("bought_back", pool_id, doc["period"], give, note=lot_id))
+                back -= give
+        forget(pool_id)
+    except Exception:  # noqa: BLE001 - a month always starts; a missed return shows in the nightly check
+        logger.exception("Couldn't return unused bought credits for pool %s", pool_id)
+
+
+async def end_bought(
+    pool_id: str, *, why: str, lot_id: Optional[str] = None, limit: Optional[int] = None, kind: str = "expire",
+) -> int:
+    """End bought credits: every pack (the plan ended), one pack (its 12 months passed), or one pack up to `limit` (refunded, kind
+    "clawback"). Returns how many ended."""
+    wallet = await wallets_col().find_one({"_id": pool_id})
+    ended = 0
+    period = period_of()
+    for lot in (wallet or {}).get("lots") or []:
+        if lot_id and lot["id"] != lot_id:
+            continue
+        take = int(lot.get("left") or 0) if limit is None else min(int(lot.get("left") or 0), max(0, limit - ended))
+        if take <= 0:
+            continue
+        res = await wallets_col().update_one(
+            {"_id": pool_id, "lots": {"$elemMatch": {"id": lot["id"], "left": {"$gte": take}}}}, {"$inc": {"lots.$.left": -take}},
+        )
+        if res.modified_count:
+            await ledger_col().insert_one(_ledger_row(kind, pool_id, period, take, note=f"{lot['id']}: {why}"))
+            ended += take
+    forget(pool_id)
+    return ended
+
+
+async def expire_bought() -> int:
+    """Nightly: packs past their end date end."""
+    now = _now()
+    ended = 0
+    async for wallet in wallets_col().find({"lots": {"$elemMatch": {"expires_at": {"$lte": now}, "left": {"$gt": 0}}}}):
+        for lot in wallet.get("lots") or []:
+            when = lot["expires_at"] if lot["expires_at"].tzinfo else lot["expires_at"].replace(tzinfo=timezone.utc)
+            if when <= now and int(lot.get("left") or 0) > 0:
+                ended += await end_bought(wallet["_id"], why="12 months passed", lot_id=lot["id"])
+    return ended
 
 
 # ── what screens show ────────────────────────────────────────────────────
@@ -481,17 +731,20 @@ async def summary(workspace_id: str) -> dict[str, Any]:
     hit = _balance_cache.get(pool.id)
     if hit and hit[0] > time.monotonic():
         return hit[1]
-    period = period_of()
+    period = pool.period()
     await _ensure_balance(pool, period)
     doc = await balances_col().find_one({"_id": _balance_id(pool.id, period)}) or {}
     cap = await owner_limit(pool.id)
     table = await C.costs()
     granted = int(doc.get("granted") or 0)
+    carried = int(doc.get("carried") or 0)
+    bought_in = int(doc.get("bought_in") or 0)
+    bought, bought_until = await bought_left(pool.id)
     used = int(doc.get("used") or 0)
     reserved = int(doc.get("reserved") or 0)
     allowance = doc.get("allowance")
-    plan_total = allowance + granted if allowance is not None else None
-    limit = effective_limit(enforced=pool.enforced, allowance=allowance, granted=granted, cap=cap)
+    plan_total = allowance + granted + carried + bought_in if allowance is not None else None
+    limit = effective_limit(enforced=pool.enforced, allowance=allowance, granted=granted + carried + bought_in, cap=cap)
     # what the meter is drawn against: the enforced limit, or before launch the plan's own number, so the bar means something
     shown_total = limit if limit is not None else plan_total
     left = max(0, shown_total - used - reserved) if shown_total is not None else None
@@ -513,7 +766,8 @@ async def summary(workspace_id: str) -> dict[str, Any]:
         "workspace_id": pool.workspace_id, "pool_id": pool.id, "shared": len(pool.workspace_ids) > 1,
         "period": period, "resets_at": resets_at(period).isoformat(), "resets_on": day_label(resets_at(period)),
         "enforced": pool.enforced, "plan_name": pool.plan_name,
-        "allowance": allowance, "granted": granted, "plan_total": plan_total, "owner_limit": cap, "limit": limit,
+        "allowance": allowance, "granted": granted, "carried": carried, "plan_total": plan_total,
+        "bought_left": bought, "bought_until": bought_until.isoformat() if bought_until else None, "bought_used": bought_in, "owner_limit": cap, "limit": limit,
         "used": used, "reserved": reserved, "left": left, "percent": percent,
         "state": None if percent is None else ("over" if percent >= 100 else "near" if percent >= 80 else "ok"),
         "modules": [
@@ -549,8 +803,10 @@ def insight(s: dict[str, Any]) -> dict[str, str]:
     if total and used * 100 >= total * 80:
         return {"kind": "warn", "text": f"{left:,} credits left until {reset}."}
     now = _now()
-    day = max(1, now.day)
-    days_in_month = (resets_at(s["period"]) - timedelta(days=1)).day
+    # days into this credit month and its length, counted from its own first day (the billing day on some paid plans)
+    start = starts_at(s["period"])
+    day = max(1, (now - start).days + 1)
+    days_in_month = (resets_at(s["period"]) - start).days
     if total and used > 0:
         projected = used / day * days_in_month
         if projected > total:
@@ -568,8 +824,11 @@ async def ledger(
     """The pool's history for one month, newest first, with plain labels and names. `before` is the `at` of the last row seen.
     Staff notes on grants and refunds are only shown in Ops."""
     pool = await pool_for(workspace_id)
-    period = period or period_of()
+    period = period or pool.period()
     query: dict[str, Any] = {"pool_id": pool.id, "period": period}
+    if not for_ops:
+        # moving bought credits into a month and back is bookkeeping; the purchase itself is what members see
+        query["kind"] = {"$nin": list(INTERNAL_KINDS)}
     if before:
         try:
             query["at"] = {"$lt": datetime.fromisoformat(before)}
@@ -589,7 +848,7 @@ async def ledger(
         at = r["at"] if r["at"].tzinfo else r["at"].replace(tzinfo=timezone.utc)
         items.append({
             "id": r["_id"], "kind": r["kind"], "action": r.get("action"),
-            "label": r.get("label") or table.get(r.get("action") or "", {}).get("label") or {"grant": "Credits added", "refund": "Credits returned"}.get(r["kind"], r["kind"]),
+            "label": r.get("label") or table.get(r.get("action") or "", {}).get("label") or LEDGER_LABELS.get(r["kind"], r["kind"]),
             "credits": int(r.get("credits") or 0), "units": r.get("units"), "unit_label": C.unit_label(table.get(r.get("action") or "", {})),
             "member": names.get(r.get("user_id") or "", "Automations" if not r.get("user_id") else "A former member") if r["kind"] == "charge" else None,
             "workspace": ws_names.get(r.get("workspace_id") or "") or None, "note": r.get("note") if for_ops else None, "at": at.isoformat(),
@@ -597,12 +856,20 @@ async def ledger(
     return {"period": period, "items": items, "next": items[-1]["at"] if more and items else None}
 
 
+LEDGER_LABELS = {
+    "grant": "Credits added", "refund": "Credits returned", "carry": "Unused credits carried over", "purchase": "Credits bought",
+    "bought_in": "Bought credits used this month", "bought_back": "Unused bought credits kept for later",
+    "expire": "Bought credits ended", "clawback": "Bought credits refunded",
+}
+INTERNAL_KINDS = ("bought_in", "bought_back")
+
+
 # ── staff changes ────────────────────────────────────────────────────────
 
 async def grant(workspace_id: str, credits: int, *, by: str, note: str) -> dict[str, Any]:
     """Add credits to this month's pool (staff, from Ops)."""
     pool = await pool_for(workspace_id)
-    period = period_of()
+    period = pool.period()
     await _ensure_balance(pool, period)
     await balances_col().update_one({"_id": _balance_id(pool.id, period)}, {"$inc": {"granted": int(credits)}})
     await ledger_col().insert_one({
@@ -617,7 +884,7 @@ async def grant(workspace_id: str, credits: int, *, by: str, note: str) -> dict[
 async def refund(workspace_id: str, credits: int, *, by: str, note: str) -> dict[str, Any]:
     """Return credits already charged this month (staff, from Ops), never more than were used."""
     pool = await pool_for(workspace_id)
-    period = period_of()
+    period = pool.period()
     await _ensure_balance(pool, period)
     bid = _balance_id(pool.id, period)
     result = await balances_col().update_one({"_id": bid, "used": {"$gte": int(credits)}}, {"$inc": {"used": -int(credits)}})
@@ -656,7 +923,7 @@ async def _maybe_notify(pool_id: str, period: str, workspace_id: str) -> None:
             return
         pool = await pool_for(workspace_id)
         cap = await owner_limit(pool_id)
-        limit = effective_limit(enforced=pool.enforced, allowance=doc.get("allowance"), granted=int(doc.get("granted") or 0), cap=cap)
+        limit = effective_limit(enforced=pool.enforced, allowance=doc.get("allowance"), granted=_extra(doc), cap=cap)
         if not limit:
             return
         used = int(doc.get("used") or 0)
@@ -720,7 +987,7 @@ async def pause_notice(workspace_id: str, what: str, *, href: Optional[str] = No
     """Background work that stopped because credits ran out says so in Activity, once per piece of work and month."""
     from app.shared.activity.projector import record_system
 
-    period = period_of()
+    period = (await pool_for(workspace_id)).period()
     try:
         await record_system(
             workspace_id=workspace_id, key=f"credits_paused:{workspace_id}:{period}:{key or what}", actor_name="Ekavo", category="credits",
@@ -758,27 +1025,37 @@ async def sweep() -> int:
 
 async def reconcile(period: Optional[str] = None) -> list[dict[str, Any]]:
     """Compare every pool's balance with its ledger for the month and record any difference. Nothing is changed: a difference is
-    for a person to look at."""
+    for a person to look at. A calendar month ("2026-11") also covers the credit months of paid plans that started in it
+    ("2026-11-15"), each compared on its own."""
     period = period or period_of()
-    totals: dict[str, int] = {}
+    month = period[:7]
+    match = {"$regex": f"^{month}"}
+    totals: dict[tuple[str, str], int] = {}
     async for row in ledger_col().aggregate([
-        {"$match": {"period": period, "kind": {"$in": ["charge", "refund"]}}},
-        {"$group": {"_id": "$pool_id", "net": {"$sum": {"$cond": [{"$eq": ["$kind", "refund"]}, {"$multiply": ["$credits", -1]}, "$credits"]}}}},
+        {"$match": {"period": match, "kind": {"$in": ["charge", "refund"]}}},
+        {"$group": {"_id": {"pool": "$pool_id", "period": "$period"}, "net": {"$sum": {"$cond": [{"$eq": ["$kind", "refund"]}, {"$multiply": ["$credits", -1]}, "$credits"]}}}},
     ]):
-        totals[row["_id"]] = int(row["net"])
-    grants: dict[str, int] = {}
+        totals[(row["_id"]["pool"], row["_id"]["period"])] = int(row["net"])
+    added: dict[tuple[str, str, str], int] = {}
     async for row in ledger_col().aggregate([
-        {"$match": {"period": period, "kind": "grant"}}, {"$group": {"_id": "$pool_id", "n": {"$sum": "$credits"}}},
+        {"$match": {"period": match, "kind": {"$in": ["grant", "carry", "bought_in", "bought_back"]}}},
+        {"$group": {"_id": {"pool": "$pool_id", "period": "$period", "kind": "$kind"}, "n": {"$sum": "$credits"}}},
     ]):
-        grants[row["_id"]] = int(row["n"])
+        added[(row["_id"]["pool"], row["_id"]["period"], row["_id"]["kind"])] = int(row["n"])
     differences = []
-    async for doc in balances_col().find({"period": period}):
-        expected_used = totals.get(doc["pool_id"], 0)
-        expected_granted = grants.get(doc["pool_id"], 0)
-        if int(doc.get("used") or 0) != expected_used or int(doc.get("granted") or 0) != expected_granted:
+    async for doc in balances_col().find({"period": match}):
+        key = (doc["pool_id"], doc["period"])
+        expected_used = totals.get(key, 0)
+        expected_granted = added.get((*key, "grant"), 0)
+        expected_carried = added.get((*key, "carry"), 0)
+        expected_bought = added.get((*key, "bought_in"), 0) - added.get((*key, "bought_back"), 0)
+        if (int(doc.get("used") or 0) != expected_used or int(doc.get("granted") or 0) != expected_granted
+                or int(doc.get("carried") or 0) != expected_carried or int(doc.get("bought_in") or 0) != expected_bought):
             differences.append({
-                "pool_id": doc["pool_id"], "period": period, "used": int(doc.get("used") or 0), "ledger_used": expected_used,
-                "granted": int(doc.get("granted") or 0), "ledger_granted": expected_granted, "at": _now(),
+                "pool_id": doc["pool_id"], "period": doc["period"], "used": int(doc.get("used") or 0), "ledger_used": expected_used,
+                "granted": int(doc.get("granted") or 0), "ledger_granted": expected_granted,
+                "carried": int(doc.get("carried") or 0), "ledger_carried": expected_carried,
+                "bought_in": int(doc.get("bought_in") or 0), "ledger_bought_in": expected_bought, "at": _now(),
             })
     if differences:
         logger.warning("Credit balances differ from the ledger for %d pools in %s", len(differences), period)
@@ -791,9 +1068,32 @@ async def housekeeping() -> None:
     await sweep()
 
 
+async def reconcile_wallets() -> list[dict[str, Any]]:
+    """Compare each wallet's bought credits left with its history: bought, minus moved into months, plus moved back, minus ended and
+    refunded. A difference is recorded for a person to look at; nothing is changed."""
+    sign = {"purchase": 1, "bought_in": -1, "bought_back": 1, "expire": -1, "clawback": -1}
+    expected: dict[str, int] = {}
+    async for row in ledger_col().aggregate([
+        {"$match": {"kind": {"$in": list(sign)}}}, {"$group": {"_id": {"pool": "$pool_id", "kind": "$kind"}, "n": {"$sum": "$credits"}}},
+    ]):
+        pool_id = row["_id"]["pool"]
+        expected[pool_id] = expected.get(pool_id, 0) + sign[row["_id"]["kind"]] * int(row["n"])
+    differences = []
+    async for wallet in wallets_col().find({}):
+        left = sum(int(lot.get("left") or 0) for lot in wallet.get("lots") or [])
+        if left != expected.get(wallet["_id"], 0):
+            differences.append({"pool_id": wallet["_id"], "period": "wallet", "bought_left": left, "ledger_bought_left": expected.get(wallet["_id"], 0), "at": _now()})
+    if differences:
+        logger.warning("Bought credits differ from the history for %d pools", len(differences))
+        await get_db()["credit_reconcile"].insert_many([dict(d) for d in differences])
+    return differences
+
+
 async def nightly() -> None:
     await sweep()
+    await expire_bought()
     await reconcile()
+    await reconcile_wallets()
     now = _now()
     if now.day == 1:  # the first night of a month also closes the month before
         await reconcile(period_of(now - timedelta(days=1)))
@@ -806,6 +1106,7 @@ async def create_indexes() -> None:
     await db["credit_holds"].create_index([("status", 1), ("expires_at", 1)])
     await db["credit_holds"].create_index("created_at", expireAfterSeconds=90 * 24 * 3600)
     await db["credit_ledger"].create_index("key", unique=True)
+    await db["credit_wallets"].create_index("lots.expires_at")
     await db["credit_ledger"].create_index([("pool_id", 1), ("period", 1), ("at", -1)])
     await db["credit_ledger"].create_index([("period", 1), ("action", 1)])
     await db["credit_reconcile"].create_index([("at", -1)])
