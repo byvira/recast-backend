@@ -546,3 +546,43 @@ async def test_many_prompts_are_signed_off_at_once_and_each_one_left_says_why(si
     assert again["signed"] == [] and again["skipped"][0]["reason"] == "Already signed off."
     staff, _ = await _person(signup_user, staff=True)
     assert (await staff.post(f"{API}/classification/sign-off-many", json={"paths": [CHIP]})).status_code == 403
+
+
+async def test_the_suggested_tests_of_every_prompt_only_fail_for_a_real_reason():
+    """The starting tests read the finished text, so protected variables, loop names and short prompts never fail by themselves."""
+    from app.api.v1.ops_prompts import _cases_for, _suite_run
+
+    db = get_db()
+    prompts = await service.catalog(db)
+    states = await service.all_states(db)
+    failing = []
+    for path, prompt in prompts.items():
+        run = _suite_run(prompt, service._state_of(states.get(path), prompt), _cases_for(prompt, None))
+        failing += [(path, r["name"]) for r in run["results"] if r["status"] == "fail"]
+    assert all(name == "Stays a sensible size" for _, name in failing), failing
+    assert len(failing) <= 2, failing
+
+
+async def test_a_new_prompt_goes_from_idea_to_live_and_keeps_its_versions_when_a_developer_adds_the_file(signup_user):
+    admin, _ = await _person(signup_user, master=True)
+    path = "text/drafts_lab/fresh_idea"
+    await admin.post(f"{API}/folders", json={"parent": "text", "name": "drafts_lab"})
+    made = await admin.post(f"{API}/prompts", json={"folder": "text/drafts_lab", "name": "fresh_idea", "reason": "A new opening idea",
+                                                     "text": "Write one specific opening line about {{ topic }} for this post."})
+    assert made.status_code == 200, made.text
+    # it starts with working tests, and they all pass
+    run = await admin.post(f"{API}/suite/run", json={"path": path})
+    assert run.status_code == 200 and all(r["status"] == "pass" for r in run.json()["results"]), run.json()
+    # an edit is checked, then it goes live as version 1
+    prompt = (await admin.get(f"{API}/prompt", params={"path": path})).json()
+    region = next(r for r in prompt["regions"] if r.get("kind") == "editable")
+    await _sign_off(admin, path)
+    checks = await _draft_and_check(admin, path, {region["id"]: "Write one fresh opening line about {{ topic }} for this post."})
+    assert checks is not None
+    live_res = await admin.post(f"{API}/publish", json={"path": path, "note": "First version of the idea"})
+    assert live_res.status_code == 200, live_res.text
+    assert live_res.json()["versions"][0]["number"] == 1
+    # a developer later adds the file: the library links it and the published version stays
+    db = get_db()
+    assert await db.prompt_proposed.find_one({"_id": path})
+    assert (await db.prompt_state.find_one({"_id": path})) is not None

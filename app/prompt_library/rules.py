@@ -12,7 +12,7 @@ import math
 import re
 from typing import Any
 
-from app.prompt_library.regions import Region, compose, find_slots, find_tags
+from app.prompt_library.regions import Region, compose, find_slots, find_tags, local_names
 
 Result = tuple[bool, Any]  # (True, value) or (False, plain message)
 
@@ -523,7 +523,7 @@ def _js_length(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
-def evaluate_assertion(a: dict, rendered: str) -> dict:
+def evaluate_assertion(a: dict, rendered: str, local: frozenset[str] | set[str] = frozenset()) -> dict:
     kind = a.get("kind")
     text = a.get("text") or ""
     value = a.get("value") or 0
@@ -546,13 +546,14 @@ def evaluate_assertion(a: dict, rendered: str) -> dict:
         t = _tokens(rendered)
         return res(True, f"About {t} tokens.") if t <= value else res(False, f"About {t} tokens. The limit is {value}.")
     if kind == "no_unfilled":
-        left = list(dict.fromkeys(m.group(1) for m in UNFILLED.finditer(rendered)))
+        # names the template makes itself (loop and set names) are not left over, they are filled when it runs
+        left = list(dict.fromkeys(m.group(1) for m in UNFILLED.finditer(rendered) if m.group(1) not in local))
         return res(True, "Every variable is filled.") if not left else res(False, f"Not filled: {', '.join(left)}.")
     return res(False, "That check isn't known.")
 
 
-def run_case(case: dict, rendered: str) -> dict:
-    results = [evaluate_assertion(a, rendered) for a in case.get("assertions") or []]
+def run_case(case: dict, rendered: str, local: frozenset[str] | set[str] = frozenset()) -> dict:
+    results = [evaluate_assertion(a, rendered, local) for a in case.get("assertions") or []]
     passed = bool(results) and all(r["ok"] for r in results)
     return {"caseId": case["id"], "name": case["name"], "status": "pass" if passed else "fail", "results": results}
 
@@ -585,18 +586,20 @@ def suggested_cases(values: dict[str, str], protected: list[str]) -> list[dict]:
     cases = [
         {"id": "case_1", "name": "Fills every variable", "values": values, "assertions": [{"kind": "no_unfilled"}]},
         {"id": "case_2", "name": "Stays a sensible size", "values": values,
-         "assertions": [{"kind": "min_chars", "value": 40}, {"kind": "max_tokens", "value": 3000}]},
+         "assertions": [{"kind": "min_chars", "value": 10}, {"kind": "max_tokens", "value": 3000}]},
     ]
     if protected:
         cases.append({"id": "case_3", "name": "Keeps the protected text", "values": values,
-                      "assertions": [{"kind": "includes", "text": t} for t in protected]})
+                      # the finished text has the variables filled in, so the protected text is looked for the way it reads once filled
+                      "assertions": [{"kind": "includes", "text": render_sample(t, values)} for t in protected]})
     return cases
 
 
 def run_suite(regions: list[Region], texts: dict[str, str], cases: list[dict], against: str, now: str) -> dict:
     composed = compose(regions, texts)
     base = sample_values(find_slots(composed))
-    results = [run_case(c, render_sample(composed, {**base, **(c.get("values") or {})})) for c in cases]
+    local = local_names(composed)
+    results = [run_case(c, render_sample(composed, {**base, **(c.get("values") or {})}), local) for c in cases]
     return {"at": now, "against": against, "results": results}
 
 

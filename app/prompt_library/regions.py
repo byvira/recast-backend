@@ -105,14 +105,21 @@ _FOR_IN = re.compile(r"\{%-?\s*for\s+[\w, ]+\s+in\s+([a-zA-Z_]\w*)")
 _WORDS = {"true", "false", "none", "not", "and", "or", "loop", "namespace"}
 
 
-def find_slots(text: str) -> list[str]:
-    """Variables a text reads: `{{ name` and the names used by `if`, `elif` and `for ... in`. Loop and set names are local."""
+def local_names(text: str) -> set[str]:
+    """Names the template makes itself (`for` loop variables and `set` names), which no one has to fill in."""
     local: set[str] = set()
     for m in _LOOP.finditer(text):
         local.add(m.group(1))
         if m.group(2):
             local.add(m.group(2))
     local.update(m.group(1) for m in _SET.finditer(text))
+    local.add("loop")  # the loop's own counter
+    return local
+
+
+def find_slots(text: str) -> list[str]:
+    """Variables a text reads: `{{ name` and the names used by `if`, `elif` and `for ... in`. Loop and set names are local."""
+    local = local_names(text)
     names: set[str] = set()
 
     def add(name: str | None) -> None:
