@@ -225,6 +225,17 @@ async def test_the_history_pages_filters_and_exports_and_the_team_exports_with_a
     assert {e["after"]["what"] for e in exports} >= {"team", "history"}
 
 
+async def test_the_staff_ledger_counts_what_each_person_did_and_is_for_the_master_only(signup_user):
+    master, profile = await _master(signup_user)
+    agent, _ = await _join(master, signup_user, "Ledgered", "staff", "support_agent")
+    assert (await agent.get("/api/v1/ops/team/ledger")).status_code == 403
+    ledger = (await master.get("/api/v1/ops/team/ledger")).json()
+    assert ledger["days"] == 30
+    me = next(p for p in ledger["people"] if p["email"] == profile["email"])
+    assert me["actions"] >= 1 and me["last_at"] and me["kinds"], "the invite the master sent is in the ledger"
+    assert any(p["email"] != profile["email"] and p["status"] in ("active", "former") for p in ledger["people"])
+
+
 async def test_a_custom_role_made_first_never_leaves_out_the_starting_roles(signup_user):
     master, _ = await _master(signup_user)
     await ST.roles_col().delete_many({})

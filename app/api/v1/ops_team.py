@@ -558,6 +558,45 @@ async def history(request: Request, ctx=Depends(_team_access), q: Optional[str] 
     return {"history": rows, "page": page, "more": len(rows) == HISTORY_PAGE}
 
 
+LEDGER_DAYS = 30
+
+
+@router.get("/ledger")
+@limiter.limit("30/minute")
+async def staff_ledger(request: Request, ctx=Depends(_team_access)) -> dict:
+    """The staff ledger: for each person who works in Ops, what they did in the last 30 days, when they last did anything, and the
+    kinds of change they made. The full line-by-line list is the History tab."""
+    _, access = ctx
+    _master(access)
+    since = _now() - timedelta(days=LEDGER_DAYS)
+    rows = await ST.audit_col().aggregate([
+        {"$match": {"at": {"$gte": since}, "by_email": {"$nin": [None, ""]}}},
+        {"$group": {"_id": {"email": "$by_email", "action": "$action"}, "n": {"$sum": 1}, "last": {"$max": "$at"}}},
+    ]).to_list(5000)
+    people: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        p = people.setdefault(r["_id"]["email"], {"email": r["_id"]["email"], "actions": 0, "last_at": None, "kinds": {}})
+        p["actions"] += r["n"]
+        p["kinds"][r["_id"]["action"].split(".")[0]] = p["kinds"].get(r["_id"]["action"].split(".")[0], 0) + r["n"]
+        if p["last_at"] is None or r["last"] > p["last_at"]:
+            p["last_at"] = r["last"]
+    staff = {u.get("email"): u async for u in users.find({"$or": [{"is_platform_staff": True}, {"is_master_admin": True}, {"staff.level": {"$exists": True}}]},
+                                                         {"_id": 0, "id": 1, "name": 1, "email": 1, "staff": 1, "is_master_admin": 1})}
+    out = []
+    for email in sorted(set(people) | set(staff)):
+        p = people.get(email, {"actions": 0, "last_at": None, "kinds": {}})
+        u = staff.get(email) or {}
+        s = u.get("staff") or {}
+        out.append({
+            "email": email, "name": u.get("name") or "", "level": "master_admin" if u.get("is_master_admin") else s.get("level") or "",
+            "status": s.get("status") or ("active" if u else "former"), "designation": s.get("designation") or "",
+            "actions": p["actions"], "last_at": p["last_at"].isoformat() if p["last_at"] else None,
+            "kinds": dict(sorted(p["kinds"].items(), key=lambda kv: -kv[1])[:4]),
+        })
+    out.sort(key=lambda r: (-r["actions"], r["email"]))
+    return {"days": LEDGER_DAYS, "people": out}
+
+
 @router.get("/history/export.csv")
 @limiter.limit("10/minute")
 async def export_history(request: Request, ctx=Depends(_team_access), q: Optional[str] = Query(None, max_length=100),

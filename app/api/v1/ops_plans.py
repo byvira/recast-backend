@@ -130,21 +130,23 @@ async def reset_plan(request: Request, plan_id: str, body: Reason, user: dict = 
 _SAFE = re.compile(r"[^\w@.\- ]")
 
 
+WORKSPACES_PAGE = 20
+
+
 @router.get("/workspaces")
 @limiter.limit("60/minute")
 async def find_workspaces(
-    request: Request, q: str = Query("", max_length=100), _: dict = Depends(require_platform_staff),
+    request: Request, q: str = Query("", max_length=100), page: int = Query(1, ge=1, le=5000), _: dict = Depends(require_platform_staff),
 ) -> dict[str, Any]:
-    """Workspaces by id, name or owner email, with the plan each is on."""
+    """Every workspace, newest first, a page at a time; with a search, those matching by id, name or owner email. Each with its plan."""
     q = _SAFE.sub("", q.strip())
-    if len(q) < 2:
-        return {"workspaces": []}
-    owner_ids = [u["id"] async for u in users.find({"email": {"$regex": re.escape(q), "$options": "i"}}, {"id": 1}).limit(20)]
-    query = {"deleted_at": {"$exists": False}, "$or": [
-        {"id": q}, {"name": {"$regex": re.escape(q), "$options": "i"}}, {"owner_id": {"$in": owner_ids}},
-    ]}
-    rows = await workspaces.find(query, {"_id": 0, "id": 1, "name": 1, "owner_id": 1, "plan": 1, "tier": 1, "billing_group_id": 1,
-                                         "entitlement_overrides": 1, "is_personal": 1}).limit(25).to_list(25)
+    query: dict[str, Any] = {"deleted_at": {"$exists": False}}
+    if q:
+        owner_ids = [u["id"] async for u in users.find({"email": {"$regex": re.escape(q), "$options": "i"}}, {"id": 1}).limit(200)]
+        query["$or"] = [{"id": q}, {"name": {"$regex": re.escape(q), "$options": "i"}}, {"owner_id": {"$in": owner_ids}}]
+    total = await workspaces.count_documents(query)
+    rows = await workspaces.find(query, {"_id": 0, "id": 1, "name": 1, "owner_id": 1, "plan": 1, "tier": 1, "billing_group_id": 1, "created_at": 1,
+                                         "entitlement_overrides": 1, "is_personal": 1}).sort("created_at", -1).skip((page - 1) * WORKSPACES_PAGE).limit(WORKSPACES_PAGE).to_list(WORKSPACES_PAGE)
     emails = {u["id"]: u.get("email") async for u in users.find({"id": {"$in": [r["owner_id"] for r in rows]}}, {"id": 1, "email": 1})}
     out = []
     for r in rows:
@@ -153,8 +155,9 @@ async def find_workspaces(
             "id": r["id"], "name": r.get("name"), "owner_email": emails.get(r["owner_id"]), "is_personal": bool(r.get("is_personal")),
             "plan": ent.plan, "plan_name": ent.plan_name, "team_size": r.get("tier"), "group_id": ent.group_id,
             "comp": ent.comp, "has_override": bool(r.get("entitlement_overrides")),
+            "created_at": r["created_at"].isoformat() if hasattr(r.get("created_at"), "isoformat") else None,
         })
-    return {"workspaces": out}
+    return {"workspaces": out, "total": total, "page": page, "page_size": WORKSPACES_PAGE}
 
 
 @router.get("/workspaces/{workspace_id}")

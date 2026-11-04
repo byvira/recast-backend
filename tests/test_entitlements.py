@@ -430,6 +430,10 @@ async def test_ops_can_read_plans_only_the_ops_owner_changes_them_and_every_chan
         assert comp.status_code == 200 and comp.json()["plan"] == "large" and comp.json()["comp"] is True
         found = (await staff.get("/api/v1/ops/plans/workspaces", params={"q": ws})).json()["workspaces"]
         assert found and found[0]["comp"] is True
+        # with no search every workspace is listed, a page at a time, newest first, with the total
+        everyone = (await staff.get("/api/v1/ops/plans/workspaces")).json()
+        assert everyone["total"] >= 1 and len(everyone["workspaces"]) <= everyone["page_size"] and ws in [w["id"] for w in everyone["workspaces"]]
+        assert (await staff.get("/api/v1/ops/plans/workspaces", params={"page": 2})).json()["page"] == 2
         cleared = await owner.request("DELETE", f"/api/v1/ops/plans/workspaces/{ws}/override", json={"reason": "ended"})
         assert cleared.status_code == 200 and cleared.json()["comp"] is False
     finally:
@@ -549,6 +553,8 @@ async def test_handing_over_a_free_workspace_to_someone_with_a_free_one_is_refus
     owner, _ = await signup_user()
     ws = await create_workspace(owner, f"Hand {uuid4().hex[:6]}")
     member_client, member = await invite_and_accept(owner, make_client, ws, "admin")
+    # someone invited to a team no longer gets a workspace of their own, so this person makes the free one they already "have"
+    await create_workspace(member_client, f"Theirs {uuid4().hex[:6]}")
     monkeypatch.setattr(E.settings, "BILLING_ENFORCED", True)
     E.forget()
     refused = await owner.put(f"/api/v1/workspaces/{ws}/members/{member['id']}/role", json={"role": "owner"})
