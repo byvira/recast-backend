@@ -23,6 +23,7 @@ from app.api.v1 import users as users_router
 from app.api.v1 import push as push_router
 from app.api.v1 import ops_team as ops_team_router
 from app.api.v1 import ops_workspaces as ops_workspaces_router
+from app.api.v1 import ops_desk as ops_desk_router
 from app.core.staff import area_guard
 from app.api.v1 import audio_assets, content, post_targets, suggest, destinations, image_assets, media, oauth, publish
 from app.api.v1 import presets as presets_router
@@ -508,6 +509,7 @@ app.include_router(ops_plans_router.router, prefix="/api/v1/ops/plans", tags=["O
 app.include_router(billing_router.router, prefix="/api/v1/billing", tags=["Billing"])
 app.include_router(ops_billing_router.router, prefix="/api/v1/ops/billing", tags=["Ops"], dependencies=[Depends(area_guard("billing"))])
 app.include_router(ops_team_router.router, prefix="/api/v1/ops/team", tags=["Ops"])
+app.include_router(ops_desk_router.router, prefix="/api/v1/ops/desk", tags=["Ops"])
 app.include_router(ops_workspaces_router.router, prefix="/api/v1/ops/workspaces", tags=["Ops"], dependencies=[Depends(area_guard("workspaces"))])
 app.include_router(ops_workspaces_router.people_router, prefix="/api/v1/ops/people", tags=["Ops"], dependencies=[Depends(area_guard("workspaces"))])
 from app.api.v1 import ops_content as ops_content_router
