@@ -755,6 +755,27 @@ async def latest_method(workspace_id: str) -> Optional[dict[str, str]]:
     return method_label(pay)
 
 
+async def saved_methods(workspace_id: str, limit: int = 8) -> list[dict[str, Any]]:
+    """Every way this workspace has paid, one row each (a card by its last digits, a UPI id, a bank), newest use first. The first is the
+    one in use. Only what Razorpay shows anyway is kept; a full card number never reaches Ekavo."""
+    rows = await payments_col().find({"workspace_id": workspace_id, "status": "captured"}, {"_id": 0}).sort("at", -1).to_list(200)
+    seen: dict[str, dict[str, Any]] = {}
+    for pay in rows:
+        label = method_label(pay)
+        if not label:
+            continue
+        key = f"{label['kind']}:{pay.get('card_last4') or pay.get('vpa') or pay.get('bank') or ''}:{pay.get('card_network') or ''}"
+        if key in seen:
+            continue
+        seen[key] = {
+            "kind": label["kind"], "label": label["label"], "network": pay.get("card_network"),
+            "last_used": pay["at"].isoformat() if hasattr(pay.get("at"), "isoformat") else None, "in_use": not seen,
+        }
+        if len(seen) >= limit:
+            break
+    return list(seen.values())
+
+
 async def mark_refunded(entity: dict[str, Any]) -> None:
     """A refund went through: the payment and its receipt say so. Each refund is kept by its own id, so several partial refunds add up
     and the same refund told twice counts once."""

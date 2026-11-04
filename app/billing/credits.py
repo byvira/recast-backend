@@ -337,6 +337,25 @@ def _key_for(step: str) -> tuple[str, Optional[str]]:
 
 # ── reserve, settle, release ─────────────────────────────────────────────
 
+#: Ekavo's own Master Admin works without credits: nothing is reserved, charged or refused for them, in any workspace they open. Looked
+#: up from the account (kept for a minute), never taken from the request.
+_MASTER_CACHE_SECONDS = 60
+_master_admin_cache: dict[str, tuple[float, bool]] = {}
+
+
+async def is_master_admin(user_id: Optional[str]) -> bool:
+    if not user_id:
+        return False
+    now = time.monotonic()
+    hit = _master_admin_cache.get(user_id)
+    if hit and hit[0] > now:
+        return hit[1]
+    doc = await get_db()["users"].find_one({"id": user_id}, {"is_master_admin": 1})
+    value = bool((doc or {}).get("is_master_admin"))
+    _master_admin_cache[user_id] = (now + _MASTER_CACHE_SECONDS, value)
+    return value
+
+
 @dataclass
 class Hold:
     action: str
@@ -372,7 +391,7 @@ async def reserve(
     label = _label.get() or label
     need = C.price_with(table, action, units)
     hold = Hold(action=action, credits=need, units=float(units or 0), workspace_id=workspace_id, user_id=user_id)
-    if need <= 0 or not workspace_id:
+    if need <= 0 or not workspace_id or await is_master_admin(user_id):
         hold.credits = 0
         return hold
 
@@ -518,12 +537,12 @@ async def charge(
     return hold
 
 
-async def require_room(workspace_id: str, credits: int = 1) -> None:
+async def require_room(workspace_id: str, credits: int = 1, user_id: Optional[str] = None) -> None:
     """Refuse (402) when this many credits would not fit, without setting anything aside. For a quick check before a long run.
 
     Credits set aside by work still running are not counted here: the caller may be that very work (a run checks again after
-    reserving its own steps), and the reserve itself is what stops two spends from going past the limit together."""
-    if credits <= 0 or not workspace_id:
+    reserving its own steps), and the reserve itself is what stops two spends from going past the limit together. A Master Admin is never refused."""
+    if credits <= 0 or not workspace_id or await is_master_admin(user_id):
         return
     pool = await pool_for(workspace_id)
     if pool.limited:
@@ -542,9 +561,9 @@ async def require_room(workspace_id: str, credits: int = 1) -> None:
         raise _refusal(pool, doc, cap, credits, period)
 
 
-async def has_room(workspace_id: str, credits: int = 1) -> bool:
+async def has_room(workspace_id: str, credits: int = 1, user_id: Optional[str] = None) -> bool:
     try:
-        await require_room(workspace_id, credits)
+        await require_room(workspace_id, credits, user_id)
     except CreditsExhausted:
         return False
     return True

@@ -54,8 +54,11 @@ async def test_accepting_an_invite_twice_never_makes_a_server_error(make_client,
     await signup_new_user(member, email=email)
     first = await member.post(f"/api/v1/invites/accept/{token}")
     second = await member.post(f"/api/v1/invites/accept/{token}")
-    assert first.status_code == 200
-    assert second.status_code in (404, 409)
+    # signing up with the invited address already joined the workspace, so both only confirm it: never an error, never a second seat
+    assert first.status_code == 200 and second.status_code == 200
+    from app.db.mongo import workspace_members
+
+    assert await workspace_members.count_documents({"workspace_id": ws, "status": "active"}) == 2
 
 
 async def test_deleting_a_workspace_hides_it_keeps_it_and_gives_everyone_a_working_default(make_client, api_client):

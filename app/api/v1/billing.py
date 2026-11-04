@@ -74,6 +74,7 @@ async def subscription(request: Request, ctx: WorkspaceContext = Depends(require
         "approval": {"token": approval["token"], "amount": approval["amount"], "currency": approval["currency"]} if approval else None,
         "seats_in_use": int(await entitlements.count_usage(ent, "seats")),
         "payment_method": await S.latest_method(ctx.workspace_id),
+        "payment_methods": await S.saved_methods(ctx.workspace_id),
     }
 
 

@@ -940,7 +940,7 @@ async def make_brand_watermark_mark(
         raise HTTPException(status_code=404, detail="Brand profile not found.")
     await assert_generation_allowed(ctx.workspace_id)
     await credits.require_room(
-        ctx.workspace_id, await credit_costs.price("picture") + await credit_costs.price("remove_background"),
+        ctx.workspace_id, await credit_costs.price("picture") + await credit_costs.price("remove_background"), ctx.user_id,
     )
     asset = await make_mark(brand=doc, idea=body.idea, workspace_id=ctx.workspace_id, user_id=ctx.user_id)
     return {"media_id": asset.id, "url": asset.url, "note": asset.qa_flag_reason}
@@ -969,7 +969,7 @@ async def add_training_sample(
     # Reading a sample's traits is a voice analysis (3 credits). The sample is always saved; with no credits left it is saved
     # without its traits, as when the reading fails.
     traits: list = []
-    if await credits.has_room(ctx.workspace_id, await credit_costs.price("voice_analysis")):
+    if await credits.has_room(ctx.workspace_id, await credit_costs.price("voice_analysis"), ctx.user_id):
         async with credits.spend(ctx.workspace_id, ctx.user_id, "voice_analysis", step=f"sample_traits:{brand_id}") as hold:
             traits = await extract_sample_traits(content, workspace_id=ctx.workspace_id)
             hold.nothing_made = not traits
@@ -1194,7 +1194,7 @@ async def regenerate_brand_mascot(
     from app.billing import credits
 
     # the first mascot comes free with the brand; making it again is a picture like any other
-    await credits.require_room(ctx.workspace_id, await credit_costs.price("mascot"))
+    await credits.require_room(ctx.workspace_id, await credit_costs.price("mascot"), ctx.user_id)
     run = await _register_mascot_run(brand_id, doc, ctx)
     if run is None:
         # Another mascot for this brand is being made, or the workspace is at its limit of running jobs.

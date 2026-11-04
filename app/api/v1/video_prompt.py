@@ -144,7 +144,7 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
     # The plan costs 3 credits and the narration 3 a minute; both are checked now, so a video that cannot be paid for is refused
     # before anything is made. The render later costs its own minutes.
     narration_s = sum(spoken_estimate(sc.narration) for sc in body.scenes)
-    await credits.require_room(ctx.workspace_id, await credit_costs.price("video_plan") + await credit_costs.price("narration", charges.minutes(narration_s)))
+    await credits.require_room(ctx.workspace_id, await credit_costs.price("video_plan") + await credit_costs.price("narration", charges.minutes(narration_s)), ctx.user_id)
     try:
         await pipeline_runs.assert_capacity(ctx.workspace_id)
         run = await pipeline_runs.create_run(

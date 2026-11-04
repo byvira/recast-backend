@@ -595,3 +595,48 @@ async def test_a_bound_label_names_every_charge_made_under_it():
     await credits.charge(ws, "u1", "picture")
     rows = (await credits.ledger(ws))["items"]
     assert [r["label"] for r in rows] == [C.DEFAULT_COSTS["picture"]["label"], "Fresh Angles picture"]
+
+
+async def test_the_master_admin_is_never_stopped_by_credits(enforced):
+    ws = await _ws("free")                               # Free gives 100 a month
+    admin, member = f"u-{uuid4().hex}", f"u-{uuid4().hex}"
+    await users.insert_one({"id": admin, "email": f"{admin}@example.com", "is_master_admin": True})
+    for _ in range(12):
+        await credits.charge(ws, member, "picture_hd")   # 96 of 100 used
+    with pytest.raises(credits.CreditsExhausted):
+        await credits.charge(ws, member, "picture_hd")
+    with pytest.raises(credits.CreditsExhausted):
+        await credits.require_room(ws, 8, member)
+    # the master admin in the same workspace is let through, before and during the work, and nothing is taken
+    await credits.require_room(ws, 500, admin)
+    assert await credits.has_room(ws, 500, admin)
+    async with credits.spend(ws, admin, "picture_hd") as hold:
+        assert hold.credits == 0
+    hold = await credits.charge(ws, admin, "render", 10)
+    assert hold.credits == 0
+    assert (await _balance(ws))["used"] == 96, "their work is not counted against the workspace"
+    # an ordinary account with the same name of action is still refused, and a lookup that finds no account refuses too
+    assert await credits.is_master_admin(admin) is True and await credits.is_master_admin(member) is False
+    assert await credits.is_master_admin(None) is False
+
+
+async def test_saved_methods_list_each_way_paid_once_newest_first():
+    from datetime import datetime, timedelta, timezone
+    from app.billing import subscriptions as S
+
+    ws = "ws_methods_test"
+    now = datetime.now(timezone.utc)
+    col = S.payments_col()
+    await col.delete_many({"workspace_id": ws})
+    await col.insert_many([
+        {"id": "pm_a", "workspace_id": ws, "status": "captured", "method": "card", "card_last4": "4242", "card_network": "Visa", "at": now - timedelta(days=60)},
+        {"id": "pm_b", "workspace_id": ws, "status": "captured", "method": "upi", "vpa": "a@bank", "at": now - timedelta(days=30)},
+        {"id": "pm_c", "workspace_id": ws, "status": "captured", "method": "card", "card_last4": "4242", "card_network": "Visa", "at": now - timedelta(days=1)},
+        {"id": "pm_d", "workspace_id": ws, "status": "failed", "method": "card", "card_last4": "0000", "at": now},
+    ])
+    try:
+        rows = await S.saved_methods(ws)
+        assert [r["label"] for r in rows] == ["Card ending 4242", "UPI Autopay · a@bank"]
+        assert rows[0]["in_use"] is True and rows[1]["in_use"] is False
+    finally:
+        await col.delete_many({"workspace_id": ws})

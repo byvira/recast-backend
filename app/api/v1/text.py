@@ -922,7 +922,7 @@ async def make_media_angles(
         clip = media_angles._clip_of(source, body.clip_id) if kind == "video" else None
         ideas = media_angles.check_ideas(kind, body.ideas, media_angles._master_words(source) if kind == "video" else None)
 
-    await credits.require_room(ctx.workspace_id, await media_angles.credits_needed(ideas, kind))
+    await credits.require_room(ctx.workspace_id, await media_angles.credits_needed(ideas, kind), ctx.user_id)
     await pipeline_runs.assert_capacity(ctx.workspace_id)
     title = source.get("title") or {"image": "a picture", "audio": "a recording", "video": "a video"}[kind]
     try:

@@ -39,6 +39,9 @@ from app.core.otp import (
 from app.core.workspace import create_first_workspace
 from app.db.mongo import brand_profiles, users
 from app.shared import invites
+from app.core import sessions as auth_sessions
+from app.core import two_step
+from pydantic import BaseModel, Field
 from app.db.redis import get_redis
 from app.models.user import (
     AuthResponse,
@@ -370,6 +373,7 @@ async def signup(
         )
 
     access_token, refresh_token = issue_tokens(user_id)
+    await auth_sessions.record(session_id_of(access_token), user_id, request)
 
     # Write HttpOnly Secure cookies — browser clients never touch tokens directly
     set_auth_cookies(response, access_token, refresh_token)
@@ -381,7 +385,14 @@ async def signup(
     )
 
 
-@router.post("/login", response_model=AuthResponse)
+class TwoStepRequired(BaseModel):
+    """Sign-in isn't finished: the emailed code was right, and this account also needs the code from its authenticator app."""
+
+    two_step_required: bool = True
+    challenge: str
+
+
+@router.post("/login", response_model=AuthResponse | TwoStepRequired)
 @limiter.limit("20/minute")
 async def login(
     request: Request,
@@ -443,7 +454,11 @@ async def login(
 
     await clear_otp_state(identifier)
 
+    if two_step.is_on(user):
+        return TwoStepRequired(challenge=await two_step.open_challenge(user["id"]))
+
     access_token, refresh_token = issue_tokens(user["id"])
+    await auth_sessions.record(session_id_of(access_token), user["id"], request)
 
     # Write HttpOnly Secure cookies — browser clients never touch tokens directly
     set_auth_cookies(response, access_token, refresh_token)
@@ -453,6 +468,22 @@ async def login(
         refresh_token=refresh_token,
         user=await _build_profile_response(user),
     )
+
+
+class TwoStepLoginBody(BaseModel):
+    challenge: str = Field(..., min_length=10, max_length=100)
+    code: str = Field(..., min_length=4, max_length=20)
+
+
+@router.post("/login/two-step", response_model=AuthResponse)
+@limiter.limit("10/minute")
+async def login_two_step(request: Request, response: Response, body: TwoStepLoginBody) -> AuthResponse:
+    """Finish a sign-in that asked for a second step: the code from the authenticator app, or one of the backup codes."""
+    user = await two_step.finish_challenge(body.challenge, body.code)
+    access_token, refresh_token = issue_tokens(user["id"])
+    await auth_sessions.record(session_id_of(access_token), user["id"], request)
+    set_auth_cookies(response, access_token, refresh_token)
+    return AuthResponse(access_token=access_token, refresh_token=refresh_token, user=await _build_profile_response(user))
 
 
 @router.post("/refresh")
@@ -503,6 +534,7 @@ async def refresh_tokens(
         )
 
     new_access, new_refresh = await rotate_refresh_token(refresh_token)
+    await auth_sessions.touch(session_id_of(new_access))
 
     # Rotate cookies so the browser always holds the latest token pair
     set_auth_cookies(response, new_access, new_refresh)
@@ -557,7 +589,9 @@ async def logout(
             await blacklist_token(each)
 
     # Ending the session also stops any copy of its tokens, including ones made by earlier refreshes.
-    await revoke_session(session_id_of(token) or session_id_of(refresh_token))
+    ended = session_id_of(token) or session_id_of(refresh_token)
+    await revoke_session(ended)
+    await auth_sessions.forget(ended)
 
     # Clear cookies from browser regardless of token validity
     clear_auth_cookies(response)
@@ -574,8 +608,67 @@ async def logout_all(
 ) -> dict[str, str]:
     """Sign the person out on every device: every token issued before now stops working."""
     await users.update_one({"id": current_user["id"]}, {"$set": {"tokens_valid_after": datetime.now(timezone.utc)}})
+    await auth_sessions.forget_all(current_user["id"])
     clear_auth_cookies(response)
     return {"message": "Signed out on all devices."}
+
+
+# ── Where you're signed in, and two-step sign-in ─────────────────────────────
+
+@router.get("/sessions")
+@limiter.limit("30/minute")
+async def list_my_sessions(request: Request, current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """The devices this account is signed in on, the one in use first."""
+    return {"sessions": await auth_sessions.listing(current_user["id"], request)}
+
+
+@router.delete("/sessions/{sid}")
+@limiter.limit("20/minute")
+async def end_my_session(request: Request, sid: str, current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, str]:
+    """Sign out one device. The one in use is signed out with the normal Sign out instead."""
+    if sid == auth_sessions.current_sid(request):
+        raise HTTPException(status_code=400, detail="This is the device you are using. Use Sign out to leave it.")
+    if not await auth_sessions.end_one(current_user["id"], sid):
+        raise HTTPException(status_code=404, detail="That device isn't signed in any more.")
+    return {"message": "Signed out on that device."}
+
+
+class TwoStepCode(BaseModel):
+    code: str = Field(..., min_length=4, max_length=20)
+
+
+@router.get("/two-step")
+@limiter.limit("30/minute")
+async def two_step_status(request: Request, current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    return two_step.status(current_user)
+
+
+@router.post("/two-step/setup")
+@limiter.limit("10/minute")
+async def two_step_setup(request: Request, current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, str]:
+    """A new secret to add to an authenticator app, as text and as the link a QR code carries. Nothing changes until it is confirmed."""
+    return await two_step.start_setup(current_user)
+
+
+@router.post("/two-step/enable")
+@limiter.limit("10/minute")
+async def two_step_enable(request: Request, body: TwoStepCode, current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Turn two-step sign-in on with a code from the app. The backup codes in the answer are shown once."""
+    return {"backup_codes": await two_step.enable(current_user, body.code)}
+
+
+@router.post("/two-step/disable")
+@limiter.limit("10/minute")
+async def two_step_disable(request: Request, body: TwoStepCode, current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, str]:
+    await two_step.disable(current_user, body.code)
+    return {"message": "Two-step sign-in is off."}
+
+
+@router.post("/two-step/backup-codes")
+@limiter.limit("10/minute")
+async def two_step_new_backup_codes(request: Request, body: TwoStepCode, current_user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Ten new backup codes, and the old ones stop working."""
+    return {"backup_codes": await two_step.new_backup_codes(current_user, body.code)}
 
 
 @router.get("/check-username/{username}")

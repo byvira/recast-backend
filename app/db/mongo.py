@@ -287,6 +287,13 @@ async def create_indexes() -> None:
     await workspaces.create_index("owner_id")
     await workspace_members.create_index([("workspace_id", 1), ("user_id", 1)], unique=True)
     await workspace_members.create_index("user_id")
+    # sign-in records: one for each session, gone once the longest token a session can hold has expired
+    from app.core.config import settings as _settings
+
+    _sessions = get_db()["auth_sessions"]
+    await _sessions.create_index("sid", unique=True)
+    await _sessions.create_index("user_id")
+    await _sessions.create_index("last_seen_at", expireAfterSeconds=int(_settings.JWT_REFRESH_EXPIRE_DAYS) * 86400)
     await invites.create_index("token", unique=True)
     await invites.create_index([("workspace_id", 1), ("status", 1)])
     await workspace_connections.create_index([("workspace_id", 1), ("platform", 1)], unique=True)
