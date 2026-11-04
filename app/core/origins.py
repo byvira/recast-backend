@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Iterable
 
 #: The app's own addresses besides FRONTEND_URL, so the site works from each of them without a setting having to be remembered.
-APP_ORIGINS = ("https://recast.byvirastudio.com",)
+# the old address stays allowed so a tab opened there before the move to Ekavo keeps working
+APP_ORIGINS = ("https://ekavo.byvirastudio.com", "https://recast.byvirastudio.com")
 
 
 def clean(origin: str) -> str:

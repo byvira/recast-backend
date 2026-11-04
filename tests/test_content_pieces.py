@@ -103,18 +103,22 @@ async def test_approve_piece_blocked_for_editor(signup_user, make_client):
     assert res.status_code == 403
 
 
-async def test_approve_piece_blocked_for_viewer(signup_user, make_client):
+async def test_a_reviewer_approves_but_cannot_create(signup_user, make_client):
     owner_client, owner_profile = await signup_user()
     ws_id = await create_workspace(owner_client, "Approve RBAC WS")
     piece_id = await _seed_piece(ws_id, owner_profile["id"])
 
-    viewer_client, _ = await invite_and_accept(owner_client, make_client, ws_id, "viewer")
+    # the stored "viewer" role is shown as Reviewer: it reads and approves, and makes nothing
+    reviewer_client, _ = await invite_and_accept(owner_client, make_client, ws_id, "viewer")
 
-    res = await viewer_client.patch(
+    res = await reviewer_client.patch(
         f"/api/v1/content/pieces/{piece_id}/approve",
         headers={"X-Workspace-Id": ws_id},
     )
-    assert res.status_code == 403
+    assert res.status_code == 200, res.text
+    from app.core.rbac import ROLE_PERMISSIONS
+
+    assert ROLE_PERMISSIONS["viewer"] == {"approve_content"}
 
 
 async def test_approve_piece_allowed_for_admin(signup_user, make_client):

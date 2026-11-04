@@ -161,9 +161,15 @@ async def test_accept_invite_twice_rejected(api_client, make_client):
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
     assert res.status_code == 200
 
-    # Same token again — invite status is no longer "pending".
+    # Same token again by the same person: they are already in, so it just confirms, and adds nothing
     res = await joiner.post(f"/api/v1/invites/accept/{token}")
-    assert res.status_code == 404
+    assert res.status_code == 200
+    members = (await api_client.get(f"/api/v1/workspaces/{ws_id}/members")).json()["items"]
+    assert len([m for m in members if m["email"] == invite_email]) == 1
+    # someone else holding the used link gets nothing
+    stranger = make_client()
+    await signup_new_user(stranger)
+    assert (await stranger.post(f"/api/v1/invites/accept/{token}")).status_code == 404
 
 
 async def test_accept_invite_already_member_conflict(api_client, make_client):
@@ -488,3 +494,36 @@ def test_an_invite_carries_the_plan_chosen_on_the_pricing_page():
     assert invite_url("abc", plan_from_source("pricing-large")).endswith("/signup?invite=abc&plan=large")
     assert invite_url("abc", plan_from_source("waitlist-page")).endswith("/signup?invite=abc")
     assert plan_from_source("pricing-free") is None and plan_from_source(None) is None
+
+
+async def test_someone_invited_before_they_have_an_account_joins_at_sign_up_without_a_workspace_of_their_own(api_client, make_client):
+    from app.db.mongo import activity_entries, workspace_members, workspaces
+
+    owner = await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Invite First", tier="large")
+    invite_email = unique_email()
+    assert (await api_client.post(f"/api/v1/invites/{ws_id}", json={"email": invite_email, "role": "viewer"})).status_code == 201
+
+    joiner = make_client()
+    profile = await signup_new_user(joiner, email=invite_email)
+    # in the workspace with the role they were invited with, and no starter workspace of their own
+    member = await workspace_members.find_one({"workspace_id": ws_id, "user_id": profile["id"]})
+    assert member and member["role"] == "viewer"
+    assert await workspaces.count_documents({"owner_id": profile["id"]}) == 0
+    items = (await joiner.get("/api/v1/workspaces/")).json()["items"]
+    assert [w["workspace_id"] for w in items] == [ws_id]
+
+
+async def test_the_person_who_sent_the_invite_is_who_added_the_member(api_client, make_client, monkeypatch):
+    from app.shared import governance_events
+
+    seen = []
+    monkeypatch.setattr(governance_events, "emit_member_added", lambda ws, **kw: seen.append(kw))
+    owner = await signup_new_user(api_client)
+    ws_id = await create_workspace(api_client, "Who Added", tier="large")
+    invite_email = unique_email()
+    await api_client.post(f"/api/v1/invites/{ws_id}", json={"email": invite_email, "role": "viewer"})
+    joiner = make_client()
+    profile = await signup_new_user(joiner, email=invite_email)
+    assert seen and seen[-1]["actor_user_id"] == owner["id"] and seen[-1]["actor_role"] == "owner"
+    assert seen[-1]["subject_user_id"] == profile["id"] and seen[-1]["role"] == "viewer"

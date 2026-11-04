@@ -1,9 +1,10 @@
 """Authentication routes — OTP request/verify, signup, login, refresh, logout."""
 
+import logging
 import random
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -52,6 +53,7 @@ from app.models.user import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _PHONE_RE = re.compile(r"^\+[1-9]\d{7,14}$")
@@ -227,6 +229,26 @@ async def check_invite(request: Request, body: dict[str, str]) -> dict[str, obje
     return {"valid": invite is not None, "email": invite["email"] if invite else None}
 
 
+
+async def _join_waiting_invite(user_doc: dict[str, Any]) -> Optional[str]:
+    """The newest waiting, unexpired workspace invite for this email, joined at once. Returns the workspace id, or None."""
+    from app.api.v1.invites import _is_expired, join_by_invite
+    from app.db.mongo import invites as workspace_invites
+    from app.models.workspace import InviteStatus
+
+    email = str(user_doc.get("email") or "").lower()
+    if not email:
+        return None
+    async for invite in workspace_invites.find({"email": email, "status": InviteStatus.PENDING.value}).sort("created_at", -1):
+        if _is_expired(invite["expires_at"]):
+            continue
+        try:
+            return (await join_by_invite(invite, user_doc))["workspace_id"]
+        except HTTPException as exc:
+            logger.info("waiting invite %s not joined at sign-up: %s", invite.get("id"), exc.detail)
+    return None
+
+
 @router.post("/signup", response_model=AuthResponse)
 @limiter.limit("10/minute")
 async def signup(
@@ -323,9 +345,11 @@ async def signup(
     if invite:
         await invites.use_invite(invite, user_id)
 
-    # Every person starts with one workspace, which onboarding sets up (name and size). More come later from "New workspace".
+    # Someone invited to a workspace before they had an account joins it now, with the role they were invited with, and gets no
+    # starter workspace of their own (they can make one later). Everyone else starts with one workspace, which onboarding sets up.
+    joined_ws_id = await _join_waiting_invite(user_doc) if body.channel == OTPChannel.EMAIL else None
     workspace_name = f"{body.name}'s Workspace"
-    personal_ws_id = await create_first_workspace(user_id, name=workspace_name)
+    personal_ws_id = joined_ws_id or await create_first_workspace(user_id, name=workspace_name)
     await users.update_one(
         {"id": user_id}, {"$set": {"default_workspace_id": personal_ws_id}}
     )

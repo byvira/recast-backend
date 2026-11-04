@@ -694,6 +694,17 @@ async def refresh_piece_attachments(
     return {"piece_id": piece_id, "attachments": items, "problems": problems}
 
 
+async def _mark_reviewed(piece_id: str, ctx: WorkspaceContext, decision: str) -> Optional[dict]:
+    """Keep who reviewed a post, when, and what they decided, so everyone sees it is reviewed."""
+    from app.db.mongo import content_pieces, users
+
+    person = await users.find_one({"id": ctx.user_id}, {"name": 1, "email": 1}) or {}
+    await content_pieces.update_one({"piece_id": piece_id, "workspace_id": ctx.workspace_id}, {"$set": {"review": {
+        "by": ctx.user_id, "by_name": person.get("name") or person.get("email") or "", "at": datetime.now(timezone.utc), "decision": decision,
+    }}})
+    return await get_piece(piece_id, ctx.workspace_id)
+
+
 @router.patch("/pieces/{piece_id}/approve")
 @limiter.limit("30/minute")
 async def approve_piece(
@@ -715,6 +726,7 @@ async def approve_piece(
     # A post generated with a planned time is only queued once it is approved.
     if await promote_approved_intent(updated, ctx.workspace_id):
         updated = await get_piece(piece_id, ctx.workspace_id) or updated
+    updated = await _mark_reviewed(piece_id, ctx, "approved") or updated
     await _notify_approval_decision(updated, ctx, "approved", piece_id)
     return updated
 
@@ -734,6 +746,7 @@ async def reject_piece(
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Piece not found.")
+    updated = await _mark_reviewed(piece_id, ctx, "rejected") or updated
     await _notify_approval_decision(updated, ctx, "rejected", piece_id)
     return updated
 
@@ -744,7 +757,7 @@ async def schedule_piece(
     request: Request,
     piece_id: str,
     body: SchedulePieceRequest,
-    ctx: WorkspaceContext = Depends(require("approve_content")),
+    ctx: WorkspaceContext = Depends(require("publish_content")),
 ) -> dict:
     """
     Schedule a piece for real future publishing.
@@ -901,7 +914,7 @@ async def mark_piece_posted(
 async def cancel_schedule_piece(
     request: Request,
     piece_id: str,
-    ctx: WorkspaceContext = Depends(require("approve_content")),
+    ctx: WorkspaceContext = Depends(require("publish_content")),
 ) -> dict:
     """Un-schedule a queued piece — back to pending, not sent to the worker."""
     piece = await get_piece(piece_id, ctx.workspace_id)

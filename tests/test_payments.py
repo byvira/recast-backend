@@ -443,3 +443,21 @@ async def test_ops_can_read_the_watch_and_members_cannot(signup_user, standin):
     client, _, _ = await _owner_with_workspace(signup_user)
     res = await client.get("/api/v1/ops/billing/watch")
     assert res.status_code in (401, 403)
+
+
+async def test_a_first_payment_that_comes_on_its_own_is_recorded_from_its_notes(signup_user, standin):
+    from app.billing import invoices as inv
+
+    client, ws_id, sid = await _opened(signup_user, standin)
+    sub = await S.subs_col().find_one({"provider_subscription_id": sid})
+    created = int(time.time())
+    # Razorpay sends the approval without the payment, then the payment by itself, with no subscription id but our reference
+    await S._apply_event(_event("subscription.authenticated", sid, "authenticated", created), None)
+    payment = {"id": f"pay_{uuid4().hex[:10]}", "amount": 12_300, "currency": "INR", "status": "captured", "method": "card",
+               "order_id": "order_x", "invoice_id": "inv_x", "subscription_id": None, "created_at": created,
+               "notes": {"workspace_id": ws_id, "sub_ref": sub["id"]}}
+    for event in ("payment.captured", "order.paid"):
+        assert await S._apply_event({"event": event, "created_at": created, "payload": {"payment": {"entity": payment}}}, None) == "applied"
+    rows = [p async for p in S.payments_col().find({"workspace_id": ws_id})]
+    assert len(rows) == 1 and rows[0]["amount"] == 12_300 and rows[0]["subscription_id"] == sub["id"]
+    assert await inv._invoices_col().count_documents({"payment_id": payment["id"]}) == 1, "one receipt, even when told twice"

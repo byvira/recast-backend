@@ -42,7 +42,12 @@ async def overview(request: Request, user: dict = Depends(require_platform_staff
     now = datetime.now(timezone.utc)
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     year_ago = now - timedelta(days=365)
-    paying = len(await S.subs_col().distinct("workspace_id", {"status": {"$in": list(S.PAID_STATES)}, "mode": provider.mode}))
+    # the same rule that gives a workspace its plan: a monthly plan paid up to its billing day counts too
+    paying = len({
+        sub["workspace_id"] async for sub in S.subs_col().find(
+            {"status": {"$in": [*S.PAID_STATES, "authenticated", "paused"]}, "mode": provider.mode}, {"_id": 0},
+        ) if S.is_paid(sub, now)
+    })
 
     async def _sum(flt: dict) -> int:
         rows = await S.payments_col().aggregate([{"$match": flt}, {"$group": {"_id": None, "n": {"$sum": "$amount"}}}]).to_list(1)

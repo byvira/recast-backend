@@ -280,7 +280,7 @@ class Settings(BaseSettings):
     # accept, OAuth reconnect, dashboard). Deliberately separate from
     # PRODUCTION_DOMAIN, which feeds CORS and in this deployment points at
     # the backend's own Render URL, not the frontend.
-    FRONTEND_URL: str = "https://recast.byvirastudio.com"
+    FRONTEND_URL: str = "https://ekavo.byvirastudio.com"
 
     # This API's own public base URL. Links that outside services open directly (the podcast feed address given to Spotify and
     # Apple) must point here, not at the frontend site, which does not serve /api.

@@ -18,6 +18,13 @@ from app.db.mongo import invites, users, workspace_members, workspaces
 from app.models.workspace import InviteMemberBody, InviteStatus
 from app.shared import entitlements
 
+ROLE_LABEL = {"owner": "Owner", "admin": "Admin", "editor": "Editor", "viewer": "Reviewer"}
+
+
+def role_label(role: str) -> str:
+    """A role as people know it: the stored "viewer" is called Reviewer."""
+    return ROLE_LABEL.get(role, role.title())
+
 router = APIRouter()
 
 
@@ -125,7 +132,7 @@ async def create_invite(
         {
             "INVITER_NAME": current_user["name"],
             "WORKSPACE_NAME": ws["name"],
-            "ROLE": invite_doc["role"],
+            "ROLE": role_label(invite_doc["role"]),
             "INVITE_LINK": invite_link,
             "EXPIRES_IN": "7 days",
             "INVITER_INITIAL": current_user["name"][:1].upper() if current_user.get("name") else "?",
@@ -191,7 +198,7 @@ async def resend_invite(
         {
             "INVITER_NAME": current_user["name"],
             "WORKSPACE_NAME": ws["name"],
-            "ROLE": invite["role"],
+            "ROLE": role_label(invite["role"]),
             "INVITE_LINK": invite_link,
             "EXPIRES_IN": "7 days",
             "INVITER_INITIAL": current_user["name"][:1].upper() if current_user.get("name") else "?",
@@ -296,6 +303,10 @@ async def accept_invite(
     invite was actually sent to (previously any authenticated holder of the
     token could accept as themselves, regardless of email)."""
     invite = await invites.find_one({"token": token})
+    if invite and invite["status"] == InviteStatus.ACCEPTED.value and (invite.get("email") or "").lower() == (current_user.get("email") or "").lower():
+        # joined already, at sign-up: opening the invite link afterwards just confirms it
+        if await workspace_members.find_one({"workspace_id": invite["workspace_id"], "user_id": current_user["id"], "status": "active"}):
+            return {"workspace_id": invite["workspace_id"], "role": invite["role"]}
     if not invite or invite["status"] != InviteStatus.PENDING.value:
         raise HTTPException(status_code=404, detail="Invite not found or no longer valid.")
     if _is_expired(invite["expires_at"]):
@@ -311,6 +322,13 @@ async def accept_invite(
             detail=f"This invite was sent to {invite['email']}. Log in with that email to accept it.",
         )
 
+    return await join_by_invite(invite, current_user)
+
+
+async def join_by_invite(invite: dict[str, Any], current_user: dict[str, Any]) -> dict[str, Any]:
+    """Add the person to the invite's workspace with its role: the seat check, the one-time claim of the invite, the membership, the
+    "member added" event and the note to whoever sent it. Used when an invite is accepted, and at sign-up for someone who was invited
+    before they had an account."""
     existing = await workspace_members.find_one(
         {"workspace_id": invite["workspace_id"], "user_id": current_user["id"]}
     )
@@ -351,8 +369,12 @@ async def accept_invite(
         raise
 
     from app.shared.governance_events import emit_member_added
+    # the person who sent the invite added this member; the one joining only said yes, so they are the subject, not the actor
+    inviter_member = await workspace_members.find_one(
+        {"workspace_id": invite["workspace_id"], "user_id": invite["invited_by"]}, {"role": 1}
+    ) or {}
     emit_member_added(
-        invite["workspace_id"], actor_user_id=current_user["id"], actor_role=invite["role"],
+        invite["workspace_id"], actor_user_id=invite["invited_by"], actor_role=inviter_member.get("role") or "owner",
         subject_user_id=current_user["id"], role=invite["role"],
     )
 
@@ -365,7 +387,7 @@ async def accept_invite(
             {
                 "NEW_MEMBER_NAME": current_user["name"],
                 "WORKSPACE_NAME": (ws or {}).get("name", "your workspace"),
-                "ROLE": invite["role"],
+                "ROLE": role_label(invite["role"]),
             },
         )
 

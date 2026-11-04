@@ -34,7 +34,8 @@ ROLE_PERMISSIONS: dict[str, set[str]] = {
         "create_content",
         "edit_content",
     },
-    "viewer": set(),
+    # shown as "Reviewer": reads everything and approves or sends back drafts, nothing else
+    "viewer": {"approve_content"},
 }
 
 

@@ -690,6 +690,15 @@ async def _apply_event(body: dict[str, Any], created_at: Optional[datetime]) -> 
         outcome = await topups.apply_payment(pay_entity)
         if outcome != "unmatched":
             return "applied"
+    # the first payment of a monthly plan with a billing day (the days until that day) can come on its own, without the
+    # subscription's id; it carries the subscription in its notes, and is recorded and receipted like any other charge
+    if event in ("payment.captured", "order.paid") and pay_entity.get("status") == "captured":
+        ref = str((pay_entity.get("notes") or {}).get("sub_ref") or "")
+        sub = await subs_col().find_one({"id": ref}, {"_id": 0}) if ref else None
+        if sub:
+            await record_payment(sub, pay_entity, event)
+            await invoices.issue_for_payment({**sub}, pay_entity)
+            return "applied"
     if event.startswith("payment.dispute."):
         dispute = (payload.get("dispute") or {}).get("entity") or {}
         await record_dispute(dispute, event)

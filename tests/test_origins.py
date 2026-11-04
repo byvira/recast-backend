@@ -3,16 +3,18 @@ from app.core.origins import build_origins
 
 VERCEL = "https://recastbyvira.vercel.app"
 NEW = "https://recast.byvirastudio.com"
+EKAVO = "https://ekavo.byvirastudio.com"
 
 
 def test_the_app_domain_is_allowed_in_production_without_any_setting():
     origins = build_origins(production=True, production_domain="https://recast-backend.onrender.com", frontend_url=VERCEL, allowed=[])
-    assert NEW in origins and VERCEL in origins
+    assert EKAVO in origins and NEW in origins and VERCEL in origins
 
 
 def test_each_origin_is_listed_once_and_trailing_slashes_are_dropped():
     origins = build_origins(production=True, production_domain="", frontend_url=VERCEL + "/", allowed=[VERCEL, NEW + "/", "https://staging.example.com"])
-    assert origins == [VERCEL, NEW, "https://staging.example.com"]
+    assert len(origins) == len(set(origins)) and not any(o.endswith("/") for o in origins)
+    assert origins[0] == VERCEL and {NEW, EKAVO, "https://staging.example.com"} <= set(origins)
 
 
 def test_without_a_primary_domain_the_frontend_address_is_used():
