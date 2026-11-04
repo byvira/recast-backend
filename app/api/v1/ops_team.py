@@ -543,8 +543,9 @@ def _history_query(q: Optional[str], action: Optional[str]) -> dict[str, Any]:
 
 async def _history_rows(query: dict[str, Any], *, skip: int, limit: int) -> list[dict]:
     rows = await ST.audit_col().find(query, {"_id": 0}).sort("at", -1).skip(skip).limit(limit).to_list(limit)
-    names = {u["id"]: u.get("name") or u.get("email") async for u in users.find({"id": {"$in": list({r.get("target") for r in rows})}}, {"id": 1, "name": 1, "email": 1})}
-    return [{**r, "target_name": names.get(r.get("target"), r.get("target"))} for r in rows]
+    from app.shared.audit_names import readable
+
+    return await readable([{**r, "target_name": None} for r in rows])
 
 
 @router.get("/history")

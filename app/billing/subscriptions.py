@@ -706,6 +706,10 @@ async def _apply_event(body: dict[str, Any], created_at: Optional[datetime]) -> 
     if event == "payment.failed" and pay_entity:
         sub_pid = str(pay_entity.get("subscription_id") or "")
         sub = await subs_col().find_one({"provider_subscription_id": sub_pid}, {"_id": 0}) if sub_pid else None
+        if not sub:
+            # a payment that failed before the plan was set up still carries the workspace it was for in its notes
+            ref = str((pay_entity.get("notes") or {}).get("sub_ref") or "")
+            sub = await subs_col().find_one({"id": ref}, {"_id": 0}) if ref else None
         await record_payment(sub, pay_entity, event)
         return "applied" if sub else "unmatched"
     return "ignored"
@@ -718,7 +722,8 @@ async def record_payment(sub: Optional[dict[str, Any]], entity: dict[str, Any], 
     await payments_col().update_one(
         {"id": pid},
         {"$set": {
-            "id": pid, "subscription_id": (sub or {}).get("id"), "workspace_id": (sub or {}).get("workspace_id"),
+            "id": pid, "subscription_id": (sub or {}).get("id"),
+            "workspace_id": (sub or {}).get("workspace_id") or (entity.get("notes") or {}).get("workspace_id"),
             "amount": int(entity.get("amount") or 0), "currency": entity.get("currency"), "status": entity.get("status"),
             "method": entity.get("method"), "error": entity.get("error_description"), "error_code": entity.get("error_code"),
             "event": event, "at": _ts(entity.get("created_at")) or _now(), "mode": (sub or {}).get("mode"),

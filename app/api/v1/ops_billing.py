@@ -183,7 +183,9 @@ async def history(request: Request, user: dict = Depends(require_platform_staff)
     """Every change Ops made to billing, with who, what and why."""
     actions = ["refund", "extend_grace", "billing_settings", "prices_changed", "credits.grant", "credits.refund", "workspace.override", "workspace.override_cleared"]
     rows = [r async for r in get_db()["billing_audit"].find({"action": {"$in": actions}}, {"_id": 0}).sort("at", -1).limit(100)]
-    return {"history": rows}
+    from app.shared.audit_names import readable
+
+    return {"history": await readable(rows)}
 
 
 async def _audit(user: dict, action: str, target: str, *, before: Any, after: Any, reason: str) -> None:

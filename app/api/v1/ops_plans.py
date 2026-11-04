@@ -241,6 +241,9 @@ async def clear_override(request: Request, workspace_id: str, body: Reason, user
 @limiter.limit("60/minute")
 async def audit_log(request: Request, limit: int = Query(50, ge=1, le=200), _: dict = Depends(require_platform_staff)) -> dict[str, Any]:
     rows = await _audit_col().find({}, {"_id": 0}).sort("at", -1).limit(limit).to_list(limit)
+    from app.shared.audit_names import readable
+
+    rows = await readable(rows)
     for r in rows:
         r["at"] = r["at"].isoformat()
     return {"changes": rows}
