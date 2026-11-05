@@ -243,3 +243,31 @@ async def send_alerts(*, created: list[dict[str, Any]], reopened: list[dict[str,
     except Exception as exc:  # noqa: BLE001 - alerts must never affect the recorder
         logger.error("LLM alerting failed: %s", exc)
         return 0
+
+
+async def send_daily_digest() -> bool:
+    """The morning email about what is still open, to the addresses set in Alerts. Sent once a day and only when there is something to
+    say, so a quiet day sends nothing. Never raises."""
+    try:
+        from app.core.config import settings
+        from app.db.mongo import llm_alert_log, llm_events, llm_issues
+
+        rules = await get_alert_rules()
+        if not rules.get("daily_digest") or not rules.get("email_to"):
+            return False
+        now = _now()
+        key = f"digest:{now.date().isoformat()}"
+        if await alerts.recently_sent([key], timedelta(hours=20)):
+            return False
+        open_issues = await llm_issues.find({"status": {"$in": ["open", "acknowledged"]}}).to_list(200)
+        states = {k: v["status"] for k, v in (await provider_states()).items()}
+        failed = await llm_events.count_documents({"at": {"$gte": now - timedelta(hours=24)}, "outcome": "failed"})
+        body = alerts.digest_body(open_issues, states, failed, (settings.FRONTEND_URL or "").rstrip("/"))
+        if not body:
+            return False
+        sent = await alerts._send_email(list(rules["email_to"]), "AI health this morning", body)
+        await llm_alert_log.insert_one({"at": now, "key": key, "kind": "digest", "subject": "AI health this morning", "result": {"email": sent}})
+        return sent
+    except Exception as exc:  # noqa: BLE001 - the digest must never affect anything else
+        logger.error("LLM daily digest failed: %s", exc)
+        return False

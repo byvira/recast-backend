@@ -156,6 +156,11 @@ class BrandWatermark(BaseModel):
     auto_apply: bool = False
     auto_kind: Literal["text", "image"] = "text"
     position: Literal["bottom_right", "bottom_left", "top_right", "top_left", "center"] = "bottom_right"
+    # Where the brand's logo goes on the pictures made for it, and whether a soft plate sits behind it so it can always be seen. These
+    # live here, apart from the visual identity the Brand Assets form saves whole, so saving colours never resets them. Top left with no
+    # plate is how pictures looked before, so nothing changes until a brand chooses.
+    logo_position: Literal["top_left", "top_right", "bottom_left", "bottom_right", "center"] = "top_left"
+    logo_backing: Literal["none", "auto", "light", "dark"] = "none"
     # Width of the mark as a fraction of the picture's width, and how see-through it is.
     size: float = Field(0.2, ge=0.05, le=0.6)
     opacity: float = Field(0.6, ge=0.1, le=1.0)

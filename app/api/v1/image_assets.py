@@ -71,6 +71,7 @@ from app.shared.events import emit_event_background
 from app.core import limits
 from app.agents.content_guard.rules import content_hash
 from app.shared.heavy_work import run_heavy
+from app.shared.history_query import HistorySort, HistoryStatus, add_clauses, search_clause, sort_spec, status_clause
 from app.shared.safe_fetch import get_limited
 from app.shared.llm import call_vision, set_usage_workspace
 from app.shared.pipeline_types import PipelineType
@@ -326,7 +327,12 @@ def _brand_tokens_from(brand: dict) -> BrandTokens:
     visual_identity = brand.get("visual_identity") or {}
     colors = visual_identity.get("colors") or {}
     fonts = visual_identity.get("fonts") or {}
+    from app.pipelines.media import logo_placement
+
+    mark = brand.get("watermark") or {}
     return BrandTokens(
+        logo_position=logo_placement.clean_position(mark.get("logo_position")),
+        logo_backing=logo_placement.clean_backing(mark.get("logo_backing")),
         primary_hex=colors.get("primary") or "#e04a1f",
         secondary_hex=colors.get("secondary") or "#0f172a",
         accent_hex=colors.get("accent") or "#38bdf8",
@@ -1828,12 +1834,15 @@ async def list_image_assets(
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
     skip: int = Query(default=0, ge=0),
+    q: Optional[str] = Query(default=None, max_length=120),
+    status: Optional[HistoryStatus] = Query(default=None),
+    sort: HistorySort = Query(default="newest"),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    """The workspace's images, newest first, each with its first slide as the
-    preview, for the Library's Image tab. Read only."""
-    flt = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
-    docs = await image_assets.find(flt, {"_id": 0}).sort([("created_at", -1), ("id", -1)]).skip(skip).limit(limit).to_list(length=limit)
+    """The workspace's images, newest first unless asked otherwise, each with its first slide as the
+    preview, for the Library's Image tab and the History tab. Read only. ``q`` searches titles, ``status`` filters by approval."""
+    flt = add_clauses({"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, search_clause(q, ("title",)), status_clause(status))
+    docs = await image_assets.find(flt, {"_id": 0}).sort(sort_spec(sort)).skip(skip).limit(limit).to_list(length=limit)
     total = await image_assets.count_documents(flt)
 
     def _first_media_id(doc: dict) -> Optional[str]:

@@ -555,7 +555,7 @@ async def clear_orphans(body: PathOnly, actor: Actor = Depends(_actor)) -> dict:
 def _cases_for(prompt: Prompt, saved: dict | None) -> list[dict]:
     if saved and saved.get("cases") is not None:
         return saved["cases"]
-    return rules.suggested_cases(rules.sample_values(find_slots(compose(prompt.regions))), prompt.protected)
+    return rules.suggested_cases(rules.sample_values(find_slots(compose(prompt.regions))), prompt.protected, fragment=prompt.path.startswith("fragments/"))
 
 
 def _suite_run(prompt: Prompt, state: dict, cases: list[dict]) -> dict:
@@ -637,6 +637,45 @@ async def run_all_suites(request: Request, actor: Actor = Depends(_actor)) -> li
     await service.audit(db, actor, "test.suite", "all",
                         f"{failed} of {len(prompts)} prompts have failing tests" if failed else f"All {len(prompts)} prompts passed")
     return rows
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Usage: what each prompt costs to run
+# ---------------------------------------------------------------------------------------------------------------------
+
+@router.get("/usage")
+async def usage_overview(days: int = Query(30, ge=1, le=365), actor: Actor = Depends(_actor)) -> dict:
+    """Calls, tokens, time and failures across every prompt for the last 7, 30 or 90 days, against the window before, with the prompts
+    ranked by tokens. Read only, from what the recorder already keeps."""
+    from app.prompt_library import usage
+
+    out = await usage.load(days=days)
+    # a prompt in the ranking can be opened: its class comes from the catalog, so the list shows how it is governed
+    catalog = await service.catalog(get_db())
+    for row in out["top"]:
+        prompt = catalog.get(row["path"])
+        row["klass"] = prompt.klass if prompt else None
+    return out
+
+
+@router.get("/usage/prompt")
+async def usage_for_prompt(path: str = Query(..., max_length=300), days: int = Query(30, ge=1, le=365), actor: Actor = Depends(_actor)) -> dict:
+    """One prompt's usage: its totals, a day by day series, the change against the window before, and the versions published in the
+    window, so a change in size can be tied to an edit."""
+    from app.prompt_library import usage
+
+    db = get_db()
+    prompt = await service.find(db, path)
+    out = await usage.load(days=days, path=path)
+    state = await service.get_state(db, prompt)
+    since = out["from"]
+    out["versions"] = sorted(
+        [{"number": v["number"], "at": str(v.get("publishedAt") or "")[:10], "note": v.get("changeNote") or "", "by": v.get("publishedBy") or ""}
+         for v in state.get("versions", []) if str(v.get("publishedAt") or "")[:10] >= since],
+        key=lambda v: v["number"],
+    )
+    out["path"], out["klass"] = path, prompt.klass
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------------------

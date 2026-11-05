@@ -582,11 +582,18 @@ def validate_case(case: dict) -> list[str]:
     return issues
 
 
-def suggested_cases(values: dict[str, str], protected: list[str]) -> list[dict]:
+#: How big a finished prompt may be before the starting size test flags it, and the larger allowance for a fragment. A fragment is a
+#: building block full of `if` branches that only some prompts reach, and the sample render keeps every branch in view at once, so
+#: what it measures there is the template's whole structure, not the text a member's prompt would really carry.
+SIZE_LIMIT_TOKENS = 3000
+FRAGMENT_SIZE_LIMIT_TOKENS = 12000
+
+
+def suggested_cases(values: dict[str, str], protected: list[str], *, fragment: bool = False) -> list[dict]:
     cases = [
         {"id": "case_1", "name": "Fills every variable", "values": values, "assertions": [{"kind": "no_unfilled"}]},
         {"id": "case_2", "name": "Stays a sensible size", "values": values,
-         "assertions": [{"kind": "min_chars", "value": 10}, {"kind": "max_tokens", "value": 3000}]},
+         "assertions": [{"kind": "min_chars", "value": 10}, {"kind": "max_tokens", "value": FRAGMENT_SIZE_LIMIT_TOKENS if fragment else SIZE_LIMIT_TOKENS}]},
     ]
     if protected:
         cases.append({"id": "case_3", "name": "Keeps the protected text", "values": values,

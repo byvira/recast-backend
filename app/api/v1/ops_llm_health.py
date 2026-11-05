@@ -285,8 +285,18 @@ async def patch_issue(request: Request, number: int, body: IssuePatch, user: dic
             sets["resolution"] = None
         history.append({"at": now, "by": who, "change": f"status: {body.status}" + (f" ({scrub_message(body.reason, 200)})" if body.reason else "")})
     if body.owner_id is not None:
+        if body.owner_id:
+            from app.db.mongo import users
+
+            # an issue can only be given to someone who works in Ops
+            owner = await users.find_one({"id": body.owner_id, "$or": [{"is_platform_staff": True}, {"is_master_admin": True}]}, {"name": 1, "email": 1})
+            if not owner:
+                raise HTTPException(status_code=422, detail="That person doesn't work in Ops.")
+            label = owner.get("name") or owner.get("email") or "someone"
+        else:
+            label = "nobody"
         sets["owner_id"] = body.owner_id or None
-        history.append({"at": now, "by": who, "change": "owner changed"})
+        history.append({"at": now, "by": who, "change": f"owner: {label}"})
     if body.priority and body.priority != doc.get("priority"):
         if not (body.reason or "").strip():
             raise HTTPException(status_code=422, detail="Say why you are changing the priority.")
@@ -297,6 +307,19 @@ async def patch_issue(request: Request, number: int, body: IssuePatch, user: dic
         update["$push"] = {"history": {"$each": history}}
     await llm_issues.update_one({"_id": doc["_id"]}, update)
     return _issue_out(await _get_issue(number))
+
+
+@router.get("/people")
+@limiter.limit("60/minute")
+async def people(request: Request, user: dict = Depends(require_platform_staff)) -> dict:
+    """The people who can own an issue: everyone who works in Ops. Names and ids only."""
+    from app.db.mongo import users
+
+    rows = await users.find(
+        {"$or": [{"is_platform_staff": True}, {"is_master_admin": True}], "staff.status": {"$ne": "deactivated"}},
+        {"_id": 0, "id": 1, "name": 1, "email": 1},
+    ).sort("name", 1).to_list(100)
+    return {"people": [{"id": r["id"], "name": r.get("name") or r.get("email") or "Someone"} for r in rows]}
 
 
 class Note(BaseModel):
@@ -416,6 +439,7 @@ class AlertRules(BaseModel):
     quota_critical: bool = True
     reopened: bool = True
     provider_down: bool = True
+    daily_digest: bool = True
 
 
 @router.put("/alerts")

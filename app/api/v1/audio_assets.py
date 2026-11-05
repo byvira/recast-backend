@@ -28,6 +28,7 @@ from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core import limits
 from app.agents.content_guard.rules import content_hash
 from app.shared.heavy_work import run_heavy
+from app.shared.history_query import HistorySort, HistoryStatus, add_clauses, in_memory_sort, search_clause, sort_spec, status_clause, term_of
 # new audio waits for review only where the workspace has a review step, the same as a new post
 from app.shared.tier_policy import default_approval
 from app.shared.safe_fetch import ResponseTooLarge, get_limited
@@ -365,10 +366,13 @@ async def list_video_clips(
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
     skip: int = Query(default=0, ge=0),
+    q: Optional[str] = Query(default=None, max_length=120),
+    status: Optional[HistoryStatus] = Query(default=None),
+    sort: HistorySort = Query(default="newest"),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    """Every video made from a recording in this workspace, newest first, each with its playable file and the recording
-    it came from. This is the Video pipeline's history."""
+    """Every video made from a recording in this workspace, newest first unless asked otherwise, each with its playable file and
+    the recording it came from. This is the Video pipeline's history. ``q`` searches the video's and its recording's title."""
     docs = await audio_assets.find(
         {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "video_clips.0": {"$exists": True}},
         {"_id": 0, "id": 1, "title": 1, "brand_id": 1, "video_clips": 1, "approval_status": 1},
@@ -377,7 +381,14 @@ async def list_video_clips(
         {"audio_asset_id": d["id"], "audio_title": d.get("title", ""), "brand_id": d.get("brand_id"), "approval_status": d.get("approval_status"), **{k: v for k, v in dict(c).items()}}
         for d in docs for c in (d.get("video_clips") or [])
     ]
-    clips.sort(key=lambda c: str(c.get("created_at") or ""), reverse=True)
+    term = term_of(q).lower()
+    if term:
+        clips = [c for c in clips if term in str(c.get("title") or "").lower() or term in str(c.get("audio_title") or "").lower()]
+    if status == "approved" or status == "rejected":
+        clips = [c for c in clips if c.get("approval_status") == status]
+    elif status == "pending":
+        clips = [c for c in clips if c.get("approval_status") not in ("approved", "rejected")]
+    clips = in_memory_sort([{**c, "title": c.get("title") or c.get("audio_title") or ""} for c in clips], sort)
     total = len(clips)
     clips = clips[skip:skip + limit]
     media_ids = [c["media_id"] for c in clips if c.get("media_id")]
@@ -1624,12 +1635,15 @@ async def list_audio_assets(
     request: Request,
     limit: int = Query(default=50, ge=1, le=100),
     skip: int = Query(default=0, ge=0),
+    q: Optional[str] = Query(default=None, max_length=120),
+    status: Optional[HistoryStatus] = Query(default=None),
+    sort: HistorySort = Query(default="newest"),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    """The workspace's audio, newest first, each with its playable file, for
-    the Library's Audio tab. Read only."""
-    flt = {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}
-    docs = await audio_assets.find(flt, {"_id": 0}).sort([("created_at", -1), ("id", -1)]).skip(skip).limit(limit).to_list(length=limit)
+    """The workspace's audio, newest first unless asked otherwise, each with its playable file, for
+    the Library's Audio tab and the History tab. Read only. ``q`` searches titles, ``status`` filters by approval."""
+    flt = add_clauses({"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}}, search_clause(q, ("title",)), status_clause(status))
+    docs = await audio_assets.find(flt, {"_id": 0}).sort(sort_spec(sort)).skip(skip).limit(limit).to_list(length=limit)
     total = await audio_assets.count_documents(flt)
 
     media_ids = [m for m in ((d.get("approved_master_media_id") or d.get("media_id")) for d in docs) if m]

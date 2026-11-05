@@ -19,6 +19,7 @@ from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace
 from app.db.mongo import get_client, support_chats, support_incidents, workspace_connections
 from app.shared import support_guides
+from app.shared.support_actions import suggest_actions
 from app.shared.support_log import support_request_log
 from app.shared.llm import GroqModel, call_llm_chat, get_circuit_breaker_status, private_content, usage_workspace
 from app.prompts.registry import text_version
@@ -103,6 +104,12 @@ async def delete_chat(request: Request, chat_id: str, ctx: WorkspaceContext = De
 
 async def _workspace_facts(ctx: WorkspaceContext) -> list[str]:
     """Read-only, plain-language facts about the member's own workspace."""
+    facts, _ = await _workspace_view(ctx)
+    return facts
+
+
+async def _workspace_view(ctx: WorkspaceContext) -> tuple[list[str], list[dict]]:
+    """The facts the assistant is told, and the links it may offer under its reply, both worked out from the one snapshot."""
     try:
         pseudo = {
             "workspace_id": ctx.workspace_id,
@@ -112,10 +119,12 @@ async def _workspace_facts(ctx: WorkspaceContext) -> list[str]:
             "category": None,
         }
         snapshot = await build_snapshot(pseudo)
-        return [f["text"] for f in await diagnose(pseudo, snapshot)]
+        findings = await diagnose(pseudo, snapshot)
+        out_of_credits = any("used up its credits" in f["text"] for f in findings)
+        return [f["text"] for f in findings], suggest_actions(snapshot, out_of_credits=out_of_credits)
     except Exception:
         logger.debug("Couldn't gather workspace facts for the assistant", exc_info=True)
-        return []
+        return [], []
 
 
 def model_messages(history: list[dict], message: str) -> list[dict]:
@@ -156,7 +165,7 @@ async def assist(
 
     history = (chat or {}).get("messages", [])[-HISTORY_TURNS:]
     guides = support_guides.search(body.message, limit=3)
-    facts = await _workspace_facts(ctx)
+    facts, actions = await _workspace_view(ctx)
 
     base = _system()
     system = (
@@ -218,6 +227,7 @@ async def assist(
         "chat_id": chat_id,
         "title": title,
         "guides": [{"id": g["id"], "title": g["title"]} for g in guides],
+        "actions": actions,
     }
 
 

@@ -59,7 +59,7 @@ async def test_failures_become_one_issue_with_counts_and_a_prompt_path(make_clie
 
 
 async def test_status_notes_report_and_ignore_rules(make_client):
-    client, _ = await _staff(make_client)
+    client, me = await _staff(make_client)
     model = "m-" + datetime.now().strftime("%H%M%S%f")
     await _fail_and_flush("groq", model, "Invalid API Key", status=401)
     number = await _issue_number(client, model)
@@ -67,8 +67,12 @@ async def test_status_notes_report_and_ignore_rules(make_client):
 
     assert (await client.patch(f"{B}/issues/{number}", json={"status": "ignored"})).status_code == 422
     assert (await client.patch(f"{B}/issues/{number}", json={"priority": "low"})).status_code == 422
-    ack = (await client.patch(f"{B}/issues/{number}", json={"status": "acknowledged", "owner_id": "someone"})).json()
-    assert ack["status"] == "acknowledged" and ack["owner_id"] == "someone"
+    # an issue can only be given to someone who works in Ops
+    assert (await client.patch(f"{B}/issues/{number}", json={"owner_id": "someone"})).status_code == 422
+    ack = (await client.patch(f"{B}/issues/{number}", json={"status": "acknowledged", "owner_id": me["id"]})).json()
+    assert ack["status"] == "acknowledged" and ack["owner_id"] == me["id"]
+    assert any("owner:" in h["change"] for h in ack["history"]), "the history says who it was given to"
+    assert me["id"] in [p["id"] for p in (await client.get(f"{B}/people")).json()["people"]]
     assert (await client.post(f"{B}/issues/{number}/notes", json={"text": "Looking at the key now"})).json()["notes"][0]["text"].startswith("Looking")
 
     report = (await client.get(f"{B}/issues/{number}/report")).json()["text"]

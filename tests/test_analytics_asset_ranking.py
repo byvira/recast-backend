@@ -71,8 +71,51 @@ async def test_one_workspace_never_sees_another_workspaces_assets(signup_user):
 async def test_an_unknown_kind_is_refused_plainly(signup_user):
     client, _ = await signup_user()
     ws = await create_workspace(client, "Kind check")
-    res = await client.get("/api/v1/analytics/assets/video/top", headers=_h(ws))
+    res = await client.get("/api/v1/analytics/assets/document/top", headers=_h(ws))
     assert res.status_code == 404 and "pictures" in res.json()["detail"]
+
+
+async def test_videos_are_ranked_from_the_posts_their_clip_went_out_in(signup_user):
+    from datetime import datetime, timezone
+
+    from app.db.mongo import content_pieces
+
+    client, _ = await signup_user()
+    ws = await create_workspace(client, "Video ranking")
+    strong, weak, unused = str(uuid4()), str(uuid4()), str(uuid4())
+    p_strong, p_weak, p_other_kind = str(uuid4()), str(uuid4()), str(uuid4())
+    await audio_assets.insert_one({
+        "id": str(uuid4()), "workspace_id": ws, "title": "Episode 9", "deleted": False,
+        "video_clips": [{"id": strong, "title": "Best bit"}, {"id": weak, "title": "Second bit"}, {"id": unused, "title": "Never posted"}],
+    })
+    now = datetime.now(timezone.utc)
+    for piece, attachments in (
+        (p_strong, [{"asset_type": "video", "clip_id": strong}]),
+        (p_weak, [{"asset_type": "video", "clip_id": weak}]),
+        (p_other_kind, [{"asset_type": "audio", "clip_id": strong}]),  # an attachment of another kind never counts for a clip
+    ):
+        await content_pieces.insert_one({"piece_id": piece, "workspace_id": ws, "attachments": attachments, "created_at": now})
+    await _metrics(ws, p_strong, 7.5, likes=30)
+    await _metrics(ws, p_weak, 1.5, likes=3)
+    await _metrics(ws, p_other_kind, 99.0, likes=999)
+    body = (await client.get("/api/v1/analytics/assets/video/top", headers=_h(ws))).json()
+    assert body["asset_type"] == "video" and body["measured"] == 2
+    assert [i["asset_id"] for i in body["items"]] == [strong, weak], "best first, and a clip never posted is left out"
+    assert body["items"][0]["title"] == "Best bit" and body["items"][0]["average_engagement_rate"] == 7.5 and body["items"][0]["rank"] == 1
+
+
+async def test_another_workspaces_video_posts_never_count(signup_user):
+    from datetime import datetime, timezone
+
+    from app.db.mongo import content_pieces
+
+    client, _ = await signup_user()
+    mine = await create_workspace(client, "Mine")
+    clip, piece = str(uuid4()), str(uuid4())
+    await audio_assets.insert_one({"id": str(uuid4()), "workspace_id": mine, "title": "Rec", "deleted": False, "video_clips": [{"id": clip, "title": "Mine"}]})
+    await content_pieces.insert_one({"piece_id": piece, "workspace_id": str(uuid4()), "attachments": [{"asset_type": "video", "clip_id": clip}], "created_at": datetime.now(timezone.utc)})
+    await _metrics(mine, piece, 9.0)
+    assert (await client.get("/api/v1/analytics/assets/video/top", headers=_h(mine))).json() == {"asset_type": "video", "measured": 0, "items": []}
 
 
 async def test_top_performers_can_be_read_within_one_medium(signup_user):

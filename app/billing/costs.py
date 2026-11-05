@@ -77,7 +77,7 @@ DEFAULT_COSTS: dict[str, dict[str, Any]] = {
     "analytics_answer": {"module": "system", "label": "The analytics answer", "credits": 0, "kind": "passive"},
     "support_assistant": {"module": "system", "label": "Support assistant and ticket sorting", "credits": 0, "kind": "passive"},
     "typing_help": {"module": "system", "label": "Typing suggestions", "credits": 0, "kind": "passive"},
-    "publish_details": {"module": "system", "label": "YouTube details and translated labels at publish", "credits": 0, "kind": "passive"},
+    "publish_details": {"module": "system", "label": "YouTube details, Instagram first comments and translated labels at publish", "credits": 0, "kind": "passive"},
 }
 
 UNIT_WORDS: dict[str, tuple[str, str]] = {"minutes": ("minute", "minutes"), "words": ("word", "words")}

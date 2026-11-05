@@ -85,7 +85,7 @@ class Batch:
     def __init__(self) -> None:
         self.rollups: dict[tuple[datetime, str, str, str], dict[str, int]] = {}
         self.events: list[dict[str, Any]] = []
-        #: per day and prompt path: calls and failures, so a prompt's failure count stays exact when events are capped
+        #: per day and prompt path: calls, failures and what they cost (tokens, time), so a prompt's counts stay exact when events are capped
         self.prompt_days: dict[tuple[datetime, str], dict[str, int]] = {}
         self._event_counts: dict[tuple[datetime, str, str, str], int] = {}
         self.dropped_events = 0
@@ -118,6 +118,13 @@ class Batch:
             day = a.at.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
             row = self.prompt_days.setdefault((day, path), {})
             row["calls"] = row.get("calls", 0) + 1
+            # what the call cost, so a prompt's size is known from real use. `token_calls` counts the calls these figures cover:
+            # days recorded before tokens were kept have calls but no token_calls, so an average is never pulled down by them.
+            row["token_calls"] = row.get("token_calls", 0) + 1
+            row["tokens_in"] = row.get("tokens_in", 0) + int(a.tokens_in or 0)
+            row["tokens_out"] = row.get("tokens_out", 0) + int(a.tokens_out or 0)
+            row["cached_tokens"] = row.get("cached_tokens", 0) + int(a.cached_tokens or 0)
+            row["latency_sum_ms"] = row.get("latency_sum_ms", 0) + int(a.latency_ms)
             if not a.ok:
                 row["failures"] = row.get("failures", 0) + 1
                 if kind:

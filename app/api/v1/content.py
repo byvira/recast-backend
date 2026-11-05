@@ -11,7 +11,7 @@ import csv
 import io
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -150,9 +150,12 @@ async def list_sessions(
     standalone: bool = Query(False),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    q: Optional[str] = Query(None, max_length=120),
+    sort: Literal["newest", "oldest", "title"] = Query("newest"),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
-    """List all content sessions in the active workspace. ``standalone`` leaves out the ones a campaign made."""
+    """List all content sessions in the active workspace. ``standalone`` leaves out the ones a campaign made. ``q`` searches the
+    run's name and the start of its input; ``sort`` is newest, oldest or title."""
     return await get_workspace_sessions(
         workspace_id=ctx.workspace_id,
         brand_id=brand_id,
@@ -160,7 +163,35 @@ async def list_sessions(
         standalone=standalone,
         page=page,
         limit=limit,
+        q=q,
+        sort=sort,
     )
+
+
+class FirstCommentRequest(BaseModel):
+    caption: str = Field(..., min_length=1, max_length=4000)
+    brand_id: Optional[str] = Field(default=None, max_length=64)
+
+
+@router.post("/first-comment")
+@limiter.limit("15/minute")
+async def suggest_first_comment(
+    request: Request, body: FirstCommentRequest, ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Write an Instagram first comment from a caption, on request. Text only: the person reads it, changes it and decides whether
+    it goes out. Free of credits (it is part of getting a post ready), with a daily allowance for each member."""
+    from app.pipelines.publish import instagram_comment
+    from app.shared.brand_name import brand_display_name
+    from app.shared.llm import set_usage_workspace
+
+    brand = None
+    if body.brand_id:
+        brand = await brand_profiles.find_one({"id": body.brand_id, "workspace_id": ctx.workspace_id})
+    if not await instagram_comment.allowed_today(ctx.user_id):
+        raise HTTPException(status_code=429, detail="You have used today's first comments. Write this one yourself, or try again tomorrow.")
+    set_usage_workspace(ctx.workspace_id)
+    comment = await instagram_comment.suggest_first_comment(body.caption, brand_display_name(brand) if brand else None)
+    return {"comment": comment}
 
 
 class RenameRequest(BaseModel):

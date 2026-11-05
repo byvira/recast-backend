@@ -32,6 +32,7 @@ from app.workers.campaign_scheduler import run_due_campaign_batches
 from app.workers.video_automation import run_due_video_recipes
 from app.workers.webhook_retries import retry_video_webhooks
 from app.shared.invites import lead_digest, sweep_invites
+from app.workers.daily_summary import write_daily_summaries
 from app.workers.link_checks import check_old_post_links
 from app.workers.run_reminders import remind_about_paused_runs
 from app.workers.scheduled_posts import process_scheduled_posts
@@ -98,6 +99,12 @@ async def _credit_nightly() -> None:
     from app.billing import credits
 
     await credits.nightly()
+
+
+async def _llm_digest() -> None:
+    from app.shared.llm_health import service
+
+    await service.send_daily_digest()
 
 
 async def _billing_webhooks() -> None:
@@ -175,6 +182,8 @@ JOBS: list[Job] = [
         minute=frozenset({23}), hour=frozenset({2})),
     # Older published posts: is the post still on its platform? Daily at 03:13 UTC.
     Job("link_checks", _no_ctx(check_old_post_links), minute=frozenset({13}), hour=frozenset({3})),
+    # A short note in each workspace's Activity Log about the day before, at 03:31 UTC (early morning in India).
+    Job("daily_summary", _no_ctx(write_daily_summaries), minute=frozenset({31}), hour=frozenset({3})),
     # Trust score (shadow mode) — daily at 02:41 UTC.
     Job("autonomy_trust_refresh", autonomy_trust_refresh,
         minute=frozenset({41}), hour=frozenset({2})),
@@ -182,6 +191,8 @@ JOBS: list[Job] = [
     Job("cadence_monitor", cadence_monitor, minute=frozenset({37})),
     # Waitlist invites: expire old ones and send the one reminder, every hour at :22.
     Job("invite_sweep", _no_ctx(sweep_invites), minute=frozenset({22})),
+    # The morning email about AI problems still open, at 04:05 UTC (late morning in India); sent only when there is something to say.
+    Job("llm_digest", _no_ctx(_llm_digest), minute=frozenset({5}), hour=frozenset({4})),
     # A short daily note to the team about new leads and waiting messages, at 07:05 UTC.
     Job("lead_digest", _no_ctx(lead_digest), minute=frozenset({5}), hour=frozenset({7})),
     # The public status: every part's state, its day, and automatic incidents, every minute.

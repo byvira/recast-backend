@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 from app.core.scheduler_lock import distributed_job_lock
 from app.db.mongo import get_db, media_assets
+from app.shared.activity import record_system
+from app.shared.activity.i18n import phrase
 from app.shared.storage import delete_file_by_url
 
 logger = logging.getLogger(__name__)
@@ -32,11 +34,28 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def tell_workspaces(counts: dict[str, int], kind: str, what_one: str, what_many: str, detail: str) -> None:
+    """Say, in each affected workspace's Activity Log, what a clean-up removed, so nothing a member made or could still read goes quietly.
+    One note for each workspace and day, however often the job runs. Never raises."""
+    day = _now().date().isoformat()
+    for workspace_id, n in counts.items():
+        if not workspace_id or n <= 0:
+            continue
+        try:
+            await record_system(
+                workspace_id=workspace_id, key=f"video-cleanup:{kind}:{workspace_id}:{day}", actor_name="Ekavo", category="workspace_alert",
+                title=phrase("Tidied up {count} {what}", count=str(n), what=what_one if n == 1 else what_many), description=detail, status="success",
+            )
+        except Exception as exc:  # noqa: BLE001 - the note is a courtesy, never a reason to stop the clean-up
+            logger.warning("Could not note the %s clean-up for %s: %s", kind, workspace_id, exc)
+
+
 async def sweep_unfinished_uploads(now: datetime | None = None) -> int:
     """Close uploads that never completed and remove the half-sent files they left in storage."""
     db = get_db()
     cutoff = (now or _now()) - timedelta(days=STALE_UPLOAD_DAYS)
     removed = 0
+    by_workspace: dict[str, int] = {}
     async for up in db["video_uploads"].find({"status": {"$in": ["started", "expired", "cancelled", "failed"]}, "created_at": {"$lt": cutoff}}).limit(PER_RUN):
         public_id = up.get("public_id")
         if public_id:
@@ -54,6 +73,11 @@ async def sweep_unfinished_uploads(now: datetime | None = None) -> int:
                 continue
         await db["video_uploads"].delete_one({"id": up["id"]})
         removed += 1
+        by_workspace[up.get("workspace_id") or ""] = by_workspace.get(up.get("workspace_id") or "", 0) + 1
+    await tell_workspaces(
+        by_workspace, "uploads", "unfinished upload", "unfinished uploads",
+        f"Video uploads that were started but never finished, and were more than {STALE_UPLOAD_DAYS} days old, were removed to free space. Nothing finished was touched.",
+    )
     return removed
 
 
@@ -87,12 +111,20 @@ async def trim_records(now: datetime | None = None) -> dict[str, int]:
     decisions = await db["agent_decisions"].delete_many({"created_at": {"$lt": moment - timedelta(days=DECISION_DAYS)}, "outcome": {"$ne": "needs_decision"}})
     deliveries = await db["video_webhook_deliveries"].delete_many({
         "status": {"$in": ["delivered", "failed"]}, "created_at": {"$lt": moment - timedelta(days=WEBHOOK_DELIVERY_DAYS)}})
-    old_links = [lk["id"] async for lk in db["video_review_links"].find(
-        {"$or": [{"revoked": True, "revoked_at": {"$lt": moment - timedelta(days=REVIEW_LINK_DAYS)}}, {"expires_at": {"$lt": moment - timedelta(days=REVIEW_LINK_DAYS)}}]}, {"id": 1}).limit(PER_RUN)]
+    link_rows = [lk async for lk in db["video_review_links"].find(
+        {"$or": [{"revoked": True, "revoked_at": {"$lt": moment - timedelta(days=REVIEW_LINK_DAYS)}}, {"expires_at": {"$lt": moment - timedelta(days=REVIEW_LINK_DAYS)}}]}, {"id": 1, "workspace_id": 1}).limit(PER_RUN)]
+    old_links = [lk["id"] for lk in link_rows]
     if old_links:
         for name in ("video_review_comments", "video_review_decisions"):
             await db[name].delete_many({"link_id": {"$in": old_links}})
         await db["video_review_links"].delete_many({"id": {"$in": old_links}})
+        per_workspace: dict[str, int] = {}
+        for lk in link_rows:
+            per_workspace[lk.get("workspace_id") or ""] = per_workspace.get(lk.get("workspace_id") or "", 0) + 1
+        await tell_workspaces(
+            per_workspace, "review-links", "old review link", "old review links",
+            f"Review links that ended more than {REVIEW_LINK_DAYS} days ago were removed, with the comments and answers on them. Save anything you still need from them.",
+        )
     return {"job_records": jobs.deleted_count, "decisions": decisions.deleted_count, "webhook_deliveries": deliveries.deleted_count, "review_links": len(old_links)}
 
 

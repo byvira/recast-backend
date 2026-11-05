@@ -478,13 +478,18 @@ async def get_workspace_sessions(
     page: int = 1,
     limit: int = 20,
     standalone: bool = False,
+    q: Optional[str] = None,
+    sort: Optional[str] = None,
 ) -> dict:
     """
     Paginated list of sessions for a workspace.
     Optionally filter by brand_id and/or is_repurpose. ``standalone`` leaves out the sessions a campaign made (one per day),
-    so a campaign's posts are only ever listed under that campaign.
+    so a campaign's posts are only ever listed under that campaign. ``q`` searches the run's name and the start of its input;
+    ``sort`` is newest (the default), oldest or title.
     Returns sessions without pieces — use get_session() for full detail.
     """
+    from app.shared.history_query import add_clauses, search_clause, sort_spec
+
     query: dict = {"workspace_id": workspace_id, "deleted": {"$ne": True}}
     if brand_id:
         query["brand_id"] = brand_id
@@ -498,12 +503,11 @@ async def get_workspace_sessions(
         query["campaign_id"] = {"$in": [None, ""]}
         query["session_id"] = {"$nin": from_campaigns}
 
+    query = add_clauses(query, search_clause(q, ("title", "input_text")))
     skip = (page - 1) * limit
     total = await content_sessions.count_documents(query)
 
-    sessions = await content_sessions.find(query).sort(
-        [("created_at", -1), ("session_id", -1)]
-    ).skip(skip).limit(limit).to_list(length=limit)
+    sessions = await content_sessions.find(query).sort(sort_spec(sort, "session_id")).skip(skip).limit(limit).to_list(length=limit)
 
     for s in sessions:
         s.pop("_id", None)

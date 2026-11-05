@@ -65,7 +65,7 @@ put(DEV, ["analytics/recommend", "audio/chapters", "audio/soundbite_refine", "au
 
 # Moved out of Python code into prompt files (Stage 5, Phase 0).
 put(OPS, ["personal/align_system"])
-put(HYBRID, ["search/agentic_system", "support/assistant_system", "publish/youtube_metadata"])
+put(HYBRID, ["search/agentic_system", "support/assistant_system", "publish/youtube_metadata", "publish/instagram_first_comment"])
 put(DEV, ["content_guard/screen", "content_guard/screen_system", "content_guard/rewrite", "content_guard/rewrite_system",
           "content_guard/picture_unsafe", "content_guard/picture_writing", "brand/extract_traits_system",
           "brand/preview_rewrite_system", "brand/suggest_voice_patterns_system", "suggest/complete_system",
@@ -123,6 +123,7 @@ WHY = {
     "search/agentic_system": "How matches are picked and explained is editable. The short reason length the screen shows is locked.",
     "support/assistant_system": "Tone and answer style are editable. Never promising fixes, no links and only known facts are locked.",
     "publish/youtube_metadata": "Writing guidance is editable. The two-line reply the code reads and the material fences are locked.",
+    "publish/instagram_first_comment": "Voice and style guidance is editable. The caption and hashtag fences, the hashtag line and the plain-text reply are locked.",
     "content_guard/screen": "Safety check. Returns JSON with fixed categories the code reads.",
     "content_guard/screen_system": "Safety reviewer persona. Locked so a safety rule cannot be edited away.",
     "content_guard/rewrite": "Safety rewrite. Locked so a safety rule cannot be edited away.",

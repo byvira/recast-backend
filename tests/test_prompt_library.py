@@ -559,8 +559,7 @@ async def test_the_suggested_tests_of_every_prompt_only_fail_for_a_real_reason()
     for path, prompt in prompts.items():
         run = _suite_run(prompt, service._state_of(states.get(path), prompt), _cases_for(prompt, None))
         failing += [(path, r["name"]) for r in run["results"] if r["status"] == "fail"]
-    assert all(name == "Stays a sensible size" for _, name in failing), failing
-    assert len(failing) <= 2, failing
+    assert failing == [], failing  # fragments get a larger size allowance, so nothing fails by itself
 
 
 async def test_a_new_prompt_goes_from_idea_to_live_and_keeps_its_versions_when_a_developer_adds_the_file(signup_user):

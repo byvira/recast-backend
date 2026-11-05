@@ -374,6 +374,29 @@ _ASSET_COLLECTIONS = ("image", "audio")
 _ENGAGEMENT_FIELDS = ("likes", "comments", "shares", "reposts", "saves", "clicks")
 
 
+async def _video_clip_rows(workspace_id: str) -> list[dict]:
+    """Videos made from recordings, shaped like the picture and recording rows (an id, a title and the posts they went out in). A clip's
+    link to a post is kept on the post's attachment, which names the clip; the recording only remembers that some clip of it went out,
+    so the posts are found from the attachments."""
+    from app.db.mongo import audio_assets, content_pieces
+
+    recordings = await audio_assets.find(
+        {"workspace_id": workspace_id, "deleted": {"$ne": True}, "video_clips.0": {"$exists": True}}, {"id": 1, "title": 1, "video_clips": 1},
+    ).limit(500).to_list(length=500)
+    clips = {c["id"]: (c.get("title") or r.get("title") or "") for r in recordings for c in (r.get("video_clips") or []) if c.get("id")}
+    if not clips:
+        return []
+    linked: dict[str, list[dict]] = {cid: [] for cid in clips}
+    async for piece in content_pieces.find(
+        {"workspace_id": workspace_id, "deleted": {"$ne": True}, "attachments": {"$elemMatch": {"asset_type": "video", "clip_id": {"$in": list(clips)}}}},
+        {"piece_id": 1, "attachments.asset_type": 1, "attachments.clip_id": 1},
+    ).limit(5000):
+        for att in piece.get("attachments") or []:
+            if att.get("asset_type") == "video" and att.get("clip_id") in linked:
+                linked[att["clip_id"]].append({"piece_id": piece["piece_id"]})
+    return [{"id": cid, "title": clips[cid], "linked_pieces": links} for cid, links in linked.items() if links]
+
+
 @router.get("/assets/{asset_type}/top")
 @limiter.limit("30/minute")
 async def top_assets(
@@ -389,13 +412,16 @@ async def top_assets(
 
     from app.db.mongo import audio_assets, image_assets
 
-    if asset_type not in _ASSET_COLLECTIONS:
-        raise HTTPException(status_code=404, detail="Results are available for pictures (image) and recordings (audio).")
-    collection = {"image": image_assets, "audio": audio_assets}[asset_type]
-    rows = await collection.find(
-        {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "linked_pieces.0": {"$exists": True}},
-        {"id": 1, "title": 1, "linked_pieces": 1, "media_id": 1},
-    ).limit(500).to_list(length=500)
+    if asset_type not in _ASSET_COLLECTIONS and asset_type != "video":
+        raise HTTPException(status_code=404, detail="Results are available for pictures (image), recordings (audio) and videos (video).")
+    if asset_type == "video":
+        rows = await _video_clip_rows(ctx.workspace_id)
+    else:
+        collection = {"image": image_assets, "audio": audio_assets}[asset_type]
+        rows = await collection.find(
+            {"workspace_id": ctx.workspace_id, "deleted": {"$ne": True}, "linked_pieces.0": {"$exists": True}},
+            {"id": 1, "title": 1, "linked_pieces": 1, "media_id": 1},
+        ).limit(500).to_list(length=500)
     piece_ids = list({l.get("piece_id") for r in rows for l in (r.get("linked_pieces") or [])[:100] if l.get("piece_id")})
     if not piece_ids:
         return {"asset_type": asset_type, "measured": 0, "items": []}

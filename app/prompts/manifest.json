@@ -1368,6 +1368,41 @@
     "app/pipelines/presets_suggest.py"
    ]
   },
+  "publish/instagram_first_comment": {
+   "klass": "hybrid",
+   "protectedLiterals": [
+    "{{ caption | untrusted(\"caption\") }}",
+    "{{ hashtags | untrusted(\"hashtags\") }}"
+   ],
+   "reason": "Voice and style guidance is editable. The caption and hashtag fences, the hashtag line and the plain-text reply are locked.",
+   "receives": [
+    {
+     "name": "brand_name",
+     "sites": 1,
+     "source": "brand_name or 'this brand'"
+    },
+    {
+     "name": "caption",
+     "sites": 1,
+     "source": "body"
+    },
+    {
+     "name": "hashtags",
+     "sites": 1,
+     "source": "hashtags"
+    },
+    {
+     "name": "max_chars",
+     "sites": 1,
+     "source": "ASK_CHARS"
+    }
+   ],
+   "receivesMore": false,
+   "safetySensitive": false,
+   "usedBy": [
+    "app/pipelines/publish/instagram_comment.py"
+   ]
+  },
   "publish/youtube_metadata": {
    "klass": "hybrid",
    "protectedLiterals": [],

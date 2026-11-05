@@ -41,6 +41,9 @@ async def test_review_links_ended_or_expired_for_ninety_days_go_with_their_comme
     assert links == {"recent" + ws, "live" + ws}
     assert {c["id"] async for c in db["video_review_comments"].find({"workspace_id": ws})} == {"c-recent" + ws}
     assert {c["id"] async for c in db["video_review_decisions"].find({"workspace_id": ws})} == {"d-recent" + ws}
+    # the workspace is told what was removed, once, in its Activity Log
+    note = await db["activity_entries"].find_one({"workspace_id": ws, "category": "workspace_alert"})
+    assert note and "2 old review links" in str(note["title"]) and "comments and answers" in note["description"]
 
 
 async def test_the_daily_job_also_retries_files_storage_could_not_remove(monkeypatch):
@@ -55,3 +58,21 @@ async def test_the_daily_job_also_retries_files_storage_could_not_remove(monkeyp
     monkeypatch.setattr(deletion, "retry_failed_files", fake_retry)
     out = await retention.run_video_retention.__wrapped__() if hasattr(retention.run_video_retention, "__wrapped__") else await retention.run_video_retention()
     assert seen and out.get("files_retried") == 3
+
+
+async def test_unfinished_uploads_are_removed_and_the_workspace_is_told_once(monkeypatch):
+    db = get_db()
+    ws = f"ws-{uuid4()}"
+    now = datetime.now(timezone.utc)
+    await db["video_uploads"].insert_many([
+        {"id": f"stale-{i}-{ws}", "workspace_id": ws, "status": "started", "created_at": now - timedelta(days=5)} for i in range(3)
+    ] + [{"id": f"fresh-{ws}", "workspace_id": ws, "status": "started", "created_at": now - timedelta(hours=3)}])
+
+    assert await retention.sweep_unfinished_uploads(now) == 3
+    left = {u["id"] async for u in db["video_uploads"].find({"workspace_id": ws})}
+    assert left == {f"fresh-{ws}"}, "a recent upload may still be going and is never touched"
+    rows = [r async for r in db["activity_entries"].find({"workspace_id": ws, "category": "workspace_alert"})]
+    assert len(rows) == 1 and "3 unfinished uploads" in str(rows[0]["title"])
+    # nothing left to remove: no second note, and the same day never writes two
+    assert await retention.sweep_unfinished_uploads(now) == 0
+    assert await db["activity_entries"].count_documents({"workspace_id": ws, "category": "workspace_alert"}) == 1

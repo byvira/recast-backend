@@ -199,6 +199,9 @@ class BrandTokens(BaseModel):
     # set by _load_font, not rendered literally as arbitrary font names.
     heading_font: Optional[str] = None
     body_font: Optional[str] = None
+    # Where the brand's logo goes and what sits behind it (see logo_placement); top left with no plate is the starting look.
+    logo_position: str = "top_left"
+    logo_backing: str = "none"
 
 
 class SlideTextContent(BaseModel):
@@ -432,10 +435,17 @@ def render_slide(
     # scrim/headline logic above never inventing content that isn't real.
     if logo_bytes:
         try:
+            from app.pipelines.media import logo_placement
+
             logo = Image.open(BytesIO(logo_bytes)).convert("RGBA")
             logo_target = int(min(target_size) * 0.08)
             logo.thumbnail((logo_target, logo_target), Image.LANCZOS)
-            img.paste(logo, (margin, margin), logo)
+            # this one-piece layout keeps its words along the bottom, so the logo stays on the top: a right choice moves it to the
+            # top right, anything else stays at the top left
+            side = "top_right" if str(brand_tokens.logo_position).endswith("right") else "top_left"
+            at = logo_placement.place(side, img.size, logo.size, (margin, margin))
+            logo_placement.draw_plate(img, (at[0], at[1], at[0] + logo.width, at[1] + logo.height), brand_tokens.logo_backing)
+            img.paste(logo, at, logo)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Logo composite failed, skipping: %s", exc)
 

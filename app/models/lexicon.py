@@ -8,7 +8,11 @@ a TTS engine yet — that wiring is separate, later work.
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+#: How many words each list may hold, and how long one word or phrase may be.
+MAX_WORDS = 100
+MAX_WORD_CHARS = 60
 
 
 class PronunciationEntry(BaseModel):
@@ -63,6 +67,23 @@ class MemberLexiconWrite(BaseModel):
     whole list) — simplest contract for a scaffolding pass; per-entry
     PATCH endpoints can follow if the UI ever needs finer-grained saves."""
     pronunciations: list[PronunciationEntry] = Field(default_factory=list)
-    whitelist: list[str] = Field(default_factory=list)
-    blacklist: list[str] = Field(default_factory=list)
+    whitelist: list[str] = Field(default_factory=list, max_length=MAX_WORDS)
+    blacklist: list[str] = Field(default_factory=list, max_length=MAX_WORDS)
     writing_blueprint: WritingBlueprint = Field(default_factory=WritingBlueprint)
+
+    @field_validator("whitelist", "blacklist")
+    @classmethod
+    def _clean_words(cls, words: list[str]) -> list[str]:
+        """Each word trimmed, short, and listed once (any case); empty ones are dropped, so the lists stay tidy however they are typed."""
+        seen: set[str] = set()
+        out: list[str] = []
+        for word in words:
+            word = " ".join(str(word).split())
+            if not word:
+                continue
+            if len(word) > MAX_WORD_CHARS:
+                raise ValueError(f"Keep each word or phrase under {MAX_WORD_CHARS} characters.")
+            if word.lower() not in seen:
+                seen.add(word.lower())
+                out.append(word)
+        return out

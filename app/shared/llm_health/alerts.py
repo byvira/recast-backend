@@ -23,6 +23,8 @@ DEFAULT_RULES: dict[str, Any] = {
     "quota_critical": True,
     "reopened": True,
     "provider_down": True,
+    # one short email a morning about what is still open, sent only when there is something to say
+    "daily_digest": True,
 }
 PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
@@ -81,6 +83,29 @@ def decide(
                 add(Alert(f"provider:{name}:down", "provider_down", "high", f"{name.capitalize()} is not working",
                           f"Most recent calls to {name.capitalize()} failed.\n{base_url}/ops/llm"))
     return out
+
+
+def digest_body(open_issues: list[dict[str, Any]], providers: dict[str, str], failed_calls: int, base_url: str = "") -> str | None:
+    """The morning note: what is still open, which providers are not working, how many calls failed in the last day. None when there is
+    nothing to say, so a quiet day sends nothing."""
+    lines: list[str] = []
+    if open_issues:
+        counts = {p: sum(1 for i in open_issues if i.get("priority") == p) for p in PRIORITY_RANK}
+        said = ", ".join(f"{n} {p}" for p, n in counts.items() if n)
+        lines.append(f"{len(open_issues)} AI problem{'s are' if len(open_issues) != 1 else ' is'} still open ({said}).")
+        for i in sorted(open_issues, key=lambda x: PRIORITY_RANK.get(x.get("priority", "medium"), 9))[:5]:
+            label = issues.issue_number_label(int(i.get("number", 0)))
+            lines.append(f"  {label}: {issues.title_for(i)} ({i.get('priority', 'medium')})")
+    down = sorted(name.capitalize() for name, state in providers.items() if state == "down")
+    if down:
+        lines.append(f"Not working right now: {', '.join(down)}.")
+    if failed_calls:
+        lines.append(f"{failed_calls} AI call{'s' if failed_calls != 1 else ''} failed in the last 24 hours.")
+    if not lines:
+        return None
+    if base_url:
+        lines.append(f"{base_url}/ops/llm")
+    return "\n".join(lines)
 
 
 async def _send_email(to: list[str], subject: str, body: str) -> bool:

@@ -52,12 +52,22 @@ class ImageSourceType(str, Enum):
     UPLOADED = "uploaded"
 
 
+MAX_CHART_BARS = 6
+
+
+class ChartBar(BaseModel):
+    """One labelled value of a bar-chart layer."""
+
+    label: str = Field("", max_length=24)
+    value: float = Field(0.0, ge=0.0, le=1_000_000_000.0)
+
+
 class Layer(BaseModel):
     """One editable element of a picture. Positions are fractions of the canvas, so a design works at any size. Every field
     is range checked here, so a bad value from the browser can never reach the drawing code."""
 
     id: str = Field(min_length=1, max_length=40)
-    type: Literal["text", "shape", "image", "logo", "mascot", "icon", "watermark"]
+    type: Literal["text", "shape", "image", "logo", "mascot", "icon", "watermark", "chart"]
     name: str = Field("", max_length=60)
     x: float = Field(0.0, ge=-1.0, le=2.0)
     y: float = Field(0.0, ge=-1.0, le=2.0)
@@ -90,6 +100,10 @@ class Layer(BaseModel):
     # picture layers: logo and mascot always come from the brand; an uploaded image names a file in this workspace's library
     media_id: Optional[str] = Field(None, max_length=80)
     fit: Literal["contain", "cover"] = "contain"
+    # logo only: a soft plate behind it. "auto" measures the picture under the logo and takes the opposite shade.
+    backing: Literal["none", "auto", "light", "dark"] = "none"
+    # chart: up to six labelled values drawn as bars in `fill`, with the words in `color`
+    bars: list[ChartBar] = Field(default_factory=list, max_length=MAX_CHART_BARS)
     # icon
     icon: Optional[str] = Field(None, max_length=60)
     # watermark: which of the brand's two marks it draws (always the brand's current one, like logo and mascot)

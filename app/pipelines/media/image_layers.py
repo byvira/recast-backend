@@ -20,7 +20,7 @@ from uuid import uuid4
 
 from PIL import Image, ImageDraw
 
-from app.models.image_asset import Layer
+from app.models.image_asset import MAX_CHART_BARS, Layer
 from app.pipelines.media.icons import DEFAULT_ACCENT_ICON, icon_char, is_known_icon, load_icon_font
 from app.pipelines.media.image_render import (
     BrandTokens,
@@ -127,6 +127,48 @@ def _shape_tile(layer: Layer, canvas_w: int, canvas_h: int) -> Image.Image:
     return tile
 
 
+def _value_text(value: float) -> str:
+    """A short figure for the top of a bar: 1,200 stays 1,200, 1,500,000 reads 1.5M."""
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    if value >= 10_000:
+        return f"{value / 1_000:.1f}".rstrip("0").rstrip(".") + "K"
+    return f"{value:,.0f}" if abs(value - round(value)) < 0.005 else f"{value:,.1f}"
+
+
+def _chart_tile(layer: Layer, canvas_w: int, canvas_h: int, brand: BrandTokens) -> Optional[Image.Image]:
+    """Bars that all start from one line, tallest in proportion, each with its figure above and its label below."""
+    bars = layer.bars[:MAX_CHART_BARS]
+    if not bars:
+        return None
+    w, h = max(40, int(layer.w * canvas_w)), max(40, int(layer.h * canvas_h))
+    tile = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(tile)
+    text_px = max(10, min(int(layer.size * canvas_w), h // 6))
+    font = _load_font(layer.font or brand.body_font, text_px, bold=layer.bold, text=" ".join(b.label for b in bars))
+    ink = (*_color(layer.color, "#FFFFFF"), 255)
+    bar_fill = (*_color(layer.fill, brand.accent_hex), 255)
+    top_room, bottom_room = text_px * 1.6, text_px * 1.6
+    plot_h = max(10, h - top_room - bottom_room)
+    base = top_room + plot_h
+    slot = w / len(bars)
+    bar_w = slot * 0.62
+    peak = max((b.value for b in bars), default=0.0) or 1.0
+    draw.line([(0, base), (w, base)], fill=(*ink[:3], 110), width=max(1, text_px // 10))
+    for i, bar in enumerate(bars):
+        left = i * slot + (slot - bar_w) / 2
+        height = max(2.0, plot_h * (bar.value / peak))
+        draw.rounded_rectangle([(left, base - height), (left + bar_w, base)], radius=min(bar_w * 0.18, 12), fill=bar_fill)
+        for text, y in ((_value_text(bar.value), base - height - text_px * 1.35), (bar.label, base + text_px * 0.25)):
+            shown = text
+            while shown and draw.textlength(shown, font=font) > slot * 0.96:
+                shown = shown[:-1]
+            if shown != text:
+                shown = shown.rstrip() + "."
+            draw.text((i * slot + slot / 2 - draw.textlength(shown, font=font) / 2, y), shown, font=font, fill=ink)
+    return tile
+
+
 def _image_tile(layer: Layer, canvas_w: int, canvas_h: int, data: Optional[bytes]) -> Optional[Image.Image]:
     if not data:
         return None
@@ -181,6 +223,8 @@ def _tile_for(layer: Layer, canvas_w: int, canvas_h: int, brand: BrandTokens, as
         return _round_corners(tile, layer.radius) if tile is not None and layer.radius > 0 else tile
     if layer.type == "icon":
         return _icon_tile(layer, canvas_w, canvas_h)
+    if layer.type == "chart":
+        return _chart_tile(layer, canvas_w, canvas_h, brand)
     return None
 
 
@@ -221,6 +265,13 @@ def render_layers(
         tile = _tile_for(layer, width, height, brand, assets)
         if tile is None:
             continue
+        if layer.type == "logo" and layer.backing != "none":
+            from app.pipelines.media import logo_placement
+
+            # a plate behind the logo, measured against the picture as it is at this point (the background, looks and layers below)
+            lx, ly = int(round(layer.x * width)), int(round(layer.y * height))
+            seen = tile.getchannel("A").getbbox() or (0, 0, tile.width, tile.height)  # the logo's own shape, not its whole box
+            logo_placement.draw_plate(canvas, (lx + seen[0], ly + seen[1], lx + seen[2], ly + seen[3]), layer.backing)
         if layer.opacity < 1.0:
             alpha = tile.getchannel("A").point(lambda v, o=layer.opacity: int(v * o))
             tile.putalpha(alpha)
@@ -279,6 +330,7 @@ def default_layers(
     margin = _MARGIN_FRACTION
     accent = _hex_or_default(brand.accent_hex, "#38bdf8")
     layers: list[Layer] = []
+    band_floor: Optional[float] = None  # the top of the words at the bottom, once they are laid out
 
     if illustration_accent:
         art = DEFAULT_ACCENT_ICON if not is_known_icon(icon_name) else icon_name
@@ -298,6 +350,7 @@ def default_layers(
         text_top = height - int(min(size) * margin) - block_h
         stack_top = text_top - (icon_px + gap if icon else bar_h + gap)
         band_top = max(0, stack_top - int(min(size) * margin) // 2)
+        band_floor = stack_top - int(min(size) * margin) // 2
         fade = int(min(size) * margin) * 2
         top = max(0, band_top - fade)
         layers.append(Layer(id=_new_id(), type="shape", name="Text band", shape="gradient_up", fill=_hex(_brand_band_color(brand)),
@@ -314,9 +367,18 @@ def default_layers(
         layers.append(Layer(id=_new_id(), type="text", name="Author", text=author.strip(), x=margin, y=margin / 2, w=1 - 2 * margin,
                             size=max(16, width // 48) / width, font=brand.body_font, bold=False, color="#FFFFFF", shadow=True))
     if has_logo:
+        from app.pipelines.media import logo_placement
+
         edge = 0.08 * min(size)
-        layers.append(Layer(id=_new_id(), type="logo", name="Logo", x=margin, y=margin, w=edge / width, h=edge / height, fit="contain",
-                            radius=min(0.5, max(0.0, inner_radius or 0.0))))
+        # a logo along the bottom stays above the headline band (or the icon and bar over it); with no words it sits at the margin
+        floor = int(band_floor) if band_floor is not None else None
+        if logo_placement.clean_position(brand.logo_position) == "top_left":
+            fx, fy = margin, margin  # the starting look, exactly as before
+        else:
+            px, py = logo_placement.place(brand.logo_position, size, (int(edge), int(edge)), (int(margin * width), int(margin * height)), floor)
+            fx, fy = px / width, py / height
+        layers.append(Layer(id=_new_id(), type="logo", name="Logo", x=fx, y=fy, w=edge / width, h=edge / height, fit="contain",
+                            radius=min(0.5, max(0.0, inner_radius or 0.0)), backing=logo_placement.clean_backing(brand.logo_backing)))
     if has_mascot:
         edge = 0.2 * min(size)
         layers.append(Layer(id=_new_id(), type="mascot", name="Mascot", x=1 - margin / 2 - edge / width, y=margin / 2, w=edge / width, h=edge / height, fit="contain",
