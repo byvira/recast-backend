@@ -950,6 +950,7 @@ async def _run_single_repurpose(
             quality_passed=is_valid,
             quality_issues=issues,
             flagged_for_review=not is_valid,
+            language=getattr(normalised, "language", None),
             repurposed=True,
             sections=[s.model_dump() for s in sections] if sections else None,
             source_platform=_platform_str(source_platform),

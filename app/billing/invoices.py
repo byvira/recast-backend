@@ -153,12 +153,15 @@ async def _email_receipt(doc: dict[str, Any]) -> None:
             to = str((await users.find_one({"id": ws["owner_id"]}, {"email": 1}) or {}).get("email") or "")
         if not to:
             return
+        from app.shared.reader_language import reader_language
+
+        language = await reader_language("owner", workspace_id=doc.get("workspace_id"))
         sent = await send_templated_email("billing-receipt", to, {
             "number": doc["number"], "amount": PR.format_amount(int(doc["total"]), doc["currency"]),
             "item": doc["lines"][0]["label"], "date": f"{doc['issued_at'].day} {doc['issued_at'].strftime('%b %Y')}",
             "workspace_name": ws.get("name") or "your workspace",
             "link": f"{(settings.FRONTEND_URL or '').rstrip('/')}/dashboard/settings?tab=billing&receipt={doc['id']}",
-        })
+        }, language=language)
         await _invoices_col().update_one({"id": doc["id"]}, {"$set": {"emailed_to": to if sent else None, "emailed_at": datetime.now(timezone.utc) if sent else None}})
     except Exception as exc:  # noqa: BLE001
         logger.warning("Receipt %s was not emailed: %s", doc.get("number"), exc)

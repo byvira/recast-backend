@@ -250,7 +250,7 @@ async def test_a_new_workspace_can_be_covered_by_a_paid_plan_with_room(signup_us
 async def test_the_reminder_goes_out_once_three_days_before_the_renewal(signup_user, standin, monkeypatch):  # noqa: F811
     sent: list[tuple[str, str]] = []
 
-    async def _email(template, to, variables):
+    async def _email(template, to, variables, *args, **kwargs):
         sent.append((template, to))
 
     from app.core import notifications

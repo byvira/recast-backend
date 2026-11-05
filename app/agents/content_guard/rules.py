@@ -157,15 +157,20 @@ def lexicon_hits(text: str) -> list[str]:
 
 _RISK_TOPICS = re.compile(
     r"\b(?:kill|suicide|self[- ]harm|rape|abuse|terror|bomb|weapon|nazi|genocide|slave|racist|racism|sexist|porn|nude|sex|drug|cocaine|"
-    r"heroin|molest|pedophile|explicit|hate|slur|threat)\w*",
+    r"heroin|molest|pedophile|explicit|hate|slur|threat|guarantee|cure|miracle|risk[- ]free|profit|returns|earn)\w*",
     re.IGNORECASE,
 )
+_NON_LATIN_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
 def risk_signals(text: str) -> list[str]:
     """Signs a text may need a closer read by the model: a hit from the profanity and slur list, or a sensitive topic."""
     signals = [f"word: {w}" for w in lexicon_hits(text)]
     signals += [f"topic: {m.group(0).lower()}" for m in _RISK_TOPICS.finditer(text or "")][:5]
+    letters = _NON_LATIN_LETTER.findall(text or "")
+    if letters and sum(1 for ch in letters if ord(ch) >= 0x0900) / len(letters) >= 0.2:
+        # The rules cannot read this script, so a model reads it for meaning.
+        signals.append("language: not in Latin letters")
     return signals
 
 
@@ -177,6 +182,8 @@ CATEGORIES = {
     "violence": "Violence or threats",
     "self_harm": "Encouraging self harm",
     "profanity": "Strong language",
+    "claims": "Claims that cannot be backed up",
+    "personal_data": "Personal or financial details",
     "assistant_leak": "Text left over from the writing assistant",
     "custom": "A term blocked by Ekavo staff",
 }
@@ -203,8 +210,8 @@ _HATE_PATTERNS = (
 )
 _VIOLENCE_PATTERNS = (
     r"\bi(?:'ll| will| am going to|'m going to)\s+(?:kill|murder|shoot|stab|hurt|beat)\s+(?:you|him|her|them|everyone)\b",
-    r"\b(?:kill|murder|shoot|stab)\s+(?:him|her|them|everyone|all of them)\b",
-    r"\bdeath\s+threats?\b",
+    # A call to hurt someone, not a story, a film line or news about violence.
+    r"\b(?:let'?s|we should|someone should|you should|go and|time to)\s+(?:kill|murder|shoot|stab)\s+(?:him|her|them|everyone|all of them)\b",
     r"\bhow\s+to\s+(?:make|build)\s+a\s+(?:bomb|pipe bomb|explosive)\b",
     r"\bmass\s+shooting\b.{0,30}\b(?:plan|next|do it)\b",
 )
@@ -251,11 +258,34 @@ class ScreenResult:
         return f"This post was held back because it may contain {names}. Edit it or ask for a rewrite."
 
 
-def _terms_regex(terms: Iterable[str]) -> re.Pattern[str] | None:
+def _is_word_char(ch: str) -> bool:
+    """Whether a character belongs inside a word, in any script: letters, numbers, underscore and the combining marks that carry the
+    vowel signs of Hindi, Tamil, Telugu and the other Indic scripts (the plain \w class leaves those out, so a blocked word stem
+    used to be found inside a longer word)."""
+    return ch == "_" or unicodedata.category(ch)[0] in "LMN"
+
+
+class _TermMatcher:
+    """Whole-word matches of a list of terms, with the same `finditer` the compiled patterns have."""
+
+    def __init__(self, cleaned: list[str]) -> None:
+        self._pattern = re.compile("(?:" + "|".join(re.escape(t) for t in cleaned) + ")", re.IGNORECASE)
+
+    def finditer(self, text: str):
+        for m in self._pattern.finditer(text):
+            start, end = m.span()
+            if start > 0 and _is_word_char(text[start - 1]):
+                continue
+            if end < len(text) and _is_word_char(text[end]):
+                continue
+            yield m
+
+
+def _terms_regex(terms: Iterable[str]) -> "_TermMatcher | None":
     cleaned = sorted({t.strip().lower() for t in terms if t and t.strip()}, key=len, reverse=True)
     if not cleaned:
         return None
-    return re.compile(r"(?<![\w])(?:" + "|".join(re.escape(t) for t in cleaned) + r")(?![\w])", re.IGNORECASE)
+    return _TermMatcher(cleaned)
 
 
 def _compile(patterns: Iterable[str]) -> list[re.Pattern[str]]:
@@ -283,8 +313,10 @@ def screen_text(
     strictness: str = "standard",
     extra_blocked_terms: Iterable[str] = (),
     allowed_terms: Iterable[str] = (),
+    own_contacts: Iterable[str] = (),
 ) -> ScreenResult:
-    """Whether `text` is safe to show people. Terms Ops lists as allowed are never counted as matches."""
+    """Whether `text` is safe to show people. Terms Ops lists as allowed are never counted as matches, and a phone number or
+    email that is one of the brand's own contacts (`own_contacts`, see sensitive.contact_keys) is not a personal detail."""
     if not isinstance(text, str) or not text.strip():
         return ScreenResult()
     allowed = _allowed_spans(text, allowed_terms)
@@ -296,6 +328,13 @@ def screen_text(
         word = match.group(0).strip()[:60]
         if word not in found.setdefault(category, []):
             found[category].append(word)
+
+    from app.agents.content_guard.sensitive import sensitive_hits
+
+    for category, shown, span in sensitive_hits(text, own_contacts):
+        if not _inside(span, allowed) and shown not in found.setdefault(category, []):
+            found[category].append(shown)
+    found = {k: v for k, v in found.items() if v}
 
     strict = strictness == "strict"
     sexual = _terms_regex(_SEXUAL_EXPLICIT + (_SEXUAL_STRICT if strict else ()))

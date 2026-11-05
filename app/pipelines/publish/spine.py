@@ -157,8 +157,12 @@ def unsafe_reason(piece: dict) -> Optional[str]:
     from app.agents.content_guard.agent import rule_screen
     from app.agents.content_guard.rules import CATEGORIES, content_hash
 
+    from app.agents.content_guard.appeals import released_for
+
     text = str(piece.get("content") or "")
-    verdict = rule_screen(text)
+    if released_for(piece):
+        return _media_reason(piece)  # staff released exactly these words; attached pictures and recordings are still checked
+    verdict = rule_screen(text, own_contacts=piece.get("own_contacts") or (), profile=(piece.get("safety_policy") or {}).get("profile"), language=piece.get("language"))
     if not verdict.ok:
         return verdict.message()
     # The model's reading of exactly this text, if one was taken (see check_piece_before_send).
@@ -166,6 +170,12 @@ def unsafe_reason(piece: dict) -> Optional[str]:
     if isinstance(stored, dict) and stored.get("ok") is False and stored.get("hash") == content_hash(text):
         names = ", ".join(CATEGORIES.get(c, c).lower() for c in stored.get("categories") or []) or "unsafe content"
         return f"This post was held back because it may contain {names}. Edit it or ask for a rewrite."
+    return _media_reason(piece)
+
+
+def _media_reason(piece: dict) -> Optional[str]:
+    from app.agents.content_guard.rules import CATEGORIES
+
     for media_id, record in (piece.get("media_safety") or {}).items():
         if isinstance(record, dict) and record.get("ok") is False:
             names = ", ".join(CATEGORIES.get(c, c).lower() for c in record.get("categories") or []) or "unsafe content"

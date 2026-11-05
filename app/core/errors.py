@@ -53,6 +53,20 @@ def make_handlers(allowed_origins: Iterable[str]):
             headers={"Retry-After": str(retry_after), **cors_headers(request, origins)},
         )
 
+    async def http_handler(request: Request, exc) -> JSONResponse:
+        """The same answer Starlette gives, except that a plain sentence for the member to read is in their language."""
+        detail = exc.detail
+        reader = getattr(request.state, "reader", None)
+        if reader and 400 <= exc.status_code < 500 and not request.url.path.startswith("/api/v1/ops"):
+            try:
+                from app.shared.reader_language import reader_language, say_error
+
+                detail = await say_error(detail, await reader_language("member", user_id=reader["user_id"], workspace_id=reader["workspace_id"]))
+            except Exception:  # noqa: BLE001 - the English message is a correct answer
+                detail = exc.detail
+        headers = dict(getattr(exc, "headers", None) or {})
+        return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=headers or None)
+
     async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled error | %s %s", request.method, request.url.path)
         from app.health import errors
@@ -68,4 +82,4 @@ def make_handlers(allowed_origins: Iterable[str]):
             headers=cors_headers(request, origins),
         )
 
-    return rate_limit_handler, unhandled_handler
+    return rate_limit_handler, unhandled_handler, http_handler

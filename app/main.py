@@ -62,6 +62,7 @@ from app.api.v1 import billing as billing_router
 from app.api.v1 import ops_billing as ops_billing_router
 from app.api.v1 import ops_prompts as ops_prompts_router
 from app.api.v1 import ops_llm_health as ops_llm_health_router
+from app.api.v1 import ops_quality as ops_quality_router
 from app.api.v1 import support as support_router
 from app.api.v1 import support_assistant as support_assistant_router
 from app.api.v1 import ops_support as ops_support_router
@@ -391,8 +392,11 @@ app.add_middleware(MaxBodySizeMiddleware, allowed_origins=origins)
 # report a CORS failure instead of the real problem (see app/core/errors.py).
 from app.core.errors import make_handlers  # noqa: E402
 
-_rate_limit_handler, _unhandled_handler = make_handlers(origins)
+_rate_limit_handler, _unhandled_handler, _http_handler = make_handlers(origins)
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+from starlette.exceptions import HTTPException as _StarletteHTTPException  # noqa: E402
+
+app.add_exception_handler(_StarletteHTTPException, _http_handler)
 from app.prompt_library.service import LibraryError as _LibraryError  # noqa: E402
 app.add_exception_handler(_LibraryError, ops_prompts_router.library_error_response)
 app.add_exception_handler(Exception, _unhandled_handler)
@@ -516,6 +520,7 @@ from app.api.v1 import ops_content as ops_content_router
 app.include_router(ops_content_router.router, prefix="/api/v1/ops/content", tags=["Ops"], dependencies=[Depends(area_guard("content"))])
 app.include_router(ops_prompts_router.router, prefix="/api/v1/ops/prompt-library", tags=["Ops"], dependencies=[Depends(area_guard("prompts"))])
 app.include_router(ops_prompts_router.lists_router, prefix="/api/v1/prompt-lists", tags=["Content"])
+app.include_router(ops_quality_router.router, prefix="/api/v1/ops/quality", tags=["Ops"], dependencies=[Depends(area_guard("quality"))])
 app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"], dependencies=[Depends(area_guard("ai"))])
 app.include_router(support_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(support_assistant_router.router, prefix="/api/v1/support", tags=["Support"])

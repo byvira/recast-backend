@@ -516,6 +516,11 @@
      "source": "allowed"
     },
     {
+     "name": "policy_note",
+     "sites": 1,
+     "source": "_policy_note.get()"
+    },
+    {
      "name": "post",
      "sites": 1,
      "source": "text[start:start + MAX_CHECK_CHARS]"

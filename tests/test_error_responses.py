@@ -16,7 +16,7 @@ def _app(origins=(ORIGIN,)) -> FastAPI:
     app = FastAPI()
     limiter = Limiter(key_func=get_remote_address)
     app.state.limiter = limiter
-    rate_limit, unhandled = make_handlers(origins)
+    rate_limit, unhandled, _http = make_handlers(origins)
     app.add_exception_handler(RateLimitExceeded, rate_limit)
     app.add_exception_handler(Exception, unhandled)
 

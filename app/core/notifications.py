@@ -47,7 +47,7 @@ def _test_sender_version(sender: str) -> str:
 
 
 async def send_templated_email(
-    template_id: str, to: str, variables: dict, from_override: str | None = None
+    template_id: str, to: str, variables: dict, from_override: str | None = None, language: str | None = None
 ) -> bool:
     """Send a published Resend template to *to*, filling in *variables*.
 
@@ -65,6 +65,8 @@ async def send_templated_email(
         variables: Template variables, keyed exactly as defined on Resend.
         from_override: Overrides the default "Ekavo <...>" sender — used
             by the ops-facing templates ("Ekavo Ops <...>").
+        language: The reader's language. When a template named `<id>-<language>` is published (for example `billing-receipt-hi`),
+            it is sent; otherwise the English template is.
 
     Returns:
         True on success (or logged in dev), False if skipped or delivery failed.
@@ -80,6 +82,9 @@ async def send_templated_email(
     try:
         import resend  # type: ignore[import-untyped]
 
+        from app.shared.reader_language import template_for
+
+        template_id = await template_for(template_id, language)
         resend.api_key = settings.RESEND_API_KEY
         sender = from_override or _DEFAULT_FROM
         payload = {"to": to, "template": {"id": template_id, "variables": variables}}

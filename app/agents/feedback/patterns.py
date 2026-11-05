@@ -21,6 +21,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.db.mongo import content_pieces, post_metric_checkpoints
+from app.quality import settings as QS
 
 CHECKPOINT = "24h"
 LOOKBACK = timedelta(days=90)
@@ -50,6 +51,7 @@ class Finding:
 
 
 async def load_samples(workspace_id: str, user_id: Optional[str] = None) -> list[dict]:
+    await QS.ensure_fresh()
     query: dict = {
         "workspace_id": workspace_id,
         "checkpoint": CHECKPOINT,
@@ -59,7 +61,7 @@ async def load_samples(workspace_id: str, user_id: Optional[str] = None) -> list
         query["user_id"] = user_id
     rows = await post_metric_checkpoints.find(
         query, {"piece_id": 1, "platform": 1, "word_count": 1, "published_at": 1, "metrics.engagement_rate": 1},
-    ).sort("captured_at", -1).limit(MAX_SAMPLES).to_list(length=MAX_SAMPLES)
+    ).sort("captured_at", -1).limit(int(QS.patterns()["max_samples"])).to_list(length=int(QS.patterns()["max_samples"]))
     if not rows:
         return []
 
@@ -83,13 +85,14 @@ async def load_samples(workspace_id: str, user_id: Optional[str] = None) -> list
 
 
 def _compare(winners: list[float], rest: list[float]) -> Optional[float]:
-    if len(winners) < MIN_PER_SIDE or len(rest) < MIN_PER_SIDE:
+    live = QS.patterns()
+    if len(winners) < live["min_per_side"] or len(rest) < live["min_per_side"]:
         return None
     w, r = statistics.median(winners), statistics.median(rest)
     if r <= 0:
         return None
     ratio = w / r
-    return round(ratio, 1) if ratio >= MIN_RATIO else None
+    return round(ratio, 1) if ratio >= live["min_ratio"] else None
 
 
 def _local_hour(published_at, tz: ZoneInfo) -> Optional[int]:

@@ -26,7 +26,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 from app.models.text import AgentTask, AgentResult, Platform, LANGUAGE_NAMES
 from app.prompts.registry import load_fixture, load_prompt, render_fragment
 from app.pipelines.text.language_check import language_problem
-from app.pipelines.text.quality import MIN_WORD_COUNTS
+from app.pipelines.text.quality import MIN_WORD_COUNTS  # noqa: F401 - the starting values, kept for older imports
+from app.quality import settings as QS
 from app.prompts.safe import contains_banned, guard_output, is_english
 from app.shared.llm import GroqModel, call_llm, call_llm_structured
 
@@ -454,7 +455,7 @@ def validate_content(
     english = is_english(language)
 
     # ── Hard gate 2 — minimum length ──────────────────────────────────────
-    min_words = MIN_WORD_COUNTS
+    min_words = {Platform(name): words for name, words in QS.min_words_map().items()}
     min_chars = {
         Platform.TWITTER: 200,
     }

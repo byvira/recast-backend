@@ -141,6 +141,18 @@ async def _reap_video_jobs() -> None:
     await reap_if_due(force=True)
 
 
+async def _ladder_check() -> None:
+    from app.agents.content_guard.ladder import demote_where_released
+
+    await demote_where_released()
+
+
+async def _quality_signals() -> None:
+    from app.quality.signals import compute_days
+
+    await compute_days()
+
+
 JOBS: list[Job] = [
     # Publishing & campaigns — every minute (each job holds its own lock).
     Job("scheduled_posts", _no_ctx(process_scheduled_posts)),
@@ -157,6 +169,8 @@ JOBS: list[Job] = [
     # so an hourly look let them lapse; long-lived ones are still renewed at most once a day.
     Job("token_refresh", _no_ctx(refresh_expiring_tokens), minute=_every(15, offset=11)),
     # Workspaces deleted more than 30 days ago are removed for good, with everything they owned — daily.
+    Job("ladder_check", _no_ctx(_ladder_check), minute=frozenset({52}), hour=frozenset({2})),
+    Job("quality_signals", _no_ctx(_quality_signals), minute=frozenset({41}), hour=frozenset({2})),
     Job("workspace_purge", _no_ctx(purge_deleted_workspaces), minute=frozenset({23}), hour=frozenset({4})),
     # Notes on posts, recordings, pictures and videos that are gone are removed — daily.
     Job("editor_notes_purge", _no_ctx(purge_orphan_notes_job), minute=frozenset({41}), hour=frozenset({4})),

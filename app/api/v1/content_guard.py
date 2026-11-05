@@ -15,6 +15,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.agents.content_guard import config as guard_config
+from app.agents.content_guard import appeals
+from app.agents.content_guard import input_guard
+from app.agents.content_guard import judges
+from app.agents.content_guard import ladder
+from app.agents.content_guard import profiles
+from app.agents.content_guard import term_lists
 from app.agents.content_guard.agent import review_text, rule_screen
 from app.agents.content_guard.rules import CATEGORIES, ai_phrases_in, clean_text
 from app.core.auth import require_platform_staff
@@ -37,6 +43,7 @@ class CheckBody(BaseModel):
     piece_id: Optional[str] = None
     platform: Optional[str] = None
     rewrite: bool = True
+    language: Optional[str] = Field(None, max_length=20)
 
 
 @router.post("/check")
@@ -45,7 +52,7 @@ async def check_text(request: Request, body: CheckBody, ctx: WorkspaceContext = 
     """The text with dashes and filler removed, rewritten when it was flagged and could be made safe, or marked blocked."""
     result = await review_text(
         body.text, where="check", workspace_id=ctx.workspace_id, piece_id=body.piece_id, platform=body.platform,
-        allow_rewrite=body.rewrite,
+        allow_rewrite=body.rewrite, language=body.language,
     )
     return result.as_dict()
 
@@ -60,6 +67,8 @@ def _public(settings_doc: dict[str, Any]) -> dict[str, Any]:
     return {
         **{k: settings_doc.get(k) for k in guard_config.DEFAULTS},
         "categories": [{"key": k, "label": v} for k, v in CATEGORIES.items()],
+        "judges": [{"key": k, "label": judges.JUDGE_LABELS[k]} for k in judges.JUDGES],
+        "profile_defs": profiles.catalogue(settings_doc),
     }
 
 
@@ -74,6 +83,195 @@ class SettingsBody(BaseModel):
     media_check: Optional[bool] = None
     video_frames: Optional[bool] = None
     model_check: Optional[Literal["off", "risky", "publish"]] = None
+    judge_models: Optional[list[str]] = None
+    shadow_model: Optional[str] = None
+    shadow_rate: Optional[float] = Field(None, ge=0.0, le=1.0)
+    profiles: Optional[dict[str, dict[str, Any]]] = None
+    terms_by_language: Optional[dict[str, dict[str, list[str]]]] = None
+    reason: str = Field("", max_length=400)
+
+
+class AskReviewBody(BaseModel):
+    piece_id: str = Field(..., max_length=80)
+    note: str = Field("", max_length=400)
+
+
+@router.post("/review-requests")
+@limiter.limit("20/minute")
+async def ask_for_review(request: Request, body: AskReviewBody, ctx: WorkspaceContext = Depends(require("edit_content"))) -> dict[str, Any]:
+    """A member asks for a person to look at a post the safety check held back."""
+    from app.db.mongo import content_pieces
+
+    piece = await content_pieces.find_one({"piece_id": body.piece_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}})
+    if not piece:
+        raise HTTPException(status_code=404, detail="That post was not found.")
+    try:
+        return await appeals.request_review(piece, user_id=ctx.user_id, note=body.note)
+    except appeals.AppealError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.get("/review-requests/{piece_id}")
+@limiter.limit("60/minute")
+async def my_review_request(request: Request, piece_id: str, ctx: WorkspaceContext = Depends(require("edit_content"))) -> dict[str, Any]:
+    """The latest review request for a post and its answer, or none."""
+    return {"request": await appeals.mine(piece_id, ctx.workspace_id)}
+
+
+class DecideBody(BaseModel):
+    decision: Literal["release", "uphold"]
+    note: str = Field("", max_length=400)
+    suggest_word: str = Field("", max_length=80)
+
+
+@ops_router.get("/appeals")
+@limiter.limit("60/minute")
+async def list_appeals(request: Request, status: Optional[str] = Query(None, max_length=10), user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    return await appeals.listing(status)
+
+
+@ops_router.post("/appeals/{appeal_id}/decide")
+@limiter.limit("60/minute")
+async def decide_appeal(request: Request, appeal_id: str, body: DecideBody, user: dict = Depends(require_action("safety", "approve"))) -> dict[str, Any]:
+    """Release a held post for sending exactly as written, or uphold the hold. Needs approval rights on Safety."""
+    try:
+        answered = await appeals.decide(appeal_id, decision=body.decision, note=body.note, staff=user)
+        if body.decision == "uphold" and body.suggest_word.strip():
+            await term_lists.suggest(body.suggest_word, answered.get("language"), source="review", by=str(user.get("id")), note=body.note, example=answered.get("excerpt") or "")
+        return answered
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except appeals.AppealError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+class SuggestBody(BaseModel):
+    term: str = Field(..., max_length=80)
+    language: str = Field("all", max_length=12)
+    note: str = Field("", max_length=200)
+
+
+class SeedBody(BaseModel):
+    words: list[str] = Field(..., max_length=200)
+    language: str = Field("all", max_length=12)
+
+
+class SuggestionDecision(BaseModel):
+    decision: Literal["accept", "reject"]
+
+
+@ops_router.get("/suggestions")
+@limiter.limit("60/minute")
+async def list_suggestions(request: Request, status: str = Query("pending", max_length=10), user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    return await term_lists.listing(status)
+
+
+@ops_router.post("/suggestions")
+@limiter.limit("60/minute")
+async def add_suggestion(request: Request, body: SuggestBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """Suggest a word for the rules. It waits in the queue until someone with approval rights accepts it."""
+    try:
+        return await term_lists.suggest(body.term, body.language, source="staff", by=str(user.get("id")), note=body.note)
+    except term_lists.SuggestionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@ops_router.post("/suggestions/import")
+@limiter.limit("10/minute")
+async def import_suggestions(request: Request, body: SeedBody, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """A pasted word list goes into the queue as suggestions. Nothing reaches the rules until it is accepted."""
+    return await term_lists.import_seeds(body.words, body.language, by=str(user.get("id")))
+
+
+@ops_router.post("/suggestions/{suggestion_id}/decide")
+@limiter.limit("60/minute")
+async def decide_suggestion(request: Request, suggestion_id: str, body: SuggestionDecision, user: dict = Depends(require_action("safety", "approve"))) -> dict[str, Any]:
+    """Accept a suggested word, which adds it to the rules and is kept in the history, or reject it so it is not suggested again."""
+    try:
+        return await term_lists.decide(suggestion_id, decision=body.decision, staff_id=str(user["id"]), staff_name=user.get("name") or user.get("email"))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except term_lists.SuggestionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except guard_config.VersionConflict:
+        raise HTTPException(status_code=409, detail="The rules changed while you were answering. Try again.")
+
+
+class LadderBody(BaseModel):
+    levels: dict[str, int] = Field(default_factory=dict)
+    enabled: Optional[bool] = None
+    reason: str = Field("", max_length=400)
+    version: int
+
+
+@ops_router.get("/ladder")
+@limiter.limit("60/minute")
+async def get_ladder(request: Request, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """How much authority the model's reading has for each kind of problem, whether it has earned a step up, and the switch."""
+    return await ladder.snapshot()
+
+
+@ops_router.put("/ladder")
+@limiter.limit("20/minute")
+async def save_ladder(request: Request, body: LadderBody, user: dict = Depends(require_action("safety", "approve"))) -> dict[str, Any]:
+    try:
+        return await ladder.save(levels=body.levels, enabled=body.enabled, reason=body.reason, expected_version=body.version, user_id=str(user["id"]), user_name=user.get("name") or user.get("email"))
+    except ladder.LadderError as exc:
+        raise HTTPException(status_code=409 if "changed while" in str(exc) else 422, detail=str(exc))
+
+
+@ops_router.get("/ladder/history")
+@limiter.limit("60/minute")
+async def ladder_history(request: Request, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    return {"items": await ladder.history()}
+
+
+@ops_router.get("/overrides")
+@limiter.limit("60/minute")
+async def list_overrides(request: Request, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    return {"items": await appeals.overrides()}
+
+
+@ops_router.get("/rule-results")
+@limiter.limit("60/minute")
+async def rule_results(request: Request, days: int = Query(30), user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    return await appeals.rule_results(days)
+
+
+@ops_router.get("/history")
+@limiter.limit("60/minute")
+async def settings_history(request: Request, limit: int = Query(50, ge=1, le=200), user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    return {"items": await guard_config.history(limit)}
+
+
+class RestoreBody(BaseModel):
+    version: int
+
+
+@ops_router.post("/history/{history_id}/restore")
+@limiter.limit("20/minute")
+async def restore_settings(request: Request, history_id: str, body: RestoreBody, user: dict = Depends(_ops_owner)) -> dict[str, Any]:
+    try:
+        saved = await guard_config.restore(history_id, expected_version=body.version, user_id=str(user["id"]), user_name=user.get("name") or user.get("email"))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except guard_config.VersionConflict:
+        raise HTTPException(status_code=409, detail="These settings changed since you opened them. Reload and try again.")
+    return _public(saved)
+
+
+@ops_router.get("/input-flags")
+@limiter.limit("60/minute")
+async def input_flags(request: Request, user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """Sources that contained orders aimed at the writing assistant, newest first. They were used as material only."""
+    return {"items": await input_guard.recent()}
+
+
+@ops_router.get("/judges")
+@limiter.limit("30/minute")
+async def judge_comparison(request: Request, days: int = Query(30, ge=1, le=90), user: dict = Depends(require_platform_staff)) -> dict[str, Any]:
+    """How often the silent second model agrees with the one that answers, by language, and the latest disagreements."""
+    return await judges.comparison_summary(days)
 
 
 @ops_router.get("")
@@ -85,9 +283,11 @@ async def get_settings(request: Request, user: dict = Depends(require_platform_s
 @ops_router.put("")
 @limiter.limit("20/minute")
 async def save_settings(request: Request, body: SettingsBody, user: dict = Depends(_ops_owner)) -> dict[str, Any]:
-    changes = body.model_dump(exclude_none=True, exclude={"version"})
+    changes = body.model_dump(exclude_none=True, exclude={"version", "reason"})
+    if len(" ".join(body.reason.split())) < 4:
+        raise HTTPException(status_code=422, detail="Say in a few words why you are changing this.")
     try:
-        saved = await guard_config.save(changes, expected_version=body.version, user_id=str(user["id"]))
+        saved = await guard_config.save(changes, expected_version=body.version, user_id=str(user["id"]), reason=body.reason, user_name=user.get("name") or user.get("email"))
     except guard_config.VersionConflict:
         raise HTTPException(status_code=409, detail="These settings changed since you opened them. Reload and try again.")
     workspace_id = user.get("default_workspace_id")

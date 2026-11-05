@@ -10,7 +10,7 @@ async def test_failed_audit_entry_is_logged_and_the_settings_still_save(make_cli
     owner, _ = await _staff(make_client, master=True)
     broken = AsyncMock(side_effect=RuntimeError("activity store is down"))
     with patch("app.api.v1.content_guard.record_system", new=broken), caplog.at_level(logging.WARNING):
-        res = await owner.put("/api/v1/ops/content-safety", json={"version": 0, "strictness": "strict"})
+        res = await owner.put("/api/v1/ops/content-safety", json={"version": 0, "strictness": "strict", "reason": "Test brand is strict"})
 
     assert res.status_code == 200 and res.json()["version"] == 1
     broken.assert_awaited()

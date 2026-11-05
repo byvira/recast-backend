@@ -11,6 +11,7 @@ its own icon, a notice about a post shows its picture where the device can, and 
 """
 from __future__ import annotations
 
+from app.shared.reader_language import reader_language, wants_english
 import asyncio
 import hashlib
 import json
@@ -223,6 +224,8 @@ async def notify_entry(entry: dict[str, Any]) -> None:
         picture = await _picture_for(entry)
         roles = {m["user_id"]: str(m.get("role") or "") async for m in get_db()["workspace_members"].find(
             {"workspace_id": entry["workspace_id"], "status": "active"}, {"user_id": 1, "role": 1})}
+        sources = (entry.get("i18n") or {}).get("sources") or {}
+        said: dict[str, tuple[str, str]] = {}
         for user_id, group in await _recipients(entry):
             if not (await _prefs(user_id)).get(group, True):
                 continue
@@ -230,8 +233,12 @@ async def notify_entry(entry: dict[str, Any]) -> None:
                 continue
             if not await _under_cap(user_id):
                 continue
+            language = await reader_language("member", user_id=user_id, workspace_id=entry["workspace_id"])
+            if language not in said:
+                said[language] = await _in_language(sources, language, title, body)
+            shown_title, shown_body = said[language]
             payload = {
-                "title": title, "body": body, "icon": icon_for(entry, group), "badge": "/icons/notify/badge.png",
+                "title": shown_title, "body": shown_body, "icon": icon_for(entry, group), "badge": "/icons/notify/badge.png",
                 "tag": str(entry.get("_id") or ""), "url": entry.get("href") or "/dashboard/activity",
                 "workspace_id": entry["workspace_id"], "workspace": clean(ws.get("name"), 40), "group": group,
                 "unread": await _unread(entry["workspace_id"], user_id, roles.get(user_id, "")),
@@ -245,6 +252,21 @@ async def notify_entry(entry: dict[str, Any]) -> None:
 
 
 _tasks: set[asyncio.Task] = set()
+
+
+async def _in_language(sources: dict[str, Any], language: str, title: str, body: str) -> tuple[str, str]:
+    """The notice's title and body for one reader. The row keeps its English sources, so each person gets their own language and not
+    the workspace's. A row with no sources, or any failure, keeps the words it already has."""
+    try:
+        from app.shared.activity.i18n import render
+
+        if sources.get("title") is None or wants_english(language):
+            return title, body
+        t = clean(await render(sources["title"], language), TITLE_MAX) or title
+        b = clean(await render(sources["description"], language), BODY_MAX) if sources.get("description") is not None else body
+        return t, b or body
+    except Exception:  # noqa: BLE001
+        return title, body
 
 
 def notify_soon(entry: dict[str, Any]) -> None:

@@ -47,6 +47,12 @@ async def record_event(
 
     from app.db.mongo import safety_events
 
+    if "personal_data" in categories:
+        # Staff read this list, so the details themselves are never kept: they see that a number was there, not the number.
+        from app.agents.content_guard.sensitive import mask_personal
+
+        text = mask_personal(text)
+        rewritten_text = mask_personal(rewritten_text) if rewritten_text else rewritten_text
     now = datetime.now(timezone.utc)
     fingerprint = _fingerprint(workspace_id, piece_id, outcome, text)
     row: dict[str, Any] = {

@@ -333,9 +333,11 @@ async def reminder_tick() -> int:
             )
             owner = await users.find_one({"id": sub.get("owner_user_id")}, {"email": 1, "name": 1})
             if owner and owner.get("email"):
+                from app.shared.reader_language import reader_language
+
                 await send_templated_email("billing-renewal-reminder", owner["email"], {
                     "plan": str(sub.get("plan", "")).title(), "amount": amount, "renews_on": when,
-                })
+                }, language=await reader_language("owner", user_id=sub.get("owner_user_id"), workspace_id=sub["workspace_id"]))
         except Exception as exc:  # noqa: BLE001 - a missed reminder never stops the others
             logger.warning("Renewal reminder for %s failed: %s", sub["id"], exc)
             continue

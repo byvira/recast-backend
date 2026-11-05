@@ -111,6 +111,14 @@ async def normalise_input(
         brand_doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": workspace_id}) if brand_id and workspace_id else None
         raw_content = await research_topic(content, language, brand_grounding(brand_doc))
 
+    # Text that tries to give orders to the writing assistant is noted, never blocked (the prompts already fence it as material)
+    from app.agents.content_guard.input_guard import check_source
+
+    await check_source(
+        raw_content, workspace_id=workspace_id or None, user_id=user_id, where="text",
+        source={InputSourceType.URL: "page", InputSourceType.TOPIC: "research"}.get(source_type, "pasted text"),
+    )
+
     # Hard cap at 8000 chars — enough context for any platform without burning tokens
     if len(raw_content) > 8000:
         raw_content = raw_content[:8000]

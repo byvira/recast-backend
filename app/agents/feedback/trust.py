@@ -34,6 +34,7 @@ from app.db.mongo import (
     workspace_insights,
     workspaces,
 )
+from app.quality import settings as QS
 from app.shared.activity import project_odette_insight
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ def _key(workspace_id: str, pipeline_type: str, platform: str) -> str:
 
 async def compute_trust(workspace_id: str, platform: str, pipeline_type: str = "text") -> dict:
     """One aggregation over the window's drafts for this tuple."""
+    await QS.ensure_fresh()
     match = {
         "workspace_id": workspace_id,
         "platform": platform,
@@ -99,9 +101,10 @@ async def compute_trust(workspace_id: str, platform: str, pipeline_type: str = "
         components["delivered"] = c["published"] / attempted
 
     score: Optional[int] = None
-    if decided >= MIN_DECIDED and components:
-        weight = sum(_WEIGHTS[k] for k in components)
-        score = round(100 * sum(_WEIGHTS[k] * v for k, v in components.items()) / weight)
+    weights = QS.trust_weights()
+    if decided >= QS.trust()["min_decided"] and components:
+        weight = sum(weights[k] for k in components) or 1.0
+        score = round(100 * sum(weights[k] * v for k, v in components.items()) / weight)
     return {
         "score": score,
         "components": {k: round(v, 3) for k, v in components.items()},
@@ -112,7 +115,7 @@ async def compute_trust(workspace_id: str, platform: str, pipeline_type: str = "
 
 async def _threshold(workspace_id: str, platform: str) -> int:
     ws = await workspaces.find_one({"id": workspace_id}, {"autonomy": 1}) or {}
-    return int(((ws.get("autonomy") or {}).get("thresholds") or {}).get(platform, PROVISIONAL_THRESHOLD))
+    return int(((ws.get("autonomy") or {}).get("thresholds") or {}).get(platform, QS.trust()["start_bar"]))
 
 
 async def refresh_tuple(workspace_id: str, platform: str, pipeline_type: str = "text") -> dict:
@@ -151,7 +154,7 @@ async def record_shadow(piece: dict, new_status: str) -> None:
             computed = computed.replace(tzinfo=timezone.utc)
         if not doc or not computed or _now() - computed > SCORE_MAX_AGE:
             doc = await refresh_tuple(workspace_id, platform, pipeline_type)
-        score, threshold = doc.get("score"), doc.get("threshold", PROVISIONAL_THRESHOLD)
+        score, threshold = doc.get("score"), doc.get("threshold", QS.trust()["start_bar"])
         if score is None:
             return   # not enough history for the score to mean anything yet
 
@@ -182,7 +185,7 @@ async def record_shadow(piece: dict, new_status: str) -> None:
 async def _maybe_recommend(tuple_doc: dict) -> Optional[str]:
     shadow = tuple_doc.get("shadow") or {}
     total, agree = shadow.get("total", 0), shadow.get("agree", 0)
-    if total < RECOMMEND_MIN_DECISIONS or agree / total < RECOMMEND_MIN_AGREEMENT or not tuple_doc.get("eligible"):
+    if total < QS.trust()["recommend_min_decisions"] or agree / total < QS.trust()["recommend_min_agreement"] / 100 or not tuple_doc.get("eligible"):
         return None
     ws_id, platform = tuple_doc["workspace_id"], tuple_doc["platform"]
     if await workspace_insights.find_one({

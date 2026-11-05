@@ -37,6 +37,7 @@ from app.db.mongo import (
 from app.prompts.registry import load_localized
 from app.shared.activity import project_odette_insight
 from app.shared.language import first_present, user_language, workspace_language
+from app.quality import settings as QS
 from app.shared.localized_strings import get_localized_string
 
 logger = logging.getLogger(__name__)
@@ -95,7 +96,7 @@ async def coach_member(workspace_id: str, user_id: str) -> Optional[str]:
         return None
 
     samples = await load_samples(workspace_id, user_id)
-    if len(samples) < MIN_SAMPLES:
+    if len(samples) < QS.patterns()["min_samples"]:
         return None
     user = await users.find_one({"id": user_id}, {"timezone": 1}) or {}
     finding = _choose(
@@ -148,7 +149,7 @@ async def advise_workspace(workspace_id: str) -> Optional[str]:
         return None
 
     samples = await load_samples(workspace_id)
-    if len(samples) < MIN_SAMPLES:
+    if len(samples) < QS.patterns()["min_samples"]:
         return None
     dismissed: dict[str, int] = {}
     recent: set[str] = set()

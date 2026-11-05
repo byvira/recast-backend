@@ -645,6 +645,33 @@ async def update_brand_language(
     return {"id": brand_id, "language": language}
 
 
+class SafetyProfileBody(BaseModel):
+    profile: Optional[str] = Field(default=None, max_length=20)
+
+
+@router.patch("/{brand_id}/safety-profile")
+@limiter.limit("30/minute")
+async def update_brand_safety_profile(
+    request: Request,
+    brand_id: str,
+    body: SafetyProfileBody,
+    ctx: WorkspaceContext = Depends(require("edit_brand_voice")),
+) -> dict[str, Any]:
+    """Choose the safety profile for this brand (kids, health, finance and so on), or clear it for the general one."""
+    from app.agents.content_guard.profiles import PROFILES
+
+    profile = (body.profile or "").strip() or None
+    if profile is not None and profile not in PROFILES:
+        raise HTTPException(status_code=422, detail="That safety profile does not exist.")
+    res = await brand_profiles.update_one(
+        {"id": brand_id, "workspace_id": ctx.workspace_id},
+        {"$set": {"safety_profile": profile, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if not res.matched_count:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    return {"id": brand_id, "safety_profile": profile}
+
+
 @router.patch("/{brand_id}/voice")
 @limiter.limit("30/minute")
 async def update_brand_voice(

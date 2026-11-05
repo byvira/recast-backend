@@ -839,6 +839,7 @@ async def collect_output_node(state: TextAgentState) -> dict:
                     quality_passed=latest_piece.get("quality_passed", True),
                     quality_issues=latest_piece.get("quality_issues", []),
                     flagged_for_review=is_flagged,
+                    language=state.get("language"),
                     readability_score=latest_piece.get("readability_score"),
                     repurposed=latest_piece.get("repurposed", False),
                     publish_status=latest_piece.get("publish_status"),

@@ -13,6 +13,8 @@ import re
 from typing import Optional
 from app.models.text import Platform, QualityResult
 from app.pipelines.text.language_check import language_problem
+from app.quality import defaults as QD
+from app.quality import settings as QS
 
 logger = logging.getLogger(__name__)
 
@@ -73,26 +75,12 @@ def is_latin_script(text: str) -> bool:
         return True
     return profile["latin"] >= profile["non_latin"]
 
-READABILITY_THRESHOLDS = {
-    Platform.BLOG: 45,
-    Platform.NEWSLETTER: 50,
-    Platform.LINKEDIN: 55,
-    Platform.TWITTER: 65,
-    Platform.TWITTER_THREAD: 65,
-    Platform.INSTAGRAM: 65,
-    Platform.FACEBOOK: 55,
-    Platform.YOUTUBE: 50,
-}
+# The starting values; the ones that run come from Ops, Quality (app/quality/settings.py).
+READABILITY_THRESHOLDS = {Platform(name): bar for name, bar in QD.READABILITY.items()}
 
-CTA_MARKERS = [
-    "?", "comment", "share", "follow", "subscribe", "link in bio",
-    "check out", "read more", "click", "dm me", "let me know",
-    "what do you think", "tag someone", "save this",
-    "try", "open", "start", "use", "this sunday",  
-]
-
-WEASEL_WORDS = ["very", "really", "quite", "rather", "somewhat", "fairly", "basically", "literally"]
-PASSIVE_PATTERNS = [r"\bwas \w+ed\b", r"\bwere \w+ed\b", r"\bis being\b", r"\bbeen \w+ed\b"]
+CTA_MARKERS = list(QD.CTA_MARKERS)
+WEASEL_WORDS = list(QD.WEASEL_WORDS)
+PASSIVE_PATTERNS = list(QD.PASSIVE_PATTERNS)
 
 
 def flesch_reading_ease(text: str) -> Optional[float]:
@@ -133,11 +121,11 @@ def check_grammar_advisory(content: str) -> list[str]:
     Maps to extras.grammarCheck toggle.
     """
     issues = []
-    for pattern in PASSIVE_PATTERNS:
+    for pattern in QS.passive_patterns():
         matches = re.findall(pattern, content, re.IGNORECASE)
         if matches:
             issues.append(f"Advisory: Passive voice found — '{matches[0]}'")
-    for word in WEASEL_WORDS:
+    for word in QS.weasel_words():
         if f" {word} " in content.lower():
             issues.append(f"Advisory: Weasel word — '{word}'")
     return issues
@@ -160,21 +148,17 @@ def check_twitter_limits(content: str, platform: Platform) -> list[str]:
 
 # The one place the shortest acceptable post for each platform is set. generator.validate_content reads it too, so the two
 # checks cannot disagree.
-MIN_WORD_COUNTS = {
-    Platform.BLOG: 600,
-    Platform.NEWSLETTER: 250,
-    Platform.LINKEDIN: 150,
-    Platform.TWITTER: 0,
-    Platform.TWITTER_THREAD: 200,
-    Platform.INSTAGRAM: 100,
-    Platform.FACEBOOK: 150,
-    Platform.YOUTUBE: 100,
-}
+MIN_WORD_COUNTS = {Platform(name): words for name, words in QD.MIN_WORDS.items()}
+
+
+def live_min_words(platform: Platform) -> int:
+    """The shortest acceptable post for a platform as Ops has it set right now."""
+    return QS.min_words(platform.value)
 
 
 def check_minimum_length(content: str, platform: Platform) -> list[str]:
     issues = []
-    minimum = MIN_WORD_COUNTS.get(platform, 15)
+    minimum = live_min_words(platform)
     word_count = len(content.split())
 
     if minimum > 0 and word_count < minimum:
@@ -205,6 +189,7 @@ async def run_quality_gate(
     Hard failures (banned words, twitter limits, minimum length) set passed=False.
     Advisory issues (grammar, readability, CTA) are included in issues but do not block.
     """
+    await QS.ensure_fresh()
     hard_issues = []
     advisory_issues = []
 
@@ -232,7 +217,7 @@ async def run_quality_gate(
     mixed = "+" in (language or "")
     english = not mixed and (language or "en").strip().lower().split("-")[0] in ("en", "")
     readability = None if mixed else flesch_reading_ease(content)
-    threshold = READABILITY_THRESHOLDS.get(platform, 45)
+    threshold = QS.readability_bar(platform.value)
     if mixed:
         pass
     elif readability is None:
@@ -243,7 +228,7 @@ async def run_quality_gate(
     elif readability < threshold:
         advisory_issues.append(f"Advisory: Readability score {readability:.0f} below {threshold} for {platform.value}")
 
-    cta_markers_lower = [m.lower() for m in CTA_MARKERS]
+    cta_markers_lower = QS.cta_markers()
     content_lower = content.lower()
     if english and platform not in (Platform.BLOG, Platform.TWITTER) and not any(m in content_lower for m in cta_markers_lower):
         advisory_issues.append(f"Advisory: No CTA detected for {platform.value}")

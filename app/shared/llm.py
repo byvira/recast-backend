@@ -86,6 +86,7 @@ class GroqModel(str, Enum):
     # Migrated 2026-09-10: the prior llama-3.x / deepseek IDs were all
     # decommissioned by Groq (404 / 400). Current lineup:
     FAST      = "openai/gpt-oss-20b"            # simple / single-field JSON, cheap
+    SAFEGUARD = "openai/gpt-oss-safeguard-20b"  # a safety model that judges against a policy written in the prompt
     BALANCED  = "openai/gpt-oss-120b"           # generation, hooks, SEO, repurpose
     POWERFUL  = "openai/gpt-oss-120b"           # complex multi-step reasoning
     REASONING = "openai/gpt-oss-120b"           # deep reasoning — pass reasoning_effort="high" at the call site if a distinct tier is needed

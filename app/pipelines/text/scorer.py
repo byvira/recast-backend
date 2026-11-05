@@ -15,6 +15,8 @@ Readability scoring:
   Specific issues identified: sentences too long, syllable density etc
 """
 
+from app.quality import defaults as _QD
+from app.quality import settings as _QS
 import logging
 import re
 from app.pipelines.text.language_check import infer_mixed_language
@@ -31,16 +33,8 @@ logger = logging.getLogger(__name__)
 # PLATFORM READABILITY THRESHOLDS
 # ─────────────────────────────────────────────────────────────────────────────
 
-PLATFORM_READABILITY_THRESHOLDS = {
-    "LinkedIn":         55,
-    "Twitter/X":        65,
-    "Twitter/X Thread": 65,
-    "Instagram":        65,
-    "Facebook":         55,
-    "Blog":             45,
-    "Newsletter":       50,
-    "YouTube":          50,
-}
+# The starting values; the ones that run come from Ops, Quality.
+PLATFORM_READABILITY_THRESHOLDS = dict(_QD.READABILITY)
 
 FLESCH_GRADES = [
     (90, "Very easy — 5th grade level"),
@@ -344,7 +338,7 @@ def score_readability(content: str, platform: str) -> dict:
     if not content or not content.strip():
         return {
             "score": 0,
-            "threshold": PLATFORM_READABILITY_THRESHOLDS.get(platform, 45),
+            "threshold": _QS.readability_bar(platform),
             "grade": "unknown",
             "grade_label": "No content provided",
             "word_count": 0,
@@ -359,7 +353,7 @@ def score_readability(content: str, platform: str) -> dict:
 
     # Strip hashtags before scoring — they inflate syllable count
     content_clean = re.sub(r'#\w+', '', content).strip()
-    threshold = PLATFORM_READABILITY_THRESHOLDS.get(platform, 45)
+    threshold = _QS.readability_bar(platform)
 
     if not is_latin_script(content_clean):
         # word_count/sentence_count are script-neutral (whitespace/punctuation

@@ -336,11 +336,11 @@ async def test_staff_read_the_settings_and_only_the_owner_changes_them(make_clie
     assert got.status_code == 200 and got.json()["strictness"] == "standard" and got.json()["version"] == 0
     assert (await staff.put(base, json={"version": 0, "strictness": "strict"})).status_code == 403
 
-    saved = await owner.put(base, json={"version": 0, "strictness": "strict", "allowed_terms": ["Nude Lipstick", "nude lipstick"]})
+    saved = await owner.put(base, json={"version": 0, "strictness": "strict", "allowed_terms": ["Nude Lipstick", "nude lipstick"], "reason": "Cosmetics brands need it"})
     assert saved.status_code == 200 and saved.json()["version"] == 1 and saved.json()["allowed_terms"] == ["nude lipstick"]
-    stale = await owner.put(base, json={"version": 0, "strictness": "standard"})
+    stale = await owner.put(base, json={"version": 0, "strictness": "standard", "reason": "Back to everyday"})
     assert stale.status_code == 409
-    assert (await owner.put(base, json={"version": 1, "strictness": "loud"})).status_code == 422
+    assert (await owner.put(base, json={"version": 1, "strictness": "loud", "reason": "Try something odd"})).status_code == 422
 
 
 async def test_ops_can_try_a_text_and_read_what_was_caught(make_client):
@@ -662,3 +662,59 @@ def _real_png() -> bytes:
     out = io.BytesIO()
     Image.new("RGB", (40, 30), (10, 120, 200)).save(out, format="PNG")
     return out.getvalue()
+
+
+# ── violence as a subject is not a threat ─────────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "Fight night is back. Two champions, one ring, no mercy. Tickets on sale now.",
+    "Our new action film opens Friday. The hero has to kill them all to survive the night.",
+    "Join our self defence class and learn how to stop an attacker.",
+    "We stand against violence. Death threats against journalists must end.",
+    "A history of the Battle of Plassey, the war that changed a continent.",
+    "True crime this week: the shooting that shook a small town.",
+])
+def test_violence_as_a_subject_is_not_held(text):
+    assert screen_text(text).ok
+
+
+@pytest.mark.parametrize("text", [
+    "I will kill you",
+    "Let's kill them all tonight",
+    "Someone should shoot him",
+    "How to build a pipe bomb at home",
+])
+def test_threats_and_calls_to_hurt_are_still_held(text):
+    result = screen_text(text)
+    assert not result.ok and "violence" in result.categories
+
+
+def test_the_model_and_picture_questions_say_violence_as_a_subject_is_fine():
+    from app.prompts.registry import load_prompt, render_fragment
+
+    text_question = render_fragment("content_guard/screen", allowed="violence", post="x")
+    assert "Violence as a subject is fine" in text_question and "threat against a person" in text_question
+    assert "Violence as a theme is fine" in render_fragment("content_guard/picture_unsafe")
+    assert "Violence as a theme is allowed" in load_prompt("media/image_safety", prompt="a boxing poster")
+
+
+# ── words in other scripts are matched as whole words ───────────────────────────
+
+@pytest.mark.parametrize("term, text, held", [
+    ("अच्छ", "यह अच्छा है", False),            # a stem inside a longer Hindi word
+    ("अच्छा", "यह अच्छा है", True),
+    ("मकान", "वह मकान है।", True),              # followed by the Devanagari full stop
+    ("தமிழ", "இது தமிழ் பதிவு", False),         # a stem inside a Tamil word
+    ("தமிழ்", "இது தமிழ் பதிவு", True),
+    ("తెలుగు", "ఇది తెలుగు పోస్ట్", True),
+    ("తెలు", "ఇది తెలుగు పోస్ట్", False),
+    ("scam", "scampi tonight", False),
+    ("scam", "no scam here", True),
+])
+def test_blocked_words_match_whole_words_in_every_script(term, text, held):
+    assert (not screen_text(text, extra_blocked_terms=[term]).ok) is held
+
+
+def test_allowed_words_in_other_scripts_protect_only_whole_words():
+    assert screen_text("यह अच्छा है", extra_blocked_terms=["अच्छा"], allowed_terms=["अच्छा"]).ok
+    assert not screen_text("यह अच्छा है", extra_blocked_terms=["अच्छा"], allowed_terms=["अच्छ"]).ok

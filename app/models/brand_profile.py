@@ -412,6 +412,8 @@ class BrandProfile(BaseModel):
     is_active: bool = True
     # The language this brand writes in, for example "ta+en". None means follow the workspace.
     language: Optional[str] = None
+    # The safety profile that adds care on top of the standard checks (see agents/content_guard/profiles.py). None means general.
+    safety_profile: Optional[str] = None
     # My Voices > Calibration tab — a persistent tone applied to every
     # generation for this brand when no per-run ToneSelector override is
     # picked. None (or the stored value "brand") both mean "no persistent

@@ -762,6 +762,33 @@ async def approve_piece(
     return updated
 
 
+class PieceFeedbackBody(BaseModel):
+    kind: str = Field(..., max_length=20)
+    reason: str = Field(..., max_length=20)
+    note: str = Field("", max_length=200)
+
+
+@router.post("/pieces/{piece_id}/feedback")
+@limiter.limit("60/minute")
+async def piece_feedback(
+    request: Request,
+    piece_id: str,
+    body: PieceFeedbackBody,
+    ctx: WorkspaceContext = Depends(require("edit_content")),
+) -> dict:
+    """Why a member sent a post back, asked for another version or threw it away. One tap; it feeds the quality signals in Ops."""
+    from app.quality import signals
+
+    piece = await get_piece(piece_id, ctx.workspace_id)
+    if not piece:
+        raise HTTPException(status_code=404, detail="Piece not found.")
+    try:
+        row = await signals.record_feedback(piece, kind=body.kind, reason=body.reason, user_id=ctx.user_id, note=body.note)
+    except signals.FeedbackError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"id": row["id"], "kind": row["kind"], "reason": row["reason"]}
+
+
 @router.patch("/pieces/{piece_id}/reject")
 @limiter.limit("30/minute")
 async def reject_piece(

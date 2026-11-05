@@ -501,6 +501,7 @@ async def get_current_user(request: Request) -> dict:
     results = await asyncio.gather(*lookups)
     token_revoked, session_revoked = results[0]
     user = results[1]
+    request.state.reader = {"user_id": user_id, "workspace_id": workspace_id or None}
     if workspace_id:
         request.state.workspace_prefetch = {"user_id": user_id, "workspace_id": workspace_id, "member": results[2], "workspace": results[3]}
 
