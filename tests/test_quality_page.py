@@ -278,3 +278,16 @@ async def test_the_analyst_role_and_area_exist():
     assert "quality" in ST.AREAS
     template = next(t for t in ST.TEMPLATES if t["key"] == "quality_analyst")
     assert template["permissions"]["quality"] == ["view", "edit"] and template["active"] is True
+
+
+async def test_a_master_admin_and_an_admin_see_the_quality_area_in_their_access(signup_user):
+    master, _ = await _master(signup_user)
+    me = (await master.get("/api/v1/ops/team/me")).json()
+    assert me["level"] == "master_admin" and me["areas"]["quality"] == ["view", "edit", "approve"]
+    assert (await master.get("/api/v1/ops/quality")).status_code == 200
+    admin, profile = await signup_user("Admin")
+    await users.update_one({"id": profile["id"]}, {"$set": {"is_platform_staff": True, "staff": {"level": "admin", "status": "active"}}})
+    ST.forget()
+    areas = (await admin.get("/api/v1/ops/team/me")).json()["areas"]
+    assert "quality" in areas and "edit" in areas["quality"]
+    assert (await admin.get("/api/v1/ops/quality")).status_code == 200
