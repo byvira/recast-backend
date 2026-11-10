@@ -37,7 +37,7 @@ from app.core import limits
 from app.shared.safe_fetch import ResponseTooLarge, get_limited
 from app.db.mongo import brand_profiles, media_assets
 from app.models.media import MediaTranscriptWord
-from app.pipelines.media.captions import build_cues, language_code, to_srt
+from app.pipelines.media.captions import Cue, build_cues, language_code, to_srt
 
 #: The largest video fetched into memory to be sent on (the member upload ceiling is 50 MB).
 MAX_VIDEO_BYTES = limits.PUBLISH_VIDEO_MAX_BYTES
@@ -60,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 YOUTUBE_UPLOAD_INIT_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 YOUTUBE_CAPTIONS_URL = "https://www.googleapis.com/upload/youtube/v3/captions"
+#: Translated subtitle tracks sent with a video besides its own. Each one costs a call to YouTube, so the number is kept small.
+MAX_EXTRA_TRACKS = 10
 YOUTUBE_THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 YOUTUBE_PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 
@@ -196,11 +198,25 @@ class YouTubePublisher(PlatformPublisher):
                 "language. Download the subtitle file and add it in YouTube Studio."
             )
 
+        sent = await self._send_track(client, access_token, video_id, code, "", to_srt(build_cues(words)))
+        if sent == "failed":
+            return "Your video is up, but its subtitles couldn't be added. You can add them in YouTube Studio."
+        if sent == "reconnect":
+            return (
+                "Your video is up, but subtitles weren't added because this YouTube connection doesn't "
+                "allow it yet. Reconnect YouTube in Settings to turn subtitles on."
+            )
+        return None
+
+    async def _send_track(
+        self, client: httpx.AsyncClient, access_token: str, video_id: str, code: str, name: str, srt: str,
+    ) -> str:
+        """Sends one subtitle track. Returns "ok", "reconnect" (this connection may not add subtitles) or "failed"."""
         boundary = "recast_captions_boundary"
-        snippet = json.dumps({"snippet": {"videoId": video_id, "language": code, "name": "", "isDraft": False}})
+        snippet = json.dumps({"snippet": {"videoId": video_id, "language": code, "name": name, "isDraft": False}})
         body = (
             f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{snippet}\r\n"
-            f"--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n{to_srt(build_cues(words))}\r\n"
+            f"--{boundary}\r\nContent-Type: application/octet-stream\r\n\r\n{srt}\r\n"
             f"--{boundary}--"
         )
         try:
@@ -215,16 +231,44 @@ class YouTubePublisher(PlatformPublisher):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("YouTube caption upload failed for video %s: %s", video_id, exc)
-            return "Your video is up, but its subtitles couldn't be added. You can add them in YouTube Studio."
-
+            return "failed"
         if resp.status_code in (401, 403):
-            return (
-                "Your video is up, but subtitles weren't added because this YouTube connection doesn't "
-                "allow it yet. Reconnect YouTube in Settings to turn subtitles on."
-            )
+            return "reconnect"
         if not resp.is_success:
             logger.warning("YouTube caption upload returned %s for video %s", resp.status_code, video_id)
-            return "Your video is up, but its subtitles couldn't be added. You can add them in YouTube Studio."
+            return "failed"
+        return "ok"
+
+    async def _upload_translated_tracks(
+        self, client: httpx.AsyncClient, access_token: str, video_id: str, workspace_id: str, media_id: str, original_code: Optional[str],
+    ) -> Optional[str]:
+        """Sends the caption translations the member already made for this video (Video, Voices, caption translations) as extra subtitle
+        tracks. Nothing is translated here and nothing is charged; each track is one more call to YouTube. At most MAX_EXTRA_TRACKS go
+        up, the language the video is spoken in is skipped, and one that fails never stops the others. Returns a plain note when any
+        could not be added, else None."""
+        from app.db.mongo import get_db
+
+        rows = await get_db()["video_caption_tracks"].find({"workspace_id": workspace_id, "media_id": media_id}).to_list(MAX_EXTRA_TRACKS + 10)
+        missed: list[str] = []
+        sent = 0
+        for row in rows:
+            code = str(row.get("language") or "").strip()
+            cues = row.get("cues") or []
+            if not code or not cues or code.split("-")[0].lower() == (original_code or "").split("-")[0].lower():
+                continue
+            if sent >= MAX_EXTRA_TRACKS:
+                missed.append(str(row.get("language_name") or code))
+                continue
+            srt = to_srt([Cue(start_s=c["start_ms"] / 1000, end_s=c["end_ms"] / 1000, text=str(c["text"])) for c in cues if c.get("text")])
+            outcome = await self._send_track(client, access_token, video_id, code, str(row.get("language_name") or "")[:150], srt)
+            if outcome == "ok":
+                sent += 1
+            elif outcome == "reconnect":
+                return "Your video is up, but translated subtitles weren't added because this YouTube connection doesn't allow it yet. Reconnect YouTube in Settings."
+            else:
+                missed.append(str(row.get("language_name") or code))
+        if missed:
+            return f"Your video is up, but subtitles in {', '.join(missed)} couldn't be added. You can add them in YouTube Studio."
         return None
 
     async def publish(
@@ -300,7 +344,14 @@ class YouTubePublisher(PlatformPublisher):
                 # Subtitles and the thumbnail are bonuses on top of a video that's already up:
                 # a failure in either is reported, never allowed to fail the post.
                 # Captions are added when the video has a transcript, unless the member turned them off.
-                caption_note = None if (request.options or {}).get("captions") is False else await self._upload_captions(client, access_token, video_id, fresh_media)
+                captions_on = (request.options or {}).get("captions") is not False
+                caption_note = await self._upload_captions(client, access_token, video_id, fresh_media) if captions_on else None
+                if captions_on and caption_note is None:
+                    # translations the member already made go up as extra tracks (only once the original track is accepted)
+                    translated_note = await self._upload_translated_tracks(
+                        client, access_token, video_id, request.workspace_id, asset.id, language_code(fresh_media.get("transcript_language")),
+                    )
+                    caption_note = translated_note
                 thumbnail_id = (request.options or {}).get("thumbnail_media_id")
                 if thumbnail_id:
                     thumbnail_note = await self._set_thumbnail(client, access_token, video_id, thumbnail_id, request.workspace_id)

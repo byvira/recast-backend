@@ -306,17 +306,44 @@ async def update_workspace(
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update.")
-    before = await workspaces.find_one({"id": workspace_id}, {"language": 1}) if "language" in updates else None
+    before = await workspaces.find_one({"id": workspace_id}, {"language": 1, "require_review": 1}) if ("language" in updates or "require_review" in updates) else None
     updates["updated_at"] = datetime.now(timezone.utc)
     await workspaces.update_one({"id": workspace_id}, {"$set": updates})
     updates.pop("updated_at")
-    if before is not None and (before or {}).get("language") != updates.get("language"):
+    if "require_review" in updates and (before or {}).get("require_review") != updates.get("require_review"):
+        await _note_review_setting(workspace_id, current_user, updates.get("require_review"))
+    if "language" in updates and before is not None and (before or {}).get("language") != updates.get("language"):
         # recent Activity, Inbox and Odette rows are written again in the new language, in the background
         from app.shared.activity.i18n import relocalize_soon
 
         relocalize_soon(workspace_id)
     fresh = await workspaces.find_one({"id": workspace_id}, {"tier": 1, "require_review": 1})
     return {"workspace_id": workspace_id, **updates, "policy": policy_for(fresh)}
+
+
+async def _note_review_setting(workspace_id: str, user: dict[str, Any], value: Optional[bool]) -> None:
+    """Who switched the review step on or off, and when, as an Activity row. Never allowed to fail the change itself."""
+    try:
+        from uuid import uuid4
+
+        from app.shared.activity.i18n import phrase
+        from app.shared.activity.projector import record_system
+
+        if value is None:
+            title, detail = "Review step back to the plan's default", "Posts follow the review rule that comes with this plan again."
+        elif value:
+            title, detail = "Review step switched on", "New posts now wait for approval before they are queued."
+        else:
+            title, detail = "Review step switched off", "New posts are approved as soon as they are made, so planned ones are queued without a review."
+        await record_system(
+            workspace_id=workspace_id, key=f"review-setting:{uuid4().hex}", actor_name=user.get("name") or user.get("email") or "A member",
+            actor_user_id=user["id"], category="workspace_alert", title=phrase(title), description=phrase(detail),
+            target_id=workspace_id, target_type="workspace", metadata={"event": "workspace.review_setting", "require_review": value},
+        )
+    except Exception as exc:  # noqa: BLE001 - the setting is saved; only its Activity row is missing
+        import logging
+
+        logging.getLogger(__name__).warning("Could not note the review setting change for %s: %s", workspace_id, exc)
 
 
 class SetupWorkspaceBody(BaseModel):
