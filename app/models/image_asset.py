@@ -108,6 +108,13 @@ class Layer(BaseModel):
     icon: Optional[str] = Field(None, max_length=60)
     # watermark: which of the brand's two marks it draws (always the brand's current one, like logo and mascot)
     watermark_kind: Literal["text", "image"] = "text"
+    # looks for any layer, each a fraction of the canvas width. `shadow` (above) is a soft shadow on every kind of layer.
+    group: Optional[str] = Field(None, max_length=40)   # layers with the same group move and select together in the editor
+    outline: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")   # a line around the shape of the layer
+    outline_w: float = Field(0.0, ge=0.0, le=0.02)
+    glow: Optional[str] = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")      # a soft light around the layer
+    glow_r: float = Field(0.0, ge=0.0, le=0.08)
+    blur: float = Field(0.0, ge=0.0, le=0.03)                            # softens the layer itself
 
 
 class Slide(BaseModel):
@@ -135,6 +142,10 @@ class Slide(BaseModel):
     # True for a picture made before the editor existed once it has been edited: its backdrop is the finished picture, words
     # included, because the clean picture was never kept.
     baked_text: bool = False
+    # Where the picture is cropped when its shape is not the shape of the slide: how far along the cut side the window sits (0 the start,
+    # 0.5 the middle, 1 the end). Left out, the middle, as pictures have always been cropped.
+    crop_x: Optional[float] = Field(None, ge=0.0, le=1.0)
+    crop_y: Optional[float] = Field(None, ge=0.0, le=1.0)
 
 
 class CommentPin(BaseModel):

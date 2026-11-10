@@ -18,7 +18,7 @@ import re
 from typing import Optional
 from uuid import uuid4
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from app.models.image_asset import MAX_CHART_BARS, Layer
 from app.pipelines.media.icons import DEFAULT_ACCENT_ICON, icon_char, is_known_icon, load_icon_font
@@ -239,6 +239,7 @@ def render_layers(
     brand: BrandTokens,
     assets: Optional[dict[str, bytes]] = None,
     effects: Optional[dict] = None,
+    place: tuple[float, float] = (0.5, 0.5),
 ) -> bytes:
     """The finished PNG. `assets` maps a layer id to the bytes of its picture (logo, mascot or uploaded image); a layer
     whose picture is missing is skipped, never drawn as a placeholder."""
@@ -247,7 +248,7 @@ def render_layers(
     canvas: Image.Image
     if background_bytes:
         try:
-            canvas = _fit_background(background_bytes, size).convert("RGBA")
+            canvas = _fit_background(background_bytes, size, place).convert("RGBA")
         except Exception as exc:  # noqa: BLE001
             logger.warning("Background could not be read, using the brand colour: %s", exc)
             canvas = Image.new("RGBA", size, (*_color(brand.primary_hex, "#1C1814"), 255))
@@ -272,11 +273,13 @@ def render_layers(
             lx, ly = int(round(layer.x * width)), int(round(layer.y * height))
             seen = tile.getchannel("A").getbbox() or (0, 0, tile.width, tile.height)  # the logo's own shape, not its whole box
             logo_placement.draw_plate(canvas, (lx + seen[0], ly + seen[1], lx + seen[2], ly + seen[3]), layer.backing)
+        box_w, box_h = tile.size
+        tile = _with_effects(tile, layer, width)
         if layer.opacity < 1.0:
             alpha = tile.getchannel("A").point(lambda v, o=layer.opacity: int(v * o))
             tile.putalpha(alpha)
-        cx = layer.x * width + tile.width / 2
-        cy = layer.y * height + tile.height / 2
+        cx = layer.x * width + box_w / 2
+        cy = layer.y * height + box_h / 2
         if layer.rotation:
             tile = tile.rotate(-layer.rotation, expand=True, resample=Image.BICUBIC)
         _paste_clipped(canvas, tile, int(round(cx - tile.width / 2)), int(round(cy - tile.height / 2)))
@@ -289,6 +292,51 @@ def render_layers(
     else:
         canvas.convert("RGB").save(out, format="PNG")
     return out.getvalue()
+
+
+def _own_shadow(layer: Layer) -> bool:
+    """Text and a text watermark draw their own shadow while they are laid out; every other layer gets it from the looks pass."""
+    return layer.type == "text" or (layer.type == "watermark" and layer.watermark_kind == "text")
+
+
+def _with_effects(tile: Image.Image, layer: Layer, canvas_w: int) -> Image.Image:
+    """`tile` with the layer's looks added: it is softened, then given an outline, a glow and a shadow. The result has the same centre as
+    the tile and is larger on every side by the room the looks need, so nothing is cut off."""
+    outline_px = int(round(layer.outline_w * canvas_w)) if layer.outline and layer.outline_w > 0 else 0
+    glow_px = int(round(layer.glow_r * canvas_w)) if layer.glow and layer.glow_r > 0 else 0
+    blur_px = layer.blur * canvas_w
+    shadow_on = bool(layer.shadow) and not _own_shadow(layer)
+    if not (outline_px or glow_px or blur_px >= 0.4 or shadow_on):
+        return tile
+    offset = max(2, int(0.01 * canvas_w))
+    soft = max(2, int(0.008 * canvas_w))
+    pad = outline_px + glow_px * 3 + int(blur_px * 3) + (offset + soft * 3 if shadow_on else 0) + 2
+    base = Image.new("RGBA", (tile.width + 2 * pad, tile.height + 2 * pad), (0, 0, 0, 0))
+    base.paste(tile, (pad, pad))
+    if blur_px >= 0.4:
+        base = base.filter(ImageFilter.GaussianBlur(blur_px))
+    alpha = base.getchannel("A")
+    result = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    if glow_px:
+        source = alpha
+        if outline_px:
+            source = alpha.filter(ImageFilter.MaxFilter(2 * outline_px + 1))
+        halo = source.filter(ImageFilter.GaussianBlur(glow_px)).point(lambda v: min(255, v * 2))
+        glow = Image.new("RGBA", base.size, (*_color(layer.glow, "#FFFFFF"), 0))
+        glow.putalpha(halo)
+        result.alpha_composite(glow)
+    if shadow_on:
+        spread = alpha.filter(ImageFilter.GaussianBlur(soft)).point(lambda v: int(v * 0.45))
+        shade = Image.new("RGBA", base.size, (0, 0, 0, 0))
+        shade.putalpha(spread)
+        result.alpha_composite(shade, (offset, offset))
+    if outline_px:
+        ring = alpha.filter(ImageFilter.MaxFilter(2 * outline_px + 1)).filter(ImageFilter.GaussianBlur(0.6))
+        line = Image.new("RGBA", base.size, (*_color(layer.outline, "#000000"), 0))
+        line.putalpha(ring)
+        result.alpha_composite(line)
+    result.alpha_composite(base)
+    return result
 
 
 def _paste_clipped(canvas: Image.Image, tile: Image.Image, x: int, y: int) -> None:

@@ -405,6 +405,19 @@ async def get_brand_profile(
     return _doc_to_brand_profile(doc).model_dump()
 
 
+@router.get("/{brand_id}/reference-style")
+@limiter.limit("30/minute")
+async def reference_style_of_brand(request: Request, brand_id: str, ctx: WorkspaceContext = Depends(get_current_workspace)) -> dict[str, Any]:
+    """What the brand's reference pictures look like (their colours, tones and amount of detail), in plain words. New pictures follow
+    this look. Empty when the brand has no reference pictures."""
+    from app.pipelines.media import reference_style
+
+    doc = await brand_profiles.find_one({"id": brand_id, "workspace_id": ctx.workspace_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Brand profile not found.")
+    return await reference_style.style_of(doc, ctx.workspace_id)
+
+
 @router.put("/{brand_id}/step")
 @limiter.limit("50/minute")
 async def save_brand_step(

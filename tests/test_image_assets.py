@@ -410,7 +410,7 @@ async def test_export_creates_a_distinct_derivative_and_rejects_unknown_formats(
     assert res.json()["source"] == "edited"
     assert res.json()["id"] != asset["slides"][0]["media_id"]  # a new asset, original untouched
 
-    bad = await client.post(url, json={"export_format": "svg"}, headers=_h(ws_id))
+    bad = await client.post(url, json={"export_format": "gif"}, headers=_h(ws_id))
     assert bad.status_code == 400
 
 

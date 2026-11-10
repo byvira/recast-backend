@@ -306,10 +306,13 @@ def _wrap_text(draw: "ImageDraw.ImageDraw", text: str, font, max_width: int) -> 
     return lines
 
 
-def _fit_background(base_image_bytes: bytes, target_size: tuple[int, int]) -> Image.Image:
+def _fit_background(base_image_bytes: bytes, target_size: tuple[int, int], place: tuple[float, float] = (0.5, 0.5)) -> Image.Image:
     """Cover-fit crop, the same behavior a CSS `background-size: cover`
     preview implies — fills target_size with no letterboxing, cropping
-    the longer axis rather than distorting the aspect ratio."""
+    the longer axis rather than distorting the aspect ratio. `place` says
+    where the cropped window sits on the side that is cut (0 the start,
+    0.5 the middle, 1 the end), like a CSS object position."""
+    px, py = min(1.0, max(0.0, place[0])), min(1.0, max(0.0, place[1]))
     img = Image.open(BytesIO(base_image_bytes)).convert("RGB")
     src_w, src_h = img.size
     target_w, target_h = target_size
@@ -319,12 +322,12 @@ def _fit_background(base_image_bytes: bytes, target_size: tuple[int, int]) -> Im
     if src_ratio > target_ratio:
         # Source is wider than target — crop left/right.
         new_w = int(src_h * target_ratio)
-        left = (src_w - new_w) // 2
+        left = int(round((src_w - new_w) * px))
         img = img.crop((left, 0, left + new_w, src_h))
     else:
         # Source is taller than target — crop top/bottom.
         new_h = int(src_w / target_ratio)
-        top = (src_h - new_h) // 2
+        top = int(round((src_h - new_h) * py))
         img = img.crop((0, top, src_w, top + new_h))
 
     scale = target_w / img.width

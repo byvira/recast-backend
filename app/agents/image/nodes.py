@@ -136,7 +136,13 @@ async def build_prompt_node(state: BaseAgentState) -> dict:
     res = await REGISTRY.run("build_prompt", topic=raw.get("topic", ""), brand=state["brand"])
     if not res.ok:
         return {"errors": [*state["errors"], res.error or "build_prompt failed"], "status": "failed", "current_step": "finish"}
-    return {"intermediate_outputs": {**_io(state), "raw_prompt": res.value}, "current_step": "gate"}
+    prompt = res.value
+    if raw.get("workspace_id"):
+        # the brand's reference pictures guide the look of every new picture (nothing is added when it has none)
+        from app.pipelines.media import reference_style
+
+        prompt = await reference_style.with_style_line(prompt, state["brand"], raw["workspace_id"])
+    return {"intermediate_outputs": {**_io(state), "raw_prompt": prompt}, "current_step": "gate"}
 
 
 async def gate_node(state: BaseAgentState) -> dict:

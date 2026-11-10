@@ -45,7 +45,7 @@ def resolve_layers(layers: list[Layer], watermark: Optional[dict]) -> list[Layer
                 "color": watermark.get("text_color") or layer.color, "bold": bool(watermark.get("text_bold", True)),
             }))
         else:
-            out.append(layer.model_copy(update={"type": "image", "fit": "contain"}))
+            out.append(layer.model_copy(update={"type": "image", "fit": "contain", "shadow": False}))  # a picture mark never had a shadow
     return out
 
 

@@ -204,6 +204,11 @@ async def _fetch_layer_assets(layers: list[Layer], brand: dict, workspace_id: st
     return {lid: data for lid, data in await asyncio.gather(*(one(layer) for layer in wanted)) if data}
 
 
+def _place_of(slide: Slide) -> tuple[float, float]:
+    """Where a slide's picture is cropped: the saved placement, else the middle."""
+    return (0.5 if slide.crop_x is None else slide.crop_x, 0.5 if slide.crop_y is None else slide.crop_y)
+
+
 def _scaled_size(picture: bytes) -> tuple[int, int]:
     """A picture's own shape, kept to a sensible size (a very large one is scaled down to 4096 on its long side)."""
     with Image.open(io.BytesIO(picture)) as source:
@@ -226,6 +231,7 @@ def _slide_canvas(slide: Slide, picture: Optional[bytes]) -> tuple[int, int]:
 async def _draw_and_store(
     *, size: tuple[int, int], background_bytes: Optional[bytes], layers: list[Layer], brand: dict, brand_tokens: BrandTokens,
     workspace_id: str, user_id: str, effects: Optional[dict] = None, cutout_bytes: Optional[bytes] = None,
+    place: tuple[float, float] = (0.5, 0.5),
 ) -> MediaAsset:
     from app.pipelines.media import watermark as watermark_mod
 
@@ -254,7 +260,7 @@ async def _draw_and_store(
                 detail="Removing the background isn't available right now. Switch it off to make the picture, or try again in a moment.",
             )
         background_bytes = background_removal.on_colour(cutout, brand_tokens.primary_hex)
-    png = await run_heavy(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets, effects=effects)
+    png = await run_heavy(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets, effects=effects, place=place)
     note = _fallback_note(background_bytes)
     # Tamil and Hindi need a text-shaping engine to draw every combination correctly. If this server does not have one, say so on
     # the picture instead of letting a wrongly ordered letter go unnoticed.
@@ -517,6 +523,69 @@ async def get_icons(request: Request, ctx: WorkspaceContext = Depends(require("c
     return {"icons": list_icons()}
 
 
+MAX_TEMPLATES = 30
+
+
+class SaveTemplateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    layers: list[Layer] = Field(min_length=1, max_length=MAX_LAYERS)
+    # the picture's shape when it was saved, so a template can be listed next to pictures of the same shape
+    width: Optional[int] = Field(None, ge=16, le=8192)
+    height: Optional[int] = Field(None, ge=16, le=8192)
+
+
+def _template_row(doc: dict) -> dict:
+    return {"id": doc["id"], "name": doc["name"], "layers": doc.get("layers") or [], "width": doc.get("width"), "height": doc.get("height"),
+            "created_at": doc.get("created_at")}
+
+
+@router.get("/templates")
+@limiter.limit("60/minute")
+async def list_templates(request: Request, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
+    """The designs this workspace saved to start new pictures from, newest first."""
+    from app.db.mongo import get_db
+
+    rows = await get_db()["image_templates"].find({"workspace_id": ctx.workspace_id}, {"_id": 0}).sort("created_at", -1).to_list(MAX_TEMPLATES)
+    return {"templates": [_template_row(r) for r in rows], "limit": MAX_TEMPLATES}
+
+
+@router.post("/templates", status_code=201)
+@limiter.limit("20/minute")
+async def save_template(request: Request, body: SaveTemplateRequest, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
+    """Keeps a set of layers as a template. An uploaded image layer must be a picture from this workspace's library, the same rule as
+    saving a design, so a template can never point at another workspace's file."""
+    from app.db.mongo import get_db
+
+    ids = [layer.id for layer in body.layers]
+    if len(set(ids)) != len(ids):
+        raise HTTPException(status_code=400, detail="Two layers share the same id.")
+    for layer in body.layers:
+        if layer.type == "image" and not (layer.media_id and await media_assets.find_one({"id": layer.media_id, "workspace_id": ctx.workspace_id, "kind": MediaKind.IMAGE.value})):
+            raise HTTPException(status_code=400, detail="An image layer must use a picture from this workspace's library.")
+    col = get_db()["image_templates"]
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Give the template a name.")
+    if await col.count_documents({"workspace_id": ctx.workspace_id}) >= MAX_TEMPLATES:
+        raise HTTPException(status_code=409, detail=f"A workspace can keep up to {MAX_TEMPLATES} templates. Delete one first.")
+    row = {
+        "id": str(uuid4()), "workspace_id": ctx.workspace_id, "name": name, "created_by": ctx.user_id, "created_at": datetime.now(timezone.utc),
+        "layers": [layer.model_dump(mode="json") for layer in body.layers], "width": body.width, "height": body.height,
+    }
+    await col.insert_one(dict(row))
+    return _template_row(row)
+
+
+@router.delete("/templates/{template_id}", status_code=204)
+@limiter.limit("30/minute")
+async def delete_template(request: Request, template_id: str, ctx: WorkspaceContext = Depends(require("create_content"))) -> None:
+    from app.db.mongo import get_db
+
+    res = await get_db()["image_templates"].delete_one({"id": template_id, "workspace_id": ctx.workspace_id})
+    if not res.deleted_count:
+        raise HTTPException(status_code=404, detail="That template was not found.")
+
+
 def _check_icon(name: Optional[str]) -> None:
     if name and not is_known_icon(name):
         raise HTTPException(status_code=400, detail="That icon isn't available. Pick one from the list.")
@@ -687,6 +756,10 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
     look = style_line(body.visual_profile)
     # Only what the image model is told carries the look; the prompt saved on the picture stays the member's own words.
     render_prompt = f"{prompt.rstrip()} {look}" if look and look not in prompt else prompt
+    # the brand's own reference pictures guide the look too, when it has any
+    from app.pipelines.media import reference_style
+
+    render_prompt = await reference_style.with_style_line(render_prompt, brand, ctx.workspace_id)
     rendered = await _render_and_upload_slide(
         prompt=render_prompt, avoid=body.negative_prompt, workspace_id=ctx.workspace_id, user_id=ctx.user_id, layout=body.active_layout, brand=brand, brand_tokens=brand_tokens,
         text_content=SlideTextContent(
@@ -947,7 +1020,7 @@ async def upload_image_asset(
 
 
 class ExportImageAssetRequest(BaseModel):
-    export_format: str = "png"  # "png" | "webp" | "pdf" | "zip"
+    export_format: str = "png"  # "png" | "webp" | "pdf" | "zip" | "svg" (one slide, as shapes a design program can edit)
     # How much larger the picture is made, the resolution it is tagged with, and whether the file is squeezed small.
     upscale: Literal[1, 2, 4] = 1
     dpi: Literal[72, 150, 300] = 300
@@ -987,6 +1060,34 @@ async def _download_slide_bytes(url: str) -> bytes:
         resp, body = await get_limited(client, url, MAX_FETCHED_IMAGE_BYTES)
         resp.raise_for_status()
         return body
+
+
+async def _export_slide_svg(asset: ImageAsset, slide: Slide, ctx: WorkspaceContext) -> MediaAsset:
+    """One slide as an SVG file: its words, shapes, charts and icons stay editable shapes, its pictures are embedded. A picture made before
+    the editor existed has no layers, so its finished picture is written as one embedded image."""
+    from app.pipelines.media import svg_export
+    from app.pipelines.media import watermark as watermark_mod
+
+    brand = await _get_brand_profile(asset.brand_id, ctx.workspace_id)
+    brand_tokens = _brand_tokens_from(brand)
+    background = await _media_bytes(slide.background_media_id, ctx.workspace_id) if slide.background_media_id else None
+    layers = slide.layers
+    if not layers:
+        background = await _media_bytes(slide.media_id, ctx.workspace_id)
+        if not background:
+            raise HTTPException(status_code=404, detail="The rendered slide's file is missing.")
+    size = _slide_canvas(slide, background)
+    assets = await _fetch_layer_assets(layers, brand, ctx.workspace_id)
+    drawn = watermark_mod.resolve_layers(layers, brand.get("watermark"))
+    svg = await run_heavy(svg_export.build_svg, size=size, background_bytes=background, layers=drawn, brand=brand_tokens, assets=assets, effects=slide.effects, place=_place_of(slide))
+    data = svg.encode("utf-8")
+    url = await upload_file(data, UploadContentType.EXPORT, ctx.user_id)
+    export_asset = MediaAsset(
+        id=str(uuid4()), workspace_id=ctx.workspace_id, kind=MediaKind.DOCUMENT, url=url, mime_type="image/svg+xml",
+        source=MediaSource.EDITED, created_by=ctx.user_id, created_at=datetime.now(timezone.utc), size_bytes=len(data),
+    )
+    await media_assets.insert_one(export_asset.model_dump())
+    return export_asset
 
 
 @router.post("/{image_asset_id}/export", response_model=MediaAsset, status_code=201)
@@ -1051,6 +1152,8 @@ async def export_image_asset(
     chosen = next((s for s in asset.slides if s.slide_number == body.slide_number), None) if body.slide_number else asset.slides[0]
     if chosen is None:
         raise HTTPException(status_code=404, detail="That slide doesn't exist on this picture.")
+    if body.export_format == "svg":
+        return await _export_slide_svg(asset, chosen, ctx)
     source_doc = await media_assets.find_one(
         {"id": chosen.media_id, "workspace_id": ctx.workspace_id}
     )
@@ -1216,6 +1319,88 @@ async def _add_slide(request: Request, asset: ImageAsset, body: AddSlideRequest,
     return ImageAsset(**updated_doc)
 
 
+# The shapes a picture can be made again for: the platforms' own sizes, in the order they are offered.
+RESHAPE_LAYOUTS = (
+    LayoutPreset.INSTAGRAM_SQUARE, LayoutPreset.CAROUSEL_4_5, LayoutPreset.STORY_9_16, LayoutPreset.LINKEDIN_POST,
+    LayoutPreset.X_POST, LayoutPreset.SOCIAL_SHARE, LayoutPreset.YOUTUBE_THUMBNAIL, LayoutPreset.HERO_16_9, LayoutPreset.QUOTE_1_1,
+)
+MAX_RESHAPE = 6
+
+
+class ReshapeRequest(BaseModel):
+    layouts: list[LayoutPreset] = Field(min_length=1, max_length=MAX_RESHAPE)
+    # Where the main subject is, as fractions of the picture. Left out, it is found from the picture.
+    focus_x: Optional[float] = Field(None, ge=0.0, le=1.0)
+    focus_y: Optional[float] = Field(None, ge=0.0, le=1.0)
+
+
+async def _reshape_source(image_asset_id: str, slide_number: int, workspace_id: str) -> tuple[ImageAsset, Slide, dict, bytes, tuple[int, int]]:
+    asset, slide, brand = await _slide_for_editing(image_asset_id, slide_number, workspace_id)
+    if slide.baked_text or not slide.background_media_id:
+        raise HTTPException(status_code=400, detail="This picture was made before the editor, so its words are part of the picture and it can't be made in other shapes.")
+    picture = await _media_bytes(slide.background_media_id, workspace_id)
+    if not picture:
+        raise HTTPException(status_code=502, detail="Couldn't load this picture just now. Try again in a moment.")
+    with Image.open(io.BytesIO(picture)) as source:
+        return asset, slide, brand, picture, source.size
+
+
+@router.get("/{image_asset_id}/slides/{slide_number}/shapes")
+@limiter.limit("30/minute")
+async def other_shapes(request: Request, image_asset_id: str, slide_number: int, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict:
+    """The main subject of a slide's picture and how it would be cropped for each platform shape, so the member sees it before anything is
+    made. Nothing is saved and nothing is charged."""
+    from app.pipelines.media import subject_crop
+
+    _, slide, _, picture, size = await _reshape_source(image_asset_id, slide_number, ctx.workspace_id)
+    focus = await run_heavy(subject_crop.find_focus, picture)
+    shapes = []
+    for layout in RESHAPE_LAYOUTS:
+        if layout == slide.layout:
+            continue
+        target = LAYOUT_DIMS[layout]
+        crop_x, crop_y = subject_crop.placement(size, target, focus)
+        shapes.append({"layout": layout.value, "width": target[0], "height": target[1], "crop_x": round(crop_x, 4), "crop_y": round(crop_y, 4)})
+    return {"focus": {"x": round(focus[0], 4), "y": round(focus[1], 4)}, "picture": {"width": size[0], "height": size[1]}, "shapes": shapes}
+
+
+@router.post("/{image_asset_id}/slides/{slide_number}/reshape", response_model=ImageAsset, status_code=201)
+@limiter.limit("10/minute")
+async def reshape_slide(
+    request: Request, image_asset_id: str, slide_number: int, body: ReshapeRequest, ctx: WorkspaceContext = Depends(require("create_content")),
+) -> ImageAsset:
+    """Makes the same picture again in other platform shapes, as new slides: the clean picture is cropped round its main subject, the
+    design is fitted to the new shape and the picture is drawn. No AI picture is made, so nothing is charged."""
+    from app.pipelines.media import subject_crop
+
+    asset, slide, brand, picture, size = await _reshape_source(image_asset_id, slide_number, ctx.workspace_id)
+    layouts = list(dict.fromkeys(body.layouts))
+    for layout in layouts:
+        if layout not in RESHAPE_LAYOUTS:
+            raise HTTPException(status_code=400, detail="That shape can't be made this way. Pick a platform shape from the list.")
+    if (body.focus_x is None) != (body.focus_y is None):
+        raise HTTPException(status_code=400, detail="Give both the left-right and the up-down place of the subject, or neither.")
+    focus = (body.focus_x, body.focus_y) if body.focus_x is not None and body.focus_y is not None else await run_heavy(subject_crop.find_focus, picture)
+    brand_tokens = _brand_tokens_from(brand)
+    source_size = _slide_canvas(slide, picture)
+    number = max((s.slide_number for s in asset.slides), default=0)
+    made: list[Slide] = []
+    for layout in layouts:
+        target = LAYOUT_DIMS[layout]
+        crop_x, crop_y = subject_crop.placement(size, target, focus)
+        layers = subject_crop.adapt_layers(slide.layers, source_size, target, heading_font=brand_tokens.heading_font, body_font=brand_tokens.body_font)
+        media = await _draw_and_store(size=target, background_bytes=picture, layers=layers, brand=brand, brand_tokens=brand_tokens,
+                                      workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=slide.effects, place=(crop_x, crop_y))
+        number += 1
+        made.append(Slide(
+            slide_number=number, title=slide.title, slide_type=layout.value, layout=layout, media_id=media.id,
+            background_media_id=slide.background_media_id, layers=layers, effects=slide.effects, text_content=slide.text_content,
+            crop_x=crop_x, crop_y=crop_y,
+        ))
+    updated = await _bump_version(image_asset_id, ctx.workspace_id, asset.slides + made, "slide_added", ctx.user_id)
+    return ImageAsset(**updated)
+
+
 class SaveLayersRequest(BaseModel):
     layers: list[Layer] = Field(max_length=MAX_LAYERS)
 
@@ -1244,7 +1429,7 @@ async def _redraw_slide(asset: ImageAsset, slide: Slide, layers: list[Layer], br
         raise HTTPException(status_code=502, detail="Couldn't load this picture just now, so nothing was changed. Try again in a moment.")
     brand_tokens = _brand_tokens_from(brand)
     media = await _draw_and_store(size=size, background_bytes=background, layers=layers, brand=brand, brand_tokens=brand_tokens,
-                                  workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=slide.effects)
+                                  workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=slide.effects, place=_place_of(slide))
     change: dict = {"media_id": media.id, "layers": layers}
     if slide.layout is None:
         # An uploaded picture is its own clean picture: it is kept as the backdrop (so the next edit draws over it, not over
@@ -1528,6 +1713,7 @@ async def _draw_looks(
                 media = await _draw_and_store(
                     size=_slide_canvas(slide, original), background_bytes=original, layers=slide.layers, brand=brand, brand_tokens=brand_tokens,
                     workspace_id=ctx.workspace_id, user_id=ctx.user_id, effects=effects, cutout_bytes=(cutouts or {}).get(slide.slide_number),
+                    place=_place_of(slide),
                 )
             except HTTPException as exc:
                 if many:
