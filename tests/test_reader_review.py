@@ -107,3 +107,13 @@ async def test_another_workspaces_brand_cannot_be_used(signup_user, mock_llm):
         headers={"X-Workspace-Id": other_ws},
     )
     assert res.status_code == 404
+
+
+async def test_a_real_post_in_chinese_or_japanese_is_not_refused_as_too_short(signup_user, mock_llm):
+    client, _ = await signup_user()
+    ws = await create_workspace(client, "Reader WS", tier="large")
+    brand_id = await _brand(client, ws)
+    mock_llm.set_structured({"headline": "x", "verdict": "almost", "strengths": ["a"], "fixes": [], "questions": []})
+    for post in ("我们五月推出三项新功能，专为小团队设计，欢迎免费试用。", "五月に小さなチーム向けの新機能を三つ公開します。無料でお試しください。"):
+        res = await client.post("/api/v1/text/reader-review", json={"content": post, "platform": "LinkedIn", "brand_id": brand_id}, headers={"X-Workspace-Id": ws})
+        assert res.status_code == 200, f"a full sentence was refused: {res.text}"

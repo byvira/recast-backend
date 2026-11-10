@@ -28,6 +28,8 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
+from pymongo.errors import DuplicateKeyError
+
 import httpx
 
 from app.core.config import settings
@@ -157,7 +159,15 @@ async def _ingest_one(track: dict, semaphore: asyncio.Semaphore) -> Optional[Mus
         license_url=license_url,
         created_at=now,
     )
-    await music_library_tracks.insert_one(entry.model_dump())
+    try:
+        await music_library_tracks.insert_one(entry.model_dump())
+    except DuplicateKeyError:
+        # the same track was ingested at the same moment by another run: keep that one and drop the copy of the audio made here
+        await media_assets.delete_one({"id": media.id})
+        existing = await music_library_tracks.find_one({"source_track_id": source_track_id})
+        if not existing:
+            raise
+        return MusicLibraryTrack(**existing)
     return entry
 
 

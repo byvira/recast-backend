@@ -54,7 +54,7 @@ async def test_only_a_paid_plan_can_buy_a_pack(signup_user, standin):  # noqa: F
 async def test_a_pack_is_paid_once_and_its_credits_are_added_once(signup_user, standin, monkeypatch):  # noqa: F811
     sent: list[str] = []
 
-    async def _email(template, to, variables):
+    async def _email(template, to, variables, *args, **kwargs):
         sent.append(template)
         return True
 

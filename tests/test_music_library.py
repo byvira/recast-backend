@@ -271,3 +271,23 @@ async def test_list_library_tracks_returns_every_ingested_track(monkeypatch):
     # collection is empty otherwise.
     assert ingested_ids.issubset({t.id for t in tracks})
     assert {t.name for t in tracks if t.id in ingested_ids} == {"Track 0", "Track 1", "Track 2"}
+
+
+async def test_two_runs_ingesting_the_same_track_at_once_keep_one_track_and_no_stray_audio_copy(monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(settings, "JAMENDO_CLIENT_ID", "test-client")
+    batch = _jamendo_tracks(1)
+    monkeypatch.setattr(lib_module.httpx, "AsyncClient", _FakeHttp(batch))
+    await _stub_upload(monkeypatch)
+    track_id = str(batch[0]["id"])
+    await music_library_tracks.delete_many({"source_track_id": track_id})
+    before = await media_assets.count_documents({"source": "library", "workspace_id": "__system__"})
+
+    sem = asyncio.Semaphore(4)
+    results = await asyncio.gather(*[lib_module._ingest_one(batch[0], sem) for _ in range(4)])
+
+    assert len({r.id for r in results if r}) == 1, "all four runs return the one track that was kept"
+    assert await music_library_tracks.count_documents({"source_track_id": track_id}) == 1
+    after = await media_assets.count_documents({"source": "library", "workspace_id": "__system__"})
+    assert after - before == 1, "the audio copies made by the runs that lost were removed"

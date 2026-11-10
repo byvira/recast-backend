@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from pymongo.errors import DuplicateKeyError
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
@@ -57,5 +59,12 @@ async def add_effect(request: Request, effect_id: str, ctx: WorkspaceContext = D
         "stock": {"provider": "Ekavo sound effects", "id": effect_id, "licence": effect["licence"]["name"], "licence_url": effect["licence"]["url"],
                   "author": effect["licence"]["author"], "origin": effect["licence"]["origin"]},
     }
-    await media_assets.insert_one(dict(doc))
+    try:
+        await media_assets.insert_one(dict(doc))
+    except DuplicateKeyError:
+        # pressed twice at once: the other press put it there first, so return that one
+        existing = await media_assets.find_one({"workspace_id": ctx.workspace_id, "sfx_id": effect_id})
+        if not existing:
+            raise
+        return {"media_id": existing["id"], "duration_s": existing.get("duration_s"), "created": False}
     return {"media_id": doc["id"], "duration_s": doc["duration_s"], "created": True}

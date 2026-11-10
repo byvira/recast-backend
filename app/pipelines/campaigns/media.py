@@ -387,6 +387,10 @@ async def _regenerate_image(
     try:
         new = await create_image_asset(await _image_request(campaign, piece), ctx)
     except Exception as exc:  # noqa: BLE001 - never fail the post
+        from app.billing import credits
+
+        if credits.is_out_of_credits(exc):
+            raise  # said as it is: out of credits is not a fault, and trying again in a moment will not help
         logger.warning("Campaign %s: regenerate image for piece %s failed: %s", campaign["id"], piece_id, exc)
         if not old_ids:
             await _record_status(workspace_id, piece_id, {"image": "failed"})

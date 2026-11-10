@@ -188,7 +188,7 @@ async def apply_payment(payment: dict[str, Any], provider: Optional[PaymentProvi
         {"$set": {"status": "paid", "payment_id": str(payment["id"]), "paid_at": _now(), "updated_at": _now()}},
     )
     if not claimed:
-        return "already"
+        return await _finish_if_not_credited(topup["id"], payment)
     await S.payments_col().update_one(
         {"id": str(payment["id"])},
         {"$set": {
@@ -200,14 +200,55 @@ async def apply_payment(payment: dict[str, Any], provider: Optional[PaymentProvi
         }},
         upsert=True,
     )
+    await _credit(topup, payment)
+    return "applied"
+
+
+async def _credit(topup: dict[str, Any], payment: dict[str, Any]) -> bool:
+    """The steps after a pack is marked paid: the credits, the receipt, the note, and the mark that the credits were added. Every step is
+    safe to repeat, so this can be run again for a pack whose first run stopped part way. Returns whether the credits were put in now."""
     label = pack_label(int(topup["credits"]))
-    await credits.add_bought(topup["workspace_id"], topup_id=topup["id"], credits=int(topup["credits"]), label=label)
+    added = await credits.add_bought(topup["workspace_id"], topup_id=topup["id"], credits=int(topup["credits"]), label=label)
+    await topups_col().update_one({"id": topup["id"]}, {"$set": {"credited_at": _now(), "updated_at": _now()}})
     await invoices.issue_for_payment(
         {"workspace_id": topup["workspace_id"], "id": None, "mode": topup.get("mode"), "customer": topup.get("customer") or {}},
         {**payment, "currency": topup["currency"]}, label=label,
     )
     await _tell(topup)
-    return "applied"
+    return added
+
+
+STUCK_PACK_MINUTES = 10
+
+
+async def finish_unfinished_packs() -> int:
+    """Nightly: a pack marked paid whose credits were never added (the server stopped in between, and the provider did not tell us
+    again) gets them now. A pack whose credits are already in the wallet only gets its mark, with no second receipt or message.
+    Returns how many were finished."""
+    from datetime import timedelta
+
+    from app.billing.credits import wallets_col
+
+    cutoff = _now() - timedelta(minutes=STUCK_PACK_MINUTES)
+    finished = 0
+    async for topup in topups_col().find({"status": "paid", "credited_at": {"$exists": False}, "paid_at": {"$lte": cutoff}}, {"_id": 0}).limit(200):
+        if await wallets_col().find_one({"_id": topup.get("pool_id"), "lots.id": topup["id"]}, {"_id": 1}):
+            await topups_col().update_one({"id": topup["id"]}, {"$set": {"credited_at": _now()}})
+            continue
+        payment = {"id": topup.get("payment_id"), "amount": topup.get("amount"), "currency": topup.get("currency")}
+        if await _credit(topup, payment):
+            finished += 1
+            logger.warning("Credits for pack %s were missing from the wallet and were added", topup["id"])
+    return finished
+
+
+async def _finish_if_not_credited(topup_id: str, payment: dict[str, Any]) -> str:
+    """The pack is already marked paid. If its credits were never added (the server stopped between marking it paid and adding them),
+    the provider telling us again is the chance to finish; otherwise there is nothing to do."""
+    topup = await topups_col().find_one({"id": topup_id}, {"_id": 0})
+    if not topup or topup.get("status") != "paid" or topup.get("credited_at"):
+        return "already"
+    return "applied" if await _credit(topup, payment) else "already"
 
 
 async def _tell(topup: dict[str, Any]) -> None:
@@ -229,13 +270,18 @@ async def on_refund(payment_id: str, refunded: int) -> None:
     if not topup or not topup.get("amount"):
         return
     owed = round(int(topup["credits"]) * min(refunded, int(topup["amount"])) / int(topup["amount"]))
-    already = int(topup.get("clawed_back") or 0)
-    if owed <= already:
+    # What is owed is claimed with one conditional write before any credits end. A refund reaches us as two messages ("created" and
+    # "processed"), and handled at the same moment each used to read the same earlier figure and end the same credits.
+    claimed = await topups_col().find_one_and_update(
+        {"id": topup["id"], "$or": [{"clawed_back": {"$exists": False}}, {"clawed_back": {"$lt": owed}}]},
+        {"$set": {"clawed_back": owed, "updated_at": _now()}},
+    )
+    if not claimed:
         return
+    already = int(claimed.get("clawed_back") or 0)
     ended = await credits.end_bought(topup["pool_id"], why="refunded", lot_id=topup["id"], limit=owed - already, kind="clawback")
     # what was owed but already spent is recorded, so Ops sees it
-    await topups_col().update_one({"id": topup["id"]}, {"$set": {"clawed_back": owed, "spent_before_refund": max(0, owed - already - ended),
-                                                               "updated_at": _now()}})
+    await topups_col().update_one({"id": topup["id"]}, {"$inc": {"spent_before_refund": max(0, owed - already - ended)}, "$set": {"updated_at": _now()}})
 
 
 def public(topup: dict[str, Any]) -> dict[str, Any]:

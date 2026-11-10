@@ -302,6 +302,7 @@ async def create_indexes() -> None:
     await platform_listings.create_index([("workspace_id", 1), ("platform_key", 1)], unique=True)
     await safety_events.create_index([("created_at", -1)])
     await safety_events.create_index("fingerprint", unique=True)
+    await get_db()["safety_model_misses"].create_index("at", expireAfterSeconds=90 * 24 * 3600)
     await pipeline_runs.create_index("id", unique=True)
     # One active run per start key (a double click, two tabs, the scheduler against a manual start). The key is removed when
     # the run ends, so the same work can be started again.
@@ -338,6 +339,10 @@ async def create_indexes() -> None:
     await get_db()["video_reframe_paths"].create_index("created_at", expireAfterSeconds=90 * 24 * 3600)
     await get_db()["video_stock_cache"].create_index("at", expireAfterSeconds=48 * 3600)
     await get_db()["media_assets"].create_index([("workspace_id", 1), ("stock.provider", 1), ("stock.id", 1)], sparse=True)
+    # a sound effect is in a workspace once, even when "add" is pressed twice at the same moment
+    await get_db()["media_assets"].create_index([("workspace_id", 1), ("sfx_id", 1)], unique=True, partialFilterExpression={"sfx_id": {"$type": "string"}})
+    # one open review request for a held post and its text, even when it is asked twice at the same moment
+    await get_db()["safety_appeals"].create_index([("piece_id", 1), ("hash", 1)], unique=True, partialFilterExpression={"status": "open"})
     await get_db()["video_speech"].create_index("job_id", unique=True)
     await get_db()["video_speech"].create_index("created_at", expireAfterSeconds=7 * 24 * 3600)
     recipes = get_db()["video_recipes"]

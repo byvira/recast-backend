@@ -12,7 +12,7 @@ import logging
 import re
 from typing import Optional
 from app.models.text import Platform, QualityResult
-from app.pipelines.text.language_check import language_problem
+from app.pipelines.text.language_check import language_problem, measured_words
 from app.quality import defaults as QD
 from app.quality import settings as QS
 
@@ -159,7 +159,7 @@ def live_min_words(platform: Platform) -> int:
 def check_minimum_length(content: str, platform: Platform) -> list[str]:
     issues = []
     minimum = live_min_words(platform)
-    word_count = len(content.split())
+    word_count = measured_words(content)
 
     if minimum > 0 and word_count < minimum:
         issues.append(

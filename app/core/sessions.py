@@ -39,8 +39,11 @@ def device_label(agent: str) -> str:
 
 
 def client_ip(request: Request) -> str:
+    """The address the host's proxy saw: the last entry of X-Forwarded-For. The first entries are whatever the caller chose to send, and a
+    session list built on them could be made to show any address."""
     forwarded = request.headers.get("x-forwarded-for", "")
-    return (forwarded.split(",")[0].strip() or (request.client.host if request.client else "")) or ""
+    last = forwarded.split(",")[-1].strip() if forwarded else ""
+    return (last or (request.client.host if request.client else "")) or ""
 
 
 async def record(sid: Optional[str], user_id: str, request: Request) -> None:

@@ -11,6 +11,7 @@ The resolved workspace membership row carries the caller's ``role``, so RBAC
 checks (:func:`app.core.rbac.assert_permission`) run with no extra query.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
@@ -22,6 +23,7 @@ from app.core.auth import get_current_user
 from app.core.rbac import assert_permission
 from app.core.tiers import TIER_DEFAULTS
 from app.db.mongo import workspace_members, workspaces
+from app.db.redis import get_redis
 from app.models.workspace import WorkspaceRole, WorkspaceTier
 
 
@@ -97,6 +99,31 @@ async def usable_workspace_id(user_id: str) -> Optional[str]:
     return candidates[0]["workspace_id"] if candidates else None
 
 
+FIRST_WORKSPACE_LOCK_SECONDS = 20
+FIRST_WORKSPACE_WAIT_SECONDS = 10
+
+
+async def ensure_first_workspace(user_id: str, name: str) -> Optional[str]:
+    """The first workspace of a person who has none, made once however many requests arrive together (a page load sends many at the same
+    moment, and each used to make its own). One request makes it while the others wait for it; None only when it cannot be had in time."""
+    redis = await get_redis()
+    key = f"first_workspace:{user_id}"
+    token = uuid4().hex
+    if await redis.set(key, token, nx=True, ex=FIRST_WORKSPACE_LOCK_SECONDS):
+        try:
+            return await usable_workspace_id(user_id) or await create_first_workspace(user_id, name=name)
+        finally:
+            held = await redis.get(key)
+            if (held.decode() if isinstance(held, bytes) else held) == token:
+                await redis.delete(key)
+    for _ in range(FIRST_WORKSPACE_WAIT_SECONDS * 4):
+        await asyncio.sleep(0.25)
+        found = await usable_workspace_id(user_id)
+        if found:
+            return found
+    return await usable_workspace_id(user_id)
+
+
 async def _resolve_workspace(
     current_user: dict[str, Any], requested: Optional[str], prefetch: Optional[dict[str, Any]] = None,
 ) -> WorkspaceContext:
@@ -112,9 +139,7 @@ async def _resolve_workspace(
         if not workspace_id:
             # An account made while the first save failed has no workspace at all. Its first one is made now, so the person is not
             # left with every page refused.
-            workspace_id = await create_first_workspace(
-                current_user["id"], name=f"{current_user.get('name') or 'My'}'s Workspace"
-            )
+            workspace_id = await ensure_first_workspace(current_user["id"], name=f"{current_user.get('name') or 'My'}'s Workspace")
         if workspace_id:
             from app.db.mongo import users
 

@@ -97,12 +97,21 @@ async def verify_otp(identifier: str, otp: str) -> bool:
             detail="OTP expired or not found. Please request a new one.",
         )
 
-    if not hmac.compare_digest(str(stored), str(otp)):
-        attempts = int(await redis.incr(f"otp:{identifier}:attempts"))
-        await redis.expire(
-            f"otp:{identifier}:attempts",
-            settings.OTP_LOCK_MINUTES * 60,
+    # Every try is counted before it is compared, in one atomic step, so a burst of guesses sent at the same moment still uses up the
+    # allowance together. Counting after the comparison let each of them read the code before any of them cancelled it.
+    attempts = int(await redis.incr(f"otp:{identifier}:attempts"))
+    await redis.expire(
+        f"otp:{identifier}:attempts",
+        settings.OTP_LOCK_MINUTES * 60,
+    )
+    if attempts > settings.OTP_MAX_ATTEMPTS:
+        await redis.delete(f"otp:{identifier}:code", f"otp:{identifier}:attempts")
+        raise HTTPException(
+            status_code=401,
+            detail="Too many wrong codes. Please request a new one.",
         )
+
+    if not hmac.compare_digest(str(stored), str(otp)):
         remaining = settings.OTP_MAX_ATTEMPTS - attempts
 
         if attempts >= settings.OTP_MAX_ATTEMPTS:
@@ -147,37 +156,41 @@ async def check_rate_limit(identifier: str) -> None:
     identifier = normalize_identifier(identifier)
     redis = await get_redis()
 
-    # Per-request cooldown
-    if await redis.exists(f"otp:{identifier}:cooldown"):
-        ttl = await redis.ttl(f"otp:{identifier}:cooldown")
+    cooldown, hours, days = f"otp:{identifier}:cooldown", f"otp:{identifier}:hour_count", f"otp:{identifier}:day_count"
+
+    # Per-request cooldown. Taken with one atomic "set if not set", so of several requests arriving together exactly one gets it and
+    # the rest are refused; checking first and setting afterwards let all of them through and sent a code for each.
+    if not await redis.set(cooldown, "1", nx=True, ex=settings.OTP_COOLDOWN_SECONDS):
+        ttl = await redis.ttl(cooldown)
         raise HTTPException(
             status_code=429,
             detail=f"Please wait {ttl} seconds before requesting another OTP.",
         )
 
-    # Hourly limit
-    hour_count = await redis.get(f"otp:{identifier}:hour_count")
-    if hour_count and int(hour_count) >= settings.OTP_MAX_SENDS_PER_HOUR:
+    # Hourly and daily limits. A request over a limit gives back what it took (the count and the cooldown), so refused requests are
+    # never counted and cannot keep the limit running for longer.
+    hour_count = int(await redis.incr(hours))
+    if hour_count > settings.OTP_MAX_SENDS_PER_HOUR:
+        await redis.decr(hours)
+        await redis.delete(cooldown)
         raise HTTPException(
             status_code=429,
             detail="Hourly OTP limit reached. Try again later.",
         )
 
-    # Daily limit
-    day_count = await redis.get(f"otp:{identifier}:day_count")
-    if day_count and int(day_count) >= settings.OTP_MAX_SENDS_PER_DAY:
+    day_count = int(await redis.incr(days))
+    if day_count > settings.OTP_MAX_SENDS_PER_DAY:
+        await redis.decr(days)
+        await redis.decr(hours)
+        await redis.delete(cooldown)
         raise HTTPException(
             status_code=429,
             detail="Daily OTP limit reached. Try again tomorrow.",
         )
 
-    # All checks passed — set cooldown and increment counters atomically
     pipe = redis.pipeline()
-    pipe.set(f"otp:{identifier}:cooldown", "1", ex=settings.OTP_COOLDOWN_SECONDS)
-    pipe.incr(f"otp:{identifier}:hour_count")
-    pipe.expire(f"otp:{identifier}:hour_count", 3600)
-    pipe.incr(f"otp:{identifier}:day_count")
-    pipe.expire(f"otp:{identifier}:day_count", 86400)
+    pipe.expire(hours, 3600)
+    pipe.expire(days, 86400)
     await pipe.execute()
 
 

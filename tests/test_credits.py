@@ -453,6 +453,7 @@ AI_FILES: dict[str, str] = {
     "pipelines/media/video_analysis.py": "here",
     "pipelines/presets_suggest.py": "free: preset suggestions are bundled",
     "pipelines/publish/youtube/metadata.py": "free: details made at publish are system work",
+    "pipelines/publish/instagram_comment.py": "free: first-comment ideas are bundled like hooks, with their own daily cap for each member",
     "pipelines/text/angles.py": "free: hooks and angles are bundled",
     "pipelines/brand/watermark_tools.py": "here; the text suggestions are free like hooks",
     "pipelines/text/media_angles.py": "free: the 3 ideas are bundled like the written angles; each piece made is charged by its own pipeline",

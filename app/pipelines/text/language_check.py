@@ -74,6 +74,32 @@ _MIN_WORDS_TO_JUDGE = 15
 _MIN_SCRIPT_SHARE = 0.6
 
 _WORD = re.compile(r"[A-Za-z']+")
+# Links, hashtags, mentions and email addresses are not the post's own words: a Tamil post with English hashtags and a link is still a Tamil post.
+_NOT_WORDS = re.compile(r"(?:https?://|www\.)\S+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+|[#@][^\s#@]+", re.IGNORECASE)
+
+
+def measured_words(text: str) -> int:
+    """How many words a text holds, counted the way its script is written. Languages that put spaces between words are counted by
+    their spaces, as always. Chinese and Japanese have none, and Thai has none between words, so a whole post counted as one
+    "word". Those are counted by letters instead: about two letters make a Chinese or Japanese word, about four a Thai one. An
+    estimate, but a post of normal length is no longer called "1 word"."""
+    cjk = other = 0
+    rest: list[str] = []
+    for ch in text or "":
+        cp = ord(ch)
+        if 0x3040 <= cp <= 0x30FF or 0x3400 <= cp <= 0x4DBF or 0x4E00 <= cp <= 0x9FFF:
+            cjk += 1
+        elif 0x0E00 <= cp <= 0x0EFF or 0x1000 <= cp <= 0x109F or 0x1780 <= cp <= 0x17FF:
+            other += 1
+        else:
+            rest.append(ch)
+    if not cjk and not other:
+        return len((text or "").split())
+    return len("".join(rest).split()) + -(-cjk // 2) + -(-other // 4)
+
+
+def _own_words(text: str) -> str:
+    return _NOT_WORDS.sub(" ", text or "")
 
 
 def _in_ranges(ch: str, ranges: list[tuple[int, int]]) -> bool:
@@ -109,7 +135,7 @@ def language_problem(text: str, language: str) -> Optional[str]:
         words = _ROMANISED_WORDS.get(native)
         if not words:
             return None
-        tokens = [t.lower() for t in _WORD.findall(text)]
+        tokens = [t.lower() for t in _WORD.findall(_own_words(text))]
         if len(tokens) < _MIN_WORDS_TO_JUDGE:
             return None
         hits = sum(1 for t in tokens if t in words)
@@ -121,7 +147,7 @@ def language_problem(text: str, language: str) -> Optional[str]:
     ranges = _SCRIPT_RANGES.get(base)
     if not ranges:
         return None
-    share = _script_share(text, ranges)
+    share = _script_share(_own_words(text), ranges)
     if share is None or share >= _MIN_SCRIPT_SHARE:
         return None
     return "The post is not written in the requested language and script."

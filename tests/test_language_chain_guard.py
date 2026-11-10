@@ -195,3 +195,21 @@ async def test_the_hold_reason_is_translated_for_another_language_and_falls_back
 
     with patch("app.shared.localized_strings.get_localized_string", new=broken):
         assert (await hold_message(["claims"], "hi")).startswith("This post was held back")
+
+
+async def test_a_check_that_ran_on_the_rules_alone_because_no_judge_answered_is_counted_for_ops(monkeypatch):
+    await judges.misses_col().delete_many({})
+    await guard_config.save({"model_check": "risky"}, expected_version=0, user_id="u")
+
+    async def down(text):
+        raise RuntimeError("every judge is down")
+
+    monkeypatch.setattr(guard_agent, "_model_screen", down)
+    result = await review_text("Naalaiku offer irukku, vaanga", where="generation", language="ta+en")
+    assert result.outcome in ("clean", "fixed"), "the post is still judged by the rules, as before"
+    await review_text("Naalaiku offer irukku, vaanga", where="generation", language="ta+en")
+
+    summary = await judges.comparison_summary(30)
+    assert summary["model_unavailable"]["total"] == 2
+    assert summary["model_unavailable"]["by_day"][0]["count"] == 2
+    await judges.misses_col().delete_many({})

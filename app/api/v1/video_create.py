@@ -9,6 +9,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from app.pipelines.text.language_check import measured_words
 from app.agents.runtime.decisions import record_decision
 from app.billing import credits
 from app.core.middleware import limiter
@@ -126,7 +127,7 @@ class HooksBody(_Base):
 async def hooks(request: Request, body: HooksBody, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
     tr, words = await _transcript(ctx, body.media_id)
     clip = _text(_slice(words, body.start_ms, body.end_ms))
-    if len(clip.split()) < 8:
+    if measured_words(clip) < 8:
         raise HTTPException(status_code=409, detail="There is too little speech in that part of the video to write an opening line from.")
     await _budget(ctx)
     voice = await voice_mod.load(ctx.workspace_id, body.brand_id)

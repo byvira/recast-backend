@@ -107,6 +107,25 @@ def spawn(coro) -> None:
 _tasks: set[asyncio.Future] = set()
 
 
+def misses_col():
+    from app.db.mongo import get_db
+
+    return get_db()["safety_model_misses"]
+
+
+async def note_unavailable(language: Optional[str]) -> None:
+    """Every judge failed for one check, so the post was screened by the rules alone. Counted per day and language so Ops can see how often
+    that happens; saving the count never blocks or fails the check."""
+    try:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        await misses_col().update_one(
+            {"_id": day}, {"$inc": {"count": 1, f"by_language.{(language or 'unknown').replace('.', '_')}": 1}, "$setOnInsert": {"at": datetime.now(timezone.utc)}},
+            upsert=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - a missing count must not touch the check
+        logger.warning("Could not count a safety model miss: %s", exc)
+
+
 async def comparison_summary(days: int = 30) -> dict[str, Any]:
     """Agreement between the answering judge and the silent one, by language, and the latest disagreements."""
     from datetime import timedelta
@@ -129,4 +148,11 @@ async def comparison_summary(days: int = 30) -> dict[str, Any]:
         "by_language": [{"language": k, **v, "agreement": None if v["compared"] == 0 else round(100 * v["agree"] / v["compared"], 1)}
                         for k, v in sorted(by_language.items(), key=lambda kv: -kv[1]["compared"])],
         "disagreements": [r for r in rows if r.get("agree") is False][:20],
+        "model_unavailable": await _misses(since),
     }
+
+
+async def _misses(since: datetime) -> dict[str, Any]:
+    """How many checks ran on the rules alone because no judge answered, in total and by day."""
+    rows = await misses_col().find({"at": {"$gte": since}}).sort("_id", -1).limit(120).to_list(120)
+    return {"total": sum(int(r.get("count") or 0) for r in rows), "by_day": [{"day": r["_id"], "count": int(r.get("count") or 0)} for r in rows]}

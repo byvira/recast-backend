@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import uuid
 from typing import Awaitable, Callable, TypeVar
 
 from app.db.redis import get_redis
@@ -35,7 +36,8 @@ def distributed_job_lock(name: str, ttl_seconds: int) -> Callable[[F], F]:
             lock_key = f"lock:scheduler:{name}"
             try:
                 redis = await get_redis()
-                acquired = await redis.set(lock_key, "1", nx=True, ex=ttl_seconds)
+                token = uuid.uuid4().hex
+                acquired = await redis.set(lock_key, token, nx=True, ex=ttl_seconds)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "scheduler lock: Redis unavailable for %s, running unlocked: %s",
@@ -54,7 +56,10 @@ def distributed_job_lock(name: str, ttl_seconds: int) -> Callable[[F], F]:
                 return await func(*args, **kwargs)
             finally:
                 try:
-                    await redis.delete(lock_key)
+                    # only the holder lets go: a job that ran past its lock time must not delete the lock another instance now holds
+                    held = await redis.get(lock_key)
+                    if (held.decode() if isinstance(held, bytes) else held) == token:
+                        await redis.delete(lock_key)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("scheduler lock: failed to release %s: %s", name, exc)
 

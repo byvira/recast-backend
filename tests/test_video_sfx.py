@@ -57,3 +57,16 @@ async def test_adding_an_effect_puts_one_item_in_the_library_with_its_licence_an
     assert row["kind"] == "audio" and row["origin"] == "own" and row["contains_stock"] is False and row["url"].endswith("/files/pop.mp3")
     assert row["stock"]["licence"].startswith("CC0") and row["stock"]["author"] == "Ekavo"
     assert (await client.post(f"{S}/nope/add", headers=h)).status_code == 404
+
+
+async def test_pressing_add_twice_at_the_same_moment_puts_the_effect_in_the_library_once(signup_user):
+    import asyncio
+
+    client, _ = await signup_user()
+    ws = await create_workspace(client, f"Sfx {uuid4().hex[:6]}")
+    h = {"X-Workspace-Id": ws}
+    answers = await asyncio.gather(*[client.post(f"{S}/swish/add", headers=h) for _ in range(6)])
+    assert {a.status_code for a in answers} == {201}
+    assert len({a.json()["media_id"] for a in answers}) == 1, "six presses made more than one library item"
+    assert sum(1 for a in answers if a.json()["created"]) == 1
+    assert await media_assets.count_documents({"workspace_id": ws, "sfx_id": "swish"}) == 1

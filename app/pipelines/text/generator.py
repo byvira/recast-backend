@@ -25,7 +25,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from app.models.text import AgentTask, AgentResult, Platform, LANGUAGE_NAMES
 from app.prompts.registry import load_fixture, load_prompt, render_fragment
-from app.pipelines.text.language_check import language_problem
+from app.pipelines.text.language_check import language_problem, measured_words
 from app.pipelines.text.quality import MIN_WORD_COUNTS  # noqa: F401 - the starting values, kept for older imports
 from app.quality import settings as QS
 from app.prompts.safe import contains_banned, guard_output, is_english
@@ -438,7 +438,7 @@ def validate_content(
     hard_issues = []
     advisory_issues = []
     content_lower = content.lower()
-    word_count = len(content.split())
+    word_count = measured_words(content)
     char_count = len(content)
 
     # ── Hard gate 1 — banned words (word boundary match) ─────────────────

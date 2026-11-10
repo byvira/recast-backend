@@ -13,8 +13,11 @@ class FakeRedis:
     def __init__(self):
         self.data: dict[str, str] = {}
 
-    async def set(self, key, value, ex=None):
+    async def set(self, key, value, ex=None, nx=False):
+        if nx and key in self.data:
+            return None
         self.data[key] = str(value)
+        return True
 
     async def get(self, key):
         return self.data.get(key)
@@ -24,6 +27,10 @@ class FakeRedis:
 
     async def incr(self, key):
         self.data[key] = str(int(self.data.get(key, 0)) + 1)
+        return int(self.data[key])
+
+    async def decr(self, key):
+        self.data[key] = str(int(self.data.get(key, 0)) - 1)
         return int(self.data[key])
 
     async def expire(self, key, seconds):

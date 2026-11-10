@@ -15,6 +15,8 @@ from uuid import uuid4
 from app.agents.content_guard import config as guard_config
 from app.agents.content_guard.rules import CATEGORIES, content_hash
 from app.agents.content_guard.sensitive import mask_personal
+from pymongo.errors import DuplicateKeyError
+
 from app.db.mongo import get_db
 
 logger = logging.getLogger(__name__)
@@ -101,7 +103,10 @@ async def request_review(piece: dict[str, Any], *, user_id: str, note: Any) -> d
         "excerpt": mask_personal(text)[:EXCERPT_MAX], "member_note": _note(note), "created_at": _now(), "decided_at": None,
         "decided_by": None, "decision_note": None,
     }
-    await appeals_col().insert_one(dict(row))
+    try:
+        await appeals_col().insert_one(dict(row))
+    except DuplicateKeyError:
+        raise AppealError("A review of this post is already waiting. You will see the answer here.") from None
     return _public(row)
 
 
@@ -138,6 +143,12 @@ async def decide(appeal_id: str, *, decision: str, note: Any, staff: dict[str, A
     if not appeal:
         raise LookupError("That review request was not found.")
     if appeal["status"] != "open":
+        # "released" is saved before the post itself is released. If the server stopped between the two, answering the same way again
+        # finishes the release; any other repeat is refused as before.
+        if appeal["status"] == "released" and decision == "release" and not await _release_done(appeal):
+            await _release(appeal, str(staff.get("id")), _note(note, required=True), _now())
+            await _tell_member(appeal, "released")
+            return _public(await appeals_col().find_one({"id": appeal_id}))
         raise AppealError("This request was already answered.")
     reason = _note(note, required=True)
     staff_id = str(staff.get("id"))
@@ -160,11 +171,12 @@ async def decide(appeal_id: str, *, decision: str, note: Any, staff: dict[str, A
 async def _release(appeal: dict[str, Any], staff_id: str, reason: str, now: datetime) -> None:
     from app.db.mongo import content_pieces
 
-    await overrides_col().insert_one({
-        "id": str(uuid4()), "appeal_id": appeal["id"], "piece_id": appeal["piece_id"], "workspace_id": appeal["workspace_id"],
-        "hash": appeal["hash"], "categories": appeal.get("categories") or [], "source": appeal.get("source"), "platform": appeal.get("platform"),
-        "language": appeal.get("language"), "decided_by": staff_id, "note": reason, "created_at": now,
-    })
+    if not await overrides_col().find_one({"appeal_id": appeal["id"]}):
+        await overrides_col().insert_one({
+            "id": str(uuid4()), "appeal_id": appeal["id"], "piece_id": appeal["piece_id"], "workspace_id": appeal["workspace_id"],
+            "hash": appeal["hash"], "categories": appeal.get("categories") or [], "source": appeal.get("source"), "platform": appeal.get("platform"),
+            "language": appeal.get("language"), "decided_by": staff_id, "note": reason, "created_at": now,
+        })
     piece = await content_pieces.find_one({"piece_id": appeal["piece_id"], "workspace_id": appeal["workspace_id"]}, {"quality_issues": 1, "content": 1})
     if not piece or content_hash(str(piece.get("content") or "")) != appeal["hash"]:
         return  # the post was edited since; the release belongs to the old text only
@@ -176,6 +188,18 @@ async def _release(appeal: dict[str, Any], staff_id: str, reason: str, now: date
     if not issues:
         update["quality_passed"] = True
     await content_pieces.update_one({"piece_id": appeal["piece_id"], "workspace_id": appeal["workspace_id"]}, {"$set": update, "$unset": {"safety_reason": ""}})
+
+
+async def _release_done(appeal: dict[str, Any]) -> bool:
+    """Whether the release of an answered request is complete: its override is kept, and the post carries it unless the text changed."""
+    from app.db.mongo import content_pieces
+
+    if not await overrides_col().find_one({"appeal_id": appeal["id"]}):
+        return False
+    piece = await content_pieces.find_one({"piece_id": appeal["piece_id"], "workspace_id": appeal["workspace_id"]}, {"content": 1, "safety_override": 1})
+    if not piece or content_hash(str(piece.get("content") or "")) != appeal["hash"]:
+        return True
+    return (piece.get("safety_override") or {}).get("appeal_id") == appeal["id"]
 
 
 async def _tell_member(appeal: dict[str, Any], status: str) -> None:

@@ -690,11 +690,12 @@ async def reader_review(
     change and what they still wonder. It is asked for by the writer (never run by itself), nothing is saved, and the post is not rewritten."""
     from app.agents.supervisor.service import assert_ai_budget_available
     from app.pipelines.text import reader_review as reader
+    from app.pipelines.text.language_check import measured_words
     from app.pipelines.text.generator import build_language_instruction
     from app.shared.llm import set_usage_workspace
 
     text = body.content.strip()
-    if len(text.split()) < reader.MIN_WORDS:
+    if measured_words(text) < reader.MIN_WORDS:
         raise HTTPException(status_code=400, detail="Write a little more first. A reader needs a few words to react to.")
     brand_profile = await _get_owned_brand(body.brand_id, ctx.workspace_id)
     brand_context = build_brand_context(brand_profile)

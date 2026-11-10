@@ -587,7 +587,12 @@ def _ledger_row(kind: str, pool_id: str, period: str, credits: int, *, key: Opti
 
 
 async def add_bought(workspace_id: str, *, topup_id: str, credits: int, label: str) -> bool:
-    """Put a bought pack's credits in the pool's wallet. Once per purchase: telling it twice adds nothing. Returns True when added."""
+    """Put a bought pack's credits in the pool's wallet. Once per purchase: telling it twice adds nothing. Returns True when the pack
+    was put in the wallet now.
+
+    The history row and the wallet entry are two writes. If the server stopped between them, the history says "bought" and the wallet has
+    nothing, and the customer has paid for credits they do not have. So telling it again always makes sure the wallet has the pack, and
+    adds it when it is missing; it never writes the history row twice."""
     pool = await pool_for(workspace_id)
     now = _now()
     lot = {"id": topup_id, "credits": int(credits), "left": int(credits), "bought_at": now,
@@ -596,12 +601,16 @@ async def add_bought(workspace_id: str, *, topup_id: str, credits: int, label: s
         await ledger_col().insert_one(_ledger_row("purchase", pool.id, pool.period(), credits, key=f"purchase:{topup_id}",
                                                   workspace_id=workspace_id, note=label))
     except DuplicateKeyError:
-        return False
-    await wallets_col().update_one(
-        {"_id": pool.id, "lots.id": {"$ne": topup_id}}, {"$push": {"lots": lot}, "$set": {"pool_id": pool.id}}, upsert=True,
-    )
+        pass  # the history already has this purchase; the wallet is checked below
+    try:
+        res = await wallets_col().update_one(
+            {"_id": pool.id, "lots.id": {"$ne": topup_id}}, {"$push": {"lots": lot}, "$set": {"pool_id": pool.id}}, upsert=True,
+        )
+        added = bool(res.modified_count or res.upserted_id)
+    except DuplicateKeyError:
+        added = False  # the wallet exists and already holds this pack
     forget(pool.id)
-    return True
+    return added
 
 
 def _add_months(when: datetime, months: int) -> datetime:
@@ -1114,6 +1123,9 @@ async def nightly() -> None:
     await expire_bought()
     await reconcile()
     await reconcile_wallets()
+    from app.billing import topups
+
+    await topups.finish_unfinished_packs()
     now = _now()
     if now.day == 1:  # the first night of a month also closes the month before
         await reconcile(period_of(now - timedelta(days=1)))

@@ -34,7 +34,12 @@ async def _build_profile_response(
     # the real collection instead, scoped the same way every other
     # workspace-owned resource is (X-Workspace-Id header, falling back to
     # the account's default workspace).
-    workspace_id = x_workspace_id or user.get("default_workspace_id")
+    workspace_id = user.get("default_workspace_id")
+    if x_workspace_id:
+        # The header only chooses among the person's own workspaces: naming one they do not belong to would list its brands.
+        member = await workspace_members.find_one({"workspace_id": x_workspace_id, "user_id": user["id"], "status": "active"}, {"_id": 1})
+        if member:
+            workspace_id = x_workspace_id
     brand_profile_ids: list[str] = []
     if workspace_id:
         brand_profile_ids = await brand_profiles.distinct(

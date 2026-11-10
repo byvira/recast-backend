@@ -211,3 +211,49 @@ async def test_a_customer_cannot_read_overrides_results_or_history(signup_user):
     member, _ = await signup_user("Customer")
     for path in ("/overrides", "/rule-results", "/history", "/judges"):
         assert (await member.get(f"/api/v1/ops/content-safety{path}")).status_code == 403
+
+
+# ---- faults found by the sweep ------------------------------------------------------------------------------------------------
+async def test_asking_twice_at_the_same_moment_opens_one_request(signup_user):
+    import asyncio
+
+    owner, profile = await signup_user("Owner")
+    ws = await create_workspace(owner, f"Twice {uuid4().hex[:6]}")
+    piece_id = await _held_piece(ws, profile["id"])
+    headers = {"X-Workspace-ID": ws}
+    answers = await asyncio.gather(*[owner.post("/api/v1/content-guard/review-requests", json={"piece_id": piece_id, "note": "Film line"}, headers=headers) for _ in range(5)])
+    assert sorted(a.status_code for a in answers) == [200, 409, 409, 409, 409], [a.status_code for a in answers]
+    assert await appeals.appeals_col().count_documents({"piece_id": piece_id, "status": "open"}) == 1
+
+
+async def test_a_release_the_server_stopped_in_the_middle_of_is_finished_when_staff_answer_again(signup_user, monkeypatch):
+    owner, profile = await signup_user("Owner")
+    staff, _ = await _master(signup_user, "Founder")
+    ws = await create_workspace(owner, f"Stopped {uuid4().hex[:6]}")
+    piece_id = await _held_piece(ws, profile["id"])
+    asked = (await owner.post("/api/v1/content-guard/review-requests", json={"piece_id": piece_id, "note": "Film line"}, headers={"X-Workspace-ID": ws})).json()
+
+    real = appeals._release
+    state = {"stopped": False}
+
+    async def stops_once(*a, **k):
+        if not state["stopped"]:
+            state["stopped"] = True
+            raise RuntimeError("the server stopped here")
+        return await real(*a, **k)
+
+    monkeypatch.setattr(appeals, "_release", stops_once)
+    url = f"/api/v1/ops/content-safety/appeals/{asked['id']}/decide"
+    with pytest.raises(RuntimeError):
+        await staff.post(url, json={"decision": "release", "note": "A quote from the film, not a threat"})
+    held = await content_pieces.find_one({"piece_id": piece_id})
+    assert unsafe_reason(held), "the stop left the post held although the request says released"
+
+    again = await staff.post(url, json={"decision": "release", "note": "A quote from the film, not a threat"})
+    assert again.status_code == 200 and again.json()["status"] == "released", again.text
+    piece = await content_pieces.find_one({"piece_id": piece_id})
+    assert unsafe_reason(piece) is None and check_gate(piece) is None, "answering again let the words go out"
+    assert await appeals.overrides_col().count_documents({"appeal_id": asked["id"]}) == 1, "one override, not two"
+
+    third = await staff.post(url, json={"decision": "release", "note": "A quote from the film, not a threat"})
+    assert third.status_code == 409 and "already answered" in third.json()["detail"], "once finished, a repeat is refused as before"

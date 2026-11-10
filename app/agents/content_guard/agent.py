@@ -259,6 +259,7 @@ async def review_text(
             caught_by = "model"
         except Exception as exc:
             logger.warning("Content Guard model check failed, rules only: %s", exc)
+            await judges.note_unavailable(_language_now.get())
     if screened.ok:
         return result
     if caught_by == "model":
