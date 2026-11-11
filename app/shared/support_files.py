@@ -2,9 +2,11 @@
 
 What the "scan" is: a check that the file really is the type it claims (the
 first bytes must match a PNG, JPEG, WebP or PDF signature; text and log files
-must be plain UTF-8 with no binary content). It is not an antivirus. Anything
-that fails is blocked and never attached. The allow-list only permits image,
-PDF and plain-text types, none of which run code when opened.
+must be plain UTF-8 with no binary content). A PDF that carries active content
+(a script, a launch action, an embedded file) is refused too. It is a free local
+check, not an antivirus, and it cannot see inside compressed parts of a file.
+Anything that fails is blocked and never attached. The allow-list only permits
+image, PDF and plain-text types, none of which run code when opened normally.
 """
 
 from __future__ import annotations
@@ -48,6 +50,20 @@ def _clean_name(filename: str) -> str:
 
 def _extension(name: str) -> str:
     return name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+
+# Names a PDF uses to run code or carry another file. A name can be written with hex escapes ("/J#61vaScript"), so the escapes are
+# undone before looking.
+_PDF_ACTIVE = re.compile(rb"/(?:JavaScript|Launch|EmbeddedFile|RichMedia|XFA)(?![A-Za-z])")
+_HEX_ESCAPE = re.compile(rb"#([0-9A-Fa-f]{2})")
+
+
+def has_active_content(data: bytes) -> bool:
+    """Whether a PDF names a script, a launch action, an embedded file or rich media. Anything else returns False."""
+    if not data.startswith(b"%PDF-"):
+        return False
+    plain = _HEX_ESCAPE.sub(lambda m: bytes([int(m.group(1), 16)]), data)
+    return bool(_PDF_ACTIVE.search(plain))
 
 
 def _looks_like(ext: str, head: bytes, data: bytes) -> bool:
@@ -96,6 +112,8 @@ def validate(filename: str, declared_mime: Optional[str], data: bytes) -> tuple[
         raise AttachmentRejected("That file doesn't match its type, so we couldn't accept it.")
     if not _looks_like(ext, data[:16], data):
         raise AttachmentRejected("That file doesn't match its type, so we couldn't accept it.")
+    if ext == "pdf" and has_active_content(data):
+        raise AttachmentRejected("That PDF contains scripts or attached files, so we couldn't accept it. Save it as a plain PDF or send a screenshot.")
     return name, mime or sorted(allowed)[0]
 
 

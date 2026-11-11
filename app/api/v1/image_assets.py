@@ -648,6 +648,11 @@ async def generate_image_asset_in_background(
 ) -> dict:
     """The same work as POST /generate, but it returns at once with a saved run. The member can leave the page; the run's
     progress and cancel are on /api/v1/runs/{id}, and when it finishes the Activity Log links to the picture."""
+    return await start_image_generation_run(body, ctx)
+
+
+async def start_image_generation_run(body: GenerateImageAssetRequest, ctx: WorkspaceContext) -> dict:
+    """Start a picture as a saved run and return it at once (used by the route above and by the Audio Promotion Bundle)."""
     from app.shared import pipeline_runs
 
     await pipeline_runs.assert_capacity(ctx.workspace_id)

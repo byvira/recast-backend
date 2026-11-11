@@ -193,8 +193,8 @@ def test_redaction_masks_personal_data_and_secrets():
     assert support_ai.redact("The post failed 3 times") == "The post failed 3 times"
 
 
-async def test_ai_category_fallback_is_off_by_default_and_only_accepts_listed_areas(make_client, monkeypatch):
-    assert rules.AI_CATEGORY_FALLBACK_ENABLED is False
+async def test_ai_category_fallback_is_on_and_only_accepts_listed_areas(make_client, monkeypatch):
+    assert rules.AI_CATEGORY_FALLBACK_ENABLED is True
 
     async def fake(prompt, **kwargs):
         return "Billing."
@@ -209,6 +209,26 @@ async def test_ai_category_fallback_is_off_by_default_and_only_accepts_listed_ar
 
     monkeypatch.setattr(support_ai, "call_llm", rogue)
     assert await support_ai.ai_category(await support_tickets_doc(tid)) is None
+
+
+async def test_placing_tickets_has_its_own_allowance_and_never_uses_up_staff_drafts(make_client, fake_draft, monkeypatch):
+    async def fake(prompt, **kwargs):
+        return "Billing"
+
+    monkeypatch.setattr(support_ai, "call_llm", fake)
+    member, _ = await _member(make_client)
+    staff, _ = await _staff(make_client)
+    tid = (await _file(member, subject="Hello", description="Just a question"))["id"]
+    await support_ai_usage.delete_many({})
+    # the staff's own drafting allowance is one call a day; many ticket placings in the same day do not touch it
+    monkeypatch.setattr(support_ai, "CALLS_PER_DAY", 1)
+    monkeypatch.setattr(support_ai, "CATEGORY_CALLS_PER_DAY", 3)
+    ticket = await support_tickets_doc(tid)
+    for _ in range(3):
+        assert await support_ai.ai_category(ticket) == "Billing"
+    assert await support_ai.ai_category(ticket) is None  # its own allowance is used up, and nothing broke
+    assert (await staff.post(f"{OPS}/tickets/{tid}/ai-draft")).status_code == 200  # the draft allowance is untouched
+    await support_ai_usage.delete_many({})
 
 
 # ── The assistant with memory ────────────────────────────────────────────────

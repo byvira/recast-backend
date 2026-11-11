@@ -104,6 +104,8 @@ support_incidents: AsyncIOMotorCollection = get_client().get_default_database()[
 support_ai_usage: AsyncIOMotorCollection = get_client().get_default_database()["support_ai_usage"]
 # One row per email that was attempted and how it ended.
 support_email_log: AsyncIOMotorCollection = get_client().get_default_database()["support_email_log"]
+# One row per email that arrived at the support address and was handled, so a message Resend delivers twice is applied once.
+support_inbound_emails: AsyncIOMotorCollection = get_client().get_default_database()["support_inbound_emails"]
 # A member's conversations with the support assistant.
 support_chats: AsyncIOMotorCollection = get_client().get_default_database()["support_chats"]
 # One counter doc ({"_id": "ticket_number", "seq": N}) for human-readable ticket numbers.
@@ -266,6 +268,7 @@ async def create_indexes() -> None:
     await users.create_index("phone", unique=True, sparse=True)
     await users.create_index("username", unique=True)
     await users.create_index("auth_identifiers")
+    await users.create_index("email_key", sparse=True)  # the one address an account is known by (not unique: older accounts may share an inbox)
     await users.create_index([("id", 1), ("social_accounts.platform", 1)])
 
     # ── Waitlist ───────────────────────────────────────────────────────────
@@ -403,6 +406,8 @@ async def create_indexes() -> None:
     await support_chats.create_index([("user_id", 1), ("workspace_id", 1), ("updated_at", -1)])
     await support_ai_usage.create_index([("staff_id", 1), ("created_at", -1)])
     await support_email_log.create_index("at", expireAfterSeconds=90 * 24 * 3600)
+    await support_inbound_emails.create_index("email_id", unique=True)
+    await support_inbound_emails.create_index("at", expireAfterSeconds=30 * 24 * 3600)
     await _create_llm_health_indexes()
     await support_incidents.create_index([("category", 1), ("platform", 1), ("status", 1)])
     await support_tickets.create_index("incident_id")
@@ -487,6 +492,8 @@ async def create_indexes() -> None:
     await personal_signals.create_index([("workspace_id", 1), ("user_id", 1), ("created_at", -1)])
     await personal_signals.create_index([("workspace_id", 1), ("created_at", -1)])
     await personal_signals.create_index([("workspace_id", 1), ("severity", 1), ("status", 1)])
+    # a signal made twice for the same thing (the same sweep run twice at once) is made once
+    await personal_signals.create_index("dedupe_key", unique=True, partialFilterExpression={"dedupe_key": {"$type": "string"}})
 
     # workspace_insights — Odette's recommendation feed (admin-only reads).
     await workspace_insights.create_index([("workspace_id", 1), ("status", 1), ("priority", 1)])
@@ -530,6 +537,8 @@ async def create_indexes() -> None:
     # against any fixed set.
     localized_strings = get_client().get_default_database()["localized_strings"]
     await localized_strings.create_index([("key", 1), ("language", 1)], unique=True)
+    # translations of free text expire after 90 days; the fixed sentences (templates) are kept
+    await localized_strings.create_index("updated_at", expireAfterSeconds=90 * 24 * 3600, partialFilterExpression={"expires_free": True})
 
     # ── Image pipeline ────────────────────────────────────────────────────
     await image_assets.create_index([("workspace_id", 1), ("created_at", -1)])

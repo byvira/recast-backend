@@ -2,7 +2,7 @@
 What has worked for this workspace, as one plain sentence for the writing prompt.
 
 It is a statement of fact about a real post, not a rule or a prediction: "your best performing LinkedIn post so far opened with
-...". It needs enough measured posts to mean something, and says nothing otherwise. Off unless PERFORMANCE_HINT_IN_PROMPTS is on.
+...". It needs enough measured posts to mean something, and says nothing otherwise. On unless PERFORMANCE_HINT_IN_PROMPTS is false.
 """
 
 import logging
@@ -18,7 +18,9 @@ MIN_MEASURED_POSTS = 3
 
 
 def _engagement(metrics: dict) -> int:
-    return int(metrics.get("likes") or 0) + int(metrics.get("comments") or 0) + int(metrics.get("shares") or 0) + int(metrics.get("reposts") or 0)
+    """What people did with a post. Clicks and saves count too, so a blog or newsletter post whose results were typed in by hand
+    (views and clicks, often no likes) can still be the one that worked best."""
+    return sum(int(metrics.get(k) or 0) for k in ("likes", "comments", "shares", "reposts", "saves", "clicks"))
 
 
 def _opening(content: str, limit: int = 110) -> str:
@@ -43,7 +45,8 @@ async def best_post_hint(workspace_id: str, platform: str) -> Optional[str]:
         metrics = await get_db()["post_metrics"].find(
             {"workspace_id": workspace_id, "post_id": {"$in": list(by_id)}}
         ).to_list(length=200)
-        if len(metrics) < MIN_MEASURED_POSTS:
+        measured = {m["post_id"] for m in metrics}  # a post with both a platform read and typed-in results counts once
+        if len(measured) < MIN_MEASURED_POSTS:
             return None
         best = max(metrics, key=_engagement)
         if _engagement(best) <= 0:
@@ -51,7 +54,7 @@ async def best_post_hint(workspace_id: str, platform: str) -> Optional[str]:
         opening = _opening(by_id[best["post_id"]].get("content", ""))
         if not opening:
             return None
-        return f"WHAT HAS WORKED HERE: your best performing {platform} post so far (of {len(metrics)} measured) opened with: \"{opening}\". Use it as a reference for tone and openers, not something to copy."
+        return f"WHAT HAS WORKED HERE: your best performing {platform} post so far (of {len(measured)} measured) opened with: \"{opening}\". Use it as a reference for tone and openers, not something to copy."
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not build the performance hint for %s: %s", workspace_id, exc)
         return None

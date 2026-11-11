@@ -40,6 +40,7 @@ from app.shared import support_sla as sla
 from app.shared.support import log_event, member_view, next_ticket_number, transition_fields
 from app.shared.support_context import enrich_ticket
 from app.shared.support_triage import triage_ticket
+from app.shared.support_reply import ReplyConflict, add_member_message
 from app.shared.support_notify import (
     mark_ticket_read,
     notify_member,
@@ -445,37 +446,11 @@ async def add_message(
         )
     await _enforce_message_limit(ctx)
 
-    now = datetime.now(timezone.utc)
     attachments = await _claim_or_400(body.attachment_ids, ctx, ticket_id)
-    message = SupportMessage(
-        sender="member", sender_name=ctx.user.get("name", ""), text=body.text, created_at=now,
-        attachments=attachments,
-    )
-    set_fields: dict = {
-        "updated_at": now,
-        "last_member_message_at": now,
-        "unread_for_ops": True,
-    }
-    # A reply on a resolved ticket reopens it; a reply to a question moves it
-    # back to the person working on it.
-    reopen_from = ticket["status"] if ticket["status"] in ("resolved", "waiting_on_member") else None
-    if reopen_from:
-        set_fields.update(transition_fields(reopen_from, "investigating", now))
-        set_fields["reminder_sent_at"] = None
-        set_fields["close_warning_sent_at"] = None
-    flt = {"id": ticket_id, "status": ticket["status"]}
-    written = await support_tickets.update_one(flt, {"$push": {"messages": message.model_dump()}, "$set": set_fields})
-    if not written.matched_count:
+    try:
+        await add_member_message(ticket, user={**ctx.user, "id": ctx.user_id}, text=body.text, attachments=attachments)
+    except ReplyConflict:
         raise HTTPException(status_code=409, detail="This ticket just changed. Reload it and send your message again.")
-    await log_event(
-        ticket_id, actor_type="member", actor_id=ctx.user_id, actor_name=ctx.user.get("name", ""),
-        type="reopened" if reopen_from == "resolved" else "replied",
-    )
-    if ticket.get("assignee_id"):
-        await notify_staff_user(
-            ticket["assignee_id"], ticket, "member_replied",
-            f"Reply on #{ticket.get('number') or ticket['id'][:6]}", body.text,
-        )
     return member_view(
         await support_tickets.find_one({"id": ticket_id}), viewer_id=ctx.user_id, limit=rules.MESSAGE_PAGE_SIZE
     )

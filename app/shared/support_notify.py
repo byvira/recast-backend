@@ -41,6 +41,16 @@ def member_link(ticket: dict) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/dashboard/support/tickets/{ticket['id']}"
 
 
+def reply_address(ticket_id: str) -> Optional[str]:
+    """The address a member's reply goes to, with the ticket in it ("hello+<ticket id>@..."). None while receiving is not set up, so
+    nothing about the emails changes until it is."""
+    base = (settings.SUPPORT_INBOX_ADDRESS or "").strip()
+    if not settings.SUPPORT_INBOUND_WEBHOOK_SECRET or "@" not in base:
+        return None
+    local, _, domain = base.rpartition("@")
+    return f"{local}+{ticket_id}@{domain}"
+
+
 def ops_link(ticket: dict) -> str:
     return f"{settings.FRONTEND_URL.rstrip('/')}/ops/support/{ticket['id']}"
 
@@ -68,11 +78,12 @@ async def _insert(user_id: str, ticket: dict, type: str, title: str, body: str, 
 
 async def _send_email_with_retry(
     to: str, variables: dict, ticket_id: str, type: str,
-    template: str = EMAIL_TEMPLATE, from_override: Optional[str] = None,
+    template: str = EMAIL_TEMPLATE, from_override: Optional[str] = None, reply_to: Optional[str] = None,
 ) -> None:
+    extra = {"reply_to": reply_to} if reply_to else {}
     for attempt in range(_EMAIL_ATTEMPTS):
         try:
-            if await send_templated_email(template, to, variables, from_override):
+            if await send_templated_email(template, to, variables, from_override, **extra):
                 await _log_email(type, True)
                 return
         except Exception:
@@ -119,6 +130,7 @@ async def notify_member(ticket: dict, type: str, headline: str, message: str, *,
                     },
                     ticket["id"],
                     type,
+                    reply_to=reply_address(ticket["id"]),
                 )
             )
     except Exception:

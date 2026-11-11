@@ -30,6 +30,7 @@ from app.core.turnstile import verify_turnstile
 from app.core.middleware import limiter
 from app.core.notifications import send_otp, send_templated_email
 from app.core.otp import (
+    account_key,
     check_rate_limit,
     clear_otp_state,
     generate_otp,
@@ -204,17 +205,18 @@ async def verify_otp_route(
     identifier = normalize_identifier(body.identifier)
     await verify_otp(identifier, body.otp)
 
-    existing = await users.find_one(
-        {
-            "$or": [
-                {"email": identifier},
-                {"phone": identifier},
-                {"auth_identifiers": identifier},
-            ]
-        }
-    )
+    existing = await _find_account(identifier)
 
     return VerifyOTPResponse(valid=True, is_new_user=existing is None)
+
+
+async def _find_account(identifier: str) -> Optional[dict[str, Any]]:
+    """The account for an address or phone number, however the address was spelled (capitals, dots in a Gmail name, "+tag")."""
+    clauses: list[dict[str, Any]] = [{"email": identifier}, {"phone": identifier}, {"auth_identifiers": identifier}]
+    key = account_key(identifier)
+    if "@" in key:
+        clauses.append({"email_key": key})
+    return await users.find_one({"$or": clauses})
 
 
 @router.get("/signup-mode")
@@ -294,15 +296,7 @@ async def signup(
             detail="OTP not verified or session expired. Please restart the verification flow.",
         )
 
-    existing = await users.find_one(
-        {
-            "$or": [
-                {"email": identifier},
-                {"phone": identifier},
-                {"auth_identifiers": identifier},
-            ]
-        }
-    )
+    existing = await _find_account(identifier)
     if existing:
         raise HTTPException(status_code=409, detail="User already exists. Please log in.")
 
@@ -335,6 +329,7 @@ async def signup(
 
     if body.channel == OTPChannel.EMAIL:
         user_doc["email"] = identifier
+        user_doc["email_key"] = account_key(identifier)
     else:
         user_doc["phone"] = identifier
 
@@ -431,15 +426,7 @@ async def login(
             detail="OTP not verified or session expired. Please restart the verification flow.",
         )
 
-    user = await users.find_one(
-        {
-            "$or": [
-                {"email": identifier},
-                {"phone": identifier},
-                {"auth_identifiers": identifier},
-            ]
-        }
-    )
+    user = await _find_account(identifier)
 
     if not user:
         raise HTTPException(

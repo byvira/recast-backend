@@ -53,9 +53,9 @@ SLA_WARN_AT_FRACTION = 0.75
 PAID_TIERS: frozenset[str] = frozenset()
 
 # ── AI help ──────────────────────────────────────────────────────────────────
-# Off by default: the keyword rules place most tickets, and every AI call spends
-# real quota. Turn it on once there is a reason to.
-AI_CATEGORY_FALLBACK_ENABLED = False
+# On (owner decision 2026-11-11). The keyword rules place most tickets first; the model is asked only when they find nothing,
+# its answer must be an exact area from the list, and it has its own daily allowance (support_ai.CATEGORY_CALLS_PER_DAY).
+AI_CATEGORY_FALLBACK_ENABLED = True
 
 # ── Privacy ──────────────────────────────────────────────────────────────────
 # Closed tickets keep their words for this long, then the text and files are

@@ -47,7 +47,8 @@ def _test_sender_version(sender: str) -> str:
 
 
 async def send_templated_email(
-    template_id: str, to: str, variables: dict, from_override: str | None = None, language: str | None = None
+    template_id: str, to: str, variables: dict, from_override: str | None = None, language: str | None = None,
+    reply_to: str | None = None,
 ) -> bool:
     """Send a published Resend template to *to*, filling in *variables*.
 
@@ -88,6 +89,8 @@ async def send_templated_email(
         resend.api_key = settings.RESEND_API_KEY
         sender = from_override or _DEFAULT_FROM
         payload = {"to": to, "template": {"id": template_id, "variables": variables}}
+        if reply_to:
+            payload["reply_to"] = reply_to
         try:
             await asyncio.to_thread(resend.Emails.send, {"from": sender, **payload})
         except Exception as first:  # noqa: BLE001

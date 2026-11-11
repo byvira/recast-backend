@@ -65,6 +65,8 @@ from app.api.v1 import ops_llm_health as ops_llm_health_router
 from app.api.v1 import ops_quality as ops_quality_router
 from app.api.v1 import support as support_router
 from app.api.v1 import support_assistant as support_assistant_router
+from app.api.v1 import support_inbound as support_inbound_router
+from app.api.v1 import audio_promotion as audio_promotion_router
 from app.api.v1 import ops_support as ops_support_router
 from app.api.v1 import ops_support_tools as ops_support_tools_router
 from app.api.v1 import ops_support_incidents as ops_support_incidents_router
@@ -490,6 +492,7 @@ app.include_router(ops_video_router.router, prefix="/api/v1/ops/video", tags=["O
 # is the real, only Image pipeline now.
 app.include_router(image_assets.router, prefix="/api/v1/image-assets", tags=["Image Assets"])
 app.include_router(audio_assets.router, prefix="/api/v1/audio-assets", tags=["Audio Assets"])
+app.include_router(audio_promotion_router.router, prefix="/api/v1/audio-assets", tags=["Audio Assets"])
 app.include_router(suggest.router, prefix="/api/v1/suggest", tags=["Suggestions"])
 app.include_router(post_targets.router, prefix="/api/v1/post-targets", tags=["Post targets"])
 app.include_router(analytics_router.router, prefix="/api/v1/analytics", tags=["Analytics"])
@@ -524,6 +527,7 @@ app.include_router(ops_quality_router.router, prefix="/api/v1/ops/quality", tags
 app.include_router(ops_llm_health_router.router, prefix="/api/v1/ops/llm", tags=["Ops"], dependencies=[Depends(area_guard("ai"))])
 app.include_router(support_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(support_assistant_router.router, prefix="/api/v1/support", tags=["Support"])
+app.include_router(support_inbound_router.router, prefix="/api/v1/support", tags=["Support"])
 app.include_router(ops_support_router.router, prefix="/api/v1/ops/support", tags=["Ops"], dependencies=[Depends(area_guard("support"))])
 app.include_router(ops_support_tools_router.router, prefix="/api/v1/ops/support", tags=["Ops"], dependencies=[Depends(area_guard("support"))])
 app.include_router(ops_support_incidents_router.router, prefix="/api/v1/ops/support", tags=["Ops"], dependencies=[Depends(area_guard("support"))])

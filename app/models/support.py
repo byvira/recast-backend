@@ -57,6 +57,8 @@ class SupportMessage(BaseModel):
     attachments: list[SupportAttachment] = Field(default_factory=list)
     # A message an admin removed. The words are gone; only the fact remains.
     is_deleted: bool = False
+    # "email" when the member wrote it from their email program; nothing for a message written in the app.
+    via: Optional[str] = None
 
 
 class SupportTicket(BaseModel):

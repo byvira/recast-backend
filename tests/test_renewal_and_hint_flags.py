@@ -108,8 +108,8 @@ def test_every_signal_the_assistants_send_is_an_allowed_type():
     assert sent and sent <= allowed, f"signal types sent but not allowed: {sorted(sent - allowed)}"
 
 
-def test_the_performance_hint_is_off_by_default():
-    assert settings.PERFORMANCE_HINT_IN_PROMPTS is False
+def test_the_performance_hint_is_on_by_default():
+    assert settings.PERFORMANCE_HINT_IN_PROMPTS is True
 
 
 async def test_the_hint_says_nothing_while_it_is_off(monkeypatch):

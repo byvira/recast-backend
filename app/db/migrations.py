@@ -202,6 +202,23 @@ async def _identity_from_setup_answers(db) -> None:
     await _mark_applied(db, migration_id, {"brands": filled})
 
 
+async def _backfill_email_key(db) -> None:
+    """Every account gets the one address it is known by (see app.core.otp.account_key), so signing in with a different spelling of
+    the same inbox finds the account instead of making a second one."""
+    migration_id = "2026-11-11_email_key"
+    if await _already_applied(db, migration_id):
+        return
+    from app.core.otp import account_key
+    from app.db.mongo import users
+
+    done = 0
+    async for doc in users.find({"email": {"$type": "string"}, "email_key": {"$exists": False}}, {"id": 1, "email": 1}):
+        await users.update_one({"id": doc["id"]}, {"$set": {"email_key": account_key(doc["email"])}})
+        done += 1
+    logger.info("migration %s: %d accounts got an address key", migration_id, done)
+    await _mark_applied(db, migration_id, {"users": done})
+
+
 async def run_startup_migrations() -> None:
     db = get_db()
     for migration in (
@@ -212,6 +229,7 @@ async def run_startup_migrations() -> None:
         _approve_waiting_media_without_review,
         _em_dash_setting_matches_behaviour,
         _identity_from_setup_answers,
+        _backfill_email_key,
     ):
         try:
             await migration(db)

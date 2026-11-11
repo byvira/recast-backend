@@ -1,8 +1,10 @@
 """Member-scoped lexicon — pronunciation dictionary, jargon whitelist/
 blacklist, and writing-blueprint thresholds. Backs Remy's "Vocabulary &
-Pronunciation" tab. Scaffolding: persists real data, but nothing enforces
-the writing-blueprint thresholds or feeds the pronunciation dictionary into
-a TTS engine yet — that wiring is separate, later work.
+Pronunciation" tab. The blacklist and whitelist reach the writing prompt, the
+sentence length, rhetorical density and anecdote settings are added to it as
+instructions (pipelines/text/writing_steering.py), and the drift limit scales
+Remy's voice check. Anecdote and density are saved but have no control on the
+page yet.
 """
 
 from datetime import datetime

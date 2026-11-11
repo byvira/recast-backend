@@ -62,6 +62,10 @@ class Settings(BaseSettings):
 
     # Email — Resend API
     RESEND_API_KEY: str = ""
+    # Replies to a support email come back to this address and are added to the ticket. Both stay empty until the owner turns on
+    # receiving in Resend and adds the webhook: the secret is the "signing secret" Resend shows for that webhook (starts with whsec_).
+    SUPPORT_INBOX_ADDRESS: str = "hello@mail.byvirastudio.com"
+    SUPPORT_INBOUND_WEBHOOK_SECRET: str = ""
     # The address emails are sent from, on a domain verified in Resend (for example hello@mail.example.com, or `Name <hello@mail.example.com>`).
     # Left empty, Resend's test sender is used, which only delivers to the Resend account's owner.
     EMAIL_FROM: str = ""
@@ -370,9 +374,9 @@ class Settings(BaseSettings):
     # technical and business terms in English, translates everyday words, and keeps any word native speakers normally say in
     # English. Switch off with ENGLISH_TERMS_STAY_ENGLISH=false.
     ENGLISH_TERMS_STAY_ENGLISH: bool = True
-    # Off by the owner's decision until about a month of real posts exists (turn on around 2026-11-03): when on, the writing prompt
-    # gets one sentence naming how the workspace's best measured post on that platform opened (needs at least 3 measured posts).
-    PERFORMANCE_HINT_IN_PROMPTS: bool = False
+    # On (owner decision 2026-11-11): the writing prompt gets one sentence naming how the workspace's best measured post on that
+    # platform opened. It says nothing until there are at least 3 measured posts with engagement. Switch off with PERFORMANCE_HINT_IN_PROMPTS=false.
+    PERFORMANCE_HINT_IN_PROMPTS: bool = True
     # Seconds to wait between retry attempts (base — multiplied per attempt)
     PUBLISH_RETRY_BASE_DELAY: int = 5
     # How many minutes ahead to refresh tokens before they expire

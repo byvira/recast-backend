@@ -50,6 +50,8 @@ MAX_THREAD_MESSAGES = 12
 MAX_MESSAGE_CHARS = 1200
 CALLS_PER_STAFF_PER_HOUR = 30
 CALLS_PER_DAY = 200
+# Placing a ticket in an area has its own daily allowance, so a busy day of new tickets can never use up the staff's reply drafts.
+CATEGORY_CALLS_PER_DAY = 100
 
 CATEGORIES = list(SUPPORT_CATEGORIES)
 
@@ -75,11 +77,18 @@ def redact(text: str) -> str:
 
 
 # ── Limits and logging ───────────────────────────────────────────────────────
-async def _enforce_caps(staff_id: Optional[str]) -> None:
+async def _enforce_caps(staff_id: Optional[str], kind: str = "draft") -> None:
     now = datetime.now(timezone.utc)
-    # Only staff drafting counts toward the staff limit; the members' own assistant is logged beside it but not counted here.
+    if kind == "category":
+        if await support_ai_usage.count_documents(
+            {"created_at": {"$gte": now - timedelta(days=1)}, "kind": "category"}
+        ) >= CATEGORY_CALLS_PER_DAY:
+            raise HTTPException(status_code=429, detail="The daily limit for placing tickets with AI help has been reached.")
+        return
+    # Only staff drafting counts toward the staff limit; the members' own assistant and the ticket placing are logged beside it
+    # but not counted here.
     if await support_ai_usage.count_documents(
-        {"created_at": {"$gte": now - timedelta(days=1)}, "kind": {"$ne": "assistant"}}
+        {"created_at": {"$gte": now - timedelta(days=1)}, "kind": {"$nin": ["assistant", "category"]}}
     ) >= CALLS_PER_DAY:
         raise HTTPException(status_code=429, detail="The daily limit for AI help has been reached. Try again tomorrow, or write the reply by hand.")
     if staff_id and await support_ai_usage.count_documents(
@@ -282,7 +291,7 @@ async def ai_category(ticket: dict) -> Optional[str]:
     """Only used when the keyword rules found nothing. Returns one of CATEGORIES
     or None. Never raises."""
     try:
-        await _enforce_caps(None)
+        await _enforce_caps(None, "category")
         first_text = next((m["text"] for m in ticket.get("messages", []) if not m.get("is_internal")), "")
         prompt = load_prompt(
             CATEGORY_PROMPT,

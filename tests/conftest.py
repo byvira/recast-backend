@@ -412,6 +412,18 @@ def _no_live_content_guard_checks(monkeypatch):
     monkeypatch.setattr(settings, "CONTENT_GUARD_LIVE_CHECKS", False)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_support_ai_calls(monkeypatch):
+    """The AI that places a ticket in an area runs on every new ticket the keyword rules cannot place, so no test may reach the
+    real model through it. A test that needs a particular answer sets its own."""
+    from app.shared import support_ai
+
+    async def _nothing(*args, **kwargs):
+        return ""
+
+    monkeypatch.setattr(support_ai, "call_llm", _nothing)
+
+
 
 @pytest.fixture(autouse=True)
 def _many_workspaces_for_setup(monkeypatch):

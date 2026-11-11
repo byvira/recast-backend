@@ -118,6 +118,10 @@ async def compute_signals_node(state: PersonaState) -> dict:
     drift_score = max(emb_comp, sty_comp)
     if emb and sim < T.SIM_HARD_DRIFT:
         drift_score = max(drift_score, 2.0)
+    # the member's own "drift limit" (Remy, Vocabulary tab) makes the check stricter or looser; unchanged while it is at its start value
+    from app.pipelines.text.writing_steering import member_drift_sensitivity
+
+    drift_score *= await member_drift_sensitivity(state.get("workspace_id"), state.get("user_id"))
 
     route = "in_voice" if drift_score < 1.0 else ("soft" if drift_score < 2.0 else "judge")
 
@@ -274,7 +278,7 @@ def _drift_metric(state: PersonaState) -> dict:
 
 async def emit_soft_node(state: PersonaState) -> dict:
     ctx = {"similarity": state["similarity"], "baseline": _baseline_sim_ref(state),
-           "why": _register_hint(state)}
+           "why": await _register_hint(state)}
     sig = await _sig(
         state, "voice_drift", "low",
         metric=_drift_metric(state),
@@ -338,11 +342,11 @@ async def judge_drift_node(state: PersonaState) -> dict:
     # The Groq "why" is unreliable on this comparison. When the drift is
     # style-driven, the deterministic fingerprint hint is more trustworthy and
     # specific; only fall back to the model's phrasing for embedding-only drift.
-    style_hint = _register_hint(state)
+    style_hint = await _register_hint(state)
     if style_hint and sty_div >= T.STYLE_DIV_SOFT:
         why = style_hint
     else:
-        why = why or style_hint or "reads differently from your usual voice"
+        why = why or style_hint or await _hint_phrase("fallback", state.get("language", "en"))
     ctx = {"similarity": sim, "baseline": _baseline_sim_ref(state), "why": why}
     sig = await _sig(
         state, "voice_drift", severity,
@@ -364,7 +368,32 @@ _REGISTER_HINT_PHRASES = {
 }
 
 
-def _register_hint(state: PersonaState) -> str:
+_HINT_ENGLISH = {
+    "more_formal": "more formal", "more_casual": "more casual", "longer": "much longer sentences", "shorter": "much shorter sentences",
+    "fallback": "reads differently from your usual voice",
+}
+
+
+async def _hint_phrase(name: str, language: str) -> str:
+    """One of the short phrases in a drift note, in the member's language. The four languages with a hand-written table use it; any other
+    language (and a mix such as Tanglish) is translated once with the same cached translation every other message uses, and falls
+    back to English if that fails, so a message is never left with English in the middle of another language."""
+    table = _REGISTER_HINT_PHRASES.get(language)
+    if table is not None and name in table:
+        return table[name]
+    english = _HINT_ENGLISH[name]
+    if not language or language == "en":
+        return english
+    from app.shared.localized_strings import get_localized_string
+
+    try:
+        return await get_localized_string(f"remy.hint.{name}", language, english)
+    except Exception as exc:  # noqa: BLE001 - the English phrase is a correct answer
+        logger.warning("_hint_phrase: could not translate %s into %r: %s", name, language, exc)
+        return english
+
+
+async def _register_hint(state: PersonaState) -> str:
     """A short, deterministic 'why' when the LLM gives nothing usable — derived
     from the style fingerprint so the member still gets something concrete.
 
@@ -377,22 +406,18 @@ def _register_hint(state: PersonaState) -> str:
     to English phrasing (logged), same fail-loud pattern as remy_message().
     """
     language = state.get("language", "en")
-    phrases = _REGISTER_HINT_PHRASES.get(language)
-    if phrases is None:
-        logger.warning("_register_hint: no phrases for language=%r — defaulting to English", language)
-        phrases = _REGISTER_HINT_PHRASES["en"]
 
     fp = style_mod.fingerprint(state["content_text"])
     base = state["persona"].get("style_fingerprint", {})
     bits = []
     bg, pg = float(base.get("reading_grade", 0) or 0), (fp["reading_grade"] or 0)
     if bg and pg and abs(pg - bg) >= 4:
-        bits.append(phrases["more_formal"] if pg > bg else phrases["more_casual"])
+        bits.append(await _hint_phrase("more_formal" if pg > bg else "more_casual", language))
     bl, pl = float(base.get("avg_sentence_len", 0) or 0), fp["avg_sentence_len"]
     if bl and pl >= bl * 1.6:
-        bits.append(phrases["longer"])
+        bits.append(await _hint_phrase("longer", language))
     elif bl and pl <= bl * 0.6:
-        bits.append(phrases["shorter"])
+        bits.append(await _hint_phrase("shorter", language))
     return ", ".join(bits)
 
 

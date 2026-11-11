@@ -647,6 +647,10 @@ async def _run_repurpose_path(
     enforcement   = await merge_member_lexicon_enforcement(
         enforcement, workspace_id=workspace_id, user_id=user_id,
     )
+    # the member's own style settings, the same instructions normal writing gets (nothing unless they were changed)
+    from app.pipelines.text.writing_steering import member_writing_steering
+
+    enforcement["writing_steering"] = await member_writing_steering(workspace_id, user_id) or ""
 
     repurpose_coros = [
         _run_single_repurpose(
@@ -723,6 +727,7 @@ async def _run_single_repurpose(
         "approved_closers":   enforcement["approved_closers"],
         "preferred_synonyms": enforcement.get("preferred_synonyms", []),
         "approved_vocabulary": enforcement.get("approved_vocabulary", []),
+        "writing_steering":   enforcement.get("writing_steering", ""),
         "structure_rules":    structure_rules,
     }
     generate_fn = run_structured_repurpose_agent if structure_rules else run_repurpose_agent

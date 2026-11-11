@@ -42,6 +42,30 @@ def normalize_identifier(identifier: str) -> str:
     return identifier
 
 
+# Providers that deliver "name+anything@domain" to "name@domain". Gmail also ignores dots in the name.
+_PLUS_DOMAINS = frozenset({
+    "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "icloud.com", "me.com", "mac.com",
+    "proton.me", "protonmail.com", "pm.me", "fastmail.com",
+})
+_DOT_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
+
+def account_key(identifier: str) -> str:
+    """The one address an account is known by. Different spellings that reach the same inbox (capital letters, dots in a Gmail
+    name, "+anything" after the name) give the same key, so someone who types a slightly different spelling signs in to the account
+    they have instead of making a second one. A phone number is returned unchanged."""
+    value = normalize_identifier(identifier)
+    if "@" not in value:
+        return value
+    name, _, domain = value.rpartition("@")
+    if domain in _PLUS_DOMAINS:
+        name = name.split("+", 1)[0]
+    if domain in _DOT_DOMAINS:
+        name = name.replace(".", "")
+        domain = "gmail.com"
+    return f"{name}@{domain}" if name else value
+
+
 async def generate_otp(identifier: str) -> str:
     """Generate a cryptographically random 6-digit OTP and store it in Redis.
 

@@ -43,6 +43,8 @@ async def run_repurpose_agent(task: AgentTask, source_platform: Platform) -> Age
 
     goal_context = build_goal_context(task.metadata.get("goal"))
     engagement_context = build_engagement_context(task.platform.value)
+    if task.metadata.get("writing_steering"):
+        engagement_context = f"{engagement_context}\n\n{task.metadata['writing_steering']}" if engagement_context else task.metadata["writing_steering"]
     tone_override = build_tone_and_terms(task.metadata.get("tone"), task.metadata.get("language", "en"))
     platform_rules = PLATFORM_RULES.get(task.platform, "")
     language_instruction = build_language_instruction(task.metadata.get("language", "en"))
@@ -123,6 +125,8 @@ async def run_structured_repurpose_agent(task: AgentTask, source_platform: Platf
 
     goal_context = build_goal_context(task.metadata.get("goal"))
     engagement_context = build_engagement_context(task.platform.value)
+    if task.metadata.get("writing_steering"):
+        engagement_context = f"{engagement_context}\n\n{task.metadata['writing_steering']}" if engagement_context else task.metadata["writing_steering"]
     tone_override = build_tone_and_terms(task.metadata.get("tone"), task.metadata.get("language", "en"))
     platform_rules = PLATFORM_RULES.get(task.platform, "")
     language_instruction = build_language_instruction(task.metadata.get("language", "en"))

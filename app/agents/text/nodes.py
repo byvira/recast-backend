@@ -242,6 +242,12 @@ async def build_context_node(state: TextAgentState) -> dict:
     hint = await best_post_hint(state["workspace_id"], current_platform_str)
     if hint:
         engagement_context = f"{engagement_context}\n\n{hint}" if engagement_context else hint
+    # The writer's own style settings (sentence length, rhetorical devices, personal examples); nothing is added unless they were changed.
+    from app.pipelines.text.writing_steering import member_writing_steering
+
+    steering = await member_writing_steering(state["workspace_id"], state.get("user_id"))
+    if steering:
+        engagement_context = f"{engagement_context}\n\n{steering}" if engagement_context else steering
 
     # ── Extract all enforcement data ──────────────────────────────────────
     enforcement = _extract_enforcement_data(brand_profile)
