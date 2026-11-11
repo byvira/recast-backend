@@ -109,7 +109,7 @@ async def get_health(request: Request, range: Literal["1h", "24h", "7d"] = "24h"
     tiers = image_tiers_in_use()
     return {
         **await service.overview(range),
-        # Which picture services are switched on. With none, every picture is a plain text card.
+        # Which picture services are switched on. With none, no pictures can be made.
         "picture_services": {"in_use": tiers, "none_on": not tiers},
     }
 
@@ -118,6 +118,15 @@ async def get_health(request: Request, range: Literal["1h", "24h", "7d"] = "24h"
 @limiter.limit("60/minute")
 async def get_providers(request: Request, user: dict = Depends(require_platform_staff)) -> dict:
     return {"providers": await service.provider_states(), "config": await service.get_config()}
+
+
+@router.get("/chains")
+@limiter.limit("60/minute")
+async def get_chains(request: Request, user: dict = Depends(require_platform_staff)) -> dict:
+    """The fallback chain for every kind of work, each step with its live state. A chain with one working step is "thin"; with none, "broken"."""
+    from app.shared.llm_health import chains
+
+    return {"chains": chains.describe(await service.provider_states())}
 
 
 @router.post("/providers/ping")
@@ -168,6 +177,15 @@ async def notifications(request: Request, user: dict = Depends(require_platform_
             out.append({
                 "id": f"llm-provider-{name}-{info['status']}-{now[:13]}", "kind": "llm_provider", "at": now,
                 "title": f"{info.get('label', name)}: {info['status_text'].lower()}", "detail": info.get("used_for", ""), "href": "/ops/llm",
+            })
+    from app.shared.llm_health import chains
+
+    for chain in chains.describe(states):
+        if chain["depth"] != "ok":
+            word = "has no working step" if chain["depth"] == "broken" else "is down to one working step"
+            out.append({
+                "id": f"llm-chain-{chain['id']}-{chain['depth']}-{now[:13]}", "kind": "llm_chain", "at": now,
+                "title": f"{chain['label']} {word}", "detail": "If it fails there is nothing left to fall back to.", "href": "/ops/llm",
             })
     return {"items": out}
 

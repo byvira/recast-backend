@@ -96,7 +96,7 @@ def image_tiers_in_use() -> list[str]:
         tiers.append("cloudflare")
     if settings.GEMINI_API_KEY:
         tiers.append("gemini")
-    if settings.HUGGINGFACE_API_TOKEN:
+    if settings.HUGGINGFACE_API_TOKEN and settings.HUGGINGFACE_IMAGE_ENABLED:
         tiers.append("huggingface")
     if settings.POLLINATIONS_ENABLED:
         tiers.append("pollinations")

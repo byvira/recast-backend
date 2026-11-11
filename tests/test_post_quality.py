@@ -171,14 +171,11 @@ def test_the_campaign_plan_keeps_the_picture_options_and_defaults_to_brand_asset
 
 
 def test_nothing_prints_a_placeholder_on_a_picture_and_a_brandless_card_still_renders():
-    from app.pipelines.media.default_image import render_quote_card
-
     tokens = BrandTokens(primary_hex="", secondary_hex="", accent_hex="")
     out = Image.open(io.BytesIO(render_slide(layout=LayoutPreset.QUOTE_1_1, base_image_bytes=None, brand_tokens=tokens,
                                              text_content=SlideTextContent(headline="")))).convert("RGB")
     # no headline: a plain brand colour card, no band or words (every pixel in the bottom half matches the top)
     assert out.getpixel((300, out.height - 100)) == out.getpixel((300, 100))
-    assert len(render_quote_card("", {})) > 1000 and len(render_quote_card("Plain words on a card", {"colors": {"primary": "#222222", "accent": "#262626"}})) > 1000
     assert "Ekavo" not in Path(__file__).resolve().parents[1].joinpath("app/pipelines/media/image_render.py").read_text(encoding="utf-8").split("def render_slide")[1]
 
 
@@ -192,15 +189,11 @@ def test_the_campaign_plan_keeps_the_picture_options_and_defaults_to_brand_asset
 
 
 def test_nothing_prints_a_placeholder_on_a_picture_and_a_brandless_card_still_renders():
-    from app.pipelines.media.default_image import render_quote_card
-
     tokens = BrandTokens(primary_hex="", secondary_hex="", accent_hex="")
     out = Image.open(io.BytesIO(render_slide(layout=LayoutPreset.QUOTE_1_1, base_image_bytes=None, brand_tokens=tokens,
                                              text_content=SlideTextContent(headline="")))).convert("RGB")
     # no headline: a plain card with no band or words, so the bottom matches the top
     assert out.getpixel((300, out.height - 100)) == out.getpixel((300, 100))
-    assert len(render_quote_card("", {})) > 1000
-    assert len(render_quote_card("Plain words on a card", {"colors": {"primary": "#222222", "accent": "#262626"}})) > 1000
     source = (Path(__file__).resolve().parents[1] / "app/pipelines/media/image_render.py").read_text(encoding="utf-8")
     assert '"Ekavo"' not in source.split("def render_slide")[1]
 

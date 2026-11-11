@@ -186,23 +186,35 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     # NVIDIA's free hosted models (OpenAI compatible, email signup, no card). Third writing backup; skipped when empty.
     NVIDIA_API_KEY: str = ""
-    NVIDIA_MODEL: str = "meta/llama-3.3-70b-instruct"
+    NVIDIA_MODEL: str = "mistralai/mistral-large-4-1t-a52b"  # the one NVIDIA model that answered for this account on 2026-11-11 (slow, about 13 s, so it is the last backup); llama-3.3-70b is gone (410); scripts/probe_candidates.py finds what is alive
     # Picture understanding when Gemini is not answering: free OpenRouter models that accept images (checked 2026-10-01).
-    OPENROUTER_VISION_MODEL: str = "qwen/qwen3.8-27b:free"
-    OPENROUTER_VISION_MODEL_2: str = "google/gemma-4-31b-it:free"
+    OPENROUTER_VISION_MODEL: str = "dots-studio/dots-3-note-preview:free"  # the one that answered a picture cleanly on 2026-11-11; qwen3.8-27b:free is no longer free (404)
+    OPENROUTER_VISION_MODEL_2: str = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"  # accepts pictures but rejected a tiny test image (422); retry with a real one
     OPENROUTER_VISION_MODEL_3: str = "openrouter/free"  # OpenRouter picks whichever free model is available; free models are often busy
     OPENROUTER_MODEL_2: str = "openrouter/free"  # tried when the first free model is busy; OpenRouter picks any free model that is up
-    OPENROUTER_MODEL: str = "qwen/qwen3.8-27b:free"  # checked live 2026-10-01; openai/gpt-oss-120b:free had been retired
+    OPENROUTER_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b:free"  # answered in 1.6 s on 2026-11-11; qwen3.8-27b:free is no longer free, gemma-4 free models were rate limited upstream
     HUGGINGFACE_API_TOKEN: str = ""
     HUGGINGFACE_IMAGE_MODEL: str = "black-forest-labs/FLUX.1-schnell"
     # The old hf-inference route is gone (410). Pictures go through a provider Hugging Face routes to; nscale was checked live.
     HUGGINGFACE_IMAGE_PROVIDER: str = "nscale"
+    # Off: on 2026-11-11 every Hugging Face route for FLUX.1-schnell failed (nscale and together deprecated, the others do not support the model through this
+    # endpoint). Switch on only after a route answers (scripts/probe_candidates.py image).
+    HUGGINGFACE_IMAGE_ENABLED: bool = False
     # AI-made video clips for a scene. Off while the model is empty. Set it to a text-to-video model Hugging Face serves, for example
     # Wan-AI/Wan2.2-TI2V-5B. "auto" lets Hugging Face pick a provider from the account's provider order; each clip is billed to the account.
     HUGGINGFACE_VIDEO_MODEL: str = ""
     HUGGINGFACE_VIDEO_PROVIDER: str = "auto"
     # Pollinations needs no key. Turn it off here if you would rather show "no picture" than a free-service picture.
     POLLINATIONS_ENABLED: bool = True
+    # Other Cloudflare picture models, tried when FLUX itself fails (they share Cloudflare's daily allowance, so they help with a model fault, not with a used-up day).
+    CLOUDFLARE_IMAGE_BACKUP_MODELS: str = "@cf/bytedance/stable-diffusion-xl-lightning,@cf/lykon/dreamshaper-8-lcm"
+    # Stable Horde is a public queue run by volunteers (about 15 seconds). Off by default because the picture description leaves for a public service.
+    STABLEHORDE_ENABLED: bool = False
+    # Backup narration and transcription from other vendors (checked live 2026-11-11).
+    GEMINI_TTS_ENABLED: bool = True
+    GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
+    GEMINI_TTS_VOICE: str = "Kore"
+    VOXTRAL_MODEL: str = "voxtral-mini-latest"
     # Read each connected account's picture, display name and follower count from its platform (in the background, at most once a day).
     PROFILE_REFRESH_ENABLED: bool = True
 

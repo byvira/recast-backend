@@ -1,5 +1,5 @@
-"""When the AI picture cannot be made the slide is a text card. These tests check that the reason is kept,
-that only the safety check can stop a picture, and that a card without a picture says so. No network."""
+"""When the AI picture cannot be made nothing is drawn in its place. These tests check that the reason is kept,
+that only the safety check can stop a picture, and that a missing picture is a plain retryable error, never a text card. No network."""
 import asyncio
 
 from app.pipelines.media import image_generation as ig
@@ -160,10 +160,43 @@ def test_the_reason_is_cleared_at_the_start_of_each_call(monkeypatch):
     assert asyncio.run(go()) == "No image service is set up."
 
 
-def test_a_card_without_a_picture_is_flagged():
-    from app.api.v1 import image_assets as ia
+def test_no_picture_is_a_retryable_error_that_makes_no_card_and_costs_nothing(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
 
-    ig._last_failure.set("The image service did not return a picture.")
-    note = ia._fallback_note(None)
-    assert note and note.startswith("No AI picture, so this is a text card.") and "did not return a picture" in note
-    assert ia._fallback_note(b"png") is None
+    from app.api.v1 import image_assets as ia
+    from app.billing import credits
+    from app.core.failures import AIUnavailable
+    from app.api.v1.image_assets import LayoutPreset
+
+    hold = SimpleNamespace(nothing_made=False)
+
+    @asynccontextmanager
+    async def spend(*a, **k):
+        yield hold
+
+    async def nothing(**k):
+        return None
+
+    async def never(*a, **k):
+        raise AssertionError("a card must not be drawn")
+
+    monkeypatch.setattr(credits, "spend", spend)
+    monkeypatch.setattr(ia, "generate_image_from_prompt", nothing)
+    monkeypatch.setattr(ia, "_draw_and_store", never)
+    monkeypatch.setattr(ia, "_store_image", never)
+
+    async def go():
+        return await ia._render_and_upload_slide(
+            prompt="x", workspace_id="w", user_id="u", layout=next(iter(LayoutPreset)), brand={}, brand_tokens=None,
+            text_content=None, show_logo=False,
+        )
+
+    try:
+        run(go())
+    except AIUnavailable as exc:
+        assert exc.status_code == 503 and exc.code == "picture_busy" and exc.retry_after == 60
+        assert "not charged" in exc.detail
+    else:
+        raise AssertionError("expected a picture_busy error")
+    assert hold.nothing_made is True

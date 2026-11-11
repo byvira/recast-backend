@@ -68,7 +68,8 @@ from app.pipelines.media.pdf_export import generate_carousel_pdf
 from app.pipelines.media.transform import build_export_url
 from app.pipelines.media.zip_export import build_slides_zip
 from app.shared.events import emit_event_background
-from app.core import limits
+from app.core import failures, limits
+from app.core.failures import AIUnavailable
 from app.agents.content_guard.rules import content_hash
 from app.shared.heavy_work import run_heavy
 from app.shared.history_query import HistorySort, HistoryStatus, add_clauses, search_clause, sort_spec, status_clause
@@ -140,14 +141,6 @@ async def _fetch_logo_bytes(logo_url: str) -> Optional[bytes]:
         logger.warning("Logo fetch failed for %s, skipping: %s", logo_url, exc)
         return None
 
-
-
-def _fallback_note(background_bytes: Optional[bytes]) -> Optional[str]:
-    """When no AI picture was made the slide is a colour card with the headline on it. Say so, and why."""
-    if background_bytes:
-        return None
-    reason = last_failure_reason() or "The picture could not be made."
-    return f"No AI picture, so this is a text card. {reason}"
 
 
 class _Rendered(NamedTuple):
@@ -261,7 +254,7 @@ async def _draw_and_store(
             )
         background_bytes = background_removal.on_colour(cutout, brand_tokens.primary_hex)
     png = await run_heavy(render_layers, size=size, background_bytes=background_bytes, layers=layers, brand=brand_tokens, assets=assets, effects=effects, place=place)
-    note = _fallback_note(background_bytes)
+    note: Optional[str] = None
     # Tamil and Hindi need a text-shaping engine to draw every combination correctly. If this server does not have one, say so on
     # the picture instead of letting a wrongly ordered letter go unnoticed.
     from app.pipelines.media.image_render import script_font_entry, shaping_available
@@ -305,12 +298,14 @@ async def _render_and_upload_slide(
     from app.billing import credits
 
     size = LAYOUT_DIMS[layout]
-    # 2 credits for each AI picture; a slide that ends as a text card because no picture came back costs nothing
+    # 2 credits for each AI picture; when no picture comes back nothing is made, nothing is charged and the call says so
     async with credits.spend(workspace_id, user_id, "picture", step="picture") as hold:
         background_bytes = await generate_image_from_prompt(
             prompt=prompt, workspace_id=workspace_id, user_id=user_id, target_size=size, brand_profile=brand, avoid=avoid,
         )
-        hold.nothing_made = not background_bytes
+        if not background_bytes:
+            hold.nothing_made = True
+            raise AIUnavailable(failures.ai_busy(kind="picture").message, retry_after=60, kind="picture")
     visual_identity = brand.get("visual_identity") or {}
     background_media_id: Optional[str] = None
     if background_bytes:
@@ -812,8 +807,7 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
         approval_status=ImageApprovalStatus(await default_approval(ctx.workspace_id)),
         source_piece_id=body.source_piece_id,
         source_content_hash=source_content_hash,
-        # A text card made because the AI picture failed carries that note on the picture; it is also kept on the asset, where
-        # the review checks look for it (it was only ever on the picture's file record).
+        # A note on the picture (a missing logo, say) is also kept on the asset, where the review checks look for it.
         # While the rest of a set is still being made the asset says so, so a server restart in the middle leaves a picture set
         # that is marked unfinished and not one that looks complete. Cleared below when the set is done.
         qa_flagged=bool(getattr(media, "qa_flagged", False)) or body.count > 1,
@@ -843,7 +837,6 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 except Exception as exc:  # noqa: BLE001 - keep what was made
                     logger.warning("Image pack stopped at image %d of %d for asset %s: %s", position, body.count, asset_id, exc)
                     break
-                no_picture_made = extra.background_media_id is None
                 made.append(Slide(
                     slide_number=position, title=f"{body.title} ({position})", slide_type=body.active_layout.value,
                     layout=body.active_layout, media_id=extra.media.id, background_media_id=extra.background_media_id, layers=extra.layers,
@@ -854,11 +847,6 @@ async def create_image_asset(body: GenerateImageAssetRequest, ctx: WorkspaceCont
                 show_logo=use_logo, show_mascot=body.show_mascot, type_ratio=body.type_ratio, inner_radius=body.inner_radius,
                     ).model_dump(),
                 ))
-                if no_picture_made:
-                    # the picture service gave nothing for this one (down, or out of allowance), so the rest are not asked for: each
-                    # would run the same checks and the same provider calls only to end as a text card
-                    logger.warning("Image pack stopped at image %d of %d for asset %s: the picture service made no picture", position, body.count, asset_id)
-                    break
         except asyncio.CancelledError:
             # Stopped part-way (a cancel, or the server going down): the pictures made so far are kept, and the set says how many.
             if len(made) > len(asset.slides):

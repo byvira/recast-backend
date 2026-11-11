@@ -416,6 +416,43 @@ async def _call_deepgram_raw(*, text: str, voice_settings: MemberVoiceSettings, 
         return response.content
 
 
+async def _call_gemini_tts(*, text: str) -> bytes:
+    """Narration from Gemini speech: raw 24 kHz audio, turned into mp3 so parts join end to end like the other voices. Raises on any failure."""
+    import subprocess
+
+    from app.pipelines.audio.sound_checks import _ffmpeg_exe
+
+    model = settings.GEMINI_TTS_MODEL
+    async with track("gemini", model, feature="text_to_speech"):
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+                json={"contents": [{"parts": [{"text": text}]}],
+                      "generationConfig": {"responseModalities": ["AUDIO"],
+                                           "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": settings.GEMINI_TTS_VOICE}}}}},
+            )
+            r.raise_for_status()
+        try:
+            data = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("Gemini speech returned no audio.") from exc
+        pcm = base64.b64decode(data)
+        if not pcm:
+            raise RuntimeError("Gemini speech returned no audio.")
+
+        def to_mp3() -> bytes:
+            done = subprocess.run(
+                [_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0", "-f", "mp3", "-b:a", "128k", "pipe:1"],
+                input=pcm, capture_output=True, timeout=120,
+            )
+            if done.returncode != 0 or not done.stdout:
+                raise RuntimeError("The speech could not be turned into mp3.")
+            return done.stdout
+
+        return await asyncio.to_thread(to_mp3)
+
+
 class SpeechResult(BaseModel):
     """Synthesized audio, plus per-word timing when the provider reported it
     (ElevenLabs does; the Deepgram fallback does not, so `words` is None)."""
@@ -509,27 +546,37 @@ async def _synthesize_part(
     else:
         logger.warning("ELEVENLABS_API_KEY not configured for workspace %s.", workspace_id)
 
-    if not settings.DEEPGRAM_API_KEY:
-        logger.warning("DEEPGRAM_API_KEY not configured — no TTS provider available.")
-        return None
-
+    spoken = respell(text, lexicon)  # no backup has a pronunciation dictionary, so the member's pronunciations are applied as plain respelling
+    tried = False
     # The fallback voices read English (and a few other languages). A script they cannot read would be spoken by an
-    # English voice and saved as that language with no sign anything was wrong, so it is refused here instead.
-    if not _deepgram_can_read(text, language):
-        logger.warning("Deepgram fallback refused for workspace %s: the script is in a language it cannot read.", workspace_id)
-        return None
+    # English voice and saved as that language with no sign anything was wrong, so Deepgram is skipped for it.
+    if settings.DEEPGRAM_API_KEY and _deepgram_can_read(text, language):
+        tried = True
+        try:
+            with fallback_scope():
+                audio = await _call_deepgram(text=spoken, voice_settings=voice_settings, language=language)
+            logger.info("ElevenLabs unavailable — served this narration via the Deepgram fallback.")
+            return SpeechResult(audio=audio)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Deepgram TTS fallback failed for workspace %s: %s", workspace_id, exc)
+    elif settings.DEEPGRAM_API_KEY:
+        logger.warning("Deepgram fallback skipped for workspace %s: the script is in a language it cannot read.", workspace_id)
 
-    try:
-        with fallback_scope():
-            # Deepgram has no pronunciation dictionary, so the member's pronunciations are applied as plain respelling
-            audio = await _call_deepgram(text=respell(text, lexicon), voice_settings=voice_settings, language=language)
-        logger.info("ElevenLabs unavailable — served this narration via the Deepgram fallback.")
-        return SpeechResult(audio=audio)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Deepgram TTS fallback also failed for workspace %s: %s", workspace_id, exc)
-        if settings.ELEVENLABS_API_KEY:
-            note_fallback_failed("deepgram", "speech", "text_to_speech", "ElevenLabs failed and the Deepgram fallback failed too.")
-        return None
+    # Last: Gemini speech, a separate vendor that reads many more languages.
+    if settings.GEMINI_TTS_ENABLED and settings.GEMINI_API_KEY:
+        tried = True
+        try:
+            with fallback_scope():
+                audio = await _call_gemini_tts(text=spoken)
+            logger.info("Served this narration via the Gemini speech fallback.")
+            return SpeechResult(audio=audio)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Gemini TTS fallback failed for workspace %s: %s", workspace_id, exc)
+    if not tried:
+        logger.warning("No TTS provider available for workspace %s.", workspace_id)
+    elif settings.ELEVENLABS_API_KEY or settings.DEEPGRAM_API_KEY:
+        note_fallback_failed("gemini", "speech", "text_to_speech", "Every narration voice failed.")
+    return None
 
 
 async def _synthesize(

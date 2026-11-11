@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 from app.shared.llm_health.track import fallback_scope, track
-from app.pipelines.audio import deepgram_stt
+from app.pipelines.audio import deepgram_stt, voxtral_stt
 
 
 _NOT_WORD = re.compile(r"[^\w']+", re.UNICODE)
@@ -136,14 +136,28 @@ async def transcribe_audio_detailed(
                 failure = exc
                 logger.warning("Whisper (%s) failed: %s", whisper.value, exc)
         if response is None:
-            # Both Whisper models failed (same Groq account). Deepgram is the real backup.
-            if not deepgram_stt.available():
-                raise failure  # type: ignore[misc]
-            result = await deepgram_stt.listen(audio_bytes, filename, language, utterances=False)
-            fallback_words = [TranscriptWord(word=w, start_s=s, end_s=e) for w, s, e in deepgram_stt.words_from(result)]
-            if punctuate is False:
-                fallback_words = strip_punctuation(fallback_words)
-            return fallback_words, deepgram_stt.detected_language(result) or language
+            # Both Whisper models failed (same Groq account). Deepgram is the first backup and Mistral Voxtral, a separate vendor, the last.
+            if deepgram_stt.available():
+                try:
+                    result = await deepgram_stt.listen(audio_bytes, filename, language, utterances=False)
+                    fallback_words = [TranscriptWord(word=w, start_s=s, end_s=e) for w, s, e in deepgram_stt.words_from(result)]
+                    if punctuate is False:
+                        fallback_words = strip_punctuation(fallback_words)
+                    return fallback_words, deepgram_stt.detected_language(result) or language
+                except Exception as exc:  # noqa: BLE001
+                    failure = exc
+                    logger.warning("Deepgram transcription failed: %s", exc)
+            if voxtral_stt.available():
+                try:
+                    result = await voxtral_stt.listen(audio_bytes, filename, language)
+                    fallback_words = [TranscriptWord(word=w, start_s=s, end_s=e) for w, s, e in voxtral_stt.words_from(result)]
+                    if punctuate is False:
+                        fallback_words = strip_punctuation(fallback_words)
+                    return fallback_words, result.get("language") or language
+                except Exception as exc:  # noqa: BLE001
+                    failure = exc
+                    logger.warning("Voxtral transcription failed: %s", exc)
+            raise failure  # type: ignore[misc]
         words = getattr(response, "words", None) or []
         # the speech SDK gives each word as an object in some versions and as a plain dictionary in others
         def _field(w, key):

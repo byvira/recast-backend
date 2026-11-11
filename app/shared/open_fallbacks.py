@@ -1,8 +1,8 @@
 """Extra fallbacks for when Gemini (text, pictures) and Cloudflare (pictures) are not answering, so the product keeps
 working until the paid tiers are switched on. All of them run open models on free plans.
 
-Text, tried in order after Gemini: Mistral, then OpenRouter's free models. Pictures, tried in order after Cloudflare
-and Gemini: Hugging Face FLUX.1 schnell, then Pollinations (no key needed).
+Text, tried in order after Gemini: Mistral, NVIDIA, OpenRouter's free models, then Pollinations (no key needed). Pictures, tried in
+order after Cloudflare FLUX and Gemini: Hugging Face (off), other Cloudflare models, Pollinations, then Stable Horde (off by default).
 
 A provider without a key is skipped, never an error. Every attempt goes through `track`, so each one shows on the LLM
 health page as a fallback and a failed attempt opens an issue like any other. Model names are settings, because free
@@ -84,6 +84,8 @@ def text_providers() -> list[TextProvider]:
         for model in (settings.OPENROUTER_MODEL, settings.OPENROUTER_MODEL_2):
             if model:
                 out.append(TextProvider("openrouter", "https://openrouter.ai/api/v1/chat/completions", settings.OPENROUTER_API_KEY, model))
+    if settings.POLLINATIONS_ENABLED:
+        out.append(TextProvider("pollinations", "https://text.pollinations.ai/openai", "", "openai"))
     return out
 
 
@@ -114,7 +116,7 @@ async def _chat(p: TextProvider, prompt: str, system: str, json_mode: bool = Fal
         body["response_format"] = {"type": "json_object"}
     async with track(p.name, p.model, feature=None):
         async with httpx.AsyncClient(timeout=TEXT_TIMEOUT_S) as client:
-            r = await client.post(p.url, headers={"Authorization": f"Bearer {p.key}"}, json=body)
+            r = await client.post(p.url, headers={"Authorization": f"Bearer {p.key}"} if p.key else {}, json=body)
             r.raise_for_status()
             payload = r.json()
             text = ((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
@@ -222,14 +224,66 @@ async def _pollinations(prompt: str) -> bytes:
         return r.content
 
 
+async def _cloudflare_backup(model: str, prompt: str) -> bytes:
+    """A picture from another Cloudflare model. Some of them answer with the picture itself, others with JSON holding it."""
+    async with track("cloudflare", model, feature="image_generation"):
+        async with httpx.AsyncClient(timeout=IMAGE_TIMEOUT_S) as client:
+            r = await client.post(
+                f"https://api.cloudflare.com/client/v4/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/ai/run/{model}",
+                headers={"Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"}, json={"prompt": prompt[:2048]},
+            )
+            r.raise_for_status()
+        if r.headers.get("content-type", "").startswith("image/"):
+            return r.content
+        encoded = ((r.json().get("result") or {}).get("image"))
+        if not encoded:
+            raise RuntimeError("Cloudflare did not return a picture.")
+        return base64.b64decode(encoded)
+
+
+async def _stablehorde(prompt: str) -> bytes:
+    """A picture from the Stable Horde public queue (anonymous). Slow, so it is the last step."""
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    headers = {"apikey": "0000000000", "Client-Agent": "ekavo:1:none"}
+    async with track("stablehorde", "anonymous", feature="image_generation"):
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            r = await client.post("https://stablehorde.net/api/v2/generate/async", headers=headers,
+                                  json={"prompt": prompt[:1000], "params": {"width": 512, "height": 512, "steps": 12, "n": 1}, "nsfw": False, "censor_nsfw": True})
+            r.raise_for_status()
+            job = r.json()["id"]
+            for _ in range(24):
+                await asyncio.sleep(3)
+                status = (await client.get(f"https://stablehorde.net/api/v2/generate/status/{job}", headers=headers)).json()
+                if status.get("done"):
+                    generations = status.get("generations") or []
+                    if not generations or generations[0].get("censored"):
+                        raise RuntimeError("Stable Horde did not return a picture.")
+                    picture = await client.get(generations[0]["img"])
+                    picture.raise_for_status()
+                    out = io.BytesIO()
+                    Image.open(io.BytesIO(picture.content)).convert("RGB").save(out, format="PNG")
+                    return out.getvalue()
+            await client.delete(f"https://stablehorde.net/api/v2/generate/status/{job}", headers=headers)
+    raise RuntimeError("Stable Horde was too slow.")
+
+
 async def open_image_fallback(prompt: str, errors: list[str] | None = None) -> bytes | None:
     """A picture from the first open-model provider that answers, or None. Each provider that fails adds a plain note to
     `errors` when given."""
     steps = []
-    if settings.HUGGINGFACE_API_TOKEN:
+    if settings.HUGGINGFACE_API_TOKEN and settings.HUGGINGFACE_IMAGE_ENABLED:
         steps.append(("huggingface", _huggingface))
+    if settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID:
+        for model in [m.strip() for m in settings.CLOUDFLARE_IMAGE_BACKUP_MODELS.split(",") if m.strip()]:
+            steps.append((f"cloudflare {model.split('/')[-1]}", lambda prompt, model=model: _cloudflare_backup(model, prompt)))
     if settings.POLLINATIONS_ENABLED:
         steps.append(("pollinations", _pollinations))
+    if settings.STABLEHORDE_ENABLED:
+        steps.append(("stablehorde", _stablehorde))
     keys = [f"image:{name}" for name, _ in steps]
     for i in _in_turn(keys):
         name, fn = steps[i]

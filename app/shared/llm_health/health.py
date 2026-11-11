@@ -31,6 +31,7 @@ DEFAULT_LIMITS: dict[str, dict[str, dict[str, int]]] = {
     "openrouter": {},
     "huggingface": {},
     "pollinations": {},
+    "stablehorde": {},
 }
 DEFAULT_RESET = {
     "groq": {"tz": "UTC", "hour": 0},
@@ -43,21 +44,23 @@ DEFAULT_RESET = {
     "openrouter": {"tz": "UTC", "hour": 0},
     "huggingface": {"tz": "UTC", "hour": 0},
     "pollinations": {"tz": "UTC", "hour": 0},
+    "stablehorde": {"tz": "UTC", "hour": 0},
 }
 
 # Every AI provider the product calls, with a plain description of what it is used for. A provider shows on the page
 # as soon as it is listed here, even before it has had any traffic.
 PROVIDERS: dict[str, dict[str, str]] = {
     "groq": {"label": "Groq", "used_for": "Writing, hooks, analysis and speech to text"},
-    "gemini": {"label": "Gemini", "used_for": "Backup writing, images, video understanding and voice matching"},
-    "cloudflare": {"label": "Cloudflare Workers AI", "used_for": "Picture generation"},
+    "gemini": {"label": "Gemini", "used_for": "Backup writing, pictures, video understanding, voice matching, backup narration and embeddings"},
+    "cloudflare": {"label": "Cloudflare Workers AI", "used_for": "Pictures (FLUX first, then two other models) and private footage text"},
     "elevenlabs": {"label": "ElevenLabs", "used_for": "Voice narration and echo reduction"},
-    "deepgram": {"label": "Deepgram", "used_for": "Voice narration when ElevenLabs is not available"},
-    "nvidia": {"label": "NVIDIA", "used_for": "Third backup writing, on free hosted models"},
-    "mistral": {"label": "Mistral", "used_for": "Backup writing when Groq and Gemini are not answering"},
-    "openrouter": {"label": "OpenRouter", "used_for": "Second backup writing, on free open models"},
-    "huggingface": {"label": "Hugging Face", "used_for": "Backup pictures when Cloudflare and Gemini are not answering"},
-    "pollinations": {"label": "Pollinations", "used_for": "Last backup for pictures (free, no key)"},
+    "deepgram": {"label": "Deepgram", "used_for": "Backup narration and backup speech to text"},
+    "nvidia": {"label": "NVIDIA", "used_for": "Backup writing, on a free hosted model"},
+    "mistral": {"label": "Mistral", "used_for": "Backup writing and last backup speech to text (Voxtral)"},
+    "openrouter": {"label": "OpenRouter", "used_for": "Backup writing and picture understanding, on free open models"},
+    "huggingface": {"label": "Hugging Face", "used_for": "Backup pictures (switched off while no route answers)"},
+    "pollinations": {"label": "Pollinations", "used_for": "Last free backup for writing and pictures (no key)"},
+    "stablehorde": {"label": "Stable Horde", "used_for": "Last backup for pictures, a public volunteer queue (off by default)"},
 }
 
 # The setting that holds each provider's key. A provider whose key is empty is "not set up", not "down".
@@ -74,6 +77,10 @@ def is_configured(provider: str) -> bool:
         return False  # switched off on purpose
     if provider == "pollinations":
         return bool(settings.POLLINATIONS_ENABLED)  # needs no key
+    if provider == "stablehorde":
+        return bool(settings.STABLEHORDE_ENABLED)  # needs no key
+    if provider == "huggingface":
+        return bool(settings.HUGGINGFACE_API_TOKEN and settings.HUGGINGFACE_IMAGE_ENABLED)
     name = KEY_SETTING.get(provider)
     return True if name is None else bool(getattr(settings, name, ""))
 
