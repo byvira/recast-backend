@@ -45,6 +45,28 @@ def summary_text(c: dict[str, int]) -> str:
     return " ".join(lines)
 
 
+def summary_phrase(c: dict[str, int]) -> dict[str, Any]:
+    """The same note as `summary_text`, built from fixed sentences with a number in each. A reader in another language gets each
+    sentence translated once and kept, instead of a new translation every day for that day's particular numbers."""
+    def one(n: int, singular: str, plural: str) -> dict[str, Any]:
+        return phrase(singular if n == 1 else plural, n=n)
+
+    parts: list[dict[str, Any]] = []
+    if c["published"]:
+        parts.append(one(c["published"], "{n} post went out.", "{n} posts went out."))
+    if c["failed"]:
+        parts.append(one(c["failed"], "{n} thing did not work and may need a look.", "{n} things did not work and may need a look."))
+    if c["remy"]:
+        parts.append(one(c["remy"], "Remy had {n} suggestion about your voice and writing.", "Remy had {n} suggestions about your voice and writing."))
+    if c["odette"]:
+        parts.append(one(c["odette"], "Odette raised {n} note about your publishing.", "Odette raised {n} notes about your publishing."))
+    if c["waiting"]:
+        parts.append(one(c["waiting"], "{n} item is waiting for you to decide.", "{n} items are waiting for you to decide."))
+    if not parts:
+        parts.append(one(c["entries"], "{n} thing happened, all of them fine.", "{n} things happened, all of them fine."))
+    return phrase(" ".join(f"{{p{i}}}" for i in range(len(parts))), **{f"p{i}": part for i, part in enumerate(parts)})
+
+
 async def counts_for(workspace_id: str, start: datetime, end: datetime) -> dict[str, int]:
     """What the day held, counted from the Activity Log and the posts themselves."""
     db = get_db()
@@ -75,7 +97,7 @@ async def write_summary(workspace_id: str, day: datetime) -> bool:
         return False
     await record_system(
         workspace_id=workspace_id, key=f"daily-summary:{workspace_id}:{day.date().isoformat()}", actor_name="Ekavo", category="daily_summary",
-        title=phrase("Yesterday, {day}", day=day.strftime("%d %b")), description=summary_text(c),
+        title=phrase("Yesterday, {day}", day=day.strftime("%d %b")), description=summary_phrase(c),
         status="warning" if c["failed"] else "success", occurred_at=end - timedelta(seconds=1), href="/dashboard/activity",
         metadata={"counts": c},
     )

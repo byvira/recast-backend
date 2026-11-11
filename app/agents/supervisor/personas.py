@@ -57,6 +57,31 @@ _MEMBER_CHURN_DEFAULT = "Unusual membership change"
 _SIGNAL_STORM_DEFAULT = "A burst of assistant signals"
 
 
+# The headline of a flag notice, one fixed sentence for each kind, so it reads well in English and is translated once and kept.
+FLAG_TITLES: dict[str, str] = {
+    "assistant_signal_storm": "Remy raised a lot of notes at once",
+    "brand_voice_instability": "Your brand voice is changing a lot",
+    "daily_publish_cap": "The daily posting limit was reached",
+    "member_churn": "Several people left the workspace",
+    "platform_capability_drift": "A platform changed what it allows",
+    "rbac_violation": "Someone tried something their role does not allow",
+    "tier_seat_exceeded": "More people than the plan allows",
+    "video_renders_failing": "Video renders keep failing",
+    "video_minutes_high": "Video render minutes are running high",
+    "video_storage_high": "Video storage is nearly full",
+    "video_automation_stopped": "Video automation stopped",
+    "video_auto_publish_on": "Video auto-publish is on",
+    "video_connection_expiring": "A video platform connection is about to expire",
+    "video_voice_changed": "A video voice changed",
+    "llm_anomaly": "Something unusual in the AI services",
+}
+
+
+def flag_title(flag_type: str) -> str:
+    """The headline for a flag notice. A kind with no sentence of its own gets a plain, short one, never the raw name of the rule."""
+    return FLAG_TITLES.get(flag_type) or "Odette flagged something to look at"
+
+
 async def odette_flag_summary(flag_type: str, detail: dict, language: str = "en") -> str:
     """Odette-voice one-liner for a rule flag, translated into `language` on
     demand and cached — see app.shared.localized_strings.get_localized_string().

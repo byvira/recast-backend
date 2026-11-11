@@ -29,10 +29,12 @@ an identity operation, not a different code path.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from app.db.mongo import get_db
 from app.prompts.registry import load_prompt
@@ -68,6 +70,37 @@ _LEAK_MARKERS = (
 # A mixed-language ("xx+en") answer is written in English letters. A share of
 # non-Latin letters above this means the model wrote the native script instead.
 _MAX_NON_LATIN_RATIO = 0.15
+
+
+class TranslationBudget:
+    """A cap on how many NEW translations (model calls) one piece of work may make. A translation already in the cache costs nothing and
+    is never counted. Once the cap is reached, further misses answer in English without a model call and are not cached, and `refused`
+    says so, so the caller can stop and carry on later."""
+
+    def __init__(self, calls: int) -> None:
+        self.left = max(0, int(calls))
+        self.refused = False
+
+
+_budget: contextvars.ContextVar[Optional[TranslationBudget]] = contextvars.ContextVar("translation_budget", default=None)
+
+
+@contextlib.contextmanager
+def translation_budget(calls: int) -> Iterator[TranslationBudget]:
+    """`with translation_budget(40) as budget:` limits the new translations made inside the block (see TranslationBudget)."""
+    budget = TranslationBudget(calls)
+    token = _budget.set(budget)
+    try:
+        yield budget
+    finally:
+        _budget.reset(token)
+
+
+#: A translation longer than this many times its source (plus a margin) is not a translation. A model steered by instructions hidden in the
+#: text tends to answer at length.
+_MAX_GROWTH = 4
+_GROWTH_MARGIN = 80
+_URL_RE = re.compile(r"https?://", re.IGNORECASE)
 
 
 def _placeholders(template: str) -> set[str]:
@@ -155,6 +188,10 @@ def _reject_reason(text: str, source: str, wanted: set[str], mixed: bool) -> Opt
         return "prompt text leaked into the output"
     if _placeholders(text) != wanted:
         return f"placeholders changed (wanted {sorted(wanted)}, got {sorted(_placeholders(text))})"
+    if len(text) > _MAX_GROWTH * len(source) + _GROWTH_MARGIN:
+        return "the answer is far longer than the text it should translate"
+    if _URL_RE.search(text) and not _URL_RE.search(source):
+        return "the answer added a link that was not in the text"
     if mixed and non_latin_ratio(text) > _MAX_NON_LATIN_RATIO:
         return "mixed-language output was written in a non-Latin script"
     return None
@@ -240,6 +277,16 @@ async def get_localized_string(
         )
         template = doc["template"]
     else:
+        budget = _budget.get()
+        if budget is not None and budget.left <= 0 and language != "en":
+            # the work has used its share of new translations: the English stands in, nothing is cached or asked of the model
+            budget.refused = True
+            try:
+                return english_template.format(**(ctx or {}))
+            except (KeyError, IndexError):
+                return english_template
+        if budget is not None and language != "en":
+            budget.left -= 1
         logger.info(
             "get_localized_string: CACHE MISS key=%s language=%s — calling LLM to translate and caching result",
             key, language,
@@ -255,6 +302,8 @@ async def get_localized_string(
                         "template": template,
                         "source_template": english_template,
                         "updated_at": datetime.now(timezone.utc),
+                        # free text (error reasons and the like) is mostly one-off; these entries expire so the cache does not only grow
+                        "expires_free": key.startswith("activity.s."),
                     }, "$setOnInsert": {"created_at": datetime.now(timezone.utc)}},
                     upsert=True,
                 )

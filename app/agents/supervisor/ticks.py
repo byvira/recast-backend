@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 from uuid import uuid4
 
+from pymongo.errors import DuplicateKeyError
 from redis.exceptions import ResponseError
 
 from app.agents.personal import thresholds as P_T
@@ -20,6 +22,7 @@ from app.agents.personal.signals import emit_signal, remy_message, supervisor_no
 from app.agents.supervisor import notify as notify_mod
 from app.agents.supervisor import thresholds as T
 from app.agents.supervisor.graph import run_supervisor
+from app.agents.supervisor.personas import flag_title
 from app.agents.supervisor.platform_snapshot import gather_platform_snapshot
 from app.agents.supervisor.rules import evaluate_rules
 from app.shared.language import first_present, user_language, workspace_language
@@ -41,6 +44,9 @@ RULES_GROUP = "supervisor_rules"
 REASON_GROUP = "supervisor_reason"
 CONSUMER = "supervisor-1"
 BATCH = 200
+#: An event that was read but never handled (its check kept failing) is given up on after this long, so one broken workspace cannot be
+#: retried for ever.
+PENDING_MAX_AGE_MS = 60 * 60 * 1000
 
 
 def _now() -> datetime:
@@ -59,27 +65,58 @@ async def _ensure_group(r, group: str) -> None:
             raise
 
 
-async def _drain_group(r, group: str) -> dict[str, int]:
-    """Read all pending new entries for *group*, ACK them, and return a
-    {workspace_id: new_event_count} map (assistant.signal events excluded)."""
+async def _ack(r, group: str, entry_ids: list[str]) -> None:
+    """Mark events as handled. Done only after a workspace's check ran, so a check that failed is tried again on the next tick."""
+    if entry_ids:
+        await r.xack(EVENTS_STREAM, group, *entry_ids)
+
+
+async def _drain_group(r, group: str) -> dict[str, list[str]]:
+    """Read the events *group* has not handled yet and return {workspace_id: [event ids]} (assistant.signal events excluded, and
+    acknowledged at once because nothing is done for them).
+
+    The events are NOT acknowledged here: the caller acknowledges a workspace's events (`_ack`) after it has handled that workspace.
+    Events read before that were never acknowledged (the check failed, or the server stopped part way) come first, so nothing is lost;
+    one older than PENDING_MAX_AGE_MS is given up on."""
     await _ensure_group(r, group)
-    touched: dict[str, int] = {}
+    touched: dict[str, list[str]] = {}
+    give_up: list[str] = []
+    skip: list[str] = []
+    now_ms = int(_now().timestamp() * 1000)
+
+    def take(entries) -> Optional[str]:
+        last = None
+        for entry_id, fields in entries:
+            last = entry_id
+            ws, etype = fields.get("workspace_id"), fields.get("event_type")
+            if not (ws and etype) or etype == "assistant.signal":
+                skip.append(entry_id)
+            elif now_ms - int(str(entry_id).split("-")[0]) > PENDING_MAX_AGE_MS:
+                give_up.append(entry_id)
+            else:
+                touched.setdefault(ws, []).append(entry_id)
+        return last
+
+    # 1. events delivered before and never acknowledged
+    cursor = "0"
+    while True:
+        resp = await r.xreadgroup(group, CONSUMER, {EVENTS_STREAM: cursor}, count=BATCH)
+        entries = [e for _stream, es in (resp or []) for e in es]
+        if not entries:
+            break
+        cursor = take(entries) or cursor
+        if len(entries) < BATCH:
+            break
+    # 2. new events
     while True:
         resp = await r.xreadgroup(group, CONSUMER, {EVENTS_STREAM: ">"}, count=BATCH, block=50)
-        if not resp:
+        entries = [e for _stream, es in (resp or []) for e in es]
+        if not entries:
             break
-        ack_ids: list[str] = []
-        for _stream, entries in resp:
-            for entry_id, fields in entries:
-                ack_ids.append(entry_id)
-                ws = fields.get("workspace_id")
-                etype = fields.get("event_type")
-                if ws and etype and etype != "assistant.signal":
-                    touched[ws] = touched.get(ws, 0) + 1
-        if ack_ids:
-            await r.xack(EVENTS_STREAM, group, *ack_ids)
-        if len(ack_ids) < BATCH:
+        take(entries)
+        if len(entries) < BATCH:
             break
+    await _ack(r, group, skip + give_up)
     return touched
 
 
@@ -131,7 +168,7 @@ async def run_rules_for_workspace(workspace_id: str) -> list[str]:
         })
         nid = await notify_mod.deliver(
             workspace_id, kind="flag", source_id=fid,
-            title=f"{c['flag_type'].replace('_', ' ').title()} flagged",
+            title=flag_title(c["flag_type"]),
             body_persona=c["summary_persona"], severity=c["severity"],
         )
         await workspace_flags.update_one(
@@ -154,10 +191,12 @@ async def supervisor_rules_tick(ctx: dict) -> dict:
     # Always sweep workspaces that saw activity; also re-check any with open flags
     # isn't needed here — resolution happens via the API.
     total_new = 0
-    for ws in touched:
+    for ws, entry_ids in touched.items():
         try:
             total_new += len(await run_rules_for_workspace(ws))
+            await _ack(r, RULES_GROUP, entry_ids)
         except Exception as exc:  # noqa: BLE001
+            # left unacknowledged: the next tick reads these events again and tries this workspace again
             logger.error("rules tick failed for ws=%s: %s", ws, exc)
     if touched:
         logger.info("supervisor_rules_tick: %d workspaces, %d new flags", len(touched), total_new)
@@ -234,16 +273,20 @@ async def _gather_inputs(workspace_id: str) -> dict:
 
 async def _run_reasoning_pass(workspace_id: str, trigger: str) -> dict:
     now = _now()
-    st = await _ws_state(workspace_id)
-    lock = st.get("lock_until")
-    if lock and lock > now:
-        logger.info("supervisor reasoning skipped (locked) ws=%s until %s", workspace_id, lock)
+    # The lock is taken with one conditional write, so the timed pass and "run now" can never both start for a workspace. The row
+    # matches only when it holds no lock or the lock has run out; if it exists and is locked, the write cannot match, trying to add a
+    # second row with the same id fails, and that means "locked".
+    try:
+        taken = await agent_worker_state.find_one_and_update(
+            {"_id": f"supervisor:{workspace_id}", "$or": [{"lock_until": None}, {"lock_until": {"$lte": now}}, {"lock_until": {"$exists": False}}]},
+            {"$set": {"lock_until": now + timedelta(seconds=T.LLM_PASS_LOCK_SECONDS), "updated_at": now}},
+            upsert=True,
+        )
+    except DuplicateKeyError:
+        taken = False
+    if taken is False:
+        logger.info("supervisor reasoning skipped (locked) ws=%s", workspace_id)
         return {"skipped": "locked"}
-    await agent_worker_state.update_one(
-        {"_id": f"supervisor:{workspace_id}"},
-        {"$set": {"lock_until": now + timedelta(seconds=T.LLM_PASS_LOCK_SECONDS), "updated_at": now}},
-        upsert=True,
-    )
     inputs = await _gather_inputs(workspace_id)
     result = await run_supervisor(workspace_id, trigger=trigger, **inputs)
     # persist_node clears the lock + counters on success; clear defensively otherwise.
@@ -260,7 +303,8 @@ async def supervisor_reason_tick(ctx: dict) -> dict:
     touched = await _drain_group(r, REASON_GROUP)
     now = _now()
     ran = 0
-    for ws, n in touched.items():
+    for ws, entry_ids in touched.items():
+        n = len(entry_ids)
         try:
             st = await _ws_state(ws)
             since = int(st.get("events_since_last_llm", 0)) + n
@@ -282,11 +326,12 @@ async def supervisor_reason_tick(ctx: dict) -> dict:
 
             trigger = _batch_trigger(st, new_rule_flag=new_rule_flag,
                                      high_sev_signal=high_sev_signal, now=now)
-            if not trigger:
-                continue
-            await _run_reasoning_pass(ws, trigger)
-            ran += 1
+            if trigger:
+                await _run_reasoning_pass(ws, trigger)
+                ran += 1
+            await _ack(r, REASON_GROUP, entry_ids)
         except Exception as exc:  # noqa: BLE001
+            # left unacknowledged: the next tick reads these events again and tries this workspace again
             logger.error("reason tick failed for ws=%s: %s", ws, exc, exc_info=True)
     if touched:
         logger.info("supervisor_reason_tick: %d workspaces touched, %d reasoning passes", len(touched), ran)
@@ -308,10 +353,14 @@ async def personal_volume_sweep(ctx: dict) -> dict:
     quiet, and raise one ``volume_drop`` signal each (deduped)."""
     now = _now()
     raised = 0
+    # only members who used to post enough for a drop to mean anything are read at all
     cursor = member_personas.find(
-        {}, {"workspace_id": 1, "user_id": 1, "volume_stats": 1}
+        {"volume_stats.mean": {"$gte": P_T.VOLUME_DROP_BASELINE_PER_DAY}}, {"workspace_id": 1, "user_id": 1, "volume_stats": 1}
     )
+    member_cache: dict[tuple[str, str], bool] = {}
     async for p in cursor:
+        if not await _still_a_member(p["workspace_id"], p["user_id"], member_cache):
+            continue
         vs = p.get("volume_stats", {}) or {}
         daily = vs.get("daily_counts", {}) or {}
         mean_v = float(vs.get("mean", 0.0) or 0.0)
@@ -349,12 +398,21 @@ async def personal_volume_sweep(ctx: dict) -> dict:
             evidence_refs=[],
             member_message=await remy_message("volume_drop", ctx=ctx_, language=member_language),
             supervisor_note=supervisor_note("volume_drop", ctx=ctx_),
+            dedupe_key=f"volume_drop:{p['workspace_id']}:{p['user_id']}:{now.strftime('%Y-%m-%d')}",
         )
         raised += 1
     raised += await _platform_volume_sweep(now)
     if raised:
         logger.info("personal_volume_sweep: raised %d volume_drop signals", raised)
     return {"volume_drop_signals": raised}
+
+
+async def _still_a_member(workspace_id: str, user_id: str, cache: dict) -> bool:
+    """Whether the person is still an active member of the workspace. Someone who left, or was removed, is not told about their volume."""
+    key = (workspace_id, user_id)
+    if key not in cache:
+        cache[key] = bool(await workspace_members.find_one({"workspace_id": workspace_id, "user_id": user_id, "status": "active"}, {"_id": 1}))
+    return cache[key]
 
 
 async def _platform_volume_sweep(now: datetime) -> int:
@@ -366,9 +424,12 @@ async def _platform_volume_sweep(now: datetime) -> int:
     a signal — the overall sweep's combined daily_counts would mask that."""
     raised = 0
     cursor = member_personas.find(
-        {}, {"workspace_id": 1, "user_id": 1, "volume_stats.daily_counts_by_platform": 1}
+        {"volume_stats.daily_counts_by_platform": {"$exists": True}}, {"workspace_id": 1, "user_id": 1, "volume_stats.daily_counts_by_platform": 1}
     )
+    member_cache: dict[tuple[str, str], bool] = {}
     async for p in cursor:
+        if not await _still_a_member(p["workspace_id"], p["user_id"], member_cache):
+            continue
         by_platform = (p.get("volume_stats", {}) or {}).get("daily_counts_by_platform", {}) or {}
         for platform, vs in by_platform.items():
             mean_v = float(vs.get("mean", 0.0) or 0.0)
@@ -408,6 +469,7 @@ async def _platform_volume_sweep(now: datetime) -> int:
                 evidence_refs=[],
                 member_message=await remy_message("platform_volume_drop", ctx=ctx_, language=member_language),
                 supervisor_note=supervisor_note("platform_volume_drop", ctx=ctx_),
+                dedupe_key=f"platform_volume_drop:{p['workspace_id']}:{p['user_id']}:{platform}:{now.strftime('%Y-%m-%d')}",
             )
             raised += 1
     return raised

@@ -24,6 +24,9 @@ TEXT_FIELDS = ("title", "description", "target_type")
 META_FIELDS = ("severity", "decision")
 RELOCALIZE_DAYS = 60
 RELOCALIZE_MAX = 500
+#: The most NEW translations (model calls) one language change may start. Rows already translated before cost nothing. The newest rows
+#: are done first; older ones keep their earlier language, so one change can never use up the model's free allowance.
+RELOCALIZE_NEW_TRANSLATIONS = 60
 
 
 def phrase(template: str, **ctx: Any) -> dict[str, Any]:
@@ -138,21 +141,28 @@ async def relocalize(workspace_id: str, *, member_user_id: Optional[str] = None)
     }
     if member_user_id:
         query.update({"visibility": "member", "member_user_id": member_user_id})
+    from app.shared.localized_strings import translation_budget
+
     changed = 0
-    async for doc in activity_entries.find(query).sort("occurred_at", -1).limit(RELOCALIZE_MAX):
-        language = await reading_language(doc)
-        if (doc.get("i18n") or {}).get("language") == language:
-            continue
-        sources = doc["i18n"]["sources"]
-        update: dict[str, Any] = {"i18n.language": language}
-        for field in TEXT_FIELDS:
-            if field in sources:
-                update[field] = await render(sources[field], language)
-        for field in META_FIELDS:
-            if f"meta_{field}" in sources and (doc.get("metadata") or {}).get(field) is not None:
-                update[f"metadata.{field}"] = await render(sources[f"meta_{field}"], language)
-        await activity_entries.update_one({"_id": doc["_id"]}, {"$set": update})
-        changed += 1
+    with translation_budget(RELOCALIZE_NEW_TRANSLATIONS) as budget:
+        async for doc in activity_entries.find(query).sort("occurred_at", -1).limit(RELOCALIZE_MAX):
+            language = await reading_language(doc)
+            if (doc.get("i18n") or {}).get("language") == language:
+                continue
+            sources = doc["i18n"]["sources"]
+            update: dict[str, Any] = {"i18n.language": language}
+            for field in TEXT_FIELDS:
+                if field in sources:
+                    update[field] = await render(sources[field], language)
+            for field in META_FIELDS:
+                if f"meta_{field}" in sources and (doc.get("metadata") or {}).get(field) is not None:
+                    update[f"metadata.{field}"] = await render(sources[f"meta_{field}"], language)
+            if budget.refused:
+                # this row would have been written half in English; it keeps its earlier language and the rest wait for another day
+                logger.info("relocalize for workspace %s stopped after its share of new translations", workspace_id)
+                break
+            await activity_entries.update_one({"_id": doc["_id"]}, {"$set": update})
+            changed += 1
     return changed
 
 

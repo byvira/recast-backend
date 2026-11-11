@@ -17,6 +17,8 @@ from typing import Optional
 from uuid import uuid4
 
 from app.db.mongo import personal_signals
+from pymongo.errors import DuplicateKeyError
+
 from app.models.agent_events import (
     AssistantSignalPayload,
     ContentRef,
@@ -42,8 +44,12 @@ async def emit_signal(
     evidence_refs: list[dict],
     member_message: str,
     supervisor_note: str,
+    dedupe_key: Optional[str] = None,
 ) -> str:
     """Persist the signal and put it on the bus. Returns the signal id.
+
+    With a `dedupe_key`, a second signal with the same key is not made (a unique index decides, so two sweeps at the same moment cannot
+    both make it): the first one's id is returned and nothing is shown to the member again.
 
     Never raises - a telemetry failure must not break the consumer loop.
     """
@@ -64,9 +70,13 @@ async def emit_signal(
         "status": "open",
         "created_at": now,
         "resolved_at": None,
+        **({"dedupe_key": dedupe_key} if dedupe_key else {}),
     }
     try:
         await personal_signals.insert_one(doc)
+    except DuplicateKeyError:
+        existing = await personal_signals.find_one({"dedupe_key": dedupe_key}, {"_id": 1}) if dedupe_key else None
+        return str((existing or {}).get("_id") or signal_id)
     except Exception as exc:  # noqa: BLE001
         logger.error("emit_signal: personal_signals insert failed: %s", exc)
     else:

@@ -24,6 +24,16 @@ def test_the_note_says_only_what_happened_in_plain_words():
     assert D.summary_text(_counts(waiting=1)) == "1 item is waiting for you to decide."
 
 
+def test_the_note_is_built_from_fixed_sentences_so_a_translation_is_reused_every_day():
+    from app.shared.activity.i18n import english
+
+    for counts in (_counts(published=3, failed=1, remy=2, odette=1, waiting=4), _counts(published=1), _counts(entries=7), _counts(waiting=1), _counts(failed=2, odette=5)):
+        assert english(D.summary_phrase(counts)) == D.summary_text(counts)
+    # two different days with different numbers use the same sentence templates, so only the first needs translating
+    a, b = D.summary_phrase(_counts(published=3)), D.summary_phrase(_counts(published=9))
+    assert a["$t"] == b["$t"] == "{p0}" and a["$c"]["p0"]["$t"] == b["$c"]["p0"]["$t"] == "{n} posts went out."
+
+
 async def _seed(ws: str, day: datetime, n: int, **extra) -> None:
     rows = [
         {"_id": uuid4().hex, "workspace_id": ws, "occurred_at": day + timedelta(hours=1 + i), "lane": "passive", "status": "success",
