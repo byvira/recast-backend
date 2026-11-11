@@ -43,7 +43,7 @@ class AnalyticsAskRequest(BaseModel):
 @limiter.limit("20/minute")
 async def get_account_metrics(
     request: Request,
-    platforms: str = Query(None, description="Comma-separated e.g. instagram,threads"),
+    platforms: str = Query(None, max_length=200, description="Comma-separated e.g. instagram,threads"),
     ctx: WorkspaceContext = Depends(get_current_workspace),
 ) -> dict:
     platform_list = platforms.split(",") if platforms else None

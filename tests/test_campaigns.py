@@ -748,3 +748,22 @@ async def test_retry_for_an_unknown_campaign_is_404(api_client):
     await signup_new_user(api_client)
     res = await api_client.post("/api/v1/campaigns/nope/pieces/x/retry-media")
     assert res.status_code == 404
+
+
+async def test_a_voice_cannot_be_removed_while_a_campaign_still_uses_it(api_client):
+    await signup_new_user(api_client)
+    first = await _create_brand(api_client)
+    second = await _create_brand(api_client)
+    created = await api_client.post("/api/v1/campaigns/", json=_valid_body(first))
+    assert created.status_code == 201, created.text
+
+    refused = await api_client.delete(f"/api/v1/brand/{first}")
+    assert refused.status_code == 409 and "Q1 Growth Push" in refused.json()["detail"]
+    assert (await api_client.get(f"/api/v1/brand/{first}")).status_code == 200  # still there
+
+    # a finished campaign no longer needs it; so does one that is gone
+    from app.db.mongo import get_campaigns_collection
+
+    await get_campaigns_collection().update_many({"brand_id": first}, {"$set": {"status": "completed"}})
+    assert (await api_client.delete(f"/api/v1/brand/{first}")).status_code == 200
+    assert (await api_client.get(f"/api/v1/brand/{second}")).status_code == 200

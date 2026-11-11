@@ -164,6 +164,18 @@ class ExtrasConfig(BaseModel):
     default_picture: bool = True
 
 
+def _each_platform_once(platforms):
+    """The platforms in the order they were chosen, each one once. A request that lists a platform twice would write two posts for
+    it and pay for one, so the repeat is dropped."""
+    seen: set = set()
+    out = []
+    for platform in platforms:
+        if platform not in seen:
+            seen.add(platform)
+            out.append(platform)
+    return out
+
+
 class GenerateTextRequest(BaseModel):
     """
     API request body — every field maps to a ConfigPanel control.
@@ -176,6 +188,18 @@ class GenerateTextRequest(BaseModel):
     # Content targeting
     platforms: list[Platform] = Field(..., min_length=1)
     brand_id: str
+
+    @field_validator("platforms")
+    @classmethod
+    def _platforms_once(cls, v):
+        return _each_platform_once(v)
+
+    @field_validator("content")
+    @classmethod
+    def _content_has_words(cls, v):
+        if not v.strip():
+            raise ValueError("Add some text, a topic or a link to write from.")
+        return v
 
     # Content intent and style
     intent: ContentIntent = ContentIntent.AUTO
@@ -223,10 +247,23 @@ class RepurposeRequest(BaseModel):
     Repurpose mode — maps to RepurposeInput tab in ConfigPanel and to
     Quick Recast (Library's "Recast Again").
     """
-    source_content: str
+    source_content: str = Field(..., min_length=1)
     source_platform: Platform
     target_platforms: list[Platform]
     brand_id: str
+
+    @field_validator("target_platforms")
+    @classmethod
+    def _targets_once(cls, v):
+        return _each_platform_once(v)
+
+    @field_validator("source_content")
+    @classmethod
+    def _source_has_words(cls, v):
+        if not v.strip():
+            raise ValueError("Add the post to repurpose.")
+        return v
+
     goal: Optional[ContentGoal] = None
     tone: ToneOverride = ToneOverride.BRAND
     extras: ExtrasConfig = ExtrasConfig()
@@ -476,6 +513,12 @@ class BatchGenerateRequest(BaseModel):
     topic_cluster: str
     platforms: list[Platform]
     brand_id: str
+
+    @field_validator("platforms")
+    @classmethod
+    def _platforms_once(cls, v):
+        return _each_platform_once(v)
+
     extras: ExtrasConfig = ExtrasConfig()
     days: int = Field(7, ge=1, le=30)
     detected_intent: ContentIntent = ContentIntent.AUTO

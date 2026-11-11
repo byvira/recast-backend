@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import field_validator, BaseModel, Field, model_validator
 
 
 class ContentType(str, Enum):
@@ -218,6 +218,21 @@ class Campaign(BaseModel):
     updated_at: datetime
 
 
+def _once(items):
+    """Each item once, in the order given (a platform listed twice would make two posts a day for it)."""
+    seen: set = set()
+    return [x for x in items if not (x in seen or seen.add(x))]
+
+
+def _clean_name(value: str) -> str:
+    value = " ".join((value or "").split())
+    if not value:
+        raise ValueError("Give the campaign a name.")
+    if len(value) > 200:
+        raise ValueError("The campaign name is too long. Keep it under 200 characters.")
+    return value
+
+
 class CreateCampaignRequest(BaseModel):
     name: str
     brand_id: str
@@ -234,6 +249,28 @@ class CreateCampaignRequest(BaseModel):
     text_options: CampaignTextOptions = Field(default_factory=CampaignTextOptions)
     language: Optional[str] = Field(default=None, max_length=16)
 
+    @field_validator("name")
+    @classmethod
+    def _name_ok(cls, v):
+        return _clean_name(v)
+
+    @field_validator("topic_cluster")
+    @classmethod
+    def _topic_ok(cls, v):
+        if not (v or "").strip():
+            raise ValueError("Add a topic, a link or a recording for the campaign.")
+        return v
+
+    @field_validator("platforms")
+    @classmethod
+    def _platforms_once(cls, v):
+        return _once(v)
+
+    @field_validator("platforms_by_day")
+    @classmethod
+    def _day_platforms_once(cls, v):
+        return None if v is None else [_once(day) for day in v]
+
 
 class UpdateCampaignRequest(BaseModel):
     name: Optional[str] = None
@@ -246,3 +283,18 @@ class UpdateCampaignRequest(BaseModel):
     text_options: Optional[CampaignTextOptions] = None
     language: Optional[str] = Field(default=None, max_length=16)
     remind_when_empty: Optional[bool] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_ok(cls, v):
+        return None if v is None else _clean_name(v)
+
+    @field_validator("platforms")
+    @classmethod
+    def _platforms_once(cls, v):
+        return None if v is None else _once(v)
+
+    @field_validator("platforms_by_day")
+    @classmethod
+    def _day_platforms_once(cls, v):
+        return None if v is None else [_once(day) for day in v]

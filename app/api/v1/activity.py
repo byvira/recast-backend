@@ -569,7 +569,35 @@ async def allowance(
     ent = await entitlements.entitlements_for(ctx.workspace)
     made = int(await entitlements.count_usage(ent, "pictures_day"))
     cap = ent.limit("pictures_day")
-    return {"pictures": {"limit": cap, "used": made, "left": None if cap is None else max(0, cap - made)}}
+    return {
+        "pictures": {"limit": cap, "used": made, "left": None if cap is None else max(0, cap - made)},
+        "shared": await _shared_picture_pressure(),
+    }
+
+
+#: The whole app's AI pictures today are counted across every workspace; one count a minute is plenty for a warning.
+_SHARED_PICTURES: dict = {"at": 0.0, "used": 0}
+_NEAR_SHARE = 0.8
+
+
+async def _shared_picture_pressure() -> dict:
+    """How close the whole app is to the free picture service's daily ceiling, so a member is told before pictures start coming out as
+    plain cards. Nothing about other workspaces is revealed, only a yes or no. Off when APP_PICTURES_PER_DAY is 0."""
+    import time
+
+    from app.core.config import settings
+    from app.db.mongo import media_assets
+    from app.shared import entitlements
+
+    cap = int(settings.APP_PICTURES_PER_DAY or 0)
+    if cap <= 0:
+        return {"near_limit": False}
+    if time.monotonic() - _SHARED_PICTURES["at"] > 60:
+        _SHARED_PICTURES["used"] = await media_assets.count_documents(
+            {"source": "ai_generated", "created_at": {"$gte": entitlements._day_start()}}
+        )
+        _SHARED_PICTURES["at"] = time.monotonic()
+    return {"near_limit": _SHARED_PICTURES["used"] >= cap * _NEAR_SHARE}
 
 
 @router.get("/unread-count")

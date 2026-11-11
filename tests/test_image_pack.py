@@ -85,3 +85,29 @@ async def test_a_failure_partway_keeps_what_was_made(signup_user, stubs, monkeyp
     res = await _generate(client, ws_id, brand_id, count=4)
     assert res.status_code == 201, res.text
     assert len(res.json()["slides"]) == 2, "images 1 and 2 were made before the failure and must be kept"
+
+
+async def test_a_pack_uses_one_of_the_daily_allowance_for_each_picture(signup_user, stubs, monkeypatch):  # noqa: F811
+    """I-09: the daily picture allowance counts every picture of a pack, not the pack as one, and a pack that does not fit is refused
+    before any picture is made."""
+    from app.db.mongo import workspaces
+    from app.shared import entitlements
+
+    client, ws_id, brand_id = await _setup(signup_user)
+    monkeypatch.setattr(entitlements.settings, "BILLING_ENFORCED", True)  # plan limits are only checked while plans are on (after setup)
+    await workspaces.update_one(
+        {"id": ws_id}, {"$set": {"entitlement_overrides": {"plan": "duo", "limits": {"pictures_day": 4}, "note": "test"}}}
+    )
+    entitlements.forget()  # the plan details are cached; read them again with the override and plans on
+    assert await image_module.pictures_made_today(ws_id) == 0
+
+    assert (await _generate(client, ws_id, brand_id, count=3)).status_code == 201
+    assert await image_module.pictures_made_today(ws_id) == 3  # three pictures, not one pack
+
+    uploads_before = len(stubs["uploads"])
+    refused = await _generate(client, ws_id, brand_id, count=2)  # 3 made + 2 wanted is over 4
+    assert refused.status_code in (402, 403, 429), refused.text
+    assert len(stubs["uploads"]) == uploads_before, "nothing is made for a pack that does not fit"
+
+    assert (await _generate(client, ws_id, brand_id, count=1)).status_code == 201  # exactly the last one left
+    assert await image_module.pictures_made_today(ws_id) == 4

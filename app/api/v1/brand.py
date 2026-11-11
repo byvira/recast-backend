@@ -1299,6 +1299,21 @@ async def delete_brand_profile(
     if not others:
         raise HTTPException(status_code=400, detail="This is your only voice. Make another one before removing it.")
 
+    # A campaign that is still going (draft, active or paused) writes in this voice every time it makes a batch, so the voice stays until
+    # those campaigns move to another voice or finish.
+    from app.db.mongo import get_campaigns_collection
+
+    using = await get_campaigns_collection().find(
+        {"workspace_id": ctx.workspace_id, "brand_id": brand_id, "deleted": {"$ne": True}, "status": {"$in": ["draft", "active", "paused"]}},
+        {"name": 1},
+    ).to_list(3)
+    if using:
+        names = ", ".join(f"\"{(c.get('name') or 'Untitled')[:40]}\"" for c in using)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Campaigns still use this voice ({names}). Move them to another voice or finish them first, then remove it.",
+        )
+
     await brand_profiles.delete_one({"id": brand_id, "workspace_id": ctx.workspace_id})
     if doc.get("is_default"):
         # The default went with it: the most recently changed voice takes its place, without touching its profile version.

@@ -343,3 +343,49 @@ async def test_the_hint_counts_clicks_and_counts_each_post_once():
     assert hint and "The opener that worked" in hint and "of 3 measured" in hint
     await content_pieces.delete_many({"workspace_id": ws})
     await get_db()["post_metrics"].delete_many({"workspace_id": ws})
+
+
+# ── Stage 6: the shared picture capacity warning ─────────────────────────────
+async def test_members_are_warned_when_the_shared_picture_service_is_nearly_used_up(monkeypatch):
+    from app.api.v1 import activity
+    from app.core.config import settings
+
+    monkeypatch.setattr(activity, "_SHARED_PICTURES", {"at": 0.0, "used": 0})
+    monkeypatch.setattr(settings, "APP_PICTURES_PER_DAY", 0)
+    assert await activity._shared_picture_pressure() == {"near_limit": False}  # switched off
+
+    monkeypatch.setattr(settings, "APP_PICTURES_PER_DAY", 10)
+    import time
+
+    monkeypatch.setattr(activity, "_SHARED_PICTURES", {"at": time.monotonic(), "used": 7})
+    assert (await activity._shared_picture_pressure())["near_limit"] is False
+    monkeypatch.setattr(activity, "_SHARED_PICTURES", {"at": time.monotonic(), "used": 8})
+    assert (await activity._shared_picture_pressure())["near_limit"] is True
+    assert set(await activity._shared_picture_pressure()) == {"near_limit"}  # nothing about other workspaces is revealed
+
+
+# ── Stage 6, text generation edge cases ──────────────────────────────────────
+def test_a_platform_listed_twice_is_written_and_paid_for_once():
+    from app.models.text import BatchGenerateRequest, GenerateTextRequest, InputSourceType, RepurposeRequest
+
+    gen = GenerateTextRequest(source_type=InputSourceType.TEXT, content="x", platforms=["LinkedIn", "Blog", "LinkedIn"], brand_id="b")
+    assert [p.value for p in gen.platforms] == ["LinkedIn", "Blog"]  # the order chosen is kept
+    rep = RepurposeRequest(source_content="x", source_platform="Blog", target_platforms=["LinkedIn", "LinkedIn"], brand_id="b",
+                           source_type=InputSourceType.TEXT)
+    assert [p.value for p in rep.target_platforms] == ["LinkedIn"]
+    batch = BatchGenerateRequest(topic_cluster="t", platforms=["Blog", "Blog"], brand_id="b")
+    assert [p.value for p in batch.platforms] == ["Blog"]
+
+
+def test_blank_source_text_is_refused_before_credits_are_reserved():
+    from pydantic import ValidationError
+
+    from app.models.text import GenerateTextRequest, InputSourceType, RepurposeRequest
+
+    for blank in ("", "   ", "\n\t "):
+        with pytest.raises(ValidationError):
+            GenerateTextRequest(source_type=InputSourceType.TEXT, content=blank, platforms=["Blog"], brand_id="b")
+    with pytest.raises(ValidationError):
+        RepurposeRequest(source_content="  ", source_platform="Blog", target_platforms=["LinkedIn"], brand_id="b", source_type=InputSourceType.TEXT)
+    ok = GenerateTextRequest(source_type=InputSourceType.TEXT, content="  a real idea  ", platforms=["Blog"], brand_id="b")
+    assert ok.content == "  a real idea  "  # what was typed is kept as typed

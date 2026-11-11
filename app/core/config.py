@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     # Denoising steps for Cloudflare FLUX schnell (1 to 8). 4 costs about 57.6 neurons a picture (about 173 a day on the
     # free allowance); 8 looks cleaner, costs about 96 (about 104 a day). Leave at 4 on the free plan.
     CLOUDFLARE_IMAGE_STEPS: int = 4
+    # How many AI pictures the whole app can make in a day on the free picture service. Members are warned when about 80% of this is
+    # used (the strip above the picture page). Set to 0 to switch the warning off, for example once the paid Workers plan is on.
+    APP_PICTURES_PER_DAY: int = 173
     # The second host for text that comes from a member's own footage (the same open model the main provider runs). Used only when the
     # main provider cannot answer; the other backup providers are never given such text. Names are settings because free lists change.
     CLOUDFLARE_TEXT_MODEL: str = "@cf/openai/gpt-oss-120b"
