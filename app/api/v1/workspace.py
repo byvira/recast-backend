@@ -41,6 +41,8 @@ class UpdateWorkspaceBody(BaseModel):
     media_upload_limits: Optional[MediaUploadLimits] = None
     # Whether posts wait for approval. Omit to leave it; null puts it back to what the plan does by default.
     require_review: Optional[bool] = None
+    # Whether to tell the owner (and whoever made the campaign) when everything scheduled has gone out and nothing is upcoming. On unless turned off.
+    queue_empty_notice: Optional[bool] = None
 
 
 class SetRoleBody(BaseModel):
@@ -317,7 +319,7 @@ async def update_workspace(
         from app.shared.activity.i18n import relocalize_soon
 
         relocalize_soon(workspace_id)
-    fresh = await workspaces.find_one({"id": workspace_id}, {"tier": 1, "require_review": 1})
+    fresh = await workspaces.find_one({"id": workspace_id}, {"tier": 1, "require_review": 1, "queue_empty_notice": 1})
     return {"workspace_id": workspace_id, **updates, "policy": policy_for(fresh)}
 
 

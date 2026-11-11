@@ -388,6 +388,9 @@ async def update_campaign(
     if "language" in payload:
         update["language"] = (payload["language"] or "").strip() or None
 
+    if payload.get("remind_when_empty") is not None:
+        update["remind_when_empty"] = bool(payload["remind_when_empty"])
+
     if payload.get("text_options") is not None:
         update["text_options"] = payload["text_options"]
 
@@ -678,6 +681,45 @@ async def start_campaign_run(
 
     pipeline_runs.start(doc, work)
     return pipeline_runs.public(doc)
+
+
+@router.get("/{campaign_id}/next-batch")
+@limiter.limit("30/minute")
+async def next_batch_preview(
+    request: Request,
+    campaign_id: str,
+    ctx: WorkspaceContext = Depends(require("create_content")),
+) -> dict[str, Any]:
+    """What making the next batch of this campaign will do, before anything is made or charged: the same settings as before, how many days,
+    posts, pictures, recordings and videos, the credits it needs, and anything that stops it or is worth fixing first. Starting it is
+    `POST /campaigns/{id}/runs`; it makes drafts for review and never publishes by itself."""
+    from app.billing import credits
+    from app.pipelines.campaigns import next_batch
+    from app.shared import pipeline_runs
+
+    campaign = await get_campaigns_collection().find_one(
+        {"id": campaign_id, "workspace_id": ctx.workspace_id, "deleted": {"$ne": True}},
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found.")
+    plan = await next_batch.preview(campaign)
+    blockers: list[str] = []
+    warnings: list[str] = []
+    if await pipeline_runs.active_run_for(ctx.workspace_id, "campaign", {"campaign_id": campaign_id}):
+        blockers.append("This campaign is already making a batch.")
+    try:
+        await entitlements.require_campaign_room(ctx.workspace_id, campaign)
+    except HTTPException as exc:
+        blockers.append(exc.detail.get("message") if isinstance(exc.detail, dict) else str(exc.detail))
+    pool = await credits.pool_for(ctx.workspace_id)
+    summary = await credits.summary(ctx.workspace_id)
+    if pool.limited:
+        blockers.append(credits.LIMITED_MESSAGE)
+    spendable = None if summary.get("left") is None else int(summary["left"]) + int(summary.get("bought_left") or 0)
+    if pool.enforced and spendable is not None and spendable < plan["credits"]:
+        blockers.append(f"This needs about {plan['credits']} credits and you have {spendable}. Buy a pack or wait for {summary.get('resets_on')}.")
+    warnings.extend(await next_batch.connection_warnings(ctx.workspace_id, plan["platforms"]))
+    return {**plan, "credits_left": spendable, "can_start": not blockers, "blockers": blockers, "warnings": warnings}
 
 
 @router.post("/{campaign_id}/generate-next-batch")

@@ -20,6 +20,7 @@ from xml.sax.saxutils import escape, quoteattr
 from PIL import Image, ImageDraw
 
 from app.models.image_asset import MAX_CHART_BARS, Layer
+from app.shared.heavy_work import stop_point
 from app.pipelines.media.icons import icon_char, is_known_icon
 from app.pipelines.media.image_layers import MAX_LAYERS, _color, _value_text
 from app.pipelines.media.image_render import BrandTokens, _fit_background, _load_font, _wrap_text
@@ -238,6 +239,7 @@ def build_svg(
     defs: list[str] = []
     body: list[str] = [f'<image width="{width}" height="{height}" href="{_data_uri(buf.getvalue())}"/>']
     for layer in layers[:MAX_LAYERS]:
+        stop_point()
         if layer.hidden:
             continue
         safe = _NOT_WORD.sub("_", layer.id)

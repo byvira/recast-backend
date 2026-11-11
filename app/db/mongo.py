@@ -302,6 +302,8 @@ async def create_indexes() -> None:
     await platform_listings.create_index([("workspace_id", 1), ("platform_key", 1)], unique=True)
     await safety_events.create_index([("created_at", -1)])
     await safety_events.create_index("fingerprint", unique=True)
+    await get_db()["queue_empty_notices"].create_index([("workspace_id", 1), ("last_post_at", 1)], unique=True)
+    await get_db()["queue_empty_notices"].create_index("at", expireAfterSeconds=180 * 24 * 3600)
     await get_db()["brand_reference_style"].create_index([("brand_id", 1), ("workspace_id", 1)], unique=True)
     await get_db()["image_templates"].create_index([("workspace_id", 1), ("created_at", -1)])
     await get_db()["safety_model_misses"].create_index("at", expireAfterSeconds=90 * 24 * 3600)

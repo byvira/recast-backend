@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from app.shared.heavy_work import stop_point
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
@@ -219,6 +220,7 @@ def build_zip(files: list[PlannedFile], media_bytes: dict[str, bytes], failed: l
     text_count = media_count = 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in files:
+            stop_point()
             if f.folder == "text":
                 zf.writestr(f"text/{f.name}", f.text or "")
                 text_count += 1

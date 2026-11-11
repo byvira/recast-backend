@@ -4,6 +4,7 @@ in PROGRESS.md's Deferred section)."""
 
 import io
 import zipfile
+from app.shared.heavy_work import stop_point
 
 
 def build_slides_zip(slides: list[tuple[str, bytes]]) -> bytes:
@@ -12,5 +13,6 @@ def build_slides_zip(slides: list[tuple[str, bytes]]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for filename, data in slides:
+            stop_point()
             zf.writestr(filename, data)
     return buf.getvalue()

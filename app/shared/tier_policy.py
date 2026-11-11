@@ -43,11 +43,13 @@ def policy_for(workspace: Optional[dict]) -> dict[str, Any]:
         "cohorts": base["cohorts"],
         "no_self_approval": review and base["no_self_approval"],
         "hidden_rules": sorted(HIDDEN_RULES.get(tier, frozenset())),
+        # whether the owner and the campaign's maker are told when everything scheduled has gone out (on unless turned off)
+        "queue_empty_notice": ws.get("queue_empty_notice") is not False,
     }
 
 
 async def workspace_policy(workspace_id: str) -> dict[str, Any]:
-    return policy_for(await workspaces.find_one({"id": workspace_id}, {"tier": 1, "require_review": 1}))
+    return policy_for(await workspaces.find_one({"id": workspace_id}, {"tier": 1, "require_review": 1, "queue_empty_notice": 1}))
 
 
 async def review_required(workspace_id: str) -> bool:

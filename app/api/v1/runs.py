@@ -38,6 +38,39 @@ async def get_run(request: Request, run_id: str, ctx: WorkspaceContext = Depends
     return pipeline_runs.public(doc)
 
 
+@router.post("/{run_id}/retry", status_code=202)
+@limiter.limit("20/minute")
+async def retry_run(request: Request, run_id: str, ctx: WorkspaceContext = Depends(require("create_content"))) -> dict[str, Any]:
+    """Starts a failed run again, as a new run with the same settings. Only work that is safe to repeat (it does the same thing when run
+    again, so it cannot double up) can be tried again; everything else says so and the member starts it again from where it began. One
+    failed run is tried again once."""
+    from app.shared import jobs
+
+    existing = await pipeline_runs.get_run(run_id, ctx.workspace_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="That run was not found.")
+    if existing.get("created_by") != ctx.user_id and ctx.role not in ("owner", "admin"):
+        raise HTTPException(status_code=403, detail="Only the person who started this, or an admin, can try it again.")
+    if existing.get("status") != "failed":
+        raise HTTPException(status_code=409, detail="Only work that failed can be tried again.")
+    if not (existing.get("restartable") and existing.get("action") and existing.get("payload")):
+        raise HTTPException(status_code=409, detail="This one can't be repeated for you. Open it and start it again.")
+    # Claimed with one write, so two quick taps (or two people) make one new run.
+    claimed = await pipeline_runs.pipeline_runs.find_one_and_update(
+        {"id": run_id, "workspace_id": ctx.workspace_id, "status": "failed", "retry_run_id": {"$exists": False}},
+        {"$set": {"retry_run_id": "starting"}},
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="This was already tried again.")
+    try:
+        run, _ = await jobs.submit(action_name=existing["action"], payload=existing["payload"], ctx=ctx)
+    except BaseException:
+        await pipeline_runs.pipeline_runs.update_one({"id": run_id, "workspace_id": ctx.workspace_id}, {"$unset": {"retry_run_id": ""}})
+        raise
+    await pipeline_runs.pipeline_runs.update_one({"id": run_id, "workspace_id": ctx.workspace_id}, {"$set": {"retry_run_id": run["id"]}})
+    return run
+
+
 @router.post("/{run_id}/{action}")
 @limiter.limit("60/minute")
 async def control_run(

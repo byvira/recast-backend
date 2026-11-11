@@ -53,7 +53,8 @@ def public(doc: Optional[dict]) -> Optional[dict]:
     """The row as the API returns it: no internal id, plus a progress percentage when the number of steps is known."""
     if not doc:
         return None
-    out = {k: v for k, v in doc.items() if k not in _INTERNAL_FIELDS}
+    out = {k: v for k, v in doc.items() if k not in _INTERNAL_FIELDS and k != "retry_run_id"}
+    out["can_retry"] = can_retry(doc)
     total = out.get("steps_total") or 0
     if out.get("status") == "done":
         out["progress"] = 100
@@ -64,6 +65,14 @@ def public(doc: Optional[dict]) -> Optional[dict]:
     # `progress` is kept for existing readers. A campaign also has a `progress` (post counts), so the percentage has its own name too.
     out["progress_percent"] = out["progress"]
     return out
+
+
+def can_retry(doc: dict) -> bool:
+    """Whether a failed run can be started again for the member: it came from a job that is safe to repeat (running it again does
+    the same thing, so a second try can never double up), its settings were kept, and it has not been tried again already."""
+    return bool(
+        doc.get("status") == "failed" and doc.get("restartable") and doc.get("action") and doc.get("payload") and not doc.get("retry_run_id")
+    )
 
 
 MAX_ACTIVE_PER_WORKSPACE = 3

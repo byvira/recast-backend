@@ -507,6 +507,7 @@ async def record_system(
     diff: Optional[dict] = None,
     restore: Optional[dict] = None,
     target_label: Optional[str] = None,
+    member_user_id: Optional[str] = None,
 ) -> None:
     """Record one piece of work that isn't a bus event — autonomous jobs
     (scheduler, retries, token refreshes) or an outcome with no event of its
@@ -540,5 +541,7 @@ async def record_system(
         "metadata": metadata or None,
         "diff": diff,
         "restore": restore,
+        # with visibility "member", only this person sees the row (and gets the device notice for it)
+        **({"member_user_id": member_user_id} if member_user_id else {}),
         "occurred_at": occurred_at or datetime.now(timezone.utc),
     })

@@ -321,6 +321,9 @@ def _retry_for(run: dict) -> dict | None:
         return {"kind": "campaign", "campaign_id": run["ref"]["campaign_id"]}
     if run["kind"] == "odette":
         return {"kind": "odette"}
+    # work started as a background job that is safe to repeat: it is started again with the settings it kept
+    if pipeline_runs.can_retry(run):
+        return {"kind": "job", "run_id": run["id"]}
     return None
 
 

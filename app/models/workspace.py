@@ -87,6 +87,7 @@ class Workspace(BaseModel):
     generation_halted: bool = False
     # Whether posts wait for approval. None means "what the plan does by default" (see app.shared.tier_policy).
     require_review: Optional[bool] = None
+    queue_empty_notice: Optional[bool] = None
     created_at: datetime
     updated_at: datetime
 

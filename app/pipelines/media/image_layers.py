@@ -21,6 +21,7 @@ from uuid import uuid4
 from PIL import Image, ImageDraw, ImageFilter
 
 from app.models.image_asset import MAX_CHART_BARS, Layer
+from app.shared.heavy_work import stop_point
 from app.pipelines.media.icons import DEFAULT_ACCENT_ICON, icon_char, is_known_icon, load_icon_font
 from app.pipelines.media.image_render import (
     BrandTokens,
@@ -261,6 +262,7 @@ def render_layers(
     canvas = apply_effects(canvas, primary_hex=brand.primary_hex, accent_hex=brand.accent_hex, effects=effects)
 
     for layer in layers[:MAX_LAYERS]:
+        stop_point()  # a cancelled picture ends between layers
         if layer.hidden:
             continue
         tile = _tile_for(layer, width, height, brand, assets)

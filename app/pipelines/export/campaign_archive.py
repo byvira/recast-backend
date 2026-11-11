@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from app.shared.heavy_work import stop_point
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, tzinfo
 from typing import Optional
@@ -112,6 +113,7 @@ def build_zip(campaign_title: str, posts: list[CampaignPost], media_bytes: dict[
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{naming.slugify(campaign_title, fallback='campaign')}.docx", build_docx(campaign_title, posts, missing))
         for m in all_media:
+            stop_point()
             if m.path in media_bytes:
                 zf.writestr(m.path, media_bytes[m.path])
     return buf.getvalue()

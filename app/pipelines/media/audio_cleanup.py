@@ -20,6 +20,7 @@ from typing import Optional
 
 import noisereduce as nr
 import numpy as np
+from app.shared.heavy_work import stop_point
 import pyloudnorm as pyln
 import soundfile as sf
 
@@ -381,13 +382,16 @@ def apply_cleanup(
     # 2. Per-channel processing.
     channels = []
     for ch in range(data.shape[1]):
+        stop_point()
         x = data[:, ch].astype("float32")
         if settings.highpass_hz:
             x = sosfiltfilt(butter(4, settings.highpass_hz, btype="high", fs=sr, output="sos"), x).astype("float32")
         if settings.lowpass_hz and settings.lowpass_hz < sr / 2 - 100:
             x = sosfiltfilt(butter(4, settings.lowpass_hz, btype="low", fs=sr, output="sos"), x).astype("float32")
+        stop_point()
         if settings.noise_reduction:
             x = nr.reduce_noise(y=x, sr=sr, prop_decrease=settings.noise_reduction).astype("float32")
+        stop_point()
         if settings.de_esser:
             x = _de_ess(x, sr, settings.de_esser)
         if settings.compressor:

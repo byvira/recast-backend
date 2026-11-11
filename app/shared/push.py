@@ -43,7 +43,7 @@ TTL_SECONDS = 24 * 3600
 ICONS = {
     "failed": "failed", "needs_you": "review", "ready": "ready", "post_published": "published", "credits": "credits",
     "billing": "billing", "recommendation": "idea", "account_connected": "account", "security_event": "account",
-    "workspace_alert": "account",
+    "workspace_alert": "account", "queue_empty": "idea",
 }
 
 

@@ -12,6 +12,7 @@ one-off HTTP response.
 import io
 import os
 from datetime import datetime, timezone
+from app.shared.heavy_work import stop_point
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
@@ -74,6 +75,7 @@ def generate_pieces_pdf(pieces: list[GeneratedPiece], brand_name: str = "") -> b
         return bytes(pdf.output())
 
     for piece in real_pieces:
+        stop_point()
         pdf.set_font("Poppins", "B", 13)
         _line(pdf, 9, _platform_label(piece))
         pdf.set_font("Poppins", "", 11)
@@ -100,6 +102,7 @@ def generate_carousel_pdf(slides: list[bytes]) -> bytes:
     pdf.set_auto_page_break(auto=False)
 
     for image_bytes in slides:
+        stop_point()
         pdf.add_page()
         img = Image.open(io.BytesIO(image_bytes))
         page_w, page_h = pdf.w, pdf.h

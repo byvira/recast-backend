@@ -211,6 +211,8 @@ class Campaign(BaseModel):
     # convenience/ordering record, not the source of truth for membership.
     piece_ids: list[str] = Field(default_factory=list)
     last_generated_at: Optional[datetime] = None
+    # Whether to tell the owner and the person who made it when everything scheduled has gone out and nothing is upcoming.
+    remind_when_empty: bool = True
     created_by: str
     created_at: datetime
     updated_at: datetime
@@ -243,3 +245,4 @@ class UpdateCampaignRequest(BaseModel):
     media_plan: Optional[CampaignMediaPlan] = None
     text_options: Optional[CampaignTextOptions] = None
     language: Optional[str] = Field(default=None, max_length=16)
+    remind_when_empty: Optional[bool] = None
