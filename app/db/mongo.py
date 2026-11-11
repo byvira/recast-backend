@@ -577,6 +577,26 @@ async def create_indexes() -> None:
     await get_db()["video_review_decisions"].create_index([("link_id", 1), ("at", -1)])
     await get_db()["api_keys"].create_index("hash", unique=True)
     await get_db()["api_keys"].create_index([("workspace_id", 1), ("created_at", -1)])
+    from app.tools import ledger as _tool_ledger
+
+    await _tool_ledger.create_indexes()
+    from app.tools import undo as _tool_undo
+
+    await _tool_undo.create_indexes()
+    from app.tools import ops as _tool_ops
+
+    await _tool_ops.create_indexes()
+    from app.core import failures as _failures
+
+    await _failures.create_indexes()
+    from app.tools import compose as _compose
+
+    await _compose.create_indexes()
+    from app.tools import email_in as _email_in
+    from app.tools import links as _links
+
+    await _links.create_indexes()
+    await _email_in.create_indexes()
     # plans: one saved row per plan, the change log, and the workspaces that share a paid workspace's plan
     await get_db()["billing_plans"].create_index("id", unique=True)
     await get_db()["billing_audit"].create_index([("at", -1)])

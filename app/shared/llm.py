@@ -33,6 +33,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 import aiofiles
 from fastapi import HTTPException
+
+from app.core.failures import AIUnavailable
 from google import genai
 from google.genai import types
 from groq import APIConnectionError, APIStatusError, AsyncGroq, InternalServerError, RateLimitError
@@ -768,7 +770,7 @@ async def call_llm(
             return result
         except Exception as exc:
             logger.error("Gemini fallback also failed (breaker open): %s", exc)
-            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+            raise AIUnavailable(detail="LLM service unavailable.")
 
     try:
         result = await _backoff_retry(
@@ -793,9 +795,7 @@ async def call_llm(
                 return await call_llm_fallback(prompt=prompt, system=system)
             except Exception as exc:
                 logger.error("Gemini fallback also failed: %s", exc)
-                raise HTTPException(
-                    status_code=503,
-                    detail="LLM rate limit. Please try again in 60 seconds.",
+                raise AIUnavailable(detail="LLM rate limit. Please try again in 60 seconds.",
                 )
 
     except APIConnectionError as exc:
@@ -805,7 +805,7 @@ async def call_llm(
             return await call_llm_fallback(prompt=prompt, system=system)
         except Exception as fallback_exc:
             logger.error("Gemini fallback also failed: %s", fallback_exc)
-            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+            raise AIUnavailable(detail="LLM service unavailable.")
 
     except APIStatusError as exc:
         # Distinct from RateLimitError (429, retrying/waiting can fix it):
@@ -824,7 +824,7 @@ async def call_llm(
             return await call_llm_fallback(prompt=prompt, system=system)
         except Exception as fallback_exc:
             logger.error("Gemini fallback also failed: %s", fallback_exc)
-            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+            raise AIUnavailable(detail="LLM service unavailable.")
 
     except HTTPException:
         raise
@@ -836,7 +836,7 @@ async def call_llm(
             return await call_llm_fallback(prompt=prompt, system=system)
         except Exception as fallback_exc:
             logger.error("Backup models also failed after an unexpected error: %s", fallback_exc)
-            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+            raise AIUnavailable(detail="LLM service unavailable.")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -883,7 +883,7 @@ async def call_llm_stream(
         try:
             text = await call_llm_fallback(prompt=prompt, system=system)
         except Exception:
-            raise HTTPException(status_code=503, detail="LLM rate limit. Please try again in 60 seconds." if rate_limited else "LLM service unavailable.")
+            raise AIUnavailable(detail="LLM rate limit. Please try again in 60 seconds." if rate_limited else "LLM service unavailable.")
         if text:
             yield text
 
@@ -932,7 +932,7 @@ async def call_llm_stream(
             except Exception:  # noqa: BLE001
                 pass
         if started:
-            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+            raise AIUnavailable(detail="LLM service unavailable.")
         async for piece in _whole_from_fallback(rate_limited=isinstance(exc, RateLimitError)):
             yield piece
     except Exception as exc:
@@ -1121,9 +1121,7 @@ async def call_llm_chat(
                 return await call_llm_fallback(prompt=_flatten_chat(messages), system=system)
             except Exception as exc:
                 logger.error("Gemini fallback also failed on chat: %s", exc)
-                raise HTTPException(
-                    status_code=503,
-                    detail="LLM rate limit. Please try again in 60 seconds.",
+                raise AIUnavailable(detail="LLM rate limit. Please try again in 60 seconds.",
                 )
     except APIConnectionError as exc:
         logger.error("Groq connection error in chat: %s — falling back to Gemini", exc)
@@ -1131,7 +1129,7 @@ async def call_llm_chat(
             return await call_llm_fallback(prompt=_flatten_chat(messages), system=system)
         except Exception as fallback_exc:
             logger.error("Gemini fallback also failed on chat: %s", fallback_exc)
-            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+            raise AIUnavailable(detail="LLM service unavailable.")
     except APIStatusError as exc:
         # Same reasoning as call_llm()'s branch: a 413 means this request's
         # prompt + max_tokens already exceeds the account's per-minute
@@ -1144,7 +1142,7 @@ async def call_llm_chat(
             return await call_llm_fallback(prompt=_flatten_chat(messages), system=system)
         except Exception as fallback_exc:
             logger.error("Gemini fallback also failed on chat: %s", fallback_exc)
-            raise HTTPException(status_code=503, detail="LLM service unavailable.")
+            raise AIUnavailable(detail="LLM service unavailable.")
     except Exception as exc:
         logger.error("Unexpected call_llm_chat error: %s", exc)
         raise HTTPException(status_code=500, detail="Unexpected error during chat.")
@@ -1453,7 +1451,7 @@ async def call_llm_fallback(
             if text is not None:
                 return text
         logger.warning("Backup providers are not used for private content; the call fails instead.")
-        raise HTTPException(status_code=503, detail="LLM service unavailable.")
+        raise AIUnavailable(detail="LLM service unavailable.")
     add_run_metadata(gemini_model=model.value)
 
     # 1. Gemini, unless it was just refused outright (key, access or model problem): then it is skipped for a while
@@ -1486,7 +1484,7 @@ async def call_llm_fallback(
     if text is not None:
         return text
     _note_fallback_failed(model.value)
-    raise HTTPException(status_code=503, detail="LLM service unavailable.")
+    raise AIUnavailable(detail="LLM service unavailable.")
 
 
 # ─────────────────────────────────────────────────────────────

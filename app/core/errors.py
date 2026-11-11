@@ -49,7 +49,8 @@ def make_handlers(allowed_origins: Iterable[str]):
         logger.warning("Rate limit exceeded | PATH=%s | IP=%s", request.url.path, request.client.host if request.client else "unknown")
         return JSONResponse(
             status_code=429,
-            content={"detail": "Too many requests. Please wait a moment and try again.", "code": "rate_limited", "retry_after": retry_after},
+            content={"detail": "Too many requests. Please wait a moment and try again.", "code": "rate_limited", "retry_after": retry_after,
+                     "retryable": True, "retry_after_seconds": retry_after},
             headers={"Retry-After": str(retry_after), **cors_headers(request, origins)},
         )
 
@@ -65,7 +66,20 @@ def make_handlers(allowed_origins: Iterable[str]):
             except Exception:  # noqa: BLE001 - the English message is a correct answer
                 detail = exc.detail
         headers = dict(getattr(exc, "headers", None) or {})
-        return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=headers or None)
+        # The same fields on every failure, beside `detail` (which is unchanged, so every screen reads what it always read): a stable code,
+        # whether trying again can help, and how long to wait. Tools, the command line and assistants read these instead of guessing.
+        from app.core import failures
+
+        named = getattr(exc, "code", None)
+        if named == "ai_busy":
+            f = failures.ai_busy(int(getattr(exc, "retry_after", 60)))
+        else:
+            f = failures.from_upstream(exc.status_code, exc.detail)
+        extra = {"code": named or f.code, "retryable": f.retryable}
+        if f.retry_after_seconds is not None:
+            extra["retry_after_seconds"] = f.retry_after_seconds
+            headers.setdefault("Retry-After", str(f.retry_after_seconds))
+        return JSONResponse(status_code=exc.status_code, content={"detail": detail, **extra}, headers=headers or None)
 
     async def unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled error | %s %s", request.method, request.url.path)
@@ -78,7 +92,7 @@ def make_handlers(allowed_origins: Iterable[str]):
         )
         return JSONResponse(
             status_code=500,
-            content={"detail": "Something went wrong on our side. Please try again.", "code": "server_error"},
+            content={"detail": "Something went wrong on our side. Please try again.", "code": "server_error", "retryable": True, "retry_after_seconds": 30},
             headers=cors_headers(request, origins),
         )
 

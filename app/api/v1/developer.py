@@ -1,13 +1,14 @@
 """Where an owner or admin manages the public API: workspace keys and webhooks. The key and the webhook secret are shown once, in the
 answer that makes them, and never again."""
 
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, require
+from app.tools import credentials, ops
 from app.video import api_keys, webhooks
 
 router = APIRouter()
@@ -85,3 +86,68 @@ async def test_webhook(request: Request, hook_id: str, ctx: WorkspaceContext = D
 @limiter.limit("60/minute")
 async def webhook_deliveries(request: Request, hook_id: str, ctx: WorkspaceContext = Depends(_MANAGE)) -> dict[str, Any]:
     return {"deliveries": await webhooks.recent_deliveries(ctx.workspace_id, hook_id)}
+
+
+class ToolKeyBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+    scopes: list[str] = Field(default_factory=lambda: ["read"], max_length=5)
+    capabilities: list[str] = Field(default_factory=list, max_length=4)
+    credit_cap: Optional[int] = Field(default=credentials.DEFAULT_CREDIT_CAP, ge=1, le=credentials.MAX_CREDIT_CAP)
+    days: int = Field(default=credentials.DEFAULT_DAYS, ge=1, le=credentials.MAX_DAYS)
+    allow_approve: bool = False
+
+
+@router.get("/tool-keys")
+@limiter.limit("60/minute")
+async def list_tool_keys(request: Request, ctx: WorkspaceContext = Depends(_MANAGE)) -> dict[str, Any]:
+    return {"keys": await credentials.list_tool_keys(ctx.workspace_id), "scopes": ["read", "create", "publish", "approve"],
+            "capabilities": list(credentials.CAPABILITIES)}
+
+
+@router.post("/tool-keys", status_code=201)
+@limiter.limit("10/minute")
+async def create_tool_key(request: Request, body: ToolKeyBody, ctx: WorkspaceContext = Depends(_MANAGE)) -> dict[str, Any]:
+    if body.allow_approve and ctx.role != "owner":
+        raise HTTPException(status_code=403, detail="Only the owner can let a key approve.")
+    try:
+        record, plain = await credentials.create_key(
+            ctx.workspace_id, ctx.user_id, body.name, body.scopes, capabilities=body.capabilities, credit_cap=body.credit_cap,
+            days=body.days, allow_approve=body.allow_approve,
+        )
+    except credentials.CredentialError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"key": record, "secret": plain, "note": "Copy this key now. It is not shown again."}
+
+
+class SwitchBody(BaseModel):
+    all_off: bool = False
+    off_tools: list[str] = Field(default_factory=list, max_length=400)
+
+
+@router.get("/tool-switches")
+@limiter.limit("60/minute")
+async def get_tool_switches(request: Request, ctx: WorkspaceContext = Depends(_MANAGE)) -> dict[str, Any]:
+    """What this workspace has switched off for connected apps, keys and assistants."""
+    state = await ops.switch_state()
+    mine = next((s for s in state["workspaces"] if s["workspace_id"] == ctx.workspace_id), {"all_off": False, "off_tools": []})
+    return {"all_off": mine["all_off"], "off_tools": mine["off_tools"], "everything_off_by_ekavo": state["global"]["off"]}
+
+
+@router.put("/tool-switches")
+@limiter.limit("20/minute")
+async def put_tool_switches(request: Request, body: SwitchBody, ctx: WorkspaceContext = Depends(_MANAGE)) -> dict[str, Any]:
+    """Switch every connected app off for this workspace, or only chosen tools. Takes effect on the next call."""
+    try:
+        changed = await ops.set_workspace(ctx.workspace_id, body.all_off, body.off_tools)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"There is no tool called {exc.args[0]!r}.")
+    return {"all_off": changed["after"]["all_off"], "off_tools": changed["after"]["off_tools"]}
+
+
+@router.get("/tool-keys/{key_id}/usage")
+@limiter.limit("60/minute")
+async def tool_key_usage(request: Request, key_id: str, ctx: WorkspaceContext = Depends(_MANAGE)) -> dict[str, Any]:
+    found = await credentials.usage(ctx.workspace_id, key_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail="That key was not found.")
+    return found

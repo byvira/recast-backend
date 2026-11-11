@@ -33,6 +33,7 @@ from app.workers.video_automation import run_due_video_recipes
 from app.workers.webhook_retries import retry_video_webhooks
 from app.shared.invites import lead_digest, sweep_invites
 from app.workers.daily_summary import write_daily_summaries
+from app.tools.digest import send_digests
 from app.workers.queue_empty import notify_empty_queues
 from app.workers.link_checks import check_old_post_links
 from app.workers.run_reminders import remind_about_paused_runs
@@ -199,6 +200,8 @@ JOBS: list[Job] = [
     Job("link_checks", _no_ctx(check_old_post_links), minute=frozenset({13}), hour=frozenset({3})),
     # A short note in each workspace's Activity Log about the day before, at 03:31 UTC (early morning in India).
     Job("daily_summary", _no_ctx(write_daily_summaries), minute=frozenset({31}), hour=frozenset({3})),
+    # The morning digest for people who switched it on: what waits for them, with one-tap buttons. Nothing waiting sends nothing.
+    Job("tool_digest", _no_ctx(send_digests), minute=frozenset({46}), hour=frozenset({3})),
     # Tells a workspace when everything scheduled has gone out and nothing is upcoming, at 06:17 UTC (late morning in India).
     Job("queue_empty", _no_ctx(notify_empty_queues), minute=frozenset({17}), hour=frozenset({6})),
     # Trust score (shadow mode) — daily at 02:41 UTC.

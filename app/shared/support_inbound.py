@@ -201,6 +201,11 @@ async def handle_event(event: dict, fetch: Fetcher = fetch_received, fetch_files
     email_id = str(data.get("email_id") or data.get("id") or "")
     if not email_id:
         return "ignored"
+    # a message to a workspace's drafts address is not a support reply: the drafts channel takes it (see app.tools.email_in)
+    if any("+d-" in str(address) for address in data.get("to") or []):
+        from app.tools import email_in
+
+        return await email_in.handle({**data, "email_id": email_id}, fetch)
     try:
         await support_inbound_emails.insert_one({"email_id": email_id, "at": datetime.now(timezone.utc), "outcome": "working"})
     except DuplicateKeyError:

@@ -204,7 +204,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.pipelines.media.image_generation import image_tiers_in_use
     if not image_tiers_in_use():
-        logger.warning("No picture service is switched on, so every picture will be a text card.")
+        logger.warning("No picture service is switched on, so pictures cannot be made until one is switched on.")
 
     # Start scheduler — every background job (publishing, campaigns, token
     # renewal, analytics, Remy/Odette, autonomy) is registered from one list,
@@ -448,6 +448,18 @@ from app.api.v1 import developer as developer_router
 app.include_router(developer_router.router, prefix="/api/v1/developer", tags=["Developer"])
 from app.api.v1 import public_video as public_video_router
 app.include_router(public_video_router.router, prefix="/api/v1/public/video", tags=["Public video API"])
+from app.api.v1 import public_tools as public_tools_router
+app.include_router(public_tools_router.router, prefix="/api/public/v1", tags=["Public tools API"])
+from app.api.v1 import ops_tools as ops_tools_router
+app.include_router(ops_tools_router.router, prefix="/api/v1/ops/tools", tags=["Ops"], dependencies=[Depends(area_guard("platform"))])
+from app.api.v1 import tool_changes as tool_changes_router
+app.include_router(tool_changes_router.router, prefix="/api/v1/tool-changes", tags=["Tool changes"])
+from app.api.v1 import public_links as public_links_router
+app.include_router(public_links_router.router, prefix="/api/v1/public/links", tags=["One-tap links"])
+from app.api.v1 import tool_reach as tool_reach_router
+app.include_router(tool_reach_router.router, prefix="/api/v1/tool-reach", tags=["Reach"])
+from app.api.v1 import tool_approvals as tool_approvals_router
+app.include_router(tool_approvals_router.router, prefix="/api/v1/tool-approvals", tags=["Tool approvals"])
 from app.api.v1 import public_status as public_status_router
 app.include_router(public_status_router.router, prefix="/api/v1/public/status", tags=["Status"])
 from app.api.v1 import public_pricing as public_pricing_router

@@ -492,7 +492,7 @@ def test_limited_things_are_only_created_in_places_that_check_the_plan():
     allowed_writers = {
         "brand_profiles.insert_one": {"app/api/v1/brand.py"},
         "get_campaigns_collection().insert_one": {"app/api/v1/campaigns.py"},
-        "_keys().insert_one": {"app/video/api_keys.py"},
+        "_keys().insert_one": {"app/video/api_keys.py", "app/tools/credentials.py"},
         "workspace_members.insert_one": {"app/api/v1/invites.py", "app/api/v1/workspace.py", "app/core/workspace.py"},
     }
     found: dict[str, set[str]] = {k: set() for k in allowed_writers}
@@ -503,6 +503,7 @@ def test_limited_things_are_only_created_in_places_that_check_the_plan():
             if needle in text:
                 found[needle].add(rel)
     assert found == allowed_writers
+    assert "require_room" in (APP / "tools" / "credentials.py").read_text(encoding="utf-8")      # tool keys count against the same plan limit
 
 
 def test_every_picture_is_made_through_a_path_that_checks_the_daily_allowance():

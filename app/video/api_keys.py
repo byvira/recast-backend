@@ -83,6 +83,9 @@ async def authenticate(plain: str) -> Optional[dict]:
     doc = await _keys().find_one({"hash": _hash(plain), "revoked": {"$ne": True}})
     if not doc:
         return None
+    expires = doc.get("expires_at")
+    if isinstance(expires, datetime) and (expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)) <= _now():
+        return None
     last = doc.get("last_used_at")
     if not last or _now() - (last if last.tzinfo else last.replace(tzinfo=timezone.utc)) > TOUCH_EVERY:
         await _keys().update_one({"id": doc["id"]}, {"$set": {"last_used_at": _now()}})
