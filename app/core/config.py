@@ -215,6 +215,9 @@ class Settings(BaseSettings):
     GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
     GEMINI_TTS_VOICE: str = "Kore"
     VOXTRAL_MODEL: str = "voxtral-mini-latest"
+    # Backup text embeddings, checked live 2026-11-11. Vectors from different models cannot be compared, so each answer says which model made it.
+    MISTRAL_EMBED_MODEL: str = "mistral-embed"
+    CLOUDFLARE_EMBED_MODEL: str = "@cf/baai/bge-m3"
     # Read each connected account's picture, display name and follower count from its platform (in the background, at most once a day).
     PROFILE_REFRESH_ENABLED: bool = True
 

@@ -62,6 +62,9 @@ os.environ["SENTRY_DSN"] = ""
 for _name in ("MISTRAL_API_KEY", "OPENROUTER_API_KEY", "NVIDIA_API_KEY", "HUGGINGFACE_API_TOKEN"):
     os.environ[_name] = ""
 os.environ["POLLINATIONS_ENABLED"] = "false"
+os.environ["STABLEHORDE_ENABLED"] = "false"
+# The backup narration voice is a real Gemini call, so tests switch it on only where they stub it.
+os.environ["GEMINI_TTS_ENABLED"] = "false"
 # Tests never read a connected account's profile from a platform.
 os.environ["PROFILE_REFRESH_ENABLED"] = "false"
 # The sending address in .env never decides what a test sees: with none set, the test sender is used.

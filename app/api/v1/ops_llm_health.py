@@ -124,9 +124,21 @@ async def get_providers(request: Request, user: dict = Depends(require_platform_
 @limiter.limit("60/minute")
 async def get_chains(request: Request, user: dict = Depends(require_platform_staff)) -> dict:
     """The fallback chain for every kind of work, each step with its live state. A chain with one working step is "thin"; with none, "broken"."""
-    from app.shared.llm_health import chains
+    from app.shared.llm_health import chains, probe
 
-    return {"chains": chains.describe(await service.provider_states())}
+    return {"chains": chains.describe(await service.provider_states(), await probe.all_readings())}
+
+
+@router.post("/chains/check")
+@limiter.limit("3/hour")
+async def check_models(request: Request, user: dict = Depends(require_platform_staff)) -> dict:
+    """Runs the model check now: one tiny real call to every model in every chain (pictures and voice included, which spend a little real allowance),
+    then returns the chains with what it found. The same check runs on its own four times a day."""
+    from app.shared.llm_health import chains, probe
+
+    summary = await probe.run(force=True)
+    await service.audit("chains.check", user, f"{summary.get('ok')} of {summary.get('checked')} answered")
+    return {"summary": summary, "chains": chains.describe(await service.provider_states(), await probe.all_readings())}
 
 
 @router.post("/providers/ping")
@@ -180,7 +192,16 @@ async def notifications(request: Request, user: dict = Depends(require_platform_
             })
     from app.shared.llm_health import chains
 
-    for chain in chains.describe(states):
+    from app.shared.llm_health import probe
+
+    readings = await probe.all_readings()
+    for chain in chains.describe(states, readings):
+        for step in chain["steps"]:
+            if step.get("retired"):
+                out.append({
+                    "id": f"llm-retired-{chain['id']}-{step['provider']}-{step['model']}-{now[:10]}", "kind": "llm_model", "at": now,
+                    "title": f"{step['label']} no longer has {step['model']}", "detail": "Change the model name in the server settings.", "href": "/ops/llm",
+                })
         if chain["depth"] != "ok":
             word = "has no working step" if chain["depth"] == "broken" else "is down to one working step"
             out.append({

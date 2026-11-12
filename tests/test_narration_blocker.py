@@ -14,6 +14,7 @@ def test_standard_voice_languages_are_never_blocked(monkeypatch):
 
 
 def test_tamil_with_the_offline_voice_says_to_pick_a_premium_voice(monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_TTS_ENABLED", False)
     monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "key")
     monkeypatch.setattr(settings, "ELEVENLABS_API_KEY", "key")
     monkeypatch.setattr(settings, "ELEVENLABS_ENABLED", True)
@@ -22,6 +23,7 @@ def test_tamil_with_the_offline_voice_says_to_pick_a_premium_voice(monkeypatch):
 
 
 def test_tamil_without_the_premium_service_says_it_is_not_switched_on(monkeypatch):
+    monkeypatch.setattr(settings, "GEMINI_TTS_ENABLED", False)
     monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "key")
     monkeypatch.setattr(settings, "ELEVENLABS_ENABLED", False)
     reason = tts.narration_blocker("Tamil", _voice("abc123"))
@@ -34,3 +36,16 @@ def test_tamil_with_a_real_voice_is_allowed(monkeypatch):
     monkeypatch.setattr(settings, "ELEVENLABS_ENABLED", True)
     monkeypatch.setattr(tts, "_elevenlabs_skip_until", 0.0)
     assert tts.narration_blocker("Tamil", _voice("21m00Tcm4TlvDq8ikWAM")) is None
+
+
+def test_hindi_and_tamil_are_never_blocked_while_gemini_speech_is_on_but_other_languages_still_are(monkeypatch):
+    monkeypatch.setattr(settings, "DEEPGRAM_API_KEY", "key")
+    monkeypatch.setattr(settings, "ELEVENLABS_ENABLED", False)
+    monkeypatch.setattr(settings, "GEMINI_TTS_ENABLED", True)
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "key")
+    assert tts.narration_blocker("Tamil", _voice("piper_lessac")) is None
+    assert tts.narration_blocker("hi", _voice("piper_lessac")) is None
+    blocked = tts.narration_blocker("Korean", _voice("piper_lessac"))
+    assert blocked and "Hindi" in blocked and "Tamil" in blocked
+    monkeypatch.setattr(settings, "GEMINI_TTS_ENABLED", False)
+    assert "isn't switched on" in tts.narration_blocker("Tamil", _voice("piper_lessac"))

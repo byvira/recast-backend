@@ -104,12 +104,14 @@ async def _fit_for_whisper(audio_bytes: bytes, filename: str) -> tuple[bytes, st
 
 async def transcribe_audio_detailed(
     audio_bytes: bytes, filename: str, language: Optional[str] = None, punctuate: Optional[bool] = None,
-    prefer_turbo: bool = False,
+    prefer_turbo: bool = False, strict: bool = False,
 ) -> tuple[list[TranscriptWord], Optional[str]]:
     """Real Groq Whisper call, word-level timestamps, plus the language
     Whisper detected. `language=None` lets Whisper auto-detect — the old
     hard-coded "en" made any non-English recording come back as garbled
-    English. Returns ([], None) (never raises) on any provider failure."""
+    English. Returns ([], None) on any provider failure, unless `strict`: then every provider failing raises a retryable
+    "speech-to-text is busy" error (`AIUnavailable`, kind transcription), so a caller that was asked to transcribe can tell a service
+    that is down from a recording with no speech in it (which is still an empty result, not an error)."""
     try:
         audio_bytes, filename = await _fit_for_whisper(audio_bytes, filename)
         client = get_groq_client()
@@ -170,18 +172,23 @@ async def transcribe_audio_detailed(
         return made, getattr(response, "language", None) or language
     except Exception as exc:  # noqa: BLE001
         logger.warning("Transcription failed, leaving transcript empty: %s", exc)
+        if strict:
+            from app.core import failures
+            from app.core.failures import AIUnavailable
+
+            raise AIUnavailable(failures.ai_busy(kind="transcription").message, retry_after=60, kind="transcription") from exc
         return [], None
 
 
 async def transcribe_audio_bytes(
-    audio_bytes: bytes, filename: str, language: Optional[str] = None, punctuate: Optional[bool] = None,
+    audio_bytes: bytes, filename: str, language: Optional[str] = None, punctuate: Optional[bool] = None, strict: bool = False,
 ) -> list[TranscriptWord]:
     """Word-level transcript only. `language=None` lets the provider detect it (a forced "en" garbled every non-English
     recording). Returns an empty list (never raises) on
     any provider failure — an uploaded file with no transcript yet is a
     real, honest state (matches AudioAsset.transcript's own default `[]`),
     not a reason to fail the whole upload."""
-    words, _ = await transcribe_audio_detailed(audio_bytes, filename, language, punctuate)
+    words, _ = await transcribe_audio_detailed(audio_bytes, filename, language, punctuate, strict=strict)
     return words
 
 

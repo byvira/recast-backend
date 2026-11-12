@@ -109,6 +109,18 @@ async def _llm_digest() -> None:
     await service.send_daily_digest()
 
 
+async def _model_probe() -> None:
+    from app.core.scheduler_lock import distributed_job_lock
+    from app.shared.llm_health import probe
+
+    @distributed_job_lock("model_probe", ttl_seconds=1200)
+    async def run() -> None:
+        summary = await probe.run()
+        logger.info("Model check: %s of %s answered.", summary.get("ok"), summary.get("checked"))
+
+    await run()
+
+
 async def _billing_webhooks() -> None:
     from app.billing import watch
 
@@ -202,6 +214,9 @@ JOBS: list[Job] = [
     Job("daily_summary", _no_ctx(write_daily_summaries), minute=frozenset({31}), hour=frozenset({3})),
     # The morning digest for people who switched it on: what waits for them, with one-tap buttons. Nothing waiting sends nothing.
     Job("tool_digest", _no_ctx(send_digests), minute=frozenset({46}), hour=frozenset({3})),
+    # One tiny call to every model the product relies on, four times a day, so a retired or silent model is found before a member hits it.
+    # Pictures and voice, which spend real allowance, are only checked once a day inside the run.
+    Job("model_probe", _no_ctx(_model_probe), minute=frozenset({12}), hour=frozenset({1, 7, 13, 19})),
     # Tells a workspace when everything scheduled has gone out and nothing is upcoming, at 06:17 UTC (late morning in India).
     Job("queue_empty", _no_ctx(notify_empty_queues), minute=frozenset({17}), hour=frozenset({6})),
     # Trust score (shadow mode) — daily at 02:41 UTC.

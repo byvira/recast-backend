@@ -90,6 +90,16 @@ ELEVENLABS_SUPPORTED_LANGUAGES = {
 DEEPGRAM_SUPPORTED_LANGUAGES = {"english", "spanish", "german", "french", "dutch", "italian", "japanese"}
 
 
+# Languages Gemini speech was checked on by reading its audio back (2026-11-12: Hindi and Tamil came back almost word for word through Whisper).
+# Gemini documents more languages, but a language is added here only after the same read-back check, so a voice never reads a script it
+# cannot read and gets saved as if it did.
+GEMINI_SUPPORTED_LANGUAGES = {"hindi", "tamil"}
+
+
+def _gemini_voice_available() -> bool:
+    return bool(settings.GEMINI_TTS_ENABLED and settings.GEMINI_API_KEY)
+
+
 def is_language_supported(language: str) -> tuple[bool, str]:
     """Real check against whichever provider(s) are actually configured,
     not just ElevenLabs' broader list — a language ElevenLabs supports
@@ -100,7 +110,9 @@ def is_language_supported(language: str) -> tuple[bool, str]:
         return True, ""
     if settings.DEEPGRAM_API_KEY and lang in DEEPGRAM_SUPPORTED_LANGUAGES:
         return True, ""
-    if not settings.ELEVENLABS_API_KEY and not settings.DEEPGRAM_API_KEY:
+    if _gemini_voice_available() and lang in GEMINI_SUPPORTED_LANGUAGES:
+        return True, ""
+    if not settings.ELEVENLABS_API_KEY and not settings.DEEPGRAM_API_KEY and not _gemini_voice_available():
         return False, "No voice is set up on this server yet."
     return False, f"The voices available right now cannot speak '{language}'. Choose another language."
 
@@ -114,8 +126,10 @@ def narration_blocker(language: str, voice_settings: MemberVoiceSettings) -> Opt
     lang = LANGUAGE_NAMES.get(lang.split("-")[0], lang).lower() if "+" not in lang else lang
     if lang in DEEPGRAM_SUPPORTED_LANGUAGES and settings.DEEPGRAM_API_KEY:
         return None
+    if lang in GEMINI_SUPPORTED_LANGUAGES and _gemini_voice_available():
+        return None
     name = lang.title() if language else "that language"
-    backup = ", ".join(sorted(n.title() for n in DEEPGRAM_SUPPORTED_LANGUAGES))
+    backup = ", ".join(sorted(n.title() for n in DEEPGRAM_SUPPORTED_LANGUAGES | (GEMINI_SUPPORTED_LANGUAGES if _gemini_voice_available() else set())))
     if not (settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED):
         return f"{name} narration needs the premium voice service, which isn't switched on. The standard voice reads {backup}."
     if lang not in ELEVENLABS_SUPPORTED_LANGUAGES:

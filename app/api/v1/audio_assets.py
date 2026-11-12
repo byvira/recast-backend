@@ -2482,13 +2482,11 @@ async def transcribe_audio_asset(
         ctx.workspace_id, ctx.user_id, "transcription", charges.minutes(media.get("duration_s") or spoken_length.audio_duration_seconds(audio_bytes)),
         step=f"transcription:{audio_asset_id}",
     ) as hold:
-        transcript = await transcribe_audio_bytes(audio_bytes, filename=f"{audio_asset_id}.mp3", language=hint, punctuate=body.punctuate)
+        # strict: every speech service failing is a retryable "busy" error (nothing charged, nothing changed), not an empty result
+        transcript = await transcribe_audio_bytes(audio_bytes, filename=f"{audio_asset_id}.mp3", language=hint, punctuate=body.punctuate, strict=True)
         hold.nothing_made = not transcript
     if not transcript:
-        raise HTTPException(
-            status_code=503,
-            detail="Transcription didn't return anything real. The provider call may have failed. Nothing was changed.",
-        )
+        raise HTTPException(status_code=422, detail="No speech was found in this recording, so there is nothing to transcribe. Nothing was changed and you were not charged.")
 
     await audio_assets.update_one(
         {"id": audio_asset_id, "workspace_id": ctx.workspace_id},

@@ -512,6 +512,7 @@ def test_language_support_reflects_which_providers_are_reachable(monkeypatch):
     """The live-confirmed gap: Deepgram's Aura has no Tamil, ElevenLabs does."""
     monkeypatch.setattr(tts_generation.settings, "ELEVENLABS_API_KEY", "")
     monkeypatch.setattr(tts_generation.settings, "DEEPGRAM_API_KEY", "dg")
+    monkeypatch.setattr(tts_generation.settings, "GEMINI_TTS_ENABLED", False)
     ok, _ = tts_generation.is_language_supported("english")
     assert ok
     ok, reason = tts_generation.is_language_supported("tamil")

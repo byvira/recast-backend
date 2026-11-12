@@ -18,6 +18,7 @@ from urllib.parse import quote
 import httpx
 
 from app.core.config import settings
+from app.shared.llm_health import probe
 from app.shared.llm_health.track import fallback_scope, track
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ def _note_failure(key: str, exc: BaseException) -> None:
 def _in_turn(keys: list[str]) -> list[int]:
     """The positions to try, in order: those not being left alone, or every one when all of them are."""
     now = time.monotonic()
-    ready = [i for i, k in enumerate(keys) if _skip_until.get(k, 0.0) <= now]
+    ready = [i for i, k in enumerate(keys) if _skip_until.get(k, 0.0) <= now and not probe.is_down(k)]
     return ready or list(range(len(keys)))
 
 
@@ -148,7 +149,8 @@ async def cloudflare_text(prompt: str, system: str = "", json_mode: bool = False
 
 async def open_text_fallback(prompt: str, system: str = "", json_mode: bool = False) -> str | None:
     """The first open-model provider that answers, or None when none is set up or all of them fail. A provider that just refused
-    for a lasting reason is passed over for a while (see _skip_until)."""
+    for a lasting reason, or that the scheduled model check found down, is passed over for a while (see _skip_until and probe.is_down)."""
+    await probe.refresh()
     providers = text_providers()
     keys = [f"text:{p.name}:{p.model}" for p in providers]
     for i in _in_turn(keys):
@@ -172,6 +174,7 @@ async def open_vision_fallback(prompt: str, image_bytes: bytes, mime_type: str =
     content = [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_uri}}]
     models = [m for m in (settings.OPENROUTER_VISION_MODEL, settings.OPENROUTER_VISION_MODEL_2, settings.OPENROUTER_VISION_MODEL_3) if m]
     keys = [f"vision:openrouter:{m}" for m in models]
+    await probe.refresh()
     for i in _in_turn(keys):
         model = models[i]
         try:
@@ -285,6 +288,7 @@ async def open_image_fallback(prompt: str, errors: list[str] | None = None) -> b
     if settings.STABLEHORDE_ENABLED:
         steps.append(("stablehorde", _stablehorde))
     keys = [f"image:{name}" for name, _ in steps]
+    await probe.refresh()
     for i in _in_turn(keys):
         name, fn = steps[i]
         try:

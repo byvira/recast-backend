@@ -248,6 +248,9 @@ async def _create_llm_health_indexes() -> None:
         await llm_prompt_daily.create_index("day", expireAfterSeconds=90 * 24 * 3600)
         await llm_prompt_daily.create_index([("prompt_path", 1), ("day", -1)])
         await llm_issues.create_index("fingerprint", unique=True)
+        from app.shared.llm_health import probe as _probe
+
+        await _probe.create_indexes()
         await llm_issues.create_index([("status", 1), ("last_seen", -1)])
         await llm_issues.create_index("number", unique=True)
         await llm_alert_log.create_index("at", expireAfterSeconds=30 * 24 * 3600)
