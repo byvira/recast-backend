@@ -67,7 +67,7 @@ async def create(workspace_id: str, user_id: str, name: str, scopes: list[str]) 
 
 
 async def list_keys(workspace_id: str) -> list[dict[str, Any]]:
-    rows = await _keys().find({"workspace_id": workspace_id}).sort("created_at", -1).to_list(length=50)
+    rows = await _keys().find({"workspace_id": workspace_id, "surface": {"$exists": False}}).sort("created_at", -1).to_list(length=50)
     return [public(r) for r in rows]
 
 

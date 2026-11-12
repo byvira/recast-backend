@@ -74,7 +74,7 @@ def specs() -> list[ToolSpec]:
         ToolSpec(
             name="compose.run", summary="Do several things as one request, for example write a post, add hashtags and make a picture, keeping every finished step if one fails.",
             risk=Risk.WRITE, scope=Scope.CREATE, mode=Mode.INSTANT, input_model=ComposeIn, output_model=ComposeOut, permission="create_content",
-            cost_note="Each step is priced as its own tool; nothing extra for the run.", source="query:compose.run",
+            cost_note="The sum of what its steps cost; nothing extra for the run. A dry run shows the total.", source="query:compose.run",
             examples=("Make a Facebook post about business tactics with hashtags and a picture",), version=1,
         ),
         ToolSpec(
@@ -322,11 +322,14 @@ async def advance(run: dict[str, Any], credential_id: str, *, run_tool: RunTool,
     return summarise(run)
 
 
-async def start(workspace_id: str, credential_id: str, user_id: Optional[str], steps: list[Step], *, run_tool: RunTool, **kw: Any) -> dict[str, Any]:
+async def start(workspace_id: str, credential_id: str, user_id: Optional[str], steps: list[Step], *, run_tool: RunTool,
+                on_created: Optional[Callable[[str], Awaitable[None]]] = None, **kw: Any) -> dict[str, Any]:
     validate(steps)
     run = {"id": uuid4().hex, "workspace_id": workspace_id, "credential_id": credential_id, "user_id": user_id, "created_at": _now(), "updated_at": _now(),
            "steps": [{"label": s.label, "tool": s.tool, "arguments": s.arguments, "optional": s.optional, "state": "pending", "attempts": 0} for s in steps]}
     await runs().insert_one(dict(run))
+    if on_created is not None:
+        await on_created(run["id"])  # a caller that shows progress learns the run's id before the first step starts
     return await advance(run, credential_id, run_tool=run_tool, **kw)
 
 

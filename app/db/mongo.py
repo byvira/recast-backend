@@ -251,6 +251,11 @@ async def _create_llm_health_indexes() -> None:
         from app.shared.llm_health import probe as _probe
 
         await _probe.create_indexes()
+        from app.ask import runs as _ask_runs
+        from app.tools import sessions as _sessions
+
+        await _ask_runs.create_indexes()
+        await _sessions.create_indexes()
         await llm_issues.create_index([("status", 1), ("last_seen", -1)])
         await llm_issues.create_index("number", unique=True)
         await llm_alert_log.create_index("at", expireAfterSeconds=30 * 24 * 3600)

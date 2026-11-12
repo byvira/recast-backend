@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ekavo-cli"
+version = "0.1.0"
+description = "The Ekavo command line: sign in once in the browser, then run any tool."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+ekavo = "ekavo_cli.main:main"
+
+[tool.setuptools]
+packages = ["ekavo_cli"]

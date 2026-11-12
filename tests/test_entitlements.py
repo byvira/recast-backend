@@ -492,7 +492,8 @@ def test_limited_things_are_only_created_in_places_that_check_the_plan():
     allowed_writers = {
         "brand_profiles.insert_one": {"app/api/v1/brand.py"},
         "get_campaigns_collection().insert_one": {"app/api/v1/campaigns.py"},
-        "_keys().insert_one": {"app/video/api_keys.py", "app/tools/credentials.py"},
+        # a sign-in (app/tools/sessions.py) is a key row too, but it is not an API key for the plan: it has its own limit, checked when the person approves it
+        "_keys().insert_one": {"app/video/api_keys.py", "app/tools/credentials.py", "app/tools/sessions.py"},
         "workspace_members.insert_one": {"app/api/v1/invites.py", "app/api/v1/workspace.py", "app/core/workspace.py"},
     }
     found: dict[str, set[str]] = {k: set() for k in allowed_writers}

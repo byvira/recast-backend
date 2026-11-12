@@ -228,6 +228,7 @@ _HINTS: dict[str, str] = {
     "campaigns_active": "Pause one first, or move to a plan with more.",
     "video_automations": "Turn one off first, or move to a plan with more.",
     "api_keys": "Remove a key you no longer use first.",
+    "ask_steps_day": "They come back tomorrow. You can do the same thing from the app meanwhile.",
 }
 
 
@@ -345,6 +346,10 @@ async def count_usage(ent: Entitlements, key: str) -> float:
         )
     if key == "brand_voices":
         return await db["brand_profiles"].count_documents({"workspace_id": ws})
+    if key == "ask_steps_day":
+        from app.ask import runs as ask_runs
+
+        return sum([await ask_runs.steps_used_today(w) for w in ent.scope_ids])
     if key == "pictures_day":
         return await db["media_assets"].count_documents({"workspace_id": ws, "source": "ai_generated", "created_at": {"$gte": _day_start()}})
     if key == "render_minutes_month":
@@ -373,7 +378,7 @@ async def count_usage(ent: Entitlements, key: str) -> float:
     if key == "video_automations":
         return await db["video_recipes"].count_documents({"workspace_id": ws, "automation.enabled": True})
     if key == "api_keys":
-        return await db["api_keys"].count_documents({"workspace_id": ws, "revoked": {"$ne": True}})
+        return await db["api_keys"].count_documents({"workspace_id": ws, "revoked": {"$ne": True}, "surface": {"$exists": False}})
     return 0
 
 
@@ -445,7 +450,7 @@ async def picture_room_message(workspace_id: str, wanted: int = 1) -> Optional[s
 
 USAGE_KEYS = (
     "seats", "owned_workspaces", "social_accounts", "brand_voices", "pictures_day", "render_minutes_month", "storage_mb",
-    "scheduled_ahead", "campaigns_active", "video_automations", "api_keys",
+    "scheduled_ahead", "campaigns_active", "video_automations", "api_keys", "ask_steps_day",
 )
 
 

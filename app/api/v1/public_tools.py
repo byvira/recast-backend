@@ -147,6 +147,44 @@ async def get_tool(request: Request, name: str) -> JSONResponse:
     return JSONResponse({**tool.catalog_entry(), "available": executor.is_wired(tool), "output": tool.output_schema(), "request_id": _rid(request)})
 
 
+async def execute(
+    credential_id: str, name: str, arguments: dict[str, Any], *, idempotency_key: Optional[str] = None, confirmed_credits: Optional[int] = None,
+    approval_token: Optional[str] = None, dry_run: bool = False,
+) -> tuple[int, dict[str, Any]]:
+    """Run one tool through the gatekeeper and the code that does the work. Returns (HTTP status, body): the body is the answer, or `{"error": ...}` with
+    a code that never changes. Used by the REST API and the MCP endpoint, so both give the same answer, the same refusals and the same records."""
+    from app.core import failures
+
+    call = Call(credential_id=credential_id, tool=name, arguments=arguments, idempotency_key=idempotency_key, confirmed_credits=confirmed_credits,
+                approval_token=approval_token, dry_run=dry_run)
+    gate = Gatekeeper(get_registry(), LiveServices())
+    try:
+        admission, outcome = await executor.run_call(gate, call)
+    except Refusal as refusal:
+        return refusal.status, {"error": {"code": refusal.code, "message": refusal.message, **{**failures.for_refusal(refusal.code), **(refusal.extra or {})}}}
+    except executor.ToolFailure as failure:
+        return failure.status, {"error": {"code": failure.code, "message": failure.message, **{k: v for k, v in failure.body().items() if k not in ("code", "message")}}}
+    except Exception as exc:  # noqa: BLE001 - anything unexpected is a plain "something went wrong", never a stack trace
+        import logging
+
+        from app.health import errors
+
+        logging.getLogger(__name__).exception("Public tools API error | tool=%s", name)
+        errors.capture_exception(exc, source="server", where=f"tool call {name}", workspace_id=None)
+        f = failures.internal_error()
+        return 500, {"error": {"code": f.code, "message": f.message, "retryable": f.retryable, "retry_after_seconds": f.retry_after_seconds, "next": f.next}}
+
+    estimate = {"credits": admission.estimate.credits, "exact": admission.estimate.exact}
+    if admission.estimate.note and admission.estimate.credits:
+        estimate["note"] = admission.estimate.note  # said only when there is a price to explain
+    if admission.replay is not None:
+        stored = admission.replay
+        return stored.get("status", 200), {"ok": True, "tool": name, "data": stored.get("data"), "change": stored.get("change"), "replayed": True, "estimate": estimate}
+    if admission.dry_run:
+        return 200, {"ok": True, "tool": name, "dry_run": True, "estimate": estimate, "arguments": admission.arguments.model_dump(mode="json", exclude={"confirm"})}
+    return outcome.status, {"ok": True, "tool": name, "data": outcome.data, "run": outcome.run, "change": outcome.change, "estimate": estimate, "warnings": list(outcome.warnings)}
+
+
 @router.post("/tools/{name}/call")
 @limiter.limit("300/minute", key_func=_limit_key)
 async def call_tool(
@@ -159,35 +197,15 @@ async def call_tool(
         return _error(request, 401, "auth_invalid", UNAUTHORIZED)
     if idempotency_key is not None and not _KEY.match(idempotency_key):
         return _error(request, 422, "input_invalid", "The Idempotency-Key is up to 120 letters, numbers and . _ : -")
-    call = Call(credential_id=credential_id, tool=name, arguments=body.arguments, idempotency_key=idempotency_key,
-                confirmed_credits=body.confirmed_credits, approval_token=body.approval_token, dry_run=body.dry_run)
-    gate = Gatekeeper(get_registry(), LiveServices())
-    try:
-        admission, outcome = await executor.run_call(gate, call)
-    except Refusal as refusal:
-        return _error(request, refusal.status, refusal.code, refusal.message, refusal.extra)
-    except executor.ToolFailure as failure:
-        return _error(request, failure.status, failure.code, failure.message, {k: v for k, v in failure.body().items() if k not in ("code", "message")})
-    except Exception as exc:  # noqa: BLE001 - anything unexpected is a plain "something went wrong" with an id, never a stack trace
-        import logging
-
-        from app.core import failures
-        from app.health import errors
-
-        logging.getLogger(__name__).exception("Public tools API error | tool=%s", name)
-        errors.capture_exception(exc, source="server", where=f"POST /api/public/v1/tools/{name}/call", workspace_id=None)
-        f = failures.internal_error()
-        return _error(request, 500, f.code, f.message, {"retryable": f.retryable, "retry_after_seconds": f.retry_after_seconds, "next": f.next})
-
-    estimate = {"credits": admission.estimate.credits, "exact": admission.estimate.exact}
-    if admission.replay is not None:
-        stored = admission.replay
-        return JSONResponse(status_code=stored.get("status", 200),
-                            content={"ok": True, "tool": name, "data": stored.get("data"), "change": stored.get("change"), "replayed": True, "estimate": estimate,
-                                     "request_id": _rid(request)})
-    if admission.dry_run:
-        return JSONResponse({"ok": True, "tool": name, "dry_run": True, "estimate": estimate,
-                             "arguments": admission.arguments.model_dump(mode="json", exclude={"confirm"}), "request_id": _rid(request)})
-    return JSONResponse(status_code=outcome.status,
-                        content={"ok": True, "tool": name, "data": outcome.data, "run": outcome.run, "change": outcome.change, "estimate": estimate,
-                                 "warnings": list(outcome.warnings), "request_id": _rid(request)})
+    status, content = await execute(
+        credential_id, name, body.arguments, idempotency_key=idempotency_key, confirmed_credits=body.confirmed_credits,
+        approval_token=body.approval_token, dry_run=body.dry_run,
+    )
+    content["request_id"] = _rid(request)
+    if (content.get("error") or {}).get("code") == "auth_invalid":
+        return _error_response(request, status, "auth_invalid", content["error"].get("message", UNAUTHORIZED), {k: v for k, v in content["error"].items() if k not in ("code", "message")}, {"WWW-Authenticate": "Bearer"})
+    headers: dict[str, str] = {}
+    wait = (content.get("error") or {}).get("retry_after_seconds")
+    if wait is not None:
+        headers["Retry-After"] = str(wait)
+    return JSONResponse(status_code=status, content=content, headers=headers or None)

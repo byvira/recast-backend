@@ -23,6 +23,8 @@ STREAM = "a live stream or session a screen listens to; the same work is a tool 
 OWNER = "an owner-only control over the whole workspace or its keys, so it stays in the app and a key cannot reach it"
 APPROVAL = "a person's own yes for a call made from outside; it is how a key gets one, so a key can never reach it"
 HISTORY = "the person's own view of what connected apps changed, and undo from the app; the same records and undo as changes.list and changes.undo"
+ASK = "Ask Ekavo is itself a way in to the tools (it plans and runs them for the person), so it is not a tool for another way in to call"
+SESSION = "the person signing a command line or assistant in, and seeing and revoking those sign-ins, is done by the person in the app and never by a key"
 FILE = "needs the file itself (an upload or a download), so it stays in the app; the link to the file is in the tool that shows the item"
 
 # (method, path prefix, reason). "*" matches every method. Longest matching prefix wins, so a narrow rule can override a wide one.
@@ -64,6 +66,8 @@ RULES: list[tuple[str, str, str]] = [
     ("*", "/api/v1/tool-approvals", APPROVAL),
     ("*", "/api/v1/tool-changes", HISTORY),
     ("*", "/api/v1/tool-reach", HISTORY),
+    ("*", "/api/v1/ask", ASK),
+    ("*", "/api/v1/tool-sessions", SESSION),
     ("POST", "/api/v1/supervisor/run", OWNER),
     ("POST", "/api/v1/supervisor/kill-switch", OWNER),
     ("GET", "/api/v1/activity/stream", STREAM),

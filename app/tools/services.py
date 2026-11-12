@@ -65,6 +65,11 @@ class LiveServices:
             kind, workspace_id, user_id = credential_id.split(":", 2)
             scopes = frozenset({Scope.READ, Scope.APPROVE}) if kind == "link" else frozenset({Scope.READ, Scope.CREATE})
             return Credential(credential_id, kind, workspace_id, user_id, scopes)
+        if credential_id.startswith("ask:"):
+            # Ask Ekavo working for a signed-in member. It reads and creates as the person's own role allows (checked on every call) and can never publish,
+            # decide, delete or approve: those are shown to the person, who does them in the app.
+            _, workspace_id, user_id = credential_id.split(":", 2)
+            return Credential(credential_id, "ask", workspace_id, user_id, frozenset({Scope.READ, Scope.CREATE}))
         if credential_id.startswith("member:"):
             # A signed-in member using the app itself (for example undoing a change). Only routes that already know who the person is make this
             # id; no key or outside caller can, because a key's id comes from the key table. It can read, make and publish as the person's own role
@@ -113,7 +118,32 @@ class LiveServices:
             return None
         return entitlements.limit_message(ent, limit_key, used)
 
+    async def _price_steps(self, credential: Credential, arguments: BaseModel) -> Estimate:
+        """A compound request costs what its steps cost. Each step is priced as its own tool; a step that depends on an earlier result, or whose
+        price depends on length, is priced at its base amount, so the total is a floor and the answer says so."""
+        from app.tools.registry import get_registry
+
+        registry = get_registry()
+        table = await credit_costs.costs()
+        total = 0
+        priced = 0
+        unsure = False
+        for step in arguments.steps:  # type: ignore[attr-defined]
+            spec = registry.get(step.tool)
+            if spec is None or not spec.cost_key:
+                continue
+            row = table.get(spec.cost_key) or {}
+            total += credit_costs.price_with(table, spec.cost_key, 1.0)
+            priced += 1
+            unsure = unsure or bool(row.get("per")) or "${" in str(step.arguments)
+        note = f"{priced} of {len(arguments.steps)} steps cost credits." if priced else "No step costs credits."  # type: ignore[attr-defined]
+        if unsure:
+            note += " Steps priced by length or using an earlier result are counted at their base price, so the total can be higher."
+        return Estimate(total, exact=not unsure, note=note)
+
     async def price(self, credential: Credential, tool: ToolSpec, arguments: BaseModel) -> Estimate:
+        if tool.name == "compose.run":
+            return await self._price_steps(credential, arguments)
         if not tool.cost_key:
             return Estimate(0, True, tool.cost_note, None, 0)
         from app.tools import estimators  # noqa: F401  (registers the estimators)

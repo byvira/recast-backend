@@ -198,6 +198,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     resumed = await resume_interrupted()
     if resumed:
         logger.info("%d safe-to-repeat background jobs were started again after the restart.", resumed)
+    from app.ask import runs as ask_runs
+
+    ask_interrupted = await ask_runs.reconcile_after_restart()
+    if ask_interrupted:
+        logger.warning("%d Ask Ekavo runs were interrupted by the restart and were marked partial.", ask_interrupted)
     interrupted = await pipeline_runs.fail_interrupted()
     if interrupted:
         logger.warning("%d background runs were interrupted by the restart and were marked failed.", interrupted)
@@ -454,6 +459,14 @@ from app.api.v1 import ops_tools as ops_tools_router
 app.include_router(ops_tools_router.router, prefix="/api/v1/ops/tools", tags=["Ops"], dependencies=[Depends(area_guard("platform"))])
 from app.api.v1 import tool_changes as tool_changes_router
 app.include_router(tool_changes_router.router, prefix="/api/v1/tool-changes", tags=["Tool changes"])
+from app.api.v1 import ask as ask_router
+from app.api.v1 import device_auth as device_auth_router
+from app.api.v1 import public_mcp as public_mcp_router
+from app.api.v1 import tool_sessions as tool_sessions_router
+app.include_router(ask_router.router, prefix="/api/v1/ask", tags=["Ask Ekavo"])
+app.include_router(tool_sessions_router.router, prefix="/api/v1/tool-sessions", tags=["Tool sessions"])
+app.include_router(device_auth_router.router, prefix="/api/public/v1", tags=["Public API"])
+app.include_router(public_mcp_router.router, prefix="/api/public/v1", tags=["Public API"])
 from app.api.v1 import public_links as public_links_router
 app.include_router(public_links_router.router, prefix="/api/v1/public/links", tags=["One-tap links"])
 from app.api.v1 import tool_reach as tool_reach_router

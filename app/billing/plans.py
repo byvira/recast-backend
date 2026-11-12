@@ -36,6 +36,7 @@ LIMITS: dict[str, dict[str, str]] = {
     "campaigns_active": {"label": "Campaigns running at once", "unit": "campaigns", "kind": "count"},
     "video_automations": {"label": "Video automations", "unit": "automations", "kind": "count"},
     "api_keys": {"label": "API keys", "unit": "keys", "kind": "count"},
+    "ask_steps_day": {"label": "Ask Ekavo planning steps a day", "unit": "steps", "kind": "period"},
     "api_calls_per_minute": {"label": "Requests from connected apps a minute", "unit": "requests", "kind": "setting"},
     "version_history_days": {"label": "Version history kept", "unit": "days", "kind": "setting"},
     "analytics_history_days": {"label": "Analytics history kept", "unit": "days", "kind": "setting"},
@@ -53,7 +54,7 @@ DEFAULT_PLANS: dict[str, dict[str, Any]] = {
         "limits": {
             "seats": 1, "owned_workspaces": 1, "social_accounts": 3, "brand_voices": 1, "credits_month": 100,
             "render_minutes_month": 5, "pictures_day": 5, "storage_mb": 1024, "scheduled_ahead": 30, "campaigns_active": 1,
-            "video_automations": 1, "api_keys": 2, "api_calls_per_minute": 30, "version_history_days": 30,
+            "video_automations": 1, "api_keys": 2, "ask_steps_day": 20, "api_calls_per_minute": 30, "version_history_days": 30,
             "analytics_history_days": 90, "review_link_days": 14, "render_priority": 0, "support_priority": 0,
         },
     },
@@ -65,7 +66,7 @@ DEFAULT_PLANS: dict[str, dict[str, Any]] = {
         "limits": {
             "seats": 1, "owned_workspaces": 3, "social_accounts": 10, "brand_voices": 3, "credits_month": 1200,
             "render_minutes_month": 60, "pictures_day": 50, "storage_mb": 10 * 1024, "scheduled_ahead": 500, "campaigns_active": 5,
-            "video_automations": 5, "api_keys": 5, "api_calls_per_minute": 60, "version_history_days": 365,
+            "video_automations": 5, "api_keys": 5, "ask_steps_day": 100, "api_calls_per_minute": 60, "version_history_days": 365,
             "analytics_history_days": 730, "review_link_days": 14, "render_priority": 1, "support_priority": 0,
         },
     },
@@ -77,7 +78,7 @@ DEFAULT_PLANS: dict[str, dict[str, Any]] = {
         "limits": {
             "seats": 2, "owned_workspaces": 5, "social_accounts": 20, "brand_voices": 6, "credits_month": 2500,
             "render_minutes_month": 150, "pictures_day": 100, "storage_mb": 30 * 1024, "scheduled_ahead": 1500,
-            "campaigns_active": 10, "video_automations": 10, "api_keys": 10, "api_calls_per_minute": 120,
+            "campaigns_active": 10, "video_automations": 10, "api_keys": 10, "ask_steps_day": 200, "api_calls_per_minute": 120,
             "version_history_days": 365, "analytics_history_days": 730, "review_link_days": 14, "render_priority": 1,
             "support_priority": 0,
         },
@@ -100,6 +101,7 @@ DEFAULT_PLANS: dict[str, dict[str, Any]] = {
             "campaigns_active": {"per_seat": 3, "min": 10},
             "video_automations": {"per_seat": 3, "min": 10},
             "api_keys": {"base": 25, "per_seat_over": 2, "over": 10},
+            "ask_steps_day": {"per_seat": 50},
             "api_calls_per_minute": {"base": 300, "per_seat_over": 20, "over": 10},
             "version_history_days": 730,
             "analytics_history_days": 1095,

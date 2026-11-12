@@ -92,7 +92,7 @@ async def create_key(
 def to_credential(doc: dict[str, Any]) -> Credential:
     scopes = frozenset(Scope(s) for s in (doc.get("tool_scopes") or ()) if s in {x.value for x in Scope})
     return Credential(
-        id=doc["id"], surface="api", workspace_id=doc["workspace_id"], user_id=doc.get("created_by"), scopes=scopes,
+        id=doc["id"], surface=doc.get("surface") or "api", workspace_id=doc["workspace_id"], user_id=doc.get("created_by"), scopes=scopes,
         capabilities=frozenset(doc.get("capabilities") or ()), credit_cap=doc.get("credit_cap"), revoked=bool(doc.get("revoked")),
         expires_at=_aware(doc.get("expires_at")),
     )
@@ -115,7 +115,7 @@ async def list_tool_keys(workspace_id: str) -> list[dict[str, Any]]:
     """The workspace's tool keys with what each may do, newest first. Never the secret or the hash."""
     from app.tools import ledger
 
-    rows = await api_keys._keys().find({"workspace_id": workspace_id, "tool_scopes": {"$exists": True}}).sort("created_at", -1).to_list(length=50)
+    rows = await api_keys._keys().find({"workspace_id": workspace_id, "tool_scopes": {"$exists": True}, "surface": {"$exists": False}}).sort("created_at", -1).to_list(length=50)
     return [{**api_keys.public(r), "tool_scopes": r.get("tool_scopes") or [], "capabilities": r.get("capabilities") or [],
              "credit_cap": r.get("credit_cap"), "expires_at": api_keys._iso(r.get("expires_at")),
              "credits_this_month": 0 if r.get("revoked") else await ledger.spent_this_month(r["id"])} for r in rows]

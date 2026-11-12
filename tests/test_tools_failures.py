@@ -426,3 +426,25 @@ async def test_a_warning_travels_with_a_step_and_with_the_answer(indexed):
     script = Script(**{"image.generate": [({"id": "i1", "qa_flagged": True, "qa_flag_reason": "No AI picture, so this is a text card."}, None)]})
     out = await _start(script, [Step(label="picture", tool="image.generate")])
     assert out["status"] == "done" and out["steps"][0]["warnings"][0]["message"].startswith("No AI picture")
+
+
+async def test_a_compound_dry_run_shows_the_sum_of_what_its_steps_cost_and_runs_nothing(world):
+    client, ws, key = world
+    free = {"steps": [{"label": "plans", "tool": "plan.limits", "arguments": {}}]}
+    res = await client.post(f"{P}/tools/compose.run/call", headers=key, json={"arguments": free, "dry_run": True})
+    assert res.status_code == 200 and res.json()["dry_run"] is True and res.json()["estimate"]["credits"] == 0
+
+    from app.billing import costs as credit_costs
+    from app.tools.registry import get_registry
+
+    priced = [s.name for s in get_registry().all() if s.cost_key and s.name.startswith("image.")]
+    assert priced, "the registry has a priced picture tool"
+    table = await credit_costs.costs()
+    spec = get_registry().get(priced[0])
+    steps = {"steps": [{"label": "one", "tool": spec.name, "arguments": {}}, {"label": "two", "tool": spec.name, "arguments": {}}, {"label": "free", "tool": "plan.limits", "arguments": {}}]}
+    res = await client.post(f"{P}/tools/compose.run/call", headers=key, json={"arguments": steps, "dry_run": True})
+    assert res.status_code == 200, res.text
+    estimate = res.json()["estimate"]
+    assert estimate["credits"] == 2 * credit_costs.price_with(table, spec.cost_key, 1.0) and estimate["credits"] > 0
+    assert "2 of 3 steps cost credits" in estimate["note"]
+    assert await ledger.calls().count_documents({"workspace_id": ws, "tool": spec.name}) == 0

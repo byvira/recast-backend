@@ -114,6 +114,45 @@ async def revoke_key(request: Request, key_id: str, body: Reason, user: dict = D
     return {"revoked": True, "key_id": key_id}
 
 
+class RoleChange(BaseModel):
+    model: Optional[str] = Field(None, max_length=60)
+    max_tokens: Optional[int] = Field(None, ge=100, le=4000)
+    reasoning_effort: Optional[str] = Field(None, max_length=10)
+
+
+class RouterChange(Reason):
+    roles: dict[str, RoleChange] = Field(min_length=1, max_length=4)
+
+
+def _role_view(role: Any) -> dict[str, Any]:
+    return {"name": role.name, "model": role.model, "max_tokens": role.max_tokens, "reasoning_effort": role.reasoning_effort, "private": role.private}
+
+
+@router.get("/ask-router")
+@limiter.limit("60/minute")
+async def ask_router(request: Request) -> dict[str, Any]:
+    """The four jobs Ask Ekavo gives to models (decide, plan, respond, explain), with the model, token budget and effort each uses now, the defaults,
+    and the models a job may use. Every job is private content: it stays with the main provider and its approved backups."""
+    from app.ask import router as ask_models
+
+    current = await ask_models.roles()
+    return {"roles": [_role_view(r) for r in current.values()], "defaults": [_role_view(r) for r in ask_models.DEFAULTS.values()], "allowed_models": sorted(ask_models.ALLOWED_MODELS)}
+
+
+@router.put("/ask-router")
+@limiter.limit("20/minute")
+async def change_ask_router(request: Request, body: RouterChange, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    from app.ask import router as ask_models
+
+    before = {n: _role_view(r) for n, r in (await ask_models.roles()).items()}
+    try:
+        after = await ask_models.save_roles({n: c.model_dump(exclude_none=True) for n, c in body.roles.items()})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await audit(user, "tools.ask_router", "ask router", before=before, after={n: _role_view(r) for n, r in after.items()}, reason=body.reason)
+    return {"roles": [_role_view(r) for r in after.values()]}
+
+
 @router.get("/abuse")
 @limiter.limit("60/minute")
 async def abuse(request: Request, hours: int = Query(1, ge=1, le=24)) -> dict[str, Any]:
