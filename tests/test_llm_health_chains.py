@@ -55,7 +55,7 @@ def test_a_chain_with_one_working_step_is_thin_and_with_none_is_broken():
     assert next(c for c in chains.describe(down("gemini", "mistral", "cloudflare")) if c["id"] == "embeddings")["depth"] == "broken"
 
     voice = next(c for c in chains.describe(healthy) if c["id"] == "voice")
-    assert voice["depth"] == "ok" and [s["provider"] for s in voice["steps"]][-1] == "gemini"
+    assert voice["depth"] == "ok" and [s["provider"] for s in voice["steps"]][-1] == "edge" and "gemini" in [s["provider"] for s in voice["steps"]]
 
 
 def test_a_step_that_is_switched_off_or_has_no_key_is_not_counted():
@@ -144,3 +144,12 @@ def test_open_model_backups_skip_a_step_the_check_found_down_but_try_everything_
         assert of._in_turn(keys) == [0, 1]
     finally:
         probe._down.clear()
+
+
+def test_failures_are_grouped_by_provider_and_cause_in_plain_words_biggest_first():
+    from app.shared.llm_health import service
+
+    rows = service._failure_rows({("groq", "rate_limit_minute"): 5, ("gemini", "quota_daily"): 9, ("nope", "unknown"): 1})
+    assert [(r["provider"], r["count"]) for r in rows] == [("gemini", 9), ("groq", 5), ("nope", 1)]
+    assert rows[0]["label"] == "Gemini" and rows[0]["cause"] and "{provider}" not in rows[0]["cause"]
+    assert len(service._failure_rows({("p", f"k{i}"): i + 1 for i in range(30)})) == 12

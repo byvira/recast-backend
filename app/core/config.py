@@ -212,6 +212,12 @@ class Settings(BaseSettings):
     STABLEHORDE_ENABLED: bool = False
     # Backup narration and transcription from other vendors (checked live 2026-11-11).
     GEMINI_TTS_ENABLED: bool = True
+    # Cloudflare MeloTTS reads English, Spanish, French, Chinese, Japanese and Korean (checked by reading the audio back, 2026-11-12). It uses a
+    # small part of Cloudflare's daily allowance, which pictures share.
+    CLOUDFLARE_TTS_ENABLED: bool = True
+    # Microsoft Edge neural voices: the last narration backup, for languages nothing else reads (Korean and Chinese are also covered by Cloudflare). An
+    # unofficial endpoint with no contract, so it is off until switched on, and it never gets a member's own footage or recordings (see edge_voice.py).
+    EDGE_TTS_ENABLED: bool = False
     GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
     GEMINI_TTS_VOICE: str = "Kore"
     VOXTRAL_MODEL: str = "voxtral-mini-latest"

@@ -122,7 +122,7 @@ def fakes(monkeypatch):
 
     monkeypatch.setattr(narrate_api, "_voice_tools", tools)
     import app.pipelines.media.tts_generation as tts
-    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj: None)
+    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj, **_: None)
     return calls, h
 
 
@@ -205,7 +205,7 @@ async def test_a_voice_that_cannot_read_the_language_stops_before_anything_is_sp
     calls, h = fakes
     client, ws = await _setup(signup_user)
     import app.pipelines.media.tts_generation as tts
-    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj: "Tamil narration needs the premium voice service.")
+    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj, **_: "Tamil narration needs the premium voice service.")
     res = await client.post("/api/v1/video-prompt/make", json={"scenes": [{"narration": "Hello there", "clip": None}], "language": "Tamil"}, headers=_h(ws))
     assert res.status_code == 409 and "premium voice" in res.json()["detail"]
     assert calls["download"] == 0 and h.spoken == []

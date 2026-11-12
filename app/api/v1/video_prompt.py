@@ -136,7 +136,7 @@ async def make(request: Request, body: MakeBody, ctx: WorkspaceContext = Depends
         raise HTTPException(status_code=409, detail="AI clips are not set up on this server yet. Choose stock footage or no footage.")
     make_speak, store, forget, voice_settings = await _voice_tools(ctx)
     code, name = resolve_language(body.language) if body.language else ("en", "English")
-    blocker = narration_blocker(name, voice_settings)
+    blocker = narration_blocker(name, voice_settings, private=True)
     if blocker:
         raise HTTPException(status_code=409, detail=blocker)
     brand = await brand_profiles.find_one({"id": body.brand_id, "workspace_id": ctx.workspace_id}) if body.brand_id else None

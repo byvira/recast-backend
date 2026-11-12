@@ -417,7 +417,7 @@ def voices(monkeypatch):
 
     monkeypatch.setattr(narrate_api, "_voice_tools", tools)
     import app.pipelines.media.tts_generation as tts
-    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj: None)
+    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj, **_: None)
 
     answers = {"mode": "ok"}
 
@@ -439,7 +439,7 @@ async def test_dubbing_needs_a_transcript_a_different_language_and_a_voice_that_
     same = await client.post("/api/v1/video-narrate/dub", json={"media_id": media["id"], "language": "English"}, headers=_h(ws))
     assert same.status_code == 400 and "already spoken" in same.json()["detail"]
     import app.pipelines.media.tts_generation as tts
-    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj: "Tamil narration needs the premium voice service.")
+    monkeypatch.setattr(tts, "narration_blocker", lambda language, settings_obj, **_: "Tamil narration needs the premium voice service.")
     blocked = await client.post("/api/v1/video-narrate/dub", json={"media_id": media["id"], "language": "Tamil"}, headers=_h(ws))
     assert blocked.status_code == 409 and "premium voice" in blocked.json()["detail"]
     assert (await client.post("/api/v1/video-narrate/dub", json={"media_id": "nope", "language": "Spanish"}, headers=_h(ws))).status_code == 404

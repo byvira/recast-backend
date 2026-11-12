@@ -160,3 +160,6 @@ regex>=2024.0.0
 rembg>=2.0.60         # Remove Background on pictures (small free local model, fetched on first use)
 onnxruntime>=1.18     # runs that model on the server CPU
 pypdf>=6.21.4           # reads PDF files dropped in as a campaign source
+# Last-resort narration voices for more languages (unofficial Microsoft endpoint; contained in app/pipelines/media/edge_voice.py and off by default)
+edge-tts==7.3.1
+aiohttp==3.14.3

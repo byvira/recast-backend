@@ -166,6 +166,17 @@ async def provider_states(now: datetime | None = None) -> dict[str, dict[str, An
 
 
 # ---- the dashboard's numbers ---------------------------------------------------------------------------------
+def _failure_rows(causes: dict[tuple[str, str], int], limit: int = 12) -> list[dict[str, Any]]:
+    """Failures grouped by provider and plain cause, biggest first, each with the wording the issues use (no provider text, no codes)."""
+    from app.shared.llm_health import catalogue
+
+    out = []
+    for (provider, kind), n in sorted(causes.items(), key=lambda kv: -kv[1])[:limit]:
+        meta = health.PROVIDERS.get(provider, {"label": provider.capitalize()})
+        out.append({"provider": provider, "label": meta["label"], "kind": kind, "cause": catalogue.render(catalogue.kind_for(kind).cause, provider=meta["label"]), "count": n})
+    return out
+
+
 async def overview(range_key: str = "24h") -> dict[str, Any]:
     from app.db.mongo import llm_issues, llm_rollups
 
@@ -177,6 +188,7 @@ async def overview(range_key: str = "24h") -> dict[str, Any]:
     tiles = {"calls": 0, "successes": 0, "failures": 0, "rate_limited": 0, "cache_tokens": 0, "tokens_in": 0, "latency_sum": 0, "latency_count": 0}
     series: dict[datetime, dict[str, int]] = {}
     features: dict[str, dict[str, int]] = {}
+    causes: dict[tuple[str, str], int] = {}
     for r in rows:
         tiles["calls"] += r.get("calls", 0)
         tiles["successes"] += r.get("successes", 0)
@@ -186,6 +198,9 @@ async def overview(range_key: str = "24h") -> dict[str, Any]:
         tiles["latency_sum"] += r.get("latency_sum_ms", 0)
         tiles["latency_count"] += r.get("latency_count", 0)
         errs = r.get("errors", {})
+        for kind, n in errs.items():
+            if n:
+                causes[(r.get("provider") or "unknown", kind)] = causes.get((r.get("provider") or "unknown", kind), 0) + n
         tiles["rate_limited"] += errs.get("rate_limit_minute", 0) + errs.get("quota_daily", 0) + errs.get("quota_tokens", 0)
         hour = series.setdefault(r["hour"], {"successes": 0, "failures": 0})
         hour["successes"] += r.get("successes", 0)
@@ -216,6 +231,7 @@ async def overview(range_key: str = "24h") -> dict[str, Any]:
         "by_feature": sorted(
             [{"feature": k, "calls": v["calls"], "failed": v["failures"], "typical_wait_ms": round(v["latency_sum"] / v["latency_count"]) if v["latency_count"] else None} for k, v in features.items()],
             key=lambda x: -x["calls"]),
+        "by_failure": _failure_rows(causes),
         "recorder": recorder.status(),
         "retention": {"events_days": 30, "hourly_days": 90},
         "version": _version(),

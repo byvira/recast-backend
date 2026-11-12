@@ -26,6 +26,7 @@ from pydantic import model_validator, BaseModel, Field
 from app.agents.supervisor.service import assert_ai_budget_available, assert_generation_allowed
 from app.api.v1.media import ALLOWED_MIME_TYPES, _max_bytes_for
 from app.core import limits
+from app.core.failures import AIUnavailable
 from app.agents.content_guard.rules import content_hash
 from app.shared.heavy_work import run_heavy
 from app.shared.history_query import HistorySort, HistoryStatus, add_clauses, in_memory_sort, search_clause, sort_spec, status_clause, term_of
@@ -564,12 +565,9 @@ async def create_audio_from_script(
         step="narration", wpm=body.words_per_minute,
     )
     if not speech:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "The narration could not be made right now. The voice may not be set up yet, or the voice service did not answer. "
-                "Nothing was created."
-            ),
+        raise AIUnavailable(
+            "The narration could not be made right now. The voice may not be set up yet, or the voice service did not answer. "
+            "Nothing was created.", kind="voice",
         )
     audio_bytes = speech.audio
     audio_mime = "audio/mpeg"
@@ -795,10 +793,7 @@ async def _generate_dialogue(body: GenerateDialogueRequest, ctx: WorkspaceContex
             if speech:
                 _remember_turn(turn_key, speech)
         if not speech:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Couldn't synthesize the turn for '{turn.speaker}'. No real voice or provider is available.",
-            )
+            raise AIUnavailable(f"Couldn't synthesize the turn for '{turn.speaker}'. No real voice or provider is available.", kind="voice")
         turn_audio.append(speech.audio)
         for w in speech.words or []:
             transcript.append(TranscriptWord(
@@ -1019,7 +1014,7 @@ async def localize_audio_asset(
     # counts toward (and is limited by) the AI budget like Text generation.
     set_usage_workspace(ctx.workspace_id)
 
-    is_supported, reason = is_language_supported(body.target_language)
+    is_supported, reason = is_language_supported(body.target_language, private=True)
     if not is_supported:
         raise HTTPException(status_code=400, detail=reason)
 
@@ -1030,7 +1025,7 @@ async def localize_audio_asset(
 
     # Checked before the translation is paid for: a language no reachable voice can read, or a premium voice that is not set.
     voice_settings = await _get_voice_settings(ctx.workspace_id, ctx.user_id)
-    blocker = narration_blocker(body.target_language, voice_settings)
+    blocker = narration_blocker(body.target_language, voice_settings, private=True)
     if blocker:
         raise HTTPException(status_code=400, detail=blocker)
 
@@ -1080,18 +1075,16 @@ async def localize_audio_asset(
         ctx.workspace_id, ctx.user_id, "narration", translated_text,
         lambda: synthesize_speech_timed(
             text=translated_text, voice_settings=voice_settings, lexicon=lexicon,
-            workspace_id=ctx.workspace_id, user_id=ctx.user_id,
+            workspace_id=ctx.workspace_id, user_id=ctx.user_id, private=True,
         ),
         step=f"narration:{audio_asset_id}:{body.target_language}",
     )
     if not speech:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                narration_blocker(body.target_language, voice_settings)
-                or "The translation worked, but the voice service couldn't make the narration just now. Try again in a moment."
-            ),
-        )
+        blocked = narration_blocker(body.target_language, voice_settings, private=True)
+        if blocked:
+            # a language no voice can read is not a busy service: trying again will not help
+            raise HTTPException(status_code=503, detail=blocked)
+        raise AIUnavailable("The translation worked, but the voice service couldn't make the narration just now. Try again in a moment.", kind="voice")
     audio_bytes = speech.audio
 
     url = await upload_file(audio_bytes, UploadContentType.AUDIO, ctx.user_id)
@@ -1559,10 +1552,7 @@ async def regenerate_audio_asset(
         step=f"narration:{audio_asset_id}",
     )
     if not speech:
-        raise HTTPException(
-            status_code=503,
-            detail="Narration couldn't be made right now. Nothing was changed. Try again in a moment.",
-        )
+        raise AIUnavailable("Narration couldn't be made right now. Nothing was changed. Try again in a moment.", kind="voice")
 
     await run.step("Saving the audio")
     url = await upload_file(speech.audio, UploadContentType.AUDIO, ctx.user_id)
@@ -2777,7 +2767,7 @@ async def synthesize_sponsor_read(
         step=f"sponsor:{brand_id}",
     )
     if not audio_bytes:
-        raise HTTPException(status_code=503, detail="The sponsor read couldn't be voiced right now. Nothing was saved.")
+        raise AIUnavailable("The sponsor read couldn't be voiced right now. Nothing was saved.", kind="voice")
 
     url = await upload_file(audio_bytes, UploadContentType.AUDIO, ctx.user_id)
     media = MediaAsset(

@@ -97,7 +97,7 @@ async def _voice_tools(ctx: WorkspaceContext):
         async def draft_or_premium(text: str, speaker: Optional[str] = None) -> Optional[bytes]:
             return await synthesize_speech(
                 text=text, voice_settings=speaker_settings(speaker, voices or {}), lexicon=lexicon, workspace_id=ctx.workspace_id,
-                user_id=ctx.user_id, language=language_code,
+                user_id=ctx.user_id, language=language_code, private=True,
             )
 
         return Voice(workspace_id=ctx.workspace_id, user_id=ctx.user_id, language=language_code, fallback=draft_or_premium, voice_settings=settings_obj,
@@ -131,7 +131,7 @@ async def start_dub(request: Request, body: DubBody, ctx: WorkspaceContext = Dep
     if code == (tr.get("language") or "").split("-")[0].lower():
         raise HTTPException(status_code=400, detail=f"This video is already spoken in {name}. Choose another language to dub into.")
     make_speak, store, forget, voice_settings = await _voice_tools(ctx)
-    blocker = narration_blocker(name, voice_settings)
+    blocker = narration_blocker(name, voice_settings, private=True)
     if blocker:
         raise HTTPException(status_code=409, detail=blocker)
     await assert_ai_budget_available(ctx.workspace_id)
@@ -321,7 +321,7 @@ async def start_narration(request: Request, body: NarrationBody, ctx: WorkspaceC
         music_url = m["url"]
     make_speak, store, forget, voice_settings = await _voice_tools(ctx)
     code, name = resolve_language(body.language) if body.language else ("en", "English")
-    blocker = narration_blocker(name, voice_settings)
+    blocker = narration_blocker(name, voice_settings, private=True)
     if blocker:
         raise HTTPException(status_code=409, detail=blocker)
     script = body.script.strip()

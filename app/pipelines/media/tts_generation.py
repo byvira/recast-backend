@@ -36,6 +36,7 @@ from app.models.audio_asset import TranscriptWord
 from app.models.lexicon import MemberLexicon
 from app.models.text import LANGUAGE_NAMES
 from app.models.voice_settings import MemberVoiceSettings
+from app.pipelines.media import edge_voice
 
 logger = logging.getLogger(__name__)
 
@@ -90,17 +91,17 @@ ELEVENLABS_SUPPORTED_LANGUAGES = {
 DEEPGRAM_SUPPORTED_LANGUAGES = {"english", "spanish", "german", "french", "dutch", "italian", "japanese"}
 
 
-# Languages Gemini speech was checked on by reading its audio back (2026-11-12: Hindi and Tamil came back almost word for word through Whisper).
+# Languages Gemini speech was checked on by reading its audio back (2026-11-12: Hindi, Tamil and Portuguese came back almost word for word through Whisper; run scripts/check_gemini_languages.py again, when the speech quota has reset, to check the rest).
 # Gemini documents more languages, but a language is added here only after the same read-back check, so a voice never reads a script it
 # cannot read and gets saved as if it did.
-GEMINI_SUPPORTED_LANGUAGES = {"hindi", "tamil"}
+GEMINI_SUPPORTED_LANGUAGES = {"hindi", "tamil", "portuguese"}
 
 
 def _gemini_voice_available() -> bool:
     return bool(settings.GEMINI_TTS_ENABLED and settings.GEMINI_API_KEY)
 
 
-def is_language_supported(language: str) -> tuple[bool, str]:
+def is_language_supported(language: str, private: bool = False) -> tuple[bool, str]:
     """Real check against whichever provider(s) are actually configured,
     not just ElevenLabs' broader list — a language ElevenLabs supports
     but Deepgram doesn't is NOT usable right now if only DEEPGRAM_API_KEY
@@ -112,12 +113,16 @@ def is_language_supported(language: str) -> tuple[bool, str]:
         return True, ""
     if _gemini_voice_available() and lang in GEMINI_SUPPORTED_LANGUAGES:
         return True, ""
-    if not settings.ELEVENLABS_API_KEY and not settings.DEEPGRAM_API_KEY and not _gemini_voice_available():
+    if _melotts_available() and lang in MELOTTS_LANGUAGES:
+        return True, ""
+    if edge_voice.available() and not private and lang in edge_voice.LANGUAGES:
+        return True, ""
+    if not settings.ELEVENLABS_API_KEY and not settings.DEEPGRAM_API_KEY and not _gemini_voice_available() and not _melotts_available() and not (edge_voice.available() and not private):
         return False, "No voice is set up on this server yet."
     return False, f"The voices available right now cannot speak '{language}'. Choose another language."
 
 
-def narration_blocker(language: str, voice_settings: MemberVoiceSettings) -> Optional[str]:
+def narration_blocker(language: str, voice_settings: MemberVoiceSettings, private: bool = False) -> Optional[str]:
     """Why narration in this language cannot be made right now, in plain words, or None when it can. The backup voice reads
     only a few languages, so any other language needs the premium voice service AND a real premium voice picked. Said before
     any translation is paid for, instead of as a vague failure afterwards."""
@@ -128,8 +133,12 @@ def narration_blocker(language: str, voice_settings: MemberVoiceSettings) -> Opt
         return None
     if lang in GEMINI_SUPPORTED_LANGUAGES and _gemini_voice_available():
         return None
+    if lang in MELOTTS_LANGUAGES and _melotts_available():
+        return None
+    if lang in edge_voice.LANGUAGES and edge_voice.available() and not private:
+        return None
     name = lang.title() if language else "that language"
-    backup = ", ".join(sorted(n.title() for n in DEEPGRAM_SUPPORTED_LANGUAGES | (GEMINI_SUPPORTED_LANGUAGES if _gemini_voice_available() else set())))
+    backup = ", ".join(sorted(n.title() for n in DEEPGRAM_SUPPORTED_LANGUAGES | (GEMINI_SUPPORTED_LANGUAGES if _gemini_voice_available() else set()) | (MELOTTS_LANGUAGES if _melotts_available() else set()) | (edge_voice.LANGUAGES if edge_voice.available() and not private else set())))
     if not (settings.ELEVENLABS_API_KEY and settings.ELEVENLABS_ENABLED):
         return f"{name} narration needs the premium voice service, which isn't switched on. The standard voice reads {backup}."
     if lang not in ELEVENLABS_SUPPORTED_LANGUAGES:
@@ -152,6 +161,25 @@ def _resolve_elevenlabs_voice_id(voice_settings: MemberVoiceSettings) -> Optiona
 
 
 _DEEPGRAM_LANGUAGE_CODES = {"en", "es", "de", "fr", "nl", "it", "ja"}
+
+# Cloudflare MeloTTS: language code -> the code it takes. Each was read back through Whisper on 2026-11-12 (0.81 to 1.0).
+MELOTTS_CODES = {"en": "en", "es": "es", "fr": "fr", "zh": "zh", "ja": "jp", "ko": "kr"}
+MELOTTS_LANGUAGES = {"english", "spanish", "french", "chinese", "japanese", "korean"}
+
+
+def _melotts_available() -> bool:
+    return bool(settings.CLOUDFLARE_TTS_ENABLED and settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID)
+
+
+def _melotts_code(text: str, language: Optional[str] = None) -> Optional[str]:
+    """The MeloTTS language code for this script, or None when it cannot read it. A stated language is trusted over detection; a mixed
+    language ("ta+en") or one it does not have is None, and so is a script whose language cannot be told."""
+    from app.shared.language import detect_language
+
+    stated = [part.split("-")[0] for part in (language or "").strip().lower().split("+") if part]
+    if stated:
+        return MELOTTS_CODES.get(stated[0]) if len(stated) == 1 else None
+    return MELOTTS_CODES.get(detect_language(text) or "")
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -430,12 +458,33 @@ async def _call_deepgram_raw(*, text: str, voice_settings: MemberVoiceSettings, 
         return response.content
 
 
-async def _call_gemini_tts(*, text: str) -> bytes:
-    """Narration from Gemini speech: raw 24 kHz audio, turned into mp3 so parts join end to end like the other voices. Raises on any failure."""
+def _to_mp3(data: bytes, *input_args: str) -> bytes:
     import subprocess
 
     from app.pipelines.audio.sound_checks import _ffmpeg_exe
 
+    done = subprocess.run([_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", *input_args, "-i", "pipe:0", "-f", "mp3", "-b:a", "128k", "pipe:1"],
+                          input=data, capture_output=True, timeout=120)
+    if done.returncode != 0 or not done.stdout:
+        raise RuntimeError("The speech could not be turned into mp3.")
+    return done.stdout
+
+
+async def _call_melotts(*, text: str, code: str) -> bytes:
+    """Narration from Cloudflare MeloTTS (a wav answer, turned into mp3 so parts join like the other voices). Raises on any failure."""
+    async with track("cloudflare", "@cf/myshell-ai/melotts", feature="text_to_speech"):
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            r = await client.post(f"https://api.cloudflare.com/client/v4/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/myshell-ai/melotts",
+                                  headers={"Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"}, json={"prompt": text[:4000], "lang": code})
+            r.raise_for_status()
+        encoded = (r.json().get("result") or {}).get("audio")
+        if not encoded:
+            raise RuntimeError("Cloudflare speech returned no audio.")
+        return await asyncio.to_thread(_to_mp3, base64.b64decode(encoded))
+
+
+async def _call_gemini_tts(*, text: str) -> bytes:
+    """Narration from Gemini speech: raw 24 kHz audio, turned into mp3 so parts join end to end like the other voices. Raises on any failure."""
     model = settings.GEMINI_TTS_MODEL
     async with track("gemini", model, feature="text_to_speech"):
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -455,16 +504,7 @@ async def _call_gemini_tts(*, text: str) -> bytes:
         if not pcm:
             raise RuntimeError("Gemini speech returned no audio.")
 
-        def to_mp3() -> bytes:
-            done = subprocess.run(
-                [_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0", "-f", "mp3", "-b:a", "128k", "pipe:1"],
-                input=pcm, capture_output=True, timeout=120,
-            )
-            if done.returncode != 0 or not done.stdout:
-                raise RuntimeError("The speech could not be turned into mp3.")
-            return done.stdout
-
-        return await asyncio.to_thread(to_mp3)
+        return await asyncio.to_thread(_to_mp3, pcm, "-f", "s16le", "-ar", "24000", "-ac", "1")
 
 
 class SpeechResult(BaseModel):
@@ -500,6 +540,7 @@ async def _synthesize_part(
     user_id: str,
     timed: bool,
     language: Optional[str] = None,
+    private: bool = False,
 ) -> Optional[SpeechResult]:
     """Tries ElevenLabs first (the real product decision); on any
     failure — no key, no real voice configured, the free-plan library-
@@ -576,6 +617,18 @@ async def _synthesize_part(
     elif settings.DEEPGRAM_API_KEY:
         logger.warning("Deepgram fallback skipped for workspace %s: the script is in a language it cannot read.", workspace_id)
 
+    # Next: Cloudflare MeloTTS for the six languages it reads (it takes only a small part of the daily allowance pictures share).
+    code = _melotts_code(text, language) if _melotts_available() else None
+    if code:
+        tried = True
+        try:
+            with fallback_scope():
+                audio = await _call_melotts(text=spoken, code=code)
+            logger.info("Served this narration via the Cloudflare speech fallback.")
+            return SpeechResult(audio=audio)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Cloudflare TTS fallback failed for workspace %s: %s", workspace_id, exc)
+
     # Last: Gemini speech, a separate vendor that reads many more languages.
     if settings.GEMINI_TTS_ENABLED and settings.GEMINI_API_KEY:
         tried = True
@@ -586,6 +639,17 @@ async def _synthesize_part(
             return SpeechResult(audio=audio)
         except Exception as exc:  # noqa: BLE001
             logger.error("Gemini TTS fallback failed for workspace %s: %s", workspace_id, exc)
+    # Very last, and never for private text: Microsoft Edge neural voices for the languages nothing above reads.
+    edge_code = edge_voice.code_for(text, language) if edge_voice.available() and not private else None
+    if edge_code:
+        tried = True
+        try:
+            with fallback_scope():
+                audio = await edge_voice.speak(spoken, edge_code)
+            logger.info("Served this narration via the Edge voice fallback.")
+            return SpeechResult(audio=audio)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Edge TTS fallback failed for workspace %s: %s", workspace_id, type(exc).__name__)
     if not tried:
         logger.warning("No TTS provider available for workspace %s.", workspace_id)
     elif settings.ELEVENLABS_API_KEY or settings.DEEPGRAM_API_KEY:
@@ -602,6 +666,7 @@ async def _synthesize(
     user_id: str,
     timed: bool,
     language: Optional[str] = None,
+    private: bool = False,
 ) -> Optional[SpeechResult]:
     """One narration from a script of any length the app accepts. A script a voice service can take in one request goes as it
     is; a longer one is cut at paragraph and sentence ends (speech_chunks), read part by part in order, and joined: the audio
@@ -614,7 +679,7 @@ async def _synthesize(
     if len(parts) <= 1:
         return await _synthesize_part(
             text=text, voice_settings=voice_settings, lexicon=lexicon, workspace_id=workspace_id,
-            user_id=user_id, timed=timed, language=language,
+            user_id=user_id, timed=timed, language=language, private=private,
         )
 
     audio = b""
@@ -624,7 +689,7 @@ async def _synthesize(
     for number, part in enumerate(parts, start=1):
         result = await _synthesize_part(
             text=part, voice_settings=voice_settings, lexicon=lexicon, workspace_id=workspace_id,
-            user_id=user_id, timed=timed, language=language,
+            user_id=user_id, timed=timed, language=language, private=private,
         )
         if result is None:
             logger.warning("Narration stopped at part %d of %d for workspace %s.", number, len(parts), workspace_id)
@@ -649,14 +714,16 @@ async def synthesize_speech(
     workspace_id: str,
     user_id: str,
     language: Optional[str] = None,
+    private: bool = False,
 ) -> Optional[bytes]:
-    """Audio only. See _synthesize for the provider order and the lexicon."""
+    """Audio only. See _synthesize for the provider order and the lexicon. `private` marks text from a member's own footage or recording: it
+    is never sent to the unofficial last-resort voice."""
     from app.agents.content_guard.media import assert_speech_ok
 
     await assert_speech_ok(text, noun="script", workspace_id=workspace_id, where="narration")
     result = await _synthesize(
         text=text, voice_settings=voice_settings, lexicon=lexicon,
-        workspace_id=workspace_id, user_id=user_id, timed=False, language=language,
+        workspace_id=workspace_id, user_id=user_id, timed=False, language=language, private=private,
     )
     return result.audio if result else None
 
@@ -669,6 +736,7 @@ async def synthesize_speech_timed(
     workspace_id: str,
     user_id: str,
     language: Optional[str] = None,
+    private: bool = False,
 ) -> Optional[SpeechResult]:
     """Audio plus the exact time of every word when the provider gives it, so
     a recording made here has a real transcript from the start."""
@@ -677,5 +745,5 @@ async def synthesize_speech_timed(
     await assert_speech_ok(text, noun="script", workspace_id=workspace_id, where="narration")
     return await _synthesize(
         text=text, voice_settings=voice_settings, lexicon=lexicon,
-        workspace_id=workspace_id, user_id=user_id, timed=True, language=language,
+        workspace_id=workspace_id, user_id=user_id, timed=True, language=language, private=private,
     )

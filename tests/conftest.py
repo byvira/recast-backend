@@ -65,6 +65,8 @@ os.environ["POLLINATIONS_ENABLED"] = "false"
 os.environ["STABLEHORDE_ENABLED"] = "false"
 # The backup narration voice is a real Gemini call, so tests switch it on only where they stub it.
 os.environ["GEMINI_TTS_ENABLED"] = "false"
+os.environ["CLOUDFLARE_TTS_ENABLED"] = "false"
+os.environ["EDGE_TTS_ENABLED"] = "false"
 # Tests never read a connected account's profile from a platform.
 os.environ["PROFILE_REFRESH_ENABLED"] = "false"
 # The sending address in .env never decides what a test sees: with none set, the test sender is used.

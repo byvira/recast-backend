@@ -32,6 +32,7 @@ DEFAULT_LIMITS: dict[str, dict[str, dict[str, int]]] = {
     "huggingface": {},
     "pollinations": {},
     "stablehorde": {},
+    "edge": {},
 }
 DEFAULT_RESET = {
     "groq": {"tz": "UTC", "hour": 0},
@@ -45,6 +46,7 @@ DEFAULT_RESET = {
     "huggingface": {"tz": "UTC", "hour": 0},
     "pollinations": {"tz": "UTC", "hour": 0},
     "stablehorde": {"tz": "UTC", "hour": 0},
+    "edge": {"tz": "UTC", "hour": 0},
 }
 
 # Every AI provider the product calls, with a plain description of what it is used for. A provider shows on the page
@@ -60,6 +62,7 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "openrouter": {"label": "OpenRouter", "used_for": "Backup writing and picture understanding, on free open models"},
     "huggingface": {"label": "Hugging Face", "used_for": "Backup pictures (switched off while no route answers)"},
     "pollinations": {"label": "Pollinations", "used_for": "Last free backup for writing and pictures (no key)"},
+    "edge": {"label": "Microsoft Edge voices", "used_for": "Last backup narration for more languages (unofficial, off by default, never for a member's own footage)"},
     "stablehorde": {"label": "Stable Horde", "used_for": "Last backup for pictures, a public volunteer queue (off by default)"},
 }
 
@@ -77,6 +80,8 @@ def is_configured(provider: str) -> bool:
         return False  # switched off on purpose
     if provider == "pollinations":
         return bool(settings.POLLINATIONS_ENABLED)  # needs no key
+    if provider == "edge":
+        return bool(settings.EDGE_TTS_ENABLED)  # needs no key
     if provider == "stablehorde":
         return bool(settings.STABLEHORDE_ENABLED)  # needs no key
     if provider == "huggingface":

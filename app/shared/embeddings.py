@@ -94,3 +94,46 @@ def best_match(query: list[float], candidates: list[list[float]]) -> Optional[in
     scores = [sum(a * b for a, b in zip(query, c)) if len(c) == len(query) else -1.0 for c in candidates]
     best = max(range(len(scores)), key=scores.__getitem__)
     return best if scores[best] > -1.0 else None
+
+
+async def available_spaces() -> list[str]:
+    """The embedding models that could answer now, best for bulk work first: Mistral and Cloudflare take a whole list in one request, Gemini one text at a time.
+    A model the scheduled check found down is left out."""
+    await probe.refresh()
+    out: list[str] = []
+    if settings.MISTRAL_API_KEY and not probe.is_down(f"embeddings:mistral:{settings.MISTRAL_EMBED_MODEL}"):
+        out.append(f"mistral:{settings.MISTRAL_EMBED_MODEL}")
+    if settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID and not probe.is_down(f"embeddings:cloudflare:{settings.CLOUDFLARE_EMBED_MODEL}"):
+        out.append(f"cloudflare:{settings.CLOUDFLARE_EMBED_MODEL}")
+    if settings.GEMINI_API_KEY:
+        from app.shared.llm import EMBED_MODEL
+
+        out.append(f"gemini:{EMBED_MODEL}")
+    return out
+
+
+async def embed_in(space: str, texts: list[str]) -> list[list[float]]:
+    """Unit vectors for `texts` made by exactly the model `space` names ([] when it cannot). Vectors from one space are only ever compared with
+    each other, so a caller that stored vectors earlier asks for the same space again. Never raises."""
+    clean = [(t or "").strip()[:MAX_CHARS] for t in texts]
+    if not clean or not all(clean):
+        return []
+    provider = space.split(":", 1)[0]
+    try:
+        if provider == "mistral":
+            with fallback_scope():
+                raw = await _mistral(clean)
+        elif provider == "cloudflare":
+            with fallback_scope():
+                raw = await _cloudflare(clean)
+        elif provider == "gemini":
+            from app.shared.llm import embed_text
+
+            raw = [await embed_text(t) for t in clean]
+        else:
+            return []
+        vectors = [_unit(list(v)) for v in raw]
+        return vectors if len(vectors) == len(clean) and all(vectors) else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("%s embeddings failed: %s", provider, exc)
+        return []

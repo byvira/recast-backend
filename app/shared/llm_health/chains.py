@@ -60,7 +60,9 @@ def all_chains() -> dict[str, dict]:
             "steps": [
                 Step("elevenlabs", "eleven_multilingual_v2", lambda: settings.ELEVENLABS_ENABLED, models=("eleven_multilingual_v2",)),
                 Step("deepgram", "aura-2", models=("aura-2",)),
+                Step("cloudflare", "melotts (English, Spanish, French, Chinese, Japanese, Korean)", lambda: settings.CLOUDFLARE_TTS_ENABLED, models=("@cf/myshell-ai/melotts",)),
                 Step("gemini", settings.GEMINI_TTS_MODEL, lambda: settings.GEMINI_TTS_ENABLED, models=(settings.GEMINI_TTS_MODEL,)),
+                Step("edge", "neural voices (not for a member's own footage)", lambda: settings.EDGE_TTS_ENABLED, "unofficial, off by default", models=("neural",)),
             ],
         },
         "speech_to_text": {

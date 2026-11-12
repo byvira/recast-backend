@@ -55,11 +55,11 @@ def stubs(monkeypatch):
     know about timing it never asked for."""
     record = {"synth": [], "uploads": [], "tts_returns_none": False, "timed_words": None}
 
-    async def _fake_synth(*, text, voice_settings, lexicon=None, workspace_id, user_id):
+    async def _fake_synth(*, text, voice_settings, lexicon=None, workspace_id, user_id, **_):
         record["synth"].append({"text": text, "voice": voice_settings.tts_voice, "lexicon": lexicon})
         return None if record["tts_returns_none"] else _wav(0.4)
 
-    async def _fake_synth_timed(*, text, voice_settings, lexicon=None, workspace_id, user_id, language=None):
+    async def _fake_synth_timed(*, text, voice_settings, lexicon=None, workspace_id, user_id, language=None, **_):
         record["synth"].append({"text": text, "voice": voice_settings.tts_voice, "lexicon": lexicon})
         if record["tts_returns_none"]:
             return None
@@ -92,7 +92,7 @@ def translation(monkeypatch):
         return replies.pop(0)
 
     monkeypatch.setattr(audio_module, "call_llm", _fake_llm)
-    monkeypatch.setattr(audio_module, "is_language_supported", lambda language: (True, ""))
+    monkeypatch.setattr(audio_module, "is_language_supported", lambda language, **_: (True, ""))
     return replies
 
 
@@ -180,6 +180,9 @@ async def test_generate_validation_and_provider_failure_create_nothing(signup_us
     stubs["tts_returns_none"] = True
     res = await _generate(client, ws_id, brand_id)
     assert res.status_code == 503, res.text
+    # a voice that could not be made is a named, retryable failure (not a bare 503), with a wait and the same words as before
+    body = res.json()
+    assert body["code"] == "voice_busy" and body["retryable"] is True and body["retry_after_seconds"] == 60 and "could not be made" in body["detail"]
 
     assert stubs["uploads"] == []
     assert await audio_assets.count_documents({"workspace_id": ws_id}) == 0
@@ -468,7 +471,7 @@ async def test_localize_errors(signup_user, stubs, translation, monkeypatch):
     assert empty.status_code == 400
 
     # A language no reachable provider can voice fails BEFORE any translation spend.
-    monkeypatch.setattr(audio_module, "is_language_supported", lambda language: (False, "not voiceable"))
+    monkeypatch.setattr(audio_module, "is_language_supported", lambda language, **_: (False, "not voiceable"))
     unsupported = await client.post(url, json={"target_language": "Klingon"}, headers=_h(ws_id))
     assert unsupported.status_code == 400
     assert "not voiceable" in unsupported.json()["detail"]

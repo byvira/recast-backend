@@ -143,6 +143,20 @@ async def _cloudflare_embed() -> str:
     return "answered"
 
 
+async def _melotts() -> str:
+    from app.pipelines.media.tts_generation import _call_melotts
+
+    await _call_melotts(text="ok", code="en")
+    return "answered"
+
+
+async def _edge() -> str:
+    from app.pipelines.media import edge_voice
+
+    await edge_voice.speak("ok", "de")
+    return "answered"
+
+
 async def _gemini_speech() -> str:
     async with httpx.AsyncClient(timeout=TIMEOUT_S * 2) as c:
         r = await c.post(f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_TTS_MODEL}:generateContent", headers={"x-goog-api-key": settings.GEMINI_API_KEY},
@@ -248,6 +262,10 @@ def targets() -> list[Target]:
     if settings.OPENROUTER_API_KEY:
         for m in dict.fromkeys(x for x in (settings.OPENROUTER_VISION_MODEL, settings.OPENROUTER_VISION_MODEL_2, settings.OPENROUTER_VISION_MODEL_3) if x):
             out.append(Target("picture_understanding", "openrouter", m, lambda m=m: _openrouter_vision(m), route=f"vision:openrouter:{m}"))
+    if settings.CLOUDFLARE_API_TOKEN and settings.CLOUDFLARE_ACCOUNT_ID and settings.CLOUDFLARE_TTS_ENABLED:
+        out.append(Target("voice", "cloudflare", "@cf/myshell-ai/melotts", _melotts, daily=True))
+    if settings.EDGE_TTS_ENABLED:
+        out.append(Target("voice", "edge", "neural", _edge, daily=True))
     if settings.DEEPGRAM_API_KEY:
         out.append(Target("voice", "deepgram", "aura-2", _deepgram_speak, daily=True))
         out.append(Target("speech_to_text", "deepgram", "nova-3", _deepgram_listen))
