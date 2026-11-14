@@ -101,7 +101,7 @@ def decide_prompt(message: str, allowed: list[ToolSpec], language: str, conversa
             "Write the answer in the language of the request" + (" (" + tongue.rule(language, script) + ")" if tongue.rule(language, script) else "") + ", in at most three short sentences."
         )
     if conversation:
-        system += " The conversation so far is shown as data: use it to understand words like \"it\", \"that\" or \"the same\", and take any id only from its \"Made:\" lines."
+        system += " The conversation so far is shown as data: use it to understand words like \"it\", \"that\" or \"the same\", and take any id only from its \"Made:\" lines. When Ekavo's last message in it was a question, the new request is the answer: carry on with the earlier request using that answer, and do not choose \"none\"."
     prompt = "Allowed tools:\n" + "\n".join(_line(s) for s in allowed)
     if conversation:
         prompt += "\n\nConversation so far:\n" + conversation

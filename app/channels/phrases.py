@@ -68,6 +68,11 @@ PHRASES: dict[str, dict[str, str]] = {
         "hi": "यह नहीं हो पाया। आगे कोई शुल्क नहीं लगा। एक मिनट बाद फिर कोशिश करें।",
         "ta": "இது நடக்கவில்லை. மேலும் கட்டணம் இல்லை. ஒரு நிமிடத்தில் மீண்டும் முயலுங்கள்.",
     },
+    "partial": {
+        "en": "Some of this finished and some did not. Open the app to see what was made.",
+        "hi": "इसका कुछ हिस्सा पूरा हुआ और कुछ नहीं। क्या बना है, देखने के लिए ऐप खोलें।",
+        "ta": "இதில் சில முடிந்தன, சில முடியவில்லை. என்ன உருவானது என்று பார்க்க செயலியைத் திறக்கவும்.",
+    },
     "found": {"en": "Here is what I found:", "hi": "यह मिला:", "ta": "கிடைத்தது:"},
     "fresh": {
         "en": "Started a new conversation. What would you like to do?",

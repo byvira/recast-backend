@@ -279,3 +279,29 @@ async def test_a_plain_answer_in_a_chat_is_sent_as_the_reply(world, monkeypatch)
     monkeypatch.setattr(shortlist, "shortlist", anything)
     assert await engine.handle(adapter, msg("should my posts be short?"), wait=True) == "answered"
     assert adapter.last["text"] == "Short posts read better on a phone."
+
+
+async def test_a_request_that_cannot_start_because_the_credits_are_used_says_so_and_when_they_return(world, monkeypatch):
+    from app.billing.credits import CreditsExhausted
+
+    client, user, ws, adapter = world
+    await linked(world)
+
+    async def refuse(*args, **kwargs):
+        raise CreditsExhausted({"code": "limit_reached", "limit": "credits_month", "message": "You've used all 100 credits this month. They start again on 1 Dec."})
+
+    monkeypatch.setattr(runs, "create", refuse)
+    assert await engine.handle(adapter, msg("make a picture of a cat"), wait=True) == "out_of_credits"
+    said = adapter.last["text"]
+    assert "used all 100 credits" in said and "add credits" in said.lower() and "try again in a minute" not in said.lower()
+
+
+async def test_a_run_that_stops_partway_is_reported_with_the_credits_reason_and_is_never_silent(world):
+    client, user, ws, adapter = world
+    out = {"code": "limit_reached", "message": "You've used all 100 credits this month."}
+    await engine._report(adapter, msg("x"), {"status": "partial", "result": {"steps": [{"error": None}, {"error": out}]}}, "en")
+    assert "Some of this finished" in adapter.last["text"] and "used all 100 credits" in adapter.last["text"]
+    await engine._report(adapter, msg("x"), {"status": "failed", "result": {"steps": [{"error": out}]}}, "en")
+    assert "used all 100 credits" in adapter.last["text"] and "did not work" not in adapter.last["text"]
+    await engine._report(adapter, msg("x"), {"status": "failed", "result": {"steps": [{"error": {"code": "internal_error", "message": "boom"}}]}}, "en")
+    assert "did not work" in adapter.last["text"] and "boom" not in adapter.last["text"]

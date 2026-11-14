@@ -73,8 +73,32 @@ def repair_arguments(model: type[BaseModel], arguments: dict[str, Any]) -> dict[
 async def default_brand_id(workspace_id: str) -> Optional[str]:
     from app.db.mongo import brand_profiles
 
-    row = await brand_profiles.find_one({"workspace_id": workspace_id}, {"id": 1}, sort=[("is_default", -1), ("created_at", 1)])
+    # only a finished brand can be used to make something; one still being set up is not offered
+    row = await brand_profiles.find_one({"workspace_id": workspace_id, "is_complete": True}, {"id": 1}, sort=[("is_default", -1), ("created_at", 1)])
     return (row or {}).get("id")
+
+
+def _picture_details(args: dict[str, Any]) -> None:
+    """A picture asked for in a few words has a description and nothing else, so its title comes from the description, and it carries no headline text
+    unless one was asked for."""
+    prompt = str(args.get("prompt") or "").strip()
+    if prompt and not str(args.get("title") or "").strip():
+        args["title"] = (prompt[:60].rsplit(" ", 1)[0] if len(prompt) > 60 else prompt).strip().capitalize()
+    if not str(args.get("headline") or "").strip():
+        args["headline"] = ""
+        args.setdefault("show_text", False)
+
+
+def missing_brand(steps: list[Any], registry: Any) -> bool:
+    """True when a step needs a brand and, after the repair, none was found for it."""
+    for step in steps:
+        spec = registry.get(step.tool)
+        if spec is None or "brand_id" not in spec.input_model.model_fields:
+            continue
+        given = step.arguments.get("brand_id")
+        if "${" not in str(given) and str(given or "").strip().lower() in PLACEHOLDER_BRANDS:
+            return True
+    return False
 
 
 async def repair_steps(steps: list[Any], registry: Any, workspace_id: str) -> None:
@@ -93,4 +117,6 @@ async def repair_steps(steps: list[Any], registry: Any, workspace_id: str) -> No
                     brand, looked = await default_brand_id(workspace_id), True
                 if brand:
                     args["brand_id"] = brand
+        if step.tool == "image.generate":
+            _picture_details(args)
         step.arguments = args

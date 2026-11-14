@@ -308,10 +308,24 @@ async def _ask(adapter: Adapter, msg: Inbound, link: dict[str, Any], text: str, 
         await adapter.send(msg.sender, failure.message)
         return "refused"
     except Exception as exc:  # noqa: BLE001 - out of credits, or the planner is down
+        from app.billing import credits
+
+        if credits.is_out_of_credits(exc):
+            await adapter.send(msg.sender, await _credits_message(exc, language, think))
+            return "out_of_credits"
         logger.info("A channel request could not be planned: %s", type(exc).__name__)
         await adapter.send(msg.sender, await phrases.tell("failed", language, localize=True, think=think))
         return "failed"
     return await _answer(adapter, msg, link, run, language, services, think, wait)
+
+
+async def _credits_message(exc: BaseException, language: Optional[str], think: Any) -> str:
+    """The credits refusal in plain words (what is left, when it starts again) and where to add more, in the person's language."""
+    from app.ask import runs
+
+    detail = getattr(exc, "detail", None)
+    said = str(detail.get("message")) if isinstance(detail, dict) and detail.get("message") else "You have used all your credits."
+    return await runs.localize(f"{said} You can add credits in the app: {app_link()}", language or "en", think=think)
 
 
 async def _answer(adapter: Adapter, msg: Inbound, link: dict[str, Any], run: dict[str, Any], language: Optional[str], services: Any, think: Any, wait: bool) -> str:
@@ -383,8 +397,24 @@ async def _report(adapter: Adapter, msg: Inbound, run: dict[str, Any], language:
             await adapter.send(msg.sender, phrases.known("found", language) + chr(10) + said)
         else:
             await adapter.send(msg.sender, f"{phrases.known('done', language)} {app_link()}")
-    elif run.get("status") in ("failed", "stopped"):
+    elif run.get("status") == "failed":
+        why = _credits_reason(run)
+        await adapter.send(msg.sender, f"{why} {app_link()}" if why else phrases.known("failed", language))
+    elif run.get("status") == "partial":
+        why = _credits_reason(run)
+        await adapter.send(msg.sender, f"{phrases.known('partial', language)} {why} {app_link()}".replace("  ", " "))
+    elif run.get("status") == "stopped":
         await adapter.send(msg.sender, phrases.known("failed", language))
+
+
+def _credits_reason(run: dict[str, Any]) -> str:
+    """The credits message of the first step that was refused for it, already in the person's language; nothing for any other kind of failure."""
+    for step in (run.get("result") or {}).get("steps") or []:
+        error = step.get("error") or {}
+        if error.get("code") == "limit_reached" and error.get("message"):
+            return str(error["message"])
+    error = run.get("error") or {}
+    return str(error["message"]) if error.get("code") == "limit_reached" and error.get("message") else ""
 
 
 async def drain() -> None:

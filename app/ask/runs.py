@@ -107,6 +107,7 @@ def say_ready(steps: int, credits_: int, exact: bool) -> str:
 
 MESSAGES = {
     "none": "I could not work out what you want from that. Could you say it another way, or tell me what to make, such as a post, a picture or a schedule?",
+    "no_brand": "You need a finished brand before I can make that. Open the Ekavo app, set up your brand, then ask me again.",
     "hand_off": "That needs your own go-ahead, so I will not do it for you. Open it in the app and check it first.",
     "answered": "Here is what I found.",
     "cap": "You have used today's planning steps for this workspace. They come back tomorrow, and you can do the same thing from the app meanwhile.",
@@ -361,6 +362,10 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
         cred_id = credential_id(workspace_id, user_id)
         await _tell(on_phase, "price")
         await repair.repair_steps(understood.steps, registry, workspace_id)     # one value where a list is needed, a different spelling, a placeholder brand
+        if repair.missing_brand(understood.steps, registry):
+            run.update(status="none", reply=await localize_fixed("ask.message.no_brand", MESSAGES["no_brand"], language), reason="no_brand")
+            await runs().insert_one(dict(run))
+            return public(run)
         problems = await _check_steps(gate, cred_id, understood.steps)
         step_rows, total, exact = await _price(understood.steps)
         await localize_steps(step_rows, language)

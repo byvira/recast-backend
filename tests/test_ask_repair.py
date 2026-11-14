@@ -142,3 +142,44 @@ def test_the_nothing_fits_message_is_plain_and_has_no_tool_words():
 
     text = runs.MESSAGES["none"].lower()
     assert "tool" not in text and "post" in text
+
+
+class _Step:
+    def __init__(self, tool, arguments):
+        self.tool, self.arguments = tool, arguments
+
+
+async def test_a_picture_asked_for_in_a_few_words_gets_a_title_and_no_headline(monkeypatch):
+    async def main_brand(workspace_id):
+        return "brand-main"
+
+    monkeypatch.setattr(repair, "default_brand_id", main_brand)
+    step = _Step("image.generate", {"prompt": "a cat in a space ship", "brand_id": "default"})
+    await repair.repair_steps([step], get_registry(), "w1")
+    assert step.arguments["title"] == "A cat in a space ship" and step.arguments["headline"] == "" and step.arguments["show_text"] is False
+    assert step.arguments["brand_id"] == "brand-main"
+    asked = _Step("image.generate", {"prompt": "a cat", "title": "My cat", "headline": "Meet Tom", "brand_id": "b1"})
+    await repair.repair_steps([asked], get_registry(), "w1")
+    assert asked.arguments["title"] == "My cat" and asked.arguments["headline"] == "Meet Tom" and "show_text" not in asked.arguments
+
+
+async def test_no_finished_brand_is_told_apart_from_a_found_one(monkeypatch):
+    async def none(workspace_id):
+        return None
+
+    monkeypatch.setattr(repair, "default_brand_id", none)
+    step = _Step("image.generate", {"prompt": "a cat", "brand_id": "default"})
+    await repair.repair_steps([step], get_registry(), "w1")
+    assert repair.missing_brand([step], get_registry()) is True
+    ok = _Step("image.generate", {"prompt": "a cat", "brand_id": "a-real-id"})
+    await repair.repair_steps([ok], get_registry(), "w1")
+    assert repair.missing_brand([ok], get_registry()) is False
+
+
+def test_the_no_brand_message_is_plain_and_a_follow_up_continues_the_question():
+    from app.ask import runs
+
+    text = runs.MESSAGES["no_brand"].lower()
+    assert "brand" in text and "tool" not in text and "—" not in text
+    _, system = pipeline.decide_prompt("stray dogs and cats", [get_registry().get("text.generate")], "en", conversation="Member: make a post\nEkavo: what tone?", allow_reply=True)
+    assert "the new request is the answer" in system
