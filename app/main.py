@@ -276,6 +276,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await prompt_live.stop()
     from app.agents.text import session_relay
     await session_relay.stop_listener()
+    from app.channels import pool as channel_pool
+    await channel_pool.close_all()
     get_mongo_client().close()
     await close_redis()
     logger.info("Connections closed successfully")

@@ -81,12 +81,13 @@ class WhatsAppAdapter:
 
     @asynccontextmanager
     async def _http(self):
-        """The client given at construction (tests) is used as it is and never closed here; otherwise one is opened for the call."""
+        """The client given at construction (tests) is used as it is; otherwise the shared pool is, so a call reuses an open connection. Never closed here."""
         if self._client is not None:
             yield self._client
         else:
-            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-                yield client
+            from app.channels import pool
+
+            yield pool.shared(TIMEOUT)
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}"}
@@ -109,6 +110,22 @@ class WhatsAppAdapter:
         except Exception as exc:  # noqa: BLE001 - a failed send is logged, never raised
             logger.warning("WhatsApp send failed: %s", type(exc).__name__)
             return False
+
+    #: WhatsApp shows "typing..." for up to 25 seconds, so it is asked again well before that
+    typing_seconds = 20.0
+
+    async def working(self, to: str, message_id: Optional[str] = None) -> None:
+        """Marks the person's message as read (the blue ticks) and shows "typing...". Best effort: a refusal is only logged."""
+        if not message_id:
+            return
+        body = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id, "typing_indicator": {"type": "text"}}
+        try:
+            async with self._http() as client:
+                res = await client.post(f"{GRAPH}/{GRAPH_VERSION}/{settings.WHATSAPP_PHONE_NUMBER_ID}/messages", headers=self._headers(), json=body)
+            if res.status_code >= 300:
+                logger.info("WhatsApp typing signal was refused: %s", res.status_code)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("WhatsApp typing signal failed: %s", type(exc).__name__)
 
     async def send_template(self, to: str, name: str, params: list[str], language: str = "en") -> bool:
         """An approved template message, the only kind WhatsApp allows after 24 hours. Each one is charged by Meta, so callers cap them. Never raises."""

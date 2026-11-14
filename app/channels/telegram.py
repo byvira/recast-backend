@@ -70,12 +70,13 @@ class TelegramAdapter:
 
     @asynccontextmanager
     async def _http(self):
-        """The client given at construction (tests) is used as it is and never closed here; otherwise one is opened for the call."""
+        """The client given at construction (tests) is used as it is; otherwise the shared pool is, so a call reuses an open connection. Never closed here."""
         if self._client is not None:
             yield self._client
         else:
-            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
-                yield client
+            from app.channels import pool
+
+            yield pool.shared(TIMEOUT)
 
     async def _call(self, method: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
         try:
@@ -92,6 +93,10 @@ class TelegramAdapter:
             payload["reply_markup"] = {"inline_keyboard": [[{"text": label[:40], "callback_data": data[:64]}] for label, data in buttons[:MAX_BUTTONS]]}
         out = await self._call("sendMessage", payload)
         return bool(out and out.get("ok"))
+
+    async def working(self, to: str, message_id: Optional[str] = None) -> None:
+        """Shows "typing..." in the chat. Telegram keeps it for about 5 seconds. Best effort."""
+        await self._call("sendChatAction", {"chat_id": to, "action": "typing"})
 
     async def answer_button(self, callback_id: Optional[str]) -> None:
         """Stops the button's spinner in Telegram. Best effort."""

@@ -81,7 +81,7 @@ async def test_a_code_links_a_chat_once_and_the_phone_number_is_never_stored(wor
     made = await links.make_code(ws, user, "simulator")
     assert len(made["code"]) == 9 and made["message"] == f"LINK {made['code']}"
     assert await engine.handle(adapter, msg(made["message"].lower()), wait=True) == "linked"
-    assert "Linked" in adapter.last["text"]
+    assert "linked to" in adapter.last["text"].lower() and "STOP" in adapter.last["text"]       # the welcome names the workspace and the handy words
     row = await get_db()["channel_links"].find_one({"workspace_id": ws})
     assert row["sender_tail"] == SENDER[-4:] and SENDER not in str(row)
     # the same code does not work twice, and a wrong one is told only that it did not work

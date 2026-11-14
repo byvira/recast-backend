@@ -13,10 +13,11 @@ PHRASES: dict[str, dict[str, str]] = {
         "ta": "வணக்கம்! இங்கே Ekavo பயன்படுத்த, Ekavo செயலியில் Settings திறந்து, Chat apps தேர்ந்தெடுத்து, அங்கே தெரியும் குறியீட்டை எனக்கு அனுப்புங்கள். உதாரணம்: LINK ABCD-2345",
     },
     "linked": {
-        "en": "Linked. Send me a message, a link or a voice note and I will make a draft. Nothing is posted without your yes.",
-        "hi": "जुड़ गया। मुझे संदेश, लिंक या वॉइस नोट भेजें, मैं ड्राफ्ट बनाऊँगा। आपकी हाँ के बिना कुछ भी पोस्ट नहीं होगा।",
-        "ta": "இணைக்கப்பட்டது. செய்தி, இணைப்பு அல்லது குரல் பதிவை அனுப்புங்கள், நான் வரைவு தயாரிக்கிறேன். உங்கள் சம்மதம் இல்லாமல் எதுவும் பதிவிடப்படாது.",
+        "en": "You are linked to {workspace} on Ekavo.\n\nSend me an idea and I will turn it into a draft:\n• a line of text\n• a link to a page or a video\n• a voice note, in any language\n\nNothing is posted without your yes. Every draft opens in Ekavo, so you can read it and change it first.\n\nHandy words: NEW starts a fresh chat. REMIND ON gives you one nudge a day. STOP unlinks this chat.",
+        "hi": "आप Ekavo पर {workspace} से जुड़ गए हैं।\n\nमुझे कोई विचार भेजिए, मैं उसे ड्राफ्ट बना दूँगा:\n• एक पंक्ति का संदेश\n• किसी पेज या वीडियो का लिंक\n• किसी भी भाषा में वॉइस नोट\n\nआपकी हाँ के बिना कुछ भी पोस्ट नहीं होता। हर ड्राफ्ट Ekavo में खुलता है, ताकि आप उसे पढ़कर बदल सकें।\n\nकाम के शब्द: NEW नई बातचीत शुरू करता है। REMIND ON दिन में एक बार याद दिलाता है। STOP इस चैट का लिंक हटाता है।",
+        "ta": "நீங்கள் Ekavo-வில் {workspace} உடன் இணைக்கப்பட்டுள்ளீர்கள்.\n\nஒரு யோசனையை அனுப்புங்கள், நான் அதை வரைவாக மாற்றுகிறேன்:\n• ஒரு வரி செய்தி\n• ஒரு பக்கம் அல்லது வீடியோவின் இணைப்பு\n• எந்த மொழியிலும் குரல் பதிவு\n\nஉங்கள் சம்மதம் இல்லாமல் எதுவும் பதிவிடப்படாது. ஒவ்வொரு வரைவும் Ekavo-வில் திறக்கும், படித்து மாற்றலாம்.\n\nபயனுள்ள சொற்கள்: NEW புதிய உரையாடலைத் தொடங்கும். REMIND ON நாளுக்கு ஒரு நினைவூட்டல் தரும். STOP இந்த அரட்டையின் இணைப்பை நீக்கும்.",
     },
+    "your_workspace": {"en": "your workspace", "hi": "आपका वर्कस्पेस", "ta": "உங்கள் வொர்க்ஸ்பேஸ்"},
     "link_bad": {
         "en": "That code did not work. It may have expired or been used. Make a new one in the app.",
         "hi": "यह कोड काम नहीं किया। यह पुराना हो गया होगा या इस्तेमाल हो चुका होगा। ऐप में नया बनाएँ।",
@@ -98,6 +99,11 @@ PHRASES: dict[str, dict[str, str]] = {
         "hi": "रिमाइंडर अभी उपलब्ध नहीं हैं। आप यहाँ फिर भी कुछ भी पूछ सकते हैं।",
         "ta": "நினைவூட்டல்கள் இப்போது கிடைக்கவில்லை. இங்கே எதையும் கேட்கலாம்.",
     },
+    "still_working": {
+        "en": "Still working on it. I will message you here the moment it is ready.",
+        "hi": "अभी भी काम चल रहा है। तैयार होते ही मैं यहीं संदेश भेजूँगा।",
+        "ta": "இன்னும் வேலை நடக்கிறது. தயாரானவுடன் இங்கே செய்தி அனுப்புவேன்.",
+    },
     "go": {"en": "Go ahead", "hi": "आगे बढ़ें", "ta": "தொடரவும்"},
     "cancel": {"en": "Cancel", "hi": "रद्द करें", "ta": "ரத்து"},
 }
@@ -118,3 +124,16 @@ async def tell(key: str, language: Optional[str], *, localize: bool = False, thi
     from app.ask import runs
 
     return await runs.localize(table["en"], code, think=think)
+
+
+async def linked_text(language: Optional[str], workspace: Optional[str]) -> str:
+    """The welcome said right after a chat is linked: the workspace by name, what can be sent, and the three handy words. In English, Hindi or Tamil it
+    is the written text; in another language it is translated once and remembered, and the English is sent when that is not ready in time."""
+    code = (language or "en")[:2].lower()
+    name = (workspace or "").strip() or PHRASES["your_workspace"].get(code, PHRASES["your_workspace"]["en"])
+    table = PHRASES["linked"]
+    if code in table:
+        return table[code].replace("{workspace}", name)
+    from app.shared.reader_language import say
+
+    return await say("channel.linked", table["en"].replace("{workspace}", "{name}"), language, {"name": name})

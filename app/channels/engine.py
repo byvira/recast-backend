@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 
@@ -42,6 +43,11 @@ POLL_LIMIT_SECONDS = 600
 _tasks: set[asyncio.Task] = set()
 
 Transcribe = Callable[[bytes, str], Awaitable[tuple[str, Optional[str]]]]
+
+#: how often "typing" is shown again while a message is being worked on (Telegram keeps it for 5 seconds), and when a short note says it is still going
+TYPING_EVERY = 4.0
+STILL_WORKING_AFTER = 8.0
+SHOWN_FOR = ("text", "voice", "image")
 
 
 def _now() -> datetime:
@@ -77,28 +83,100 @@ async def default_transcribe(data: bytes, name: str) -> tuple[str, Optional[str]
     return " ".join(w.word for w in words).strip(), language
 
 
+async def _keep_alive(adapter: Adapter, msg: Inbound, state: dict[str, Any]) -> None:
+    """Shows the sender that Ekavo is on it, from the first moment: "typing" at once and again before it fades, and one short note when it takes long.
+    A service with no such signal is simply not shown one. Stopped (cancelled) as soon as the message has been dealt with."""
+    working = getattr(adapter, "working", None)
+    every = float(getattr(adapter, "typing_seconds", TYPING_EVERY))
+    waited, told = 0.0, False
+    while True:
+        if working is not None:
+            await working(msg.sender, msg.message_id)
+        step = min(every, max(STILL_WORKING_AFTER - waited, 0.05)) if not told else every
+        await asyncio.sleep(step)
+        waited += step
+        if not told and waited >= STILL_WORKING_AFTER:
+            told = True
+            if state.get("linked"):                          # a chat that is not linked is only ever given its one hint
+                await adapter.send(msg.sender, await phrases.tell("still_working", state.get("language"), localize=True))
+
+
 async def handle(adapter: Adapter, msg: Inbound, *, services: Any = None, think: Any = None, embed: Any = None, transcribe: Optional[Transcribe] = None, wait: bool = False) -> str:
-    """One message. Returns what happened (for tests and logs; never shown to the sender). With `wait`, a started run finishes before this returns."""
+    """One message. Returns what happened (for tests and logs; never shown to the sender). With `wait`, a started run finishes before this returns.
+    While it is worked on, the sender sees Ekavo typing, so nobody is left looking at a silent chat."""
+    state: dict[str, Any] = {}
+    started = time.monotonic()
+    outcome = "error"
+    keep: Optional[asyncio.Task] = asyncio.create_task(_keep_alive(adapter, msg, state)) if msg.kind in SHOWN_FOR else None
+    try:
+        outcome = await _handle(adapter, msg, services=services, think=think, embed=embed, transcribe=transcribe, wait=wait, state=state)
+        return outcome
+    finally:
+        # how long a message took, from the moment it reached the engine to the last thing said (a run that goes on in the background is not counted)
+        logger.info("channel message handled channel=%s kind=%s outcome=%s ms=%d", msg.channel, msg.kind, outcome, int((time.monotonic() - started) * 1000))
+        if keep is not None:
+            keep.cancel()
+            await asyncio.gather(keep, return_exceptions=True)
+
+
+async def _first_time(msg: Inbound, key: str) -> bool:
+    """Records the message as seen. False when it was seen before (services resend), so nothing is ever done twice."""
+    try:
+        await seen().insert_one({"channel": msg.channel, "message_id": msg.message_id, "sender_hash": key, "at": _now()})
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def _nothing() -> None:
+    return None
+
+
+def _confident(text: str) -> bool:
+    """Whether a message is long enough, or written in letters outside the Latin alphabets, for its language to be trusted over what this chat has been using."""
+    t = (text or "").strip()
+    return len(t) >= 15 or any(ord(c) > 0x024F for c in t)
+
+
+async def _language_for(text: str, link: dict[str, Any]) -> tuple[Optional[str], Optional[str]]:
+    """(the language to answer in, the language to remember for this chat). The message's own language wins when it can be trusted. A short word such as "ok"
+    keeps the language the chat has been using. A brand-new chat is answered in the member's language, then the workspace's, so nobody has to start in English."""
+    detected = detect_language(text) if text else None
+    remembered = link.get("language")
+    if detected and (_confident(text) or not remembered):
+        return detected, detected
+    if remembered:
+        return remembered, None
+    try:
+        from app.shared.reader_language import reader_language
+
+        return await reader_language("member", user_id=link["user_id"], workspace_id=link["workspace_id"]), None
+    except Exception:  # noqa: BLE001 - not knowing the language must never stop an answer
+        return detected, None
+
+
+async def _handle(adapter: Adapter, msg: Inbound, *, services: Any = None, think: Any = None, embed: Any = None, transcribe: Optional[Transcribe] = None, wait: bool = False,
+                  state: Optional[dict[str, Any]] = None) -> str:
     from app.tools.services import LiveServices
 
     services = services or LiveServices()
     key = links.sender_hash(msg.channel, msg.sender)
-    try:
-        await seen().insert_one({"channel": msg.channel, "message_id": msg.message_id, "sender_hash": key, "at": _now()})
-    except DuplicateKeyError:
-        return "duplicate"
-
     code = links.parse_link_message(msg.text) if msg.kind == "text" else None
+    # the "seen before?" check and the "who is this?" lookup do not depend on each other, so they go out together and cost one wait, not two
+    first_time, link = await asyncio.gather(_first_time(msg, key), links.find(msg.channel, msg.sender) if not code else _nothing())
+    if not first_time:
+        return "duplicate"
     if code:
         return await _link(adapter, msg, code, services)
 
-    link = await links.find(msg.channel, msg.sender)
     language = detect_language(msg.text) if msg.text else None
     if link is None:
         return await _hint(adapter, msg, key, language)
 
     workspace_id, user_id = link["workspace_id"], link["user_id"]
-    language = language or link.get("language")
+    language, learned = await _language_for(msg.text, link)
+    if state is not None:
+        state.update(language=language, linked=True)
     off = await services.switched_off(workspace_id, f"channel.{msg.channel}")
     if off:
         await adapter.send(msg.sender, await phrases.tell("off", language, localize=True, think=think))
@@ -116,7 +194,7 @@ async def handle(adapter: Adapter, msg: Inbound, *, services: Any = None, think:
     if permissions is None or "create_content" not in permissions:
         await links.unlink_sender(msg.channel, msg.sender)
         return "not_allowed"
-    await links.touch(link["id"], language)
+    await links.touch(link["id"], learned)
 
     if msg.kind == "button":
         return await _button(adapter, msg, link, language, services, wait)
@@ -155,8 +233,23 @@ async def _link(adapter: Adapter, msg: Inbound, code: str, services: Any) -> str
     if made is None:
         await adapter.send(msg.sender, phrases.known("link_bad", language))
         return "link_bad"
-    await adapter.send(msg.sender, phrases.known("linked", language))
+    await adapter.send(msg.sender, await _welcome(made, language))
     return "linked"
+
+
+async def _welcome(made: dict[str, Any], fallback: Optional[str]) -> str:
+    """The welcome in the member's own language, then the workspace's, then English: the person has only said `LINK` so far, so the words they typed
+    say nothing about the language they read. Anything that goes wrong falls back to what was typed, and never stops the link."""
+    from app.db.mongo import workspaces
+    from app.shared.reader_language import reader_language
+
+    try:
+        language = await reader_language("member", user_id=made["user_id"], workspace_id=made["workspace_id"])
+        row = await workspaces.find_one({"id": made["workspace_id"]}, {"name": 1})
+        return await phrases.linked_text(language, (row or {}).get("name"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not write the welcome in the member's language: %s", exc)
+        return await phrases.linked_text(fallback, None)
 
 
 async def _hint(adapter: Adapter, msg: Inbound, key: str, language: Optional[str]) -> str:
