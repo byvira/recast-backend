@@ -309,7 +309,7 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
     if reference_ids:
         run["reference_ids"] = request_refs.check_ids(reference_ids)
     limit = await daily_limit(workspace_id)
-    if await steps_used_today(workspace_id) >= limit:
+    if not await credits.is_master_admin(user_id) and await steps_used_today(workspace_id) >= limit:      # the platform's own admin is never held to the day's cap
         run.update(status="none", reply=await localize_fixed("ask.message.cap", MESSAGES["cap"], language), reason="daily_cap")
         await runs().insert_one(dict(run))
         return public(run)

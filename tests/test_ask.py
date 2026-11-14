@@ -297,6 +297,22 @@ async def test_the_daily_step_cap_stops_planning_before_any_model_is_asked(asker
     assert res.status_code == 201 and res.json()["status"] == "none" and "planning steps" in res.json()["reply"] and calls == []
 
 
+async def test_the_platforms_master_admin_is_never_held_to_the_daily_step_cap(asker, monkeypatch):
+    client, user, ws, h = asker
+    calls = _stub(monkeypatch, {"decide": {"action": "none"}})
+
+    async def tiny(workspace_id):
+        return 0
+
+    async def admin(user_id):
+        return True
+
+    monkeypatch.setattr(runs, "daily_limit", tiny)
+    monkeypatch.setattr(runs.credits, "is_master_admin", admin)
+    res = await client.post("/api/v1/ask", headers=h, json={"message": "anything"})
+    assert res.status_code == 201 and "planning steps" not in res.json().get("reply", "") and calls != []
+
+
 async def test_a_failed_model_step_is_a_plain_retryable_failure_and_is_not_charged(asker, monkeypatch):
     from app.core.failures import AIUnavailable
 

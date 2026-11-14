@@ -118,7 +118,7 @@ async def test_fixed_sentences_and_step_summaries_are_given_in_the_members_langu
     await runs.localize_steps(rows, "ta")
     assert rows[0]["summary_local"] == "[ta] Lists your saved drafts." and "summary_local" not in rows[1]
     assert ("ask.tool.library.list", "ta") in asked
-    assert await runs.localize_fixed("ask.message.none", runs.MESSAGES["none"], "hi") == f"[hi] {runs.MESSAGES['none']}"
+    assert await runs.localize_fixed("ask.message.not_understood", runs.MESSAGES["none"], "hi") == f"[hi] {runs.MESSAGES['none']}"
 
     asked.clear()
     english = [{"tool": "library.list", "summary": "Lists your saved drafts."}]
