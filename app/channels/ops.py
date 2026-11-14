@@ -23,9 +23,9 @@ def _now() -> datetime:
 
 def configured() -> dict[str, bool]:
     """Which channels have their keys set in this deployment (a channel with no keys answers nothing)."""
-    from app.channels import telegram, whatsapp
+    from app.channels import telegram, twilio_whatsapp, whatsapp
 
-    return {"whatsapp": whatsapp.enabled(), "telegram": telegram.enabled()}
+    return {"whatsapp": whatsapp.enabled() or twilio_whatsapp.enabled(), "telegram": telegram.enabled()}
 
 
 async def switches() -> dict[str, dict[str, Any]]:

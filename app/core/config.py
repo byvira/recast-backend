@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str = ""
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_PHONE_NUMBER: str = ""
+    # The WhatsApp number Twilio sends from, with the plus (the shared sandbox number while testing). Empty: WhatsApp through Twilio is off.
+    TWILIO_WHATSAPP_NUMBER: str = ""
+    # The exact public address Twilio is told to call, only when it differs from the address the server sees (behind a proxy). Empty: use the request's own.
+    TWILIO_WHATSAPP_WEBHOOK_URL: str = ""
 
     # ElevenLabs — present in .env but not yet wired to any code (no caller
     # anywhere in the app). Declared here only so pydantic-settings' strict

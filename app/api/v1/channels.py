@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
 from app.channels import link as links
-from app.channels import telegram, whatsapp
+from app.channels import telegram, twilio_whatsapp, whatsapp
 from app.core.config import settings
 from app.core.middleware import limiter
 from app.core.workspace import WorkspaceContext, get_current_workspace, require
@@ -27,8 +27,9 @@ class CodeIn(BaseModel):
 def available() -> list[dict[str, Any]]:
     """The chat apps this deployment answers on, with what a person needs to find the bot."""
     out = []
-    if whatsapp.enabled():
-        out.append({"channel": "whatsapp", "label": "WhatsApp", "address": settings.WHATSAPP_DISPLAY_NUMBER or None})
+    if whatsapp.enabled() or twilio_whatsapp.enabled():
+        address = settings.WHATSAPP_DISPLAY_NUMBER or (settings.TWILIO_WHATSAPP_NUMBER if twilio_whatsapp.enabled() else "")
+        out.append({"channel": "whatsapp", "label": "WhatsApp", "address": address or None})
     if telegram.enabled():
         out.append({"channel": "telegram", "label": "Telegram", "address": f"@{settings.TELEGRAM_BOT_USERNAME}" if settings.TELEGRAM_BOT_USERNAME else None})
     return out

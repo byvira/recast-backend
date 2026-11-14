@@ -14,7 +14,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from app.channels import engine, telegram, whatsapp
+from app.channels import engine, telegram, twilio_whatsapp, whatsapp
 from app.channels.base import Inbound
 from app.channels.simulator import SimulatorAdapter
 from app.core.config import settings
@@ -66,6 +66,22 @@ async def whatsapp_in(request: Request, x_hub_signature_256: Optional[str] = Hea
     adapter = whatsapp.WhatsAppAdapter()
     for msg in whatsapp.parse(payload if isinstance(payload, dict) else {}):
         _background(_safely(adapter, msg))
+    return {"ok": True}
+
+
+@router.post("/twilio-whatsapp/webhook")
+@limiter.limit("600/minute")
+async def twilio_whatsapp_in(request: Request, x_twilio_signature: Optional[str] = Header(None)) -> dict[str, bool]:
+    """WhatsApp through Twilio (the sandbox while testing). Only a call signed with the account's auth token is read."""
+    if not twilio_whatsapp.enabled():
+        raise HTTPException(status_code=404, detail="Not found.")
+    form = {k: str(v) for k, v in (await request.form()).items()}
+    url = settings.TWILIO_WHATSAPP_WEBHOOK_URL or str(request.url)
+    if not twilio_whatsapp.verify_signature(url, form, x_twilio_signature):
+        raise HTTPException(status_code=403, detail="Bad signature.")
+    msg = twilio_whatsapp.parse(form)
+    if msg is not None:
+        _background(_safely(twilio_whatsapp.TwilioWhatsAppAdapter(), msg))
     return {"ok": True}
 
 
