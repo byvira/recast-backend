@@ -19,6 +19,8 @@ DEFAULT_LIMITS: dict[str, dict[str, dict[str, int]]] = {
         "openai/gpt-oss-120b": {"rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000},
         "openai/gpt-oss-20b": {"rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000},
         "whisper-large-v3": {"rpm": 20, "rpd": 2000},
+        "whisper-large-v3-turbo": {},  # known and used, but no figure is invented: the owner enters it from the Groq console
+        "openai/gpt-oss-safeguard-20b": {},
     },
     "gemini": {},  # Google publishes no per-model numbers to copy; the owner enters them from the AI Studio rate limit page
     # The earlier image work measured 10,000 neurons a day at about 57.6 neurons a picture, so about 173 pictures a day
@@ -34,6 +36,19 @@ DEFAULT_LIMITS: dict[str, dict[str, dict[str, int]]] = {
     "stablehorde": {},
     "edge": {},
 }
+# Cloudflare Workers AI gives one shared pool of "neurons" a day to the whole account, whatever the model. Pictures are the main use here, so the pool is
+# estimated from the pictures made (about 57.6 neurons each). Both numbers are from the earlier image work, not checked against Cloudflare today.
+CLOUDFLARE_POOL = {"neurons_per_day": 10000, "neurons_per_picture": 57.6, "model_prefix": "@cf/black-forest-labs/flux"}
+
+
+def pool_estimate(pictures: int) -> dict[str, Any]:
+    """How much of Cloudflare's shared daily pool the pictures made today have used, as an estimate."""
+    used = round(pictures * CLOUDFLARE_POOL["neurons_per_picture"])
+    total = CLOUDFLARE_POOL["neurons_per_day"]
+    return {"used": used, "limit": total, "percent": percent(used, total), "estimate": True,
+            "note": "An estimate from the pictures made today. Cloudflare shares one daily allowance across everything on the account, including translation."}
+
+
 DEFAULT_RESET = {
     "groq": {"tz": "UTC", "hour": 0},
     "gemini": {"tz": "America/Los_Angeles", "hour": 0},  # Google resets daily requests at midnight Pacific

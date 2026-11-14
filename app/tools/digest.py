@@ -92,7 +92,14 @@ async def send_for(workspace_id: str, user_id: str, role: str, email: str) -> bo
     content = await build(workspace_id, user_id, role)
     if content is None:
         return False
-    return await send_templated_email("approvals-digest", email, template_variables(content))
+    sent = await send_templated_email("approvals-digest", email, template_variables(content))
+    try:
+        from app.channels import reminders
+
+        await reminders.nudge(workspace_id, user_id, int(content["count"]))        # one pointer a day to a chat the person opted in, if the caps allow
+    except Exception:  # noqa: BLE001 - a reminder never stops the digest
+        logger.debug("A chat reminder could not be sent")
+    return sent
 
 
 @distributed_job_lock("tool_digest", ttl_seconds=1800)

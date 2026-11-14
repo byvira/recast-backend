@@ -54,9 +54,9 @@ def get_registry() -> ToolRegistry:
     global _registry
     if _registry is None:
         registry = ToolRegistry()
-        from app.tools import actions, catalog_account, catalog_audio, changes, compose, catalog_campaigns, catalog_images, catalog_library, catalog_video, catalog_publish, catalog_text, pictures, reads, videos
+        from app.tools import actions, ask_tool, catalog_account, catalog_audio, changes, compose, catalog_campaigns, catalog_images, catalog_library, catalog_video, catalog_publish, catalog_sources, catalog_text, pictures, reads, videos
 
-        for module in (reads, pictures, videos, actions, catalog_library, catalog_text, catalog_publish, catalog_audio, catalog_images, catalog_campaigns, catalog_video, catalog_account, changes, compose):
+        for module in (reads, pictures, videos, actions, catalog_library, catalog_text, catalog_publish, catalog_audio, catalog_images, catalog_campaigns, catalog_sources, catalog_video, catalog_account, changes, compose, ask_tool):
             for spec in module.specs():
                 registry.register(spec)
         _registry = registry

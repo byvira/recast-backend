@@ -9,9 +9,9 @@ from app.billing import plans as plan_table
 from app.billing.costs import DEFAULT_COSTS
 from app.core.rbac import ROLE_PERMISSIONS
 from app.shared import jobs
-from app.tools import actions, changes, compose, catalog_account, catalog_audio, catalog_campaigns, catalog_images, catalog_library, catalog_video, catalog_publish, catalog_text, pictures, reads, videos
+from app.tools import actions, ask_tool, changes, compose, catalog_account, catalog_audio, catalog_campaigns, catalog_images, catalog_library, catalog_video, catalog_publish, catalog_sources, catalog_text, pictures, reads, videos
 
-_MODULES = (reads, pictures, videos, actions, catalog_library, catalog_text, catalog_publish, catalog_audio, catalog_images, catalog_campaigns, catalog_video, catalog_account, changes, compose)
+_MODULES = (reads, pictures, videos, actions, catalog_library, catalog_text, catalog_publish, catalog_audio, catalog_images, catalog_campaigns, catalog_sources, catalog_video, catalog_account, changes, compose, ask_tool)
 from app.tools.contract import Mode, Risk, Scope, ToolError, ToolSpec
 from app.tools.registry import ToolRegistry, get_registry
 

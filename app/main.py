@@ -62,6 +62,8 @@ from app.api.v1 import billing as billing_router
 from app.api.v1 import ops_billing as ops_billing_router
 from app.api.v1 import ops_prompts as ops_prompts_router
 from app.api.v1 import ops_llm_health as ops_llm_health_router
+from app.api.v1 import ops_sources as ops_sources_router
+from app.api.v1 import ops_channels as ops_channels_router
 from app.api.v1 import ops_quality as ops_quality_router
 from app.api.v1 import support as support_router
 from app.api.v1 import support_assistant as support_assistant_router
@@ -457,16 +459,29 @@ from app.api.v1 import public_tools as public_tools_router
 app.include_router(public_tools_router.router, prefix="/api/public/v1", tags=["Public tools API"])
 from app.api.v1 import ops_tools as ops_tools_router
 app.include_router(ops_tools_router.router, prefix="/api/v1/ops/tools", tags=["Ops"], dependencies=[Depends(area_guard("platform"))])
+app.include_router(ops_sources_router.router, prefix="/api/v1/ops/sources", tags=["Ops"], dependencies=[Depends(area_guard("platform"))])
+app.include_router(ops_channels_router.router, prefix="/api/v1/ops/channels", tags=["Ops"], dependencies=[Depends(area_guard("platform"))])
 from app.api.v1 import tool_changes as tool_changes_router
 app.include_router(tool_changes_router.router, prefix="/api/v1/tool-changes", tags=["Tool changes"])
 from app.api.v1 import ask as ask_router
+from app.api.v1 import sources as sources_router
 from app.api.v1 import device_auth as device_auth_router
 from app.api.v1 import public_mcp as public_mcp_router
 from app.api.v1 import tool_sessions as tool_sessions_router
+from app.api.v1 import ask_threads as ask_threads_router
+# the conversations routes are mounted first: "/api/v1/ask/threads" must not be read as a request id
+app.include_router(ask_threads_router.router, prefix="/api/v1/ask/threads", tags=["Ask Ekavo"])
 app.include_router(ask_router.router, prefix="/api/v1/ask", tags=["Ask Ekavo"])
+app.include_router(sources_router.router, prefix="/api/v1/sources", tags=["Sources"])
+from app.api.v1 import channels as channels_router
+from app.api import channels_webhooks
+app.include_router(channels_router.router, prefix="/api/v1/channels", tags=["Channels"])
+app.include_router(channels_webhooks.router, prefix="/api/channels", tags=["Channels"])
 app.include_router(tool_sessions_router.router, prefix="/api/v1/tool-sessions", tags=["Tool sessions"])
 app.include_router(device_auth_router.router, prefix="/api/public/v1", tags=["Public API"])
 app.include_router(public_mcp_router.router, prefix="/api/public/v1", tags=["Public API"])
+from app.api import oauth_public
+app.include_router(oauth_public.router, tags=["OAuth"])
 from app.api.v1 import public_links as public_links_router
 app.include_router(public_links_router.router, prefix="/api/v1/public/links", tags=["One-tap links"])
 from app.api.v1 import tool_reach as tool_reach_router

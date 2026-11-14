@@ -143,12 +143,24 @@ async def _allowed_scopes(workspace_id: str, user_id: str, wanted: Iterable[str]
     return chosen
 
 
+async def ensure_room(workspace_id: str) -> None:
+    """Refuse a new sign-in when the workspace has reached its plan's limit (the plan's own message, or the fixed one while plans are off)."""
+    from app.shared import entitlements
+
+    try:
+        await entitlements.require_room(await entitlements.entitlements_for(workspace_id), "tool_sessions",
+                                        legacy_message=f"This workspace has {MAX_SESSIONS} sign-ins already. Revoke one in Settings, Connections first.")
+    except Exception as exc:  # noqa: BLE001 - the plan's own message is the one to show
+        detail = getattr(exc, "detail", None)
+        text = detail.get("message") if isinstance(detail, dict) else detail
+        raise SessionError("sessions_full", str(text or getattr(exc, "message", None) or exc), 409) from exc
+
+
 async def approve(user_code: str, user_id: str, workspace_id: str, scopes: Iterable[str], *, allow_approve: bool = False) -> dict[str, Any]:
     """The person says yes: for this workspace, with these scopes (never more than their own role has)."""
     doc = await _pending(user_code)
     chosen = await _allowed_scopes(workspace_id, user_id, scopes, allow_approve)
-    if await get_db()["api_keys"].count_documents({"workspace_id": workspace_id, "surface": {"$in": list(CLIENTS)}, "revoked": {"$ne": True}}) >= MAX_SESSIONS:
-        raise SessionError("sessions_full", f"This workspace has {MAX_SESSIONS} sign-ins already. Revoke one in Settings, Connections first.", 409)
+    await ensure_room(workspace_id)
     done = await codes().update_one({"id": doc["id"], "status": "pending"}, {"$set": {"status": "approved", "approved_by": user_id, "workspace_id": workspace_id, "scopes": chosen, "approved_at": _now()}})
     if not done.modified_count:
         raise SessionError("code_unknown", "That sign-in was already answered.", 409)
@@ -210,7 +222,7 @@ async def list_sessions(workspace_id: str, user_id: Optional[str] = None) -> lis
     for r in rows:
         out.append({
             "id": r["id"], "client": r["surface"], "label": r.get("client_label") or r.get("name"), "scopes": r.get("tool_scopes") or [], "created_by": r.get("created_by"),
-            "created_at": api_keys._iso(r.get("created_at")), "last_used_at": api_keys._iso(r.get("last_used_at")), "expires_at": api_keys._iso(r.get("expires_at")),
+            "created_at": api_keys._iso(r.get("created_at")), "last_used_at": api_keys._iso(r.get("last_used_at")), "expires_at": api_keys._iso((r.get("oauth") or {}).get("refresh_expires_at") or r.get("expires_at")),
             "revoked": bool(r.get("revoked")), "credits_this_month": 0 if r.get("revoked") else await ledger.spent_this_month(r["id"]),
         })
     return out

@@ -635,3 +635,13 @@ async def test_staff_ops_work_never_shows_in_the_workspace_activity(signup_user)
     rows = items.get("items") or items.get("completed") or []
     assert not any("stage changed" in str(r.get("title")) for r in rows)
     assert is_visible_to({"category": "platform_ops", "visibility": "workspace"}, profile["id"], "owner") is False
+
+
+def test_work_made_by_a_followed_source_is_marked_so_in_the_inbox_and_the_done_list():
+    from app.api.v1.activity import _completed_card, _inbox_item
+
+    base = {"_id": "a1", "title": "Drafts made", "category": "content_generated", "lane": "passive", "status": "success", "actor": {"type": "system_cron"}}
+    assert _inbox_item({**base, "target_type": "Source"}, False)["fromSource"] is True
+    assert _inbox_item(base, False)["fromSource"] is False
+    assert _completed_card({**base, "target_type": "Source"})["fromSource"] is True
+    assert _completed_card({**base, "target_type": "Piece"})["fromSource"] is False

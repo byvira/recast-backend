@@ -87,6 +87,18 @@ async def switch_tool(request: Request, tool: str, body: ToolSwitch, user: dict 
     return {"tool": tool, "off": changed["after"]}
 
 
+@router.put("/switches/surfaces/{surface}")
+@limiter.limit("60/minute")
+async def switch_surface(request: Request, surface: str, body: ToolSwitch, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    """Pause or resume the command line, assistants (MCP) or service keys (the API) for everyone, without touching the others."""
+    try:
+        changed = await ops.set_surface(surface, body.off, body.message)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="There is no such way in. Choose cli, mcp or api.")
+    await audit(user, "tools.switch_surface", surface, before=changed["before"], after=changed["after"], reason=body.reason)
+    return {"surface": surface, "off": changed["after"]}
+
+
 @router.put("/switches/workspaces/{workspace_id}")
 @limiter.limit("60/minute")
 async def switch_workspace(request: Request, workspace_id: str, body: WorkspaceSwitch, user: dict = Depends(get_current_user)) -> dict[str, Any]:
@@ -151,6 +163,34 @@ async def change_ask_router(request: Request, body: RouterChange, user: dict = D
         raise HTTPException(status_code=422, detail=str(exc))
     await audit(user, "tools.ask_router", "ask router", before=before, after={n: _role_view(r) for n, r in after.items()}, reason=body.reason)
     return {"roles": [_role_view(r) for r in after.values()]}
+
+
+class ShadowChange(BaseModel):
+    name: Optional[str] = Field(None, max_length=40)
+    reason: str = Field("", max_length=300)
+
+
+@router.get("/ask-shadow")
+@limiter.limit("60/minute")
+async def ask_shadow(request: Request) -> dict[str, Any]:
+    """The candidate deciders that can run beside the live one, which is on, and how often each agreed with the live choice over the last week."""
+    from app.ask import decisions
+
+    return {"candidates": sorted(decisions.CANDIDATES), "current": await decisions.shadow_name(), "agreement": await decisions.agreement()}
+
+
+@router.put("/ask-shadow")
+@limiter.limit("20/minute")
+async def change_ask_shadow(request: Request, body: ShadowChange, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    from app.ask import decisions
+
+    before = await decisions.shadow_name()
+    try:
+        after = await decisions.set_shadow(body.name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await audit(user, "tools.ask_shadow", "ask shadow", before=before, after=after, reason=body.reason)
+    return {"candidates": sorted(decisions.CANDIDATES), "current": after, "agreement": await decisions.agreement()}
 
 
 @router.get("/abuse")

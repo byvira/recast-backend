@@ -66,6 +66,30 @@ class Settings(BaseSettings):
     # receiving in Resend and adds the webhook: the secret is the "signing secret" Resend shows for that webhook (starts with whsec_).
     SUPPORT_INBOX_ADDRESS: str = "hello@mail.byvirastudio.com"
     SUPPORT_INBOUND_WEBHOOK_SECRET: str = ""
+    # Chat channels (see app/channels). Every value stays empty until the owner makes the Meta app or the Telegram bot; an empty value means that
+    # channel does not answer. WhatsApp: the verify token is one you choose and give Meta, the app secret signs each message, the access token and
+    # the phone number id send replies (Meta's free test number works for up to five recipients before business verification).
+    WHATSAPP_VERIFY_TOKEN: str = ""
+    WHATSAPP_APP_SECRET: str = ""
+    WHATSAPP_ACCESS_TOKEN: str = ""
+    WHATSAPP_PHONE_NUMBER_ID: str = ""
+    # What a person is shown to find the bot (the WhatsApp number to message, the Telegram bot name without the @).
+    WHATSAPP_DISPLAY_NUMBER: str = ""
+    # The name of the Meta-approved utility template used for a reminder after the 24-hour window ("{{1}} drafts are waiting for your yes"). Empty: no WhatsApp reminder is sent outside the window.
+    WHATSAPP_TEMPLATE_DRAFTS: str = ""
+    TELEGRAM_BOT_USERNAME: str = ""
+    # Telegram: the bot token from BotFather, and a secret Telegram sends back with every message so only Telegram can call the webhook.
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_WEBHOOK_SECRET: str = ""
+    # Lets the built-in test sender post signed messages to the webhook, so every flow is tested without Meta or Telegram. Never on in production.
+    CHANNELS_SIMULATOR: bool = False
+    # Decide candidates (app/ask/candidates.py): other Groq models to test beside the live one (free tier, the main provider), and a translator pivot that sends a
+    # member's words to Cloudflare's free translation model; the pivot stays off until the owner agrees to that.
+    # Empty by default: Groq removed its older Llama and Qwen models on 2026-09-10 and now offers gpt-oss-20b, gpt-oss-120b, gpt-oss-safeguard-20b and Whisper. Name a model here only after
+    # checking it in the Groq console (comma separated, for example another gpt-oss size or a new multilingual model Groq adds).
+    ASK_CANDIDATE_MODELS: str = ""
+    ASK_PIVOT_ENABLED: bool = False
+    # The address of the app that links in messages open (a draft, the Library). Falls back to FRONTEND_URL.
     # The address emails are sent from, on a domain verified in Resend (for example hello@mail.example.com, or `Name <hello@mail.example.com>`).
     # Left empty, Resend's test sender is used, which only delivers to the Resend account's owner.
     EMAIL_FROM: str = ""

@@ -5,6 +5,8 @@
     ekavo describe library.create_draft             what a tool needs
     ekavo call plan.limits                          run a read
     ekavo call library.create_draft --arg platform=LinkedIn --arg content="Hello" --dry-run
+    ekavo ask "how many credits do I have left"    say what you want, in your own words
+    ekavo chat                                      keep a conversation going (type 'exit' to leave)
     ekavo token --mcp                               the MCP address and token, for an assistant app
     ekavo logout                                    sign this computer out
 
@@ -192,6 +194,93 @@ def call(args: argparse.Namespace, out, err, transport: Transport, sleep) -> int
     return OK
 
 
+WORKING = {"planning", "running"}
+ASK_WAIT_SECONDS = 600
+
+
+def _show_turn(out, err, run: dict[str, Any]) -> None:
+    """What Ekavo said for one request, in plain lines."""
+    reply = run.get("reply") or run.get("question") or ""
+    if reply:
+        _print(out, reply)
+    result = run.get("result") or {}
+    for step in result.get("steps") or []:
+        mark = {"done": "done", "failed": "FAILED", "running": "working", "pending": "waiting"}.get(step.get("state"), step.get("state"))
+        _print(out, f"  [{mark}] {step.get('label')}")
+        if step.get("error"):
+            _print(err, f"    {step['error'].get('message')}")
+    plan = run.get("plan") or {}
+    if run.get("status") == "ready" and plan.get("steps"):
+        credits = plan.get("credits", 0)
+        _print(out, f"It would cost {'about ' if plan.get('exact') else 'at least '}{credits} credits." if credits else "It is free.")
+
+
+def _settle(client: Client, run: dict[str, Any], sleep) -> dict[str, Any]:
+    """Wait for a running request to finish, reading it every couple of seconds."""
+    waited = 0
+    while run.get("status") in WORKING and waited < ASK_WAIT_SECONDS:
+        sleep(2)
+        waited += 2
+        run = client.ask_status(run["id"]).get("run") or run
+    return run
+
+
+def _turn(client: Client, message: str, thread: str, yes: bool, out, err, sleep, ask_yes: Optional[Callable[[], bool]] = None) -> tuple[int, str]:
+    """One message: ask, show the plan and price, and run it only after a yes (`--yes`, or the person typing y). Returns (exit code, the conversation id)."""
+    answer = client.ask(message, thread)
+    run, thread = answer.get("run") or {}, answer.get("thread_id") or thread
+    _show_turn(out, err, run)
+    if run.get("status") == "ready" and (run.get("plan") or {}).get("steps") and run.get("trust") != "suggest":
+        if not (yes or (ask_yes is not None and ask_yes())):
+            client.ask_stop(run["id"])
+            _print(err, "Nothing was done. Run it again with --yes to agree to the price." if ask_yes is None else "Cancelled.")
+            return (NEEDS_YES if ask_yes is None else OK), thread
+        run = _settle(client, client.ask_confirm(run["id"]).get("run") or run, sleep)
+        _show_turn(out, err, run)
+    elif run.get("status") in WORKING:
+        run = _settle(client, run, sleep)
+        _show_turn(out, err, run)
+    return (OK if run.get("status") not in ("failed", "stopped") else FAILED), thread
+
+
+def ask(args: argparse.Namespace, out, err, transport: Transport, sleep) -> int:
+    client = _client(config.load(), transport)
+    if client is None:
+        _print(err, "You are not signed in. Run ekavo login first.")
+        return NOT_SIGNED_IN
+    try:
+        code, thread = _turn(client, " ".join(args.message), args.thread or "", args.yes, out, err, sleep)
+    except ApiError as exc:
+        return _fail(err, exc, False)
+    if code == OK and not args.thread:
+        _print(err, f"To keep going in this conversation: ekavo ask --thread {thread} \"...\"")
+    return code
+
+
+def chat(args: argparse.Namespace, out, err, transport: Transport, sleep) -> int:
+    """A conversation in the terminal: each line is a message, Ekavo reads the earlier ones, a price asks for y or n, and 'exit' leaves."""
+    client = _client(config.load(), transport)
+    if client is None:
+        _print(err, "You are not signed in. Run ekavo login first.")
+        return NOT_SIGNED_IN
+    read = args.reader or input
+    _print(out, "Ekavo. Say what you want. Type exit to leave.")
+    thread = args.thread or ""
+    while True:
+        try:
+            line = read("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return OK
+        if line.lower() in ("exit", "quit", ":q"):
+            return OK
+        if not line:
+            continue
+        try:
+            _code, thread = _turn(client, line, thread, False, out, err, sleep, ask_yes=lambda: read("Go ahead? (y/n) ").strip().lower() in ("y", "yes"))
+        except ApiError as exc:
+            _fail(err, exc, False)
+
+
 def whoami(args: argparse.Namespace, out, err, transport: Transport, sleep) -> int:
     settings = config.load()
     if not (settings.url and settings.token):
@@ -228,6 +317,14 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("token", help="print the sign-in token, for an assistant app that connects with a header")
     p.add_argument("--mcp", action="store_true", help="also print the MCP address and header")
     p.set_defaults(run=token)
+    p = sub.add_parser("ask", help="say what you want in your own words")
+    p.add_argument("message", nargs="+")
+    p.add_argument("--thread", help="carry on in an earlier conversation")
+    p.add_argument("--yes", action="store_true", help="agree to the price shown, so it runs")
+    p.set_defaults(run=ask)
+    p = sub.add_parser("chat", help="keep a conversation going")
+    p.add_argument("--thread", help="carry on in an earlier conversation")
+    p.set_defaults(run=chat, reader=None)
     p = sub.add_parser("tools", help="list what you can do")
     p.add_argument("--search")
     p.add_argument("--group")

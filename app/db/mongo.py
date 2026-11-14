@@ -252,10 +252,15 @@ async def _create_llm_health_indexes() -> None:
 
         await _probe.create_indexes()
         from app.ask import runs as _ask_runs
+        from app.sources import service as _sources
         from app.tools import sessions as _sessions
 
         await _ask_runs.create_indexes()
         await _sessions.create_indexes()
+        from app.tools import oauth as _oauth
+
+        await _oauth.create_indexes()
+        await _sources.create_indexes()
         await llm_issues.create_index([("status", 1), ("last_seen", -1)])
         await llm_issues.create_index("number", unique=True)
         await llm_alert_log.create_index("at", expireAfterSeconds=30 * 24 * 3600)
@@ -605,6 +610,18 @@ async def create_indexes() -> None:
 
     await _links.create_indexes()
     await _email_in.create_indexes()
+    from app.channels import engine as _channels
+
+    await _channels.create_indexes()
+    from app.channels import reminders as _reminders
+
+    await _reminders.create_indexes()
+    from app.ask import threads as _threads
+
+    await _threads.create_indexes()
+    from app.pipelines.media import request_refs as _refs
+
+    await _refs.create_indexes()
     # plans: one saved row per plan, the change log, and the workspaces that share a paid workspace's plan
     await get_db()["billing_plans"].create_index("id", unique=True)
     await get_db()["billing_audit"].create_index([("at", -1)])

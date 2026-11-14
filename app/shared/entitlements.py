@@ -29,7 +29,7 @@ PLAN_CACHE_SECONDS = 60
 ENTITLEMENT_CACHE_SECONDS = 10
 
 # Limits that already existed before plans, with the value each had. Every other limit is open while plans are off.
-_LEGACY_FIXED: dict[str, int] = {"brand_voices": 10, "api_keys": 10, "review_link_days": 14, "render_priority": 0, "support_priority": 0}
+_LEGACY_FIXED: dict[str, int] = {"brand_voices": 10, "api_keys": 10, "tool_sessions": 25, "review_link_days": 14, "render_priority": 0, "support_priority": 0}
 
 _WS_FIELDS = {
     "id": 1, "tier": 1, "tier_config": 1, "plan": 1, "plan_seats": 1, "billing_group_id": 1, "entitlement_overrides": 1,
@@ -228,6 +228,7 @@ _HINTS: dict[str, str] = {
     "campaigns_active": "Pause one first, or move to a plan with more.",
     "video_automations": "Turn one off first, or move to a plan with more.",
     "api_keys": "Remove a key you no longer use first.",
+    "tool_sessions": "Sign one out in Settings, Connections first.",
     "ask_steps_day": "They come back tomorrow. You can do the same thing from the app meanwhile.",
 }
 
@@ -379,6 +380,8 @@ async def count_usage(ent: Entitlements, key: str) -> float:
         return await db["video_recipes"].count_documents({"workspace_id": ws, "automation.enabled": True})
     if key == "api_keys":
         return await db["api_keys"].count_documents({"workspace_id": ws, "revoked": {"$ne": True}, "surface": {"$exists": False}})
+    if key == "tool_sessions":
+        return await db["api_keys"].count_documents({"workspace_id": ws, "revoked": {"$ne": True}, "surface": {"$in": ["cli", "mcp"]}})
     return 0
 
 
@@ -450,7 +453,7 @@ async def picture_room_message(workspace_id: str, wanted: int = 1) -> Optional[s
 
 USAGE_KEYS = (
     "seats", "owned_workspaces", "social_accounts", "brand_voices", "pictures_day", "render_minutes_month", "storage_mb",
-    "scheduled_ahead", "campaigns_active", "video_automations", "api_keys", "ask_steps_day",
+    "scheduled_ahead", "campaigns_active", "video_automations", "api_keys", "tool_sessions", "ask_steps_day",
 )
 
 

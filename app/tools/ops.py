@@ -122,7 +122,8 @@ async def switch_state() -> dict[str, Any]:
     rows = await ledger.settings().find({}, {"_id": 0}).to_list(length=2000)
     return {
         "global": next(({"off": bool(r.get("off")), "message": r.get("message")} for r in rows if r.get("scope") == "global"), {"off": False, "message": None}),
-        "tools_off": sorted(r["tool"] for r in rows if r.get("scope") == "tool" and r.get("off")),
+        "tools_off": sorted(r["tool"] for r in rows if r.get("scope") == "tool" and r.get("off") and not str(r["tool"]).startswith("surface.")),
+        "surfaces_off": sorted(str(r["tool"])[len("surface."):] for r in rows if r.get("scope") == "tool" and r.get("off") and str(r["tool"]).startswith("surface.")),
         "workspaces": [{"workspace_id": r["workspace_id"], "all_off": bool(r.get("all_off")), "off_tools": r.get("off_tools") or []}
                        for r in rows if r.get("scope") == "workspace" and (r.get("all_off") or r.get("off_tools"))],
     }
@@ -132,6 +133,19 @@ async def set_global(off: bool, message: Optional[str]) -> dict[str, Any]:
     before = (await switch_state())["global"]
     await ledger.settings().update_one({"scope": "global"}, {"$set": {"scope": "global", "off": off, "message": (message or "").strip()[:200] or None, "at": _now()}}, upsert=True)
     return {"before": before, "after": (await switch_state())["global"]}
+
+
+#: the ways into the tool layer that can be paused on their own: the command line, an assistant (MCP) and a service key (the API)
+SURFACES = ("cli", "mcp", "api")
+
+
+async def set_surface(surface: str, off: bool, message: Optional[str]) -> dict[str, Any]:
+    """Pause or resume one way in for everyone. The gatekeeper reads it on the very next call (see `Gatekeeper._switches`)."""
+    if surface not in SURFACES:
+        raise KeyError(surface)
+    before = surface in (await switch_state())["surfaces_off"]
+    await ledger.settings().update_one({"scope": "tool", "tool": f"surface.{surface}"}, {"$set": {"scope": "tool", "tool": f"surface.{surface}", "off": off, "message": (message or "").strip()[:200] or None, "at": _now()}}, upsert=True)
+    return {"before": before, "after": off}
 
 
 async def set_tool(tool: str, off: bool, message: Optional[str]) -> dict[str, Any]:

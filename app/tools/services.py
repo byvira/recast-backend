@@ -65,6 +65,11 @@ class LiveServices:
             kind, workspace_id, user_id = credential_id.split(":", 2)
             scopes = frozenset({Scope.READ, Scope.APPROVE}) if kind == "link" else frozenset({Scope.READ, Scope.CREATE})
             return Credential(credential_id, kind, workspace_id, user_id, scopes)
+        if credential_id.startswith("source:"):
+            # A source (a feed or a file that makes drafts) working for the member who set it up. It can read and create, never publish, decide, delete or approve,
+            # and the person's current role is still read on every call.
+            _, workspace_id, user_id = credential_id.split(":", 2)
+            return Credential(credential_id, "source", workspace_id, user_id, frozenset({Scope.READ, Scope.CREATE}))
         if credential_id.startswith("ask:"):
             # Ask Ekavo working for a signed-in member. It reads and creates as the person's own role allows (checked on every call) and can never publish,
             # decide, delete or approve: those are shown to the person, who does them in the app.

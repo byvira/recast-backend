@@ -34,6 +34,7 @@ from app.workers.webhook_retries import retry_video_webhooks
 from app.shared.invites import lead_digest, sweep_invites
 from app.workers.daily_summary import write_daily_summaries
 from app.tools.digest import send_digests
+from app.sources.service import run_due as run_due_sources
 from app.workers.queue_empty import notify_empty_queues
 from app.workers.link_checks import check_old_post_links
 from app.workers.run_reminders import remind_about_paused_runs
@@ -117,6 +118,31 @@ async def _model_probe() -> None:
     async def run() -> None:
         summary = await probe.run()
         logger.info("Model check: %s of %s answered.", summary.get("ok"), summary.get("checked"))
+
+    await run()
+
+
+async def _ask_thread_cleanup() -> None:
+    from app.ask import threads
+    from app.core.scheduler_lock import distributed_job_lock
+
+    @distributed_job_lock("ask_thread_cleanup", ttl_seconds=600)
+    async def run() -> None:
+        count = await threads.cleanup()
+        if count:
+            logger.info("Removed %d old Ask conversations.", count)
+
+    await run()
+
+
+async def _source_checks() -> None:
+    from app.core.scheduler_lock import distributed_job_lock
+
+    @distributed_job_lock("source_checks", ttl_seconds=1500)
+    async def run() -> None:
+        count = await run_due_sources()
+        if count:
+            logger.info("Checked %d sources.", count)
 
     await run()
 
@@ -217,6 +243,10 @@ JOBS: list[Job] = [
     # One tiny call to every model the product relies on, four times a day, so a retired or silent model is found before a member hits it.
     # Pictures and voice, which spend real allowance, are only checked once a day inside the run.
     Job("model_probe", _no_ctx(_model_probe), minute=frozenset({12}), hour=frozenset({1, 7, 13, 19})),
+    # Checks the feeds and pages members follow, every half hour (a source is only due every six hours or more); drafts only.
+    Job("source_checks", _no_ctx(_source_checks), minute=frozenset({7, 37})),
+    # Removes Ask conversations that have been quiet for 30 days, with their messages, at 03:23 UTC.
+    Job("ask_thread_cleanup", _no_ctx(_ask_thread_cleanup), minute=frozenset({23}), hour=frozenset({3})),
     # Tells a workspace when everything scheduled has gone out and nothing is upcoming, at 06:17 UTC (late morning in India).
     Job("queue_empty", _no_ctx(notify_empty_queues), minute=frozenset({17}), hour=frozenset({6})),
     # Trust score (shadow mode) — daily at 02:41 UTC.

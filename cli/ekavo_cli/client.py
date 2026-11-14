@@ -113,3 +113,16 @@ class Client:
         if approval_token:
             body["approval_token"] = approval_token
         return self.request("POST", f"/tools/{name}/call", body, headers={"Idempotency-Key": idempotency_key} if idempotency_key else None)
+
+    # ── ask ────────────────────────────────────────────────────
+    def ask(self, message: str, thread_id: str = "") -> dict[str, Any]:
+        return self.request("POST", "/ask", {"message": message, **({"thread_id": thread_id} if thread_id else {})})
+
+    def ask_status(self, run_id: str) -> dict[str, Any]:
+        return self.request("GET", f"/ask/{run_id}")
+
+    def ask_confirm(self, run_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/ask/{run_id}/confirm", {})
+
+    def ask_stop(self, run_id: str) -> dict[str, Any]:
+        return self.request("POST", f"/ask/{run_id}/stop", {})

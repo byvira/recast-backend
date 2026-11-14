@@ -239,3 +239,20 @@ async def test_the_bell_lists_serious_issues_and_lists_every_provider_on_the_hea
     providers = (await client.get(f"{B}/providers")).json()["providers"]
     assert {"groq", "gemini", "cloudflare", "elevenlabs", "deepgram"} <= set(providers)
     assert providers["cloudflare"]["label"] == "Cloudflare Workers AI" and providers["cloudflare"]["used_for"]
+
+
+async def test_every_model_used_today_shows_even_without_a_limit_and_cloudflare_shows_its_shared_pool(make_client):
+    client, _ = await _staff(make_client)
+    rec = Recorder()
+    flux = "@cf/black-forest-labs/flux-1-schnell"
+    for _ in range(5):
+        rec.record(Attempt(provider="cloudflare", model=flux, ok=True, latency_ms=900, feature="pictures"))
+    rec.record(Attempt(provider="mistral", model="open-mistral-nemo-gauge", ok=True, latency_ms=200, tokens_in=40, tokens_out=10, feature="hooks"))
+    await rec.flush()
+    providers = (await client.get(f"{B}/providers")).json()["providers"]
+    cf = providers["cloudflare"]
+    assert cf["pool"]["estimate"] is True and cf["pool"]["limit"] == 10000 and cf["pool"]["used"] >= 288
+    assert any(m["model"] == flux and m["calls"] >= 5 and m["limit_set"] for m in cf["today"])
+    mistral = {m["model"]: m for m in providers["mistral"]["today"]}
+    assert mistral["open-mistral-nemo-gauge"]["tokens"] >= 50 and mistral["open-mistral-nemo-gauge"]["limit_set"] is False
+    assert "pool" not in providers["groq"]

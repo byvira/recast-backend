@@ -71,7 +71,8 @@ def make_handlers(allowed_origins: Iterable[str]):
         from app.core import failures
 
         named = getattr(exc, "code", None)
-        if named == "ai_busy":
+        if isinstance(exc, failures.AIUnavailable):
+            # a busy writing, voice or picture service: retryable, with the wait it asked for (not the generic 503 answer)
             f = failures.ai_busy(int(getattr(exc, "retry_after", 60)))
         else:
             f = failures.from_upstream(exc.status_code, exc.detail)

@@ -149,7 +149,7 @@ async def test_a_good_call_is_admitted_with_its_typed_input_and_estimate(gate, f
 
 async def test_checks_run_in_the_fixed_order_and_stop_at_the_first_refusal(gate, fake):
     await gate.admit(Call("k1", "demo.make", {"topic": "launch"}, idempotency_key="a"))
-    assert fake.calls == ["credential", "person", "switch", "rate", "plan", "price", "idempotency", "room"]
+    assert fake.calls == ["credential", "person", "switch", "switch", "rate", "plan", "price", "idempotency", "room"]
     fake.calls.clear()
     fake.cred = None
     assert await _code(gate, tool="demo.make", arguments={"topic": "x"}) == "auth_invalid"

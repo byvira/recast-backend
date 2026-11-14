@@ -42,7 +42,11 @@ def _rpc_error(id_: Any, code: int, message: str, status: int = 200) -> JSONResp
 
 
 def _unauthorized() -> JSONResponse:
-    return JSONResponse(status_code=401, content={"error": {"code": "auth_invalid", "message": UNAUTHORIZED}}, headers={"WWW-Authenticate": "Bearer"})
+    from app.tools import oauth
+
+    # the pointer is what lets an assistant such as Claude find where to sign in (MCP authorization, RFC 9728)
+    challenge = f'Bearer resource_metadata="{oauth.resource_metadata_url()}", scope="{" ".join(oauth.SCOPES[:1])}"'
+    return JSONResponse(status_code=401, content={"error": {"code": "auth_invalid", "message": UNAUTHORIZED}}, headers={"WWW-Authenticate": challenge})
 
 
 def tool_view(tool: ToolSpec) -> dict[str, Any]:

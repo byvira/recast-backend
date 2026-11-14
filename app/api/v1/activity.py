@@ -226,6 +226,7 @@ def _completed_card(doc: dict) -> dict:
             "subtitle": subtitle,
             "occurredAt": _iso(doc.get("occurred_at")),
             "href": doc.get("href"),
+            "fromSource": doc.get("target_type") == "Source",
         }
     return {
         "id": doc["_id"],
@@ -481,6 +482,7 @@ def _inbox_item(doc: dict, unread: bool) -> dict:
         "lane": doc.get("lane"),
         "href": doc.get("href"),
         "unread": unread,
+        "fromSource": doc.get("target_type") == "Source",
     }
 
 

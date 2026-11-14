@@ -242,6 +242,10 @@ class Gatekeeper:
         reason = await self.services.switched_off(credential.workspace_id, tool.name)
         if reason:
             raise Refusal("tool_off", reason, status=403)
+        # the way in (the command line, an assistant, a service key) has a switch of its own, so one can be paused without stopping the others
+        way = await self.services.switched_off(credential.workspace_id, f"surface.{credential.surface}")
+        if way:
+            raise Refusal("tool_off", way, status=403)
 
     # 4. scope and role
     def _scope_and_role(self, credential: Credential, tool: ToolSpec, permissions: frozenset[str]) -> None:

@@ -459,6 +459,10 @@ _NOT_STORED = {
     ("ops_support.py", "upload_staff_attachment"),
     # pictures Ekavo staff add to the public website's posts and pages; no workspace's storage
     ("ops_content.py", "upload_media"),
+    # a picture read for its look only, and a voice note turned to text: neither file is kept
+    ("ask.py", "add_reference"), ("ask.py", "voice"),
+    # a spreadsheet, document or picture read once into draft ideas: the file itself is not kept
+    ("sources.py", "_file_bytes"), ("sources.py", "check_file"), ("sources.py", "create_file"),
 }
 
 
@@ -492,8 +496,8 @@ def test_limited_things_are_only_created_in_places_that_check_the_plan():
     allowed_writers = {
         "brand_profiles.insert_one": {"app/api/v1/brand.py"},
         "get_campaigns_collection().insert_one": {"app/api/v1/campaigns.py"},
-        # a sign-in (app/tools/sessions.py) is a key row too, but it is not an API key for the plan: it has its own limit, checked when the person approves it
-        "_keys().insert_one": {"app/video/api_keys.py", "app/tools/credentials.py", "app/tools/sessions.py"},
+        # a sign-in (app/tools/sessions.py, and by address app/tools/oauth.py) is a key row too, but it is not an API key for the plan: it has its own limit, checked when the person approves it
+        "_keys().insert_one": {"app/video/api_keys.py", "app/tools/credentials.py", "app/tools/sessions.py", "app/tools/oauth.py"},
         "workspace_members.insert_one": {"app/api/v1/invites.py", "app/api/v1/workspace.py", "app/core/workspace.py"},
     }
     found: dict[str, set[str]] = {k: set() for k in allowed_writers}

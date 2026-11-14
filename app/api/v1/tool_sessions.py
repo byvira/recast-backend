@@ -14,7 +14,7 @@ from app.core.middleware import limiter
 from app.core.rbac import ROLE_PERMISSIONS
 from app.core.workspace import WorkspaceContext, get_current_workspace
 from app.db.mongo import get_db
-from app.tools import sessions
+from app.tools import oauth, sessions
 
 router = APIRouter()
 
@@ -38,6 +38,16 @@ def _can(role: str, permission: str) -> bool:
     return permission in ROLE_PERMISSIONS.get(role or "", set())
 
 
+async def _workspaces(user: dict) -> list[dict[str, Any]]:
+    members = await get_db()["workspace_members"].find({"user_id": user["id"], "status": {"$ne": "removed"}}, {"workspace_id": 1, "role": 1}).to_list(length=50)
+    names = {w["id"]: w.get("name") for w in await get_db()["workspaces"].find({"id": {"$in": [m["workspace_id"] for m in members]}}, {"id": 1, "name": 1}).to_list(length=50)}
+    return [
+        {"id": m["workspace_id"], "name": names.get(m["workspace_id"]) or "Workspace", "role": m.get("role"),
+         "can": {"create": _can(m.get("role", ""), "create_content"), "publish": _can(m.get("role", ""), "publish_content"), "approve": _can(m.get("role", ""), "approve_content")}}
+        for m in members
+    ]
+
+
 @router.post("/device/lookup")
 @limiter.limit("20/minute")
 async def lookup(request: Request, body: CodeBody, user: dict = Depends(get_current_user)) -> dict[str, Any]:
@@ -46,13 +56,47 @@ async def lookup(request: Request, body: CodeBody, user: dict = Depends(get_curr
         found = await sessions.lookup(body.code)
     except sessions.SessionError as exc:
         raise _fail(exc)
-    members = await get_db()["workspace_members"].find({"user_id": user["id"], "status": {"$ne": "removed"}}, {"workspace_id": 1, "role": 1}).to_list(length=50)
-    names = {w["id"]: w.get("name") for w in await get_db()["workspaces"].find({"id": {"$in": [m["workspace_id"] for m in members]}}, {"id": 1, "name": 1}).to_list(length=50)}
-    return {**found, "workspaces": [
-        {"id": m["workspace_id"], "name": names.get(m["workspace_id"]) or "Workspace", "role": m.get("role"),
-         "can": {"create": _can(m.get("role", ""), "create_content"), "publish": _can(m.get("role", ""), "publish_content"), "approve": _can(m.get("role", ""), "approve_content")}}
-        for m in members
-    ]}
+    return {**found, "workspaces": await _workspaces(user)}
+
+
+class RequestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request: str = Field(min_length=10, max_length=100)
+
+
+class OAuthApproveBody(RequestBody):
+    workspace_id: str = Field(min_length=1, max_length=64)
+    scopes: list[str] = Field(default_factory=lambda: ["read"], max_length=4)
+    allow_approve: bool = False
+
+
+@router.post("/oauth/lookup")
+@limiter.limit("30/minute")
+async def oauth_lookup(request: Request, body: RequestBody, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    """What an assistant that connects by address is asking for, and the workspaces the person could give it."""
+    try:
+        return {**await oauth.lookup(body.request), "workspaces": await _workspaces(user)}
+    except sessions.SessionError as exc:
+        raise _fail(exc)
+
+
+@router.post("/oauth/approve")
+@limiter.limit("10/minute")
+async def oauth_approve(request: Request, body: OAuthApproveBody, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    """The person says yes. Returns the address to send the browser back to the assistant."""
+    try:
+        return {"redirect_url": await oauth.approve(body.request, user["id"], body.workspace_id, body.scopes, allow_approve=body.allow_approve)}
+    except sessions.SessionError as exc:
+        raise _fail(exc)
+
+
+@router.post("/oauth/deny")
+@limiter.limit("10/minute")
+async def oauth_deny(request: Request, body: RequestBody, user: dict = Depends(get_current_user)) -> dict[str, Any]:
+    try:
+        return {"redirect_url": await oauth.deny(body.request)}
+    except sessions.SessionError as exc:
+        raise _fail(exc)
 
 
 @router.post("/device/approve")

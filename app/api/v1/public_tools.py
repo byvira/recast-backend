@@ -11,6 +11,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Header, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -99,6 +100,13 @@ async def _visible(request: Request) -> tuple[Optional[Any], list[ToolSpec]]:
 async def openapi_document(request: Request) -> JSONResponse:
     """The whole API as an OpenAPI document, built from the tool list. It describes every tool; what a key may use is in GET /tools."""
     return JSONResponse(openapi.build(get_registry().all()))
+
+
+@router.get("/reference")
+@limiter.limit("30/minute", key_func=_limit_key)
+async def reference_document(request: Request) -> JSONResponse:
+    """Every tool in plain terms (what it does, what it costs, what it needs, the fields it takes), for the public developer page. No key is needed."""
+    return JSONResponse(openapi.reference(get_registry().all()), headers={"Cache-Control": "public, max-age=300"})
 
 
 @router.get("/approvals/{request_id}")
@@ -209,3 +217,99 @@ async def call_tool(
     if wait is not None:
         headers["Retry-After"] = str(wait)
     return JSONResponse(status_code=status, content=content, headers=headers or None)
+
+
+# ── Ask Ekavo from a signed-in command line or assistant ─────────────────────────────
+
+class AskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(min_length=1, max_length=2000)
+    thread_id: Optional[str] = Field(None, max_length=64)
+    #: "act" is not offered here: a price always waits for a yes that the caller gives with confirm
+    trust: str = Field("ask", pattern="^(suggest|ask)$")
+
+
+async def _asker(request: Request) -> tuple[Optional[Any], Optional[JSONResponse]]:
+    """The signed-in member behind this call, or the refusal to send. Ask is for a person's own sign-in (the command line or an assistant), never a service key:
+    Ask spends the member's credits outside any key's cap, so a key would be a way round its cap."""
+    cred_id = await _credential_id(request)
+    if not cred_id:
+        return None, _error(request, 401, "auth_invalid", UNAUTHORIZED)
+    cred = await LiveServices().credential(cred_id)
+    if cred is None or cred.revoked or not cred.user_id:
+        return None, _error(request, 401, "auth_invalid", UNAUTHORIZED)
+    if cred.surface not in ("cli", "mcp"):
+        return None, _error(request, 403, "not_allowed", "Ask works from a signed-in command line or assistant, not a service key.")
+    if Scope.CREATE not in cred.scopes:
+        return None, _error(request, 403, "scope_missing", "Ask can make things, so it needs a sign-in that is allowed to create.")
+    paused = await LiveServices().switched_off(cred.workspace_id, f"surface.{cred.surface}")
+    if paused:
+        return None, _error(request, 403, "tool_off", paused)
+    return cred, None
+
+
+def _ask_error(request: Request, failure: "executor.ToolFailure") -> JSONResponse:
+    return _error(request, failure.status, failure.code, failure.message)
+
+
+@router.post("/ask")
+@limiter.limit("20/minute", key_func=_limit_key)
+async def ask_ekavo(request: Request, body: AskBody) -> JSONResponse:
+    """Say what you want. Ekavo plans it, shows the price and waits for your yes (`/ask/{id}/confirm`); a plain question is answered at once. Send the returned
+    `thread_id` with the next message to keep the conversation."""
+    from app.ask import runs, threads
+
+    cred, refusal = await _asker(request)
+    if refusal is not None:
+        return refusal
+    surface = cred.surface
+    try:
+        thread_id = body.thread_id
+        if not thread_id:
+            thread_id = (await threads.create(cred.workspace_id, cred.user_id, surface, title=body.message))["id"]
+        run = await runs.create(cred.workspace_id, cred.user_id, body.message, body.trust, thread_id=thread_id, surface=surface)
+    except executor.ToolFailure as failure:
+        return _ask_error(request, failure)
+    return JSONResponse(status_code=201, content=jsonable_encoder({"ok": True, "run": run, "thread_id": thread_id, "request_id": _rid(request)}))
+
+
+@router.get("/ask/{run_id}")
+@limiter.limit("120/minute", key_func=_limit_key)
+async def ask_status(request: Request, run_id: str) -> JSONResponse:
+    from app.ask import runs
+
+    cred, refusal = await _asker(request)
+    if refusal is not None:
+        return refusal
+    try:
+        return JSONResponse(content=jsonable_encoder({"ok": True, "run": await runs.get(cred.workspace_id, cred.user_id, run_id), "request_id": _rid(request)}))
+    except executor.ToolFailure as failure:
+        return _ask_error(request, failure)
+
+
+@router.post("/ask/{run_id}/confirm")
+@limiter.limit("20/minute", key_func=_limit_key)
+async def ask_confirm(request: Request, run_id: str) -> JSONResponse:
+    from app.ask import runs
+
+    cred, refusal = await _asker(request)
+    if refusal is not None:
+        return refusal
+    try:
+        return JSONResponse(content=jsonable_encoder({"ok": True, "run": await runs.confirm(cred.workspace_id, cred.user_id, run_id), "request_id": _rid(request)}))
+    except executor.ToolFailure as failure:
+        return _ask_error(request, failure)
+
+
+@router.post("/ask/{run_id}/stop")
+@limiter.limit("30/minute", key_func=_limit_key)
+async def ask_stop(request: Request, run_id: str) -> JSONResponse:
+    from app.ask import runs
+
+    cred, refusal = await _asker(request)
+    if refusal is not None:
+        return refusal
+    try:
+        return JSONResponse(content=jsonable_encoder({"ok": True, "run": await runs.stop(cred.workspace_id, cred.user_id, run_id), "request_id": _rid(request)}))
+    except executor.ToolFailure as failure:
+        return _ask_error(request, failure)

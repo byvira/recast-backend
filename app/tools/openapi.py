@@ -68,6 +68,34 @@ def _operation(tool: ToolSpec, components: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _kind(schema: dict[str, Any]) -> str:
+    """A short plain name for what a field holds: text, number, a choice, a list, and so on."""
+    if "enum" in schema:
+        return "one of: " + ", ".join(str(v) for v in schema["enum"][:8])
+    options = schema.get("anyOf") or schema.get("oneOf")
+    if options:
+        names = [_kind(o) for o in options if o.get("type") != "null"]
+        return " or ".join(dict.fromkeys(names)) or "any"
+    kind = schema.get("type", "any")
+    return {"string": "text", "integer": "whole number", "number": "number", "boolean": "yes or no", "array": "list", "object": "object"}.get(kind, str(kind))
+
+
+def reference(tools: Iterable[ToolSpec]) -> dict[str, Any]:
+    """The tools in a form a page can show: no schemas to follow, just each tool's plain facts and the fields it takes. A tool only a person can use is left out."""
+    out = []
+    for tool in sorted(tools, key=lambda t: t.name):
+        if tool.human_only:
+            continue
+        schema = tool.input_schema() or {}
+        required = set(schema.get("required") or ())
+        fields = [{"name": name, "kind": _kind(spec), "required": name in required, "about": str(spec.get("description") or "")[:200]}
+                  for name, spec in (schema.get("properties") or {}).items()]
+        out.append({"name": tool.name, "group": tool.name.split(".")[0], "summary": tool.summary, "risk": tool.risk.value, "scope": tool.scope.value, "mode": tool.mode.value,
+                    "cost": tool.cost_key or tool.cost_note or "free", "approval": tool.approval, "undo": _undo(tool) or "", "examples": list(tool.examples)[:2],
+                    "fields": fields, "beta": bool(tool.beta)})
+    return {"version": API_VERSION, "server": SERVER_PATH, "count": len(out), "tools": out}
+
+
 def build(tools: Iterable[ToolSpec], *, base_url: str = "") -> dict[str, Any]:
     components: dict[str, Any] = {}
     paths: dict[str, Any] = {}

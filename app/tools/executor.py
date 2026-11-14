@@ -78,7 +78,7 @@ class Outcome:
 
 def load_handlers() -> None:
     """Make sure every tool's own runner is registered (they register themselves when their module is imported)."""
-    from app.tools import changes, compose, handlers, runners_edit  # noqa: F401
+    from app.tools import ask_tool, changes, compose, handlers, runners_edit  # noqa: F401
 
 
 def is_wired(tool: ToolSpec) -> bool:

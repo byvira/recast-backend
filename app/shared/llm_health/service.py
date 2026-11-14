@@ -102,6 +102,37 @@ async def usage_since(since: datetime, *, provider: str | None = None, model: st
     return {"calls": r.get("calls", 0), "tokens": r.get("tokens_in", 0) + r.get("tokens_out", 0)}
 
 
+async def models_today(now: datetime | None = None) -> dict[str, list[dict[str, Any]]]:
+    """Every model that was called since its provider's allowance last reset, with calls and tokens, whether or not a limit is set for it.
+    A model with no limit still shows what it used, so the owner can see what to enter from the provider's console."""
+    from app.db.mongo import llm_rollups
+
+    now = now or _now()
+    cfg = {(c["provider"], c["model"]): c for c in (await get_config())["models"]}
+    reset = {p: health.last_reset(now, rule) for p, rule in health.DEFAULT_RESET.items()}
+    earliest = min(reset.values(), default=now - timedelta(days=1))
+    rows = await llm_rollups.aggregate([
+        {"$match": {"hour": {"$gte": earliest.replace(minute=0, second=0, microsecond=0)}}},
+        {"$group": {"_id": {"p": "$provider", "m": "$model", "h": "$hour"}, "calls": {"$sum": "$calls"}, "failures": {"$sum": "$failures"},
+                    "tin": {"$sum": "$tokens_in"}, "tout": {"$sum": "$tokens_out"}}},
+    ]).to_list(5000)
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for r in rows:
+        provider, model, hour = r["_id"]["p"], r["_id"]["m"], r["_id"]["h"]
+        start = reset.get(provider) or health.last_reset(now, {"tz": "UTC", "hour": 0})
+        if hour.replace(tzinfo=hour.tzinfo or timezone.utc) < start.replace(minute=0, second=0, microsecond=0):
+            continue
+        m = out.setdefault(provider, {}).setdefault(model, {"model": model, "calls": 0, "failures": 0, "tokens": 0})
+        m["calls"] += int(r.get("calls", 0)); m["failures"] += int(r.get("failures", 0)); m["tokens"] += int(r.get("tin", 0)) + int(r.get("tout", 0))
+    final: dict[str, list[dict[str, Any]]] = {}
+    for provider, models in out.items():
+        for model, m in models.items():
+            limits = (cfg.get((provider, model)) or {}).get("limits") or {}
+            m["limit_set"] = any(limits.get(k) for k in ("rpd", "tpd", "rpm", "tpm"))
+        final[provider] = sorted(models.values(), key=lambda m: -m["calls"])
+    return final
+
+
 async def quota_snapshot(now: datetime | None = None) -> list[dict[str, Any]]:
     """One row per model per day window with a limit: how much is used, the level, when it resets, the projection."""
     now = now or _now()
@@ -146,6 +177,7 @@ async def provider_states(now: datetime | None = None) -> dict[str, dict[str, An
 
     now = now or _now()
     quota = await quota_snapshot(now)
+    today = await models_today(now)
     recent = recent_provider_stats()
     open_issues = await llm_issues.find({"status": {"$in": ["open", "acknowledged"]}}).to_list(200)
     names = set(health.PROVIDERS) | set(health.DEFAULT_LIMITS) | set(recent)
@@ -161,7 +193,8 @@ async def provider_states(now: datetime | None = None) -> dict[str, dict[str, An
         busiest = max(rows, key=lambda q: q["percent"] or 0, default=None)
         meta = health.PROVIDERS.get(name, {"label": name.capitalize(), "used_for": ""})
         out[name] = {"configured": health.is_configured(name), "label": meta["label"], "used_for": meta["used_for"], "status": state, "status_text": health.STATUS_TEXT[state],
-                     "recent": r, "quota": rows, "busiest": busiest}
+                     "recent": r, "quota": rows, "busiest": busiest, "today": today.get(name, []),
+                     **({"pool": health.pool_estimate(sum(m["calls"] - m["failures"] for m in today.get(name, []) if m["model"].startswith(health.CLOUDFLARE_POOL["model_prefix"])))} if name == "cloudflare" else {})}
     return out
 
 
