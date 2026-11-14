@@ -45,7 +45,11 @@ logger = logging.getLogger(__name__)
 GROUP = "personal"
 CONSUMER = f"personal-{os.getpid()}"
 BATCH = 50
-BLOCK_MS = 5000
+# How long one read waits for new work. Every read is one request against the Redis plan, so a longer wait costs far fewer requests when idle.
+BLOCK_MS = 30_000
+# After a failed read the loop waits 1, 2, 4 ... seconds up to this cap, and pauses for QUOTA_PAUSE_SECONDS when the plan says its requests are used up.
+MAX_ERROR_DELAY = 60.0
+QUOTA_PAUSE_SECONDS = 300.0
 RECLAIM_IDLE_MS = 60_000        # provisional: treat an entry idle this long as abandoned
 MAX_DELIVERIES = 5             # provisional: dead-letter after this many failed attempts
 
@@ -141,21 +145,36 @@ async def drain_personal_once(max_batches: int = 1) -> int:
 # long-running consume loop + cron guard
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _is_quota_error(exc: BaseException) -> bool:
+    return "max requests limit" in str(exc).lower() or "max daily request limit" in str(exc).lower()
+
+
+def _error_delay(attempt: int, exc: BaseException) -> float:
+    """Seconds to wait after a failed read: a long pause when the request quota is used up, otherwise 1, 2, 4 ... up to the cap."""
+    if _is_quota_error(exc):
+        return QUOTA_PAUSE_SECONDS
+    return float(min(MAX_ERROR_DELAY, 2 ** min(attempt, 6)))
+
+
 async def _consume_loop(stop: asyncio.Event) -> None:
     r = await get_redis()
     await _ensure_group(r)
     await _reclaim_stale(r)
     logger.info("personal consume loop started (consumer=%s)", CONSUMER)
+    failures = 0
     while not stop.is_set():
         try:
             resp = await r.xreadgroup(
                 GROUP, CONSUMER, {EVENTS_STREAM: ">"}, count=BATCH, block=BLOCK_MS
             )
+            failures = 0
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            logger.error("personal consumer: xreadgroup error: %s", exc)
-            await asyncio.sleep(1.0)
+            delay = _error_delay(failures, exc)
+            failures += 1
+            logger.error("personal consumer: xreadgroup error: %s (waiting %.0f s)", exc, delay)
+            await asyncio.sleep(delay)
             continue
         if not resp:
             continue
@@ -166,7 +185,9 @@ async def _consume_loop(stop: asyncio.Event) -> None:
 
 
 async def personal_consumer_guard(ctx: dict) -> None:
-    """1-minute cron: (re)start the consume loop if it isn't running."""
+    """1-minute cron: (re)start the consume loop if it isn't running. Does nothing when AGENT_CONSUMER_ENABLED is false."""
+    if not settings.AGENT_CONSUMER_ENABLED:
+        return
     task: asyncio.Task | None = ctx.get("personal_consumer_task")
     if task is not None and not task.done():
         return
@@ -242,5 +263,6 @@ class WorkerSettings:
     on_shutdown = _on_shutdown
     redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
     max_tries = 3
+    poll_delay = 5.0        # the default of 0.5 s would use the Redis plan's monthly requests in about a day
     job_timeout = 300
     keep_result = 3600

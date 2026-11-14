@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     TELEGRAM_WEBHOOK_SECRET: str = ""
     # Lets the built-in test sender post signed messages to the webhook, so every flow is tested without Meta or Telegram. Never on in production.
     CHANNELS_SIMULATOR: bool = False
+    # The personal-assistant stream consumer asks Redis for work on a timer, and every request counts against the Redis plan's monthly limit.
+    # Local and test runs set this to false so they never use the live Redis's requests.
+    AGENT_CONSUMER_ENABLED: bool = True
     # Decide candidates (app/ask/candidates.py): other Groq models to test beside the live one (free tier, the main provider), and a translator pivot that sends a
     # member's words to Cloudflare's free translation model; the pivot stays off until the owner agrees to that.
     # Empty by default: Groq removed its older Llama and Qwen models on 2026-09-10 and now offers gpt-oss-20b, gpt-oss-120b, gpt-oss-safeguard-20b and Whisper. Name a model here only after
