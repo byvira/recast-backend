@@ -402,10 +402,12 @@ async def notify_assignee(issue: dict[str, Any], email: str, by: str) -> None:
     """Tell the person an error was given to, by email. Never raises."""
     try:
         from app.core.config import settings
-        from app.shared.llm_health.alerts import _send_email
+        from app.shared.llm_health.alerts import ASSIGNED_TEMPLATE, _send_email
 
         link = f"{(settings.FRONTEND_URL or '').rstrip('/')}/ops/errors?issue={issue.get('number')}"
-        await _send_email([email], f"Error #{issue.get('number')} was given to you", f"{by} gave you: {issue.get('title', '')}\n{link}")
+        variables = {"NAME": email.split("@")[0], "BY": by, "ERROR_NUMBER": str(issue.get("number")), "ERROR_TITLE": issue.get("title", ""), "LINK_URL": link}
+        await _send_email([email], f"Error #{issue.get('number')} was given to you", f"{by} gave you: {issue.get('title', '')}\n{link}",
+                          template=ASSIGNED_TEMPLATE, variables=variables)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not email the person an error was given to: %s", exc)
 

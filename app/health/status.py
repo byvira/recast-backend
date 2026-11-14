@@ -341,12 +341,19 @@ def subscribers_col():
     return _db()["status_subscribers"]
 
 
-async def _send(to: str, subject: str, text: str) -> bool:
+CONFIRM_TEMPLATE = "status-confirm"
+UPDATE_TEMPLATE = "status-update"
+
+
+async def _send(to: str, subject: str, text: str, *, template: str | None = None, variables: dict[str, str] | None = None) -> bool:
+    """Email a status subscriber. With a template it is sent first, and the plain version is sent instead when the template cannot be sent."""
     from app.core.config import settings
-    from app.core.notifications import sender_for
+    from app.core.notifications import send_templated_email, sender_for
 
     if settings.ENVIRONMENT != "production" or not settings.RESEND_API_KEY:
         logger.info("[status email, not sent outside production] to %s: %s", to, subject)
+        return True
+    if template and await send_templated_email(template, to, variables or {}, from_override=sender_for("Ekavo Status"), subject=subject):
         return True
     try:
         import resend
@@ -380,7 +387,7 @@ async def subscribe(email: str) -> None:
     await _send(address, "Confirm your Ekavo status updates", NEWLINE.join([
         "Confirm that you want an email when something is wrong with Ekavo, and when it is fixed:", link, "",
         "If you did not ask for this, ignore this email.",
-    ]))
+    ]), template=CONFIRM_TEMPLATE, variables={"CONFIRM_URL": link})
 
 
 async def confirm(token: str) -> bool:
@@ -408,7 +415,9 @@ async def email_subscribers(doc: dict) -> int:
         stop = f"{_site_url()}/status/subscription?action=unsubscribe&token={sub['token']}"
         text = NEWLINE.join([latest.get("text") or "", "", f"Read every update: {_site_url()}/status/incidents/{doc['_id']}", "",
                              f"Stop these emails: {stop}"])
-        if await _send(sub["_id"], f"{word}: {doc.get('title') or 'Ekavo status'}", text):
+        variables = {"STATUS_WORD": word, "TITLE": doc.get("title") or "Ekavo status", "UPDATE_TEXT": latest.get("text") or "",
+                     "INCIDENT_URL": f"{_site_url()}/status/incidents/{doc['_id']}", "STOP_URL": stop}
+        if await _send(sub["_id"], f"{word}: {doc.get('title') or 'Ekavo status'}", text, template=UPDATE_TEMPLATE, variables=variables):
             sent += 1
     return sent
 

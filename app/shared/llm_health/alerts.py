@@ -108,12 +108,56 @@ def digest_body(open_issues: list[dict[str, Any]], providers: dict[str, str], fa
     return "\n".join(lines)
 
 
-async def _send_email(to: list[str], subject: str, body: str) -> bool:
+ALERT_TEMPLATE = "ops-alert"
+ASSIGNED_TEMPLATE = "ops-assigned"
+DIGEST_TEMPLATE = "ops-daily-digest"
+
+_KIND_WORDS = {
+    "new_issue": "New problem", "reopened": "Came back", "spike": "Many at once", "quota_warning": "Running low",
+    "quota_critical": "Almost out", "provider_down": "Provider down",
+}
+
+
+def alert_variables(alert: "Alert") -> dict[str, str]:
+    """The fields of the alert template: the headline, what kind it is, how serious, the details, and the one link (the last line, when it is a web address)."""
+    lines = alert.body.split("\n")
+    link = lines[-1] if lines and lines[-1].startswith("http") else ""
+    details = " ".join(x for x in (lines[:-1] if link else lines) if x)
+    return {
+        "HEADLINE": alert.subject, "KIND": _KIND_WORDS.get(alert.kind, "Alert"), "SEVERITY": alert.severity, "DETAILS": details,
+        "LINK_URL": link, "LINK_LABEL": "Open it" if link else "",
+    }
+
+
+def digest_variables(open_issues: list[dict[str, Any]], providers: dict[str, str], failed_calls: int, base_url: str = "") -> dict[str, str]:
+    """The fields of the morning-note template. Every field is a sentence, never empty, because a template cannot hide a part."""
+    counts = {p: sum(1 for i in open_issues if i.get("priority") == p) for p in PRIORITY_RANK}
+    said = ", ".join(f"{n} {p}" for p, n in counts.items() if n)
+    ranked = sorted(open_issues, key=lambda x: PRIORITY_RANK.get(x.get("priority", "medium"), 9))[:5]
+    listing = "; ".join(f"{issues.issue_number_label(int(i.get('number', 0)))}: {issues.title_for(i)} ({i.get('priority', 'medium')})" for i in ranked)
+    down = sorted(name.capitalize() for name, state in providers.items() if state == "down")
+    return {
+        "OPEN_COUNT": str(len(open_issues)), "OPEN_SUMMARY": said or "none open", "OPEN_LIST": listing or "Nothing is open.",
+        "DOWN_PROVIDERS": ", ".join(down) if down else "Nothing is down right now.", "FAILED_CALLS": str(failed_calls),
+        "LINK_URL": f"{base_url}/ops/llm" if base_url else "",
+    }
+
+
+async def _send_email(to: list[str], subject: str, body: str, *, template: str | None = None, variables: dict[str, str] | None = None) -> bool:
+    """Email Ops. With a template, each address is sent the template first; any address the template could not reach gets the plain version instead."""
     from app.core.config import settings
-    from app.core.notifications import OPS_FROM
+    from app.core.notifications import OPS_FROM, send_templated_email
 
     if not to or not settings.RESEND_API_KEY:
         return False
+    if template:
+        left = []
+        for address in to:
+            if not await send_templated_email(template, address, variables or {}, from_override=OPS_FROM, subject=f"[Ekavo] {subject}"):
+                left.append(address)
+        if not left:
+            return True
+        to = left
     try:
         import resend
 
@@ -150,7 +194,7 @@ async def deliver(alert: Alert, rules: dict[str, Any]) -> dict[str, bool]:
     from app.db.mongo import llm_alert_log
 
     rules = {**DEFAULT_RULES, **(rules or {})}
-    result = {"email": await _send_email(list(rules["email_to"]), alert.subject, alert.body)}
+    result = {"email": await _send_email(list(rules["email_to"]), alert.subject, alert.body, template=ALERT_TEMPLATE, variables=alert_variables(alert))}
     result["slack"] = await _send_slack(f"*{alert.subject}*\n{alert.body}") if rules["slack"] else False
     try:
         await llm_alert_log.insert_one({"at": datetime.now(timezone.utc), "key": alert.key, "kind": alert.kind, "subject": alert.subject, "result": result})

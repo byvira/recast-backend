@@ -36,7 +36,7 @@ async def test_the_digest_is_sent_once_a_day_to_the_set_addresses_and_only_when_
     await db["llm_alert_log"].delete_many({"kind": "digest"})
     sent: list[tuple] = []
 
-    async def fake_send(to, subject, body):
+    async def fake_send(to, subject, body, **_):
         sent.append((tuple(to), subject, body))
         return True
 

@@ -314,7 +314,9 @@ async def send_daily_digest() -> bool:
         body = alerts.digest_body(open_issues, states, failed, (settings.FRONTEND_URL or "").rstrip("/"))
         if not body:
             return False
-        sent = await alerts._send_email(list(rules["email_to"]), "AI health this morning", body)
+        base = (settings.FRONTEND_URL or "").rstrip("/")
+        sent = await alerts._send_email(list(rules["email_to"]), "AI health this morning", body, template=alerts.DIGEST_TEMPLATE,
+                                        variables=alerts.digest_variables(open_issues, states, failed, base))
         await llm_alert_log.insert_one({"at": now, "key": key, "kind": "digest", "subject": "AI health this morning", "result": {"email": sent}})
         return sent
     except Exception as exc:  # noqa: BLE001 - the digest must never affect anything else
