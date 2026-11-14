@@ -188,3 +188,42 @@ async def test_a_member_can_link_only_a_few_chats(member, keys):
         made = (await client.post("/api/v1/channels/link-code", headers=h, json={"channel": "telegram"})).json()
         assert await links.redeem("telegram", f"77700000{n}", made["code"], LiveServices()) is not None
     assert (await client.post("/api/v1/channels/link-code", headers=h, json={"channel": "telegram"})).status_code == 409
+
+
+async def test_a_signed_link_message_through_the_door_links_the_chat_and_a_reply_goes_back(member, keys, monkeypatch):
+    """The whole path with Meta replaced by a stand-in: a signed call, the engine, the link, and the reply posted to the Graph address."""
+    import asyncio
+
+    import httpx
+
+    from app.api import channels_webhooks
+
+    client, user, ws, h = member
+    made = (await client.post("/api/v1/channels/link-code", headers=h, json={"channel": "whatsapp"})).json()
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append({"url": str(request.url), "body": json.loads(request.content), "auth": request.headers.get("authorization")})
+        return httpx.Response(200, json={"messages": [{"id": "wamid.out"}]})
+
+    stand_in = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr("app.channels.pool.shared", lambda timeout: stand_in)
+    body = json.dumps(wa_payload({"from": "919999900077", "id": "wamid.in", "type": "text", "text": {"body": made["message"]}})).encode()
+    res = await client.post(W, content=body, headers={"X-Hub-Signature-256": sign(body)})
+    assert res.status_code == 200
+    await asyncio.gather(*list(channels_webhooks._tasks))
+
+    replies = [s for s in sent if s["body"].get("type") in ("text", "interactive")]
+    assert replies, f"no reply was sent; calls made: {[s['body'] for s in sent]}"
+    assert all(s["url"].endswith("/111/messages") and s["auth"] == "Bearer tok" for s in sent)
+    assert "linked" in json.dumps(replies[0]["body"]).lower()
+    assert (await get_db()["channel_links"].count_documents({"workspace_id": ws})) == 1
+
+
+def test_a_failed_delivery_report_gives_the_code_and_title_and_nothing_about_the_person():
+    payload = {"entry": [{"changes": [{"value": {"statuses": [
+        {"id": "wamid.x", "status": "failed", "recipient_id": "919999900001", "errors": [{"code": 131031, "title": "Business Account locked"}]},
+        {"id": "wamid.y", "status": "delivered", "recipient_id": "919999900001"},
+    ]}}]}]}
+    assert whatsapp.failed_deliveries(payload) == [(131031, "Business Account locked")]
+    assert whatsapp.failed_deliveries({}) == [] and whatsapp.failed_deliveries({"entry": [None]}) == []

@@ -73,6 +73,19 @@ def parse(payload: dict[str, Any]) -> list[Inbound]:
     return out
 
 
+def failed_deliveries(payload: dict[str, Any]) -> list[tuple[int, str]]:
+    """The (code, title) of every reply Meta reports as not delivered, from the status updates in one webhook call. Nothing about the person is returned."""
+    out: list[tuple[int, str]] = []
+    for entry in payload.get("entry") or []:
+        for change in (entry or {}).get("changes") or []:
+            for status in ((change or {}).get("value") or {}).get("statuses") or []:
+                if not isinstance(status, dict) or status.get("status") != "failed":
+                    continue
+                for err in status.get("errors") or [{}]:
+                    out.append((int((err or {}).get("code") or 0), str((err or {}).get("title") or "unknown")[:80]))
+    return out
+
+
 class WhatsAppAdapter:
     name = "whatsapp"
 

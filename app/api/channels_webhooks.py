@@ -61,6 +61,8 @@ async def whatsapp_in(request: Request, x_hub_signature_256: Optional[str] = Hea
         payload = json.loads(body)
     except ValueError:
         raise HTTPException(status_code=400, detail="Bad body.")
+    for code, title in whatsapp.failed_deliveries(payload if isinstance(payload, dict) else {}):
+        logger.warning("WhatsApp could not deliver a reply: %s %s", code, title)
     adapter = whatsapp.WhatsAppAdapter()
     for msg in whatsapp.parse(payload if isinstance(payload, dict) else {}):
         _background(_safely(adapter, msg))
