@@ -200,3 +200,10 @@ async def test_a_new_invite_for_staff_keeps_the_old_code_until_the_new_one_is_se
     assert (await signup_invites.find_one({"id": old["id"]}))["revoked"] is True
     assert (await signup_invites.find_one({"id": new["id"]}))["revoked"] is False
     await signup_invites.delete_many({"email": email})
+
+
+def test_a_webhook_check_address_is_masked_in_the_access_log():
+    from app.core.logger import _mask_secrets
+
+    line = _mask_secrets('GET /api/channels/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=SECRETVALUE&hub.challenge=123 HTTP/1.1')
+    assert "SECRETVALUE" not in line and "hub.mode=subscribe" in line

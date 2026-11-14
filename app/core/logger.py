@@ -17,7 +17,8 @@ import structlog
 from app.core.config import settings
 
 
-_SECRET_IN_URL = re.compile(r"(?i)([?&](?:key|api_key|apikey|access_token|token|secret|client_secret|password|code)=)[^&\s\"']+")
+# a parameter is masked when its name ends in one of these words, so `hub.verify_token` and `client_secret` are covered along with `token`
+_SECRET_IN_URL = re.compile(r"(?i)([?&][\w.\-]*?(?:key|token|secret|password|code|challenge)=)[^&\s\"']+")
 _BEARER = re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{12,}")
 
 
