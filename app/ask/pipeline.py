@@ -47,12 +47,35 @@ def _line(spec: ToolSpec) -> str:
     return f"- {spec.name}: {spec.summary}"
 
 
+def _choices(prop: dict[str, Any], defs: dict[str, Any]) -> str:
+    """What an input takes, in a few words: its allowed values, or that it is a list (of what) or a number, so the model does not have to guess."""
+    def values(node: dict[str, Any]) -> list[str]:
+        if "$ref" in node:
+            node = defs.get(str(node["$ref"]).rsplit("/", 1)[-1], {})
+        found = [str(v) for v in node.get("enum", [])]
+        for option in node.get("anyOf", []):
+            found += values(option)
+        return found
+
+    if prop.get("type") == "array":
+        inner = values(prop.get("items") or {})
+        return "a list of " + ("|".join(inner[:14]) if inner else "values")
+    allowed = values(prop)
+    if allowed:
+        return "|".join(allowed[:14])
+    return {"integer": "a number", "number": "a number", "boolean": "yes or no"}.get(str(prop.get("type")), "")
+
+
 def _inputs(spec: ToolSpec) -> str:
     schema = spec.input_schema() or {}
-    props = list((schema.get("properties") or {}).keys())
+    defs = schema.get("$defs") or {}
+    props = schema.get("properties") or {}
     required = set(schema.get("required") or [])
-    shown = ", ".join(f"{p}{'*' if p in required else ''}" for p in props[:12])
-    return f"- {spec.name}({shown})"
+    parts = []
+    for name in list(props)[:12]:
+        choice = _choices(props[name], defs)
+        parts.append(f"{name}{'*' if name in required else ''}" + (f": {choice}" if choice else ""))
+    return f"- {spec.name}({', '.join(parts)})"
 
 
 def decide_prompt(message: str, allowed: list[ToolSpec], language: str, conversation: str = "", allow_reply: bool = False, script: str = "") -> tuple[str, str]:
@@ -68,8 +91,12 @@ def decide_prompt(message: str, allowed: list[ToolSpec], language: str, conversa
     )
     if allow_reply:
         system += (
-            ' Use "reply" only to explain, advise or answer about the person\'s content or this conversation, using only what the conversation shows; '
-            "never invent facts, numbers or ids, and never use it to do work a tool should do. Write the answer in the language of the request" + (" (" + tongue.rule(language, script) + ")" if tongue.rule(language, script) else "") + ", in at most three short sentences."
+            ' A request to write, draft, make, create or schedule something (a post, a caption, a script, a picture, audio, a video) is always a "tool" request, '
+            'never a "reply", even when it is short or has spelling mistakes: the tool does the writing, so never write the post yourself. '
+            'Use "reply" to explain, advise or answer about the person\'s content or this conversation, and also to suggest a few ideas, give tips or brainstorm '
+            '(for example "what should I post about"). Ideas, tips and general questions about content or social media are a "reply", never "none". '
+            "Take anything about the person's own account only from what the conversation shows; never invent facts, numbers or ids about it. "
+            "Write the answer in the language of the request" + (" (" + tongue.rule(language, script) + ")" if tongue.rule(language, script) else "") + ", in at most three short sentences."
         )
     if conversation:
         system += " The conversation so far is shown as data: use it to understand words like \"it\", \"that\" or \"the same\", and take any id only from its \"Made:\" lines."
@@ -85,7 +112,8 @@ def plan_prompt(message: str, allowed: list[ToolSpec], conversation: str = "") -
         f"{fence.RULES}\nMake a plan of at most {compose.MAX_STEPS} steps using only the allowed tools, in the order they must run.\n"
         'Answer: {"steps": [{"label": "one_lowercase_word", "tool": "<allowed name>", "arguments": {}, "optional": false}]}\n'
         'A later step may use an earlier step\'s result, written exactly as "${label.path}". Use only the argument names a tool lists (a * marks a required one). '
-        "Never invent an id; if an id is needed, an earlier step must produce it."
+        "Never invent an id; if an id is needed, an earlier step must produce it, except a brand_id, where you write \"default\" for the workspace's main brand. "
+        "Where a tool shows its allowed values or says a list, write exactly those, spelled as shown."
     )
     if conversation:
         system += " The conversation so far is shown as data: an id may be taken only from its \"Made:\" lines, never guessed."
@@ -179,7 +207,7 @@ async def understand(
             return result
         prompt, system = plan_prompt(message, [spec], conversation)
         async with charge("fill"):
-            raw = await think("plan", prompt, system)
+            raw = await think("fill", prompt, system)
         result.model_steps += 1
         steps, problems = parse_plan(raw, {spec.name})
         result.problems = problems

@@ -1,6 +1,7 @@
-"""Which model does which job in Ask Ekavo. Four roles, each with a model, a token budget and a privacy flag; staff can change them in Ops.
+"""Which model does which job in Ask Ekavo. Five roles, each with a model, a token budget and a privacy flag; staff can change them in Ops.
 
 - decide: choose one tool, or a plan, or ask a short question (the small model; a closed choice, so it needs little).
+- fill: fill in the details of a request that one tool does (the small model; the tool says what each input takes, and a repair step puts right small slips).
 - plan: write the steps of a multi-step request (the larger model, only when more than one step is needed).
 - respond: put a short answer in the person's language.
 - explain: say why something was refused or failed, in plain words.
@@ -35,6 +36,7 @@ class Role:
 
 DEFAULTS: dict[str, Role] = {
     "decide": Role("decide", GroqModel.FAST.value, 400),
+    "fill": Role("fill", GroqModel.FAST.value, 600),
     "plan": Role("plan", GroqModel.BALANCED.value, 1500),
     "respond": Role("respond", GroqModel.FAST.value, 300),
     "explain": Role("explain", GroqModel.BALANCED.value, 800),

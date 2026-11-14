@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
 from uuid import uuid4
 
-from app.ask import context, decisions, pipeline, router, shortlist, threads, tongue
+from app.ask import context, decisions, pipeline, repair, router, shortlist, threads, tongue
 from app.pipelines.media import request_refs
 from app.billing import costs as credit_costs
 from app.billing import credits
@@ -355,6 +355,7 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
         gate = Gatekeeper(registry, services)
         cred_id = credential_id(workspace_id, user_id)
         await _tell(on_phase, "price")
+        await repair.repair_steps(understood.steps, registry, workspace_id)     # one value where a list is needed, a different spelling, a placeholder brand
         problems = await _check_steps(gate, cred_id, understood.steps)
         step_rows, total, exact = await _price(understood.steps)
         await localize_steps(step_rows, language)
@@ -362,7 +363,12 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
         run["plan"] = {"steps": [{**r, "arguments": understood.steps[i].arguments} for i, r in enumerate(step_rows)], "credits": total, "exact": exact, "problems": problems,
                        "confirm_needed": total > CONFIRM_ABOVE}
         blocking = [p for p in problems if not p.get("optional")]
-        if blocking:
+        if blocking and blocking[0].get("code") == "input_invalid":
+            # the plan was understood but a value in it still cannot be read: ask, in plain words, instead of showing a technical refusal
+            logger.info("A plan step had an input that could not be used: %s", [(p.get("label"), p.get("code")) for p in blocking])
+            need = await localize_fixed("ask.message.need_more", "I could not set that up from what you wrote. Tell me a little more, for example what it is about and where it should go.", language)
+            run.update(status="ask", question=need, reply=need)
+        elif blocking:
             run.update(status="none", reply=await localize(blocking[0]["message"], language, think=think))
         elif _is_free_read(specs_used) and trust != "suggest":
             run["status"] = "ready"
