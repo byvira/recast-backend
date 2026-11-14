@@ -95,6 +95,8 @@ def decide_prompt(message: str, allowed: list[ToolSpec], language: str, conversa
             'never a "reply", even when it is short or has spelling mistakes: the tool does the writing, so never write the post yourself. '
             'Use "reply" to explain, advise or answer about the person\'s content or this conversation, and also to suggest a few ideas, give tips or brainstorm '
             '(for example "what should I post about"). Ideas, tips and general questions about content or social media are a "reply", never "none". '
+            "When asked what you can do, answer in everyday words about their content (write posts, make pictures, audio and video, schedule and publish, give ideas and tips); "
+            "never name a tool or use words such as tool, button, chip or catalog. "
             "Take anything about the person's own account only from what the conversation shows; never invent facts, numbers or ids about it. "
             "Write the answer in the language of the request" + (" (" + tongue.rule(language, script) + ")" if tongue.rule(language, script) else "") + ", in at most three short sentences."
         )

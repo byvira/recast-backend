@@ -129,3 +129,16 @@ def test_staff_can_change_the_new_job_like_the_others():
     from app.ask import router
 
     assert "fill" in router.DEFAULTS and router.DEFAULTS["fill"].private
+
+
+def test_a_what_can_you_do_question_is_answered_in_everyday_words_not_tool_words():
+    _, system = pipeline.decide_prompt("what can you do for me?", [get_registry().get("text.generate")], "en", allow_reply=True)
+    assert "When asked what you can do" in system and "never name a tool" in system
+    assert pipeline.decide_prompt("hi", [get_registry().get("text.generate")], "en", allow_reply=False)[1].count("never name a tool") == 0
+
+
+def test_the_nothing_fits_message_is_plain_and_has_no_tool_words():
+    from app.ask import runs
+
+    text = runs.MESSAGES["none"].lower()
+    assert "tool" not in text and "post" in text

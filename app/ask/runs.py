@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional
@@ -105,7 +106,7 @@ def say_ready(steps: int, credits_: int, exact: bool) -> str:
 
 
 MESSAGES = {
-    "none": "I could not find a way to do that with the tools you have. Try saying it a little differently.",
+    "none": "I could not work out what you want from that. Could you say it another way, or tell me what to make, such as a post, a picture or a schedule?",
     "hand_off": "That needs your own go-ahead, so I will not do it for you. Open it in the app and check it first.",
     "answered": "Here is what I found.",
     "cap": "You have used today's planning steps for this workspace. They come back tomorrow, and you can do the same thing from the app meanwhile.",
@@ -285,6 +286,7 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
     services = services or LiveServices()
     think = think or router.think
     embed = embed or shortlist.default_embed
+    started = time.monotonic()
 
     off = await services.switched_off(workspace_id, "ask")
     if off:
@@ -314,9 +316,11 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
     cred = await services.credential(credential_id(workspace_id, user_id))
     registry = get_registry()
     specs = [s for s in visible_tools(registry, cred, permissions) if not s.name.startswith(_HIDDEN)]
+    setup_ms = int((time.monotonic() - started) * 1000)
     await _tell(on_phase, "find")
     space = await shortlist.pick_space()
     names, how = await shortlist.shortlist(text, specs, embed=embed, space=space)
+    shortlist_ms = int((time.monotonic() - started) * 1000) - setup_ms
 
     @asynccontextmanager
     async def charge(step: str) -> AsyncIterator[Any]:
@@ -337,6 +341,7 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
         await runs().insert_one(dict(run))
         return public(run)
 
+    logger.info("ask timing setup=%dms shortlist=%dms understand=%dms action=%s", setup_ms, shortlist_ms, int((time.monotonic() - started) * 1000) - setup_ms - shortlist_ms, understood.action)
     run["understanding"] = {"action": understood.action, "tool": understood.tool, "reason": understood.reason, "shortlist": understood.shortlist, "how": understood.how, "problems": understood.problems}
     run["updated_at"] = _now()
     shadow = await decisions.shadow_name()
@@ -383,7 +388,7 @@ async def _plan_run(workspace_id: str, user_id: str, message: str, trust: str = 
                 await runs().insert_one(dict(run))
                 return await confirm(workspace_id, user_id, run_id, services=services)
     else:
-        run.update(status="none", reply=await localize_fixed("ask.message.none", MESSAGES["none"], language))
+        run.update(status="none", reply=await localize_fixed("ask.message.not_understood", MESSAGES["none"], language))
     await runs().insert_one(dict(run))
     return public(run)
 
