@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -217,6 +218,25 @@ def _blacklist_key(token: str) -> str:
     return f"blacklist:{hashlib.sha256(token.encode()).hexdigest()}"
 
 
+# A token that was just found to be in good standing is not asked about again for a short while. Every signed-in request (the app, the command line,
+# the assistants) would otherwise cost a trip to Redis, which is most of the time a quick request takes and a share of the Redis plan. Only "not revoked"
+# is remembered, so a sign-out is seen at once by the process that handled it, and by any other within REVOCATION_CACHE_SECONDS.
+REVOCATION_CACHE_SECONDS = 30.0
+REVOCATION_CACHE_MAX = 5000
+_good_standing: dict[tuple[str, str | None], float] = {}
+
+
+def _standing_key(token: str, sid: str | None) -> tuple[str, str | None]:
+    return hashlib.sha256(token.encode()).hexdigest(), sid
+
+
+def forget_standing(token: str | None = None, sid: str | None = None) -> None:
+    """Drops what is remembered about a token, or about every token of a session, because it was just revoked."""
+    digest = hashlib.sha256(token.encode()).hexdigest() if token else None
+    for key in [k for k in _good_standing if (digest is not None and k[0] == digest) or (sid is not None and k[1] == sid)]:
+        _good_standing.pop(key, None)
+
+
 # ── Sessions ──────────────────────────────────────────────────────────────────
 # Every sign-in starts a session (`sid`). Its tokens all carry it, so the whole session can be ended at once: when a refresh token that
 # was already used is shown again (someone holds a copy), and when a person logs out.
@@ -234,6 +254,7 @@ async def revoke_session(sid: str | None) -> None:
     """Ends a session: none of its tokens work again, wherever copies of them are."""
     if not sid:
         return
+    forget_standing(sid=sid)
     redis = await get_redis()
     await redis.set(f"revoked_session:{sid}", "1", ex=settings.JWT_REFRESH_EXPIRE_DAYS * 86400)
 
@@ -296,6 +317,7 @@ async def blacklist_token(token: str) -> None:
         )
         exp = payload.get("exp", 0)
         remaining = int(exp - datetime.now(timezone.utc).timestamp())
+        forget_standing(token=token)
         if remaining > 0:
             redis = await get_redis()
             # The key is a hash of the token, so a copy of the Redis data is not a copy of live tokens. The value is when it was revoked.
@@ -318,7 +340,11 @@ async def is_token_blacklisted(token: str) -> bool:
 
 async def _revocation_flags(token: str, sid: str | None) -> tuple[bool, bool]:
     """Whether this token was revoked, and whether its session was ended, in one trip to Redis (the same three keys
-    is_token_blacklisted and is_session_revoked read)."""
+    is_token_blacklisted and is_session_revoked read). A token found in good standing in the last REVOCATION_CACHE_SECONDS is not asked about again."""
+    key = _standing_key(token, sid)
+    now = time.monotonic()
+    if _good_standing.get(key, 0.0) > now:
+        return False, False
     redis = await get_redis()
     pipe = redis.pipeline(transaction=False)
     pipe.get(_blacklist_key(token))
@@ -328,6 +354,13 @@ async def _revocation_flags(token: str, sid: str | None) -> tuple[bool, bool]:
     answers = await pipe.execute()
     token_revoked = answers[0] is not None or bool(answers[1])
     session_revoked = bool(answers[2]) if sid else False
+    if not token_revoked and not session_revoked:
+        if len(_good_standing) >= REVOCATION_CACHE_MAX:
+            for stale in [k for k, until in _good_standing.items() if until <= now]:
+                _good_standing.pop(stale, None)
+            if len(_good_standing) >= REVOCATION_CACHE_MAX:
+                _good_standing.clear()
+        _good_standing[key] = now + REVOCATION_CACHE_SECONDS
     return token_revoked, session_revoked
 
 
