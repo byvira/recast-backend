@@ -333,6 +333,10 @@ async def signup(
     else:
         user_doc["phone"] = identifier
 
+    if body.terms_version:
+        # what the person agreed to when they made the account, and when
+        user_doc["consents"] = [{"kind": "terms_and_privacy", "version": body.terms_version, "at": now, "source": "signup"}]
+
     try:
         await users.insert_one(user_doc)
     except DuplicateKeyError:

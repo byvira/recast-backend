@@ -657,6 +657,9 @@ async def create_indexes() -> None:
 
     await _errors.create_indexes()
     await _status.create_indexes()
+    from app.shared import data_requests as _data_requests
+
+    await _data_requests.create_indexes()
     # Ops prompt library
     await get_db()["prompt_library_audit"].create_index([("at", -1)])
     await get_db()["prompt_library_audit"].create_index([("subject", 1), ("at", -1)])

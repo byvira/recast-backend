@@ -19,7 +19,7 @@ from app.db.mongo import get_db, invites, users, workspace_members, workspaces
 logger = logging.getLogger(__name__)
 
 #: Collections kept untouched: records the law or the books need, Ops' own history, and shared data that belongs to nobody.
-KEEP = {"billing_invoices", "billing_payments", "billing_audit", "staff_audit", "migrations", "localized_strings", "account_erasures"}
+KEEP = {"billing_invoices", "billing_payments", "billing_audit", "staff_audit", "migrations", "localized_strings", "account_erasures", "data_requests"}
 #: Personal rows that live inside a workspace but belong to one member (their voice settings, word lists, read state, devices).
 MEMBER_ROWS = ("member_voice_settings", "member_lexicon", "inbox_state", "push_subscriptions", "notification_prefs")
 

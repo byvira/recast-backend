@@ -506,6 +506,15 @@ async def export_people(request: Request, f: PeopleFilters = Depends(), staff: d
                         [[r["name"], r["email"], r["id"], r["created_at"], r["last_active"], r["workspaces"], r["staff"] or ""] for r in rows])
 
 
+@people_router.get("/data-requests")
+@limiter.limit("60/minute")
+async def data_requests_list(request: Request, limit: int = Query(100, ge=1, le=500)) -> dict:
+    """Each time a person took a copy of their data or deleted their account, newest first. No names: see app.shared.data_requests."""
+    from app.shared import data_requests
+
+    return {"requests": await data_requests.listing(limit)}
+
+
 @people_router.get("/{user_id}")
 @limiter.limit("60/minute")
 async def person(request: Request, user_id: str) -> dict:

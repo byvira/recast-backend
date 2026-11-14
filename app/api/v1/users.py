@@ -96,9 +96,11 @@ async def export_my_data(request: Request, current_user: dict[str, Any] = Depend
     """A copy of the caller's own account data as a JSON download (see app.shared.account_export)."""
     import json
 
+    from app.shared import data_requests
     from app.shared.account_export import export_account
 
     body = json.dumps(await export_account(current_user["id"]), indent=2, default=str)
+    await data_requests.record("export", current_user)
     return Response(body, media_type="application/json", headers={"Content-Disposition": 'attachment; filename="my-ekavo-data.json"', "Cache-Control": "no-store"})
 
 
@@ -118,6 +120,9 @@ async def delete_my_account(
     if body.confirm.strip().upper() != "DELETE":
         raise HTTPException(status_code=400, detail="Type DELETE to confirm.")
     result = await erase_account(current_user)
+    from app.shared import data_requests
+
+    await data_requests.record("erase", current_user)
     clear_auth_cookies(response)
     return {"deleted": True, **result}
 

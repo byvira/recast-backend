@@ -79,6 +79,9 @@ class SignupCompleteBody(BaseModel):
     )
     # The one-time code from an invite email. Needed while sign-up is by invite; ignored while it is open.
     invite_code: str | None = Field(default=None, max_length=200)
+    # Which version of the Terms and Privacy Policy the person agreed to on the sign-up screen. Optional, so an older app build
+    # that does not send it can still create an account; nothing is recorded for that account.
+    terms_version: str | None = Field(default=None, max_length=40, pattern=r"^[0-9A-Za-z._-]+$")
 
 
 class UserUpdateBody(BaseModel):
