@@ -136,4 +136,8 @@ async def with_style_line(prompt: str, brand: dict, workspace_id: str) -> str:
     """`prompt` with the brand's reference-picture style added, or as it was when the brand has none."""
     made = await style_of(brand, workspace_id)
     line = made.get("line") or ""
-    return f"{prompt.rstrip()} {line}" if line and line not in prompt else prompt
+    out = f"{prompt.rstrip()} {line}" if line and line not in prompt else prompt
+    from app.pipelines.media import request_refs
+
+    sent = request_refs.active_line()                       # the pictures the person sent with this request, when there are any
+    return f"{out.rstrip()} {sent}" if sent and sent not in out else out

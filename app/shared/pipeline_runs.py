@@ -46,7 +46,7 @@ def _now() -> datetime:
 
 
 # What a job keeps for itself: the key that stops double starts and what it needs to start again after a restart.
-_INTERNAL_FIELDS = ("_id", "idem_key", "live_run_id", "payload_digest", "active_key", "interrupted", "payload", "restartable", "restart_attempts", "action_secret")
+_INTERNAL_FIELDS = ("_id", "idem_key", "live_run_id", "payload_digest", "active_key", "interrupted", "payload", "restartable", "restart_attempts", "action_secret", "style_line")
 
 
 def public(doc: Optional[dict]) -> Optional[dict]:

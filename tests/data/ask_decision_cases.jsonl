@@ -1,0 +1,17 @@
+# A seed set of labelled requests for the decision harness: what a person says, its language, and the tool they meant (null when no tool fits).
+# "reviewed": false means the wording has NOT been checked by a native speaker. The real set is written by native speakers of each language (the owner and testers),
+# about 100 to 150 requests in English, Hindi, Tamil and Tanglish, and replaces this one. Translated sentences are not a substitute: they overestimate real accuracy.
+{"text": "how many credits do I have left this month", "language": "en", "tool": "credits.summary", "reviewed": true}
+{"text": "what does each action cost in credits", "language": "en", "tool": "credits.prices", "reviewed": true}
+{"text": "what are my plan limits", "language": "en", "tool": "plan.limits", "reviewed": true}
+{"text": "which workspace and role am I using", "language": "en", "tool": "me.whoami", "reviewed": true}
+{"text": "show my saved templates", "language": "en", "tool": "presets.list", "reviewed": true}
+{"text": "list my campaigns", "language": "en", "tool": "campaigns.list", "reviewed": true}
+{"text": "which feeds am I following", "language": "en", "tool": "sources.list", "reviewed": true}
+{"text": "book me a flight to Chennai", "language": "en", "tool": null, "reviewed": true}
+{"text": "enakku inniku evlo credits irukku", "language": "ta-latn", "tool": "credits.summary", "reviewed": false}
+{"text": "en campaigns ellam kaattu", "language": "ta-latn", "tool": "campaigns.list", "reviewed": false}
+{"text": "mere plan mein kya limits hain", "language": "hi-latn", "tool": "plan.limits", "reviewed": false}
+{"text": "mere saved templates dikhao", "language": "hi-latn", "tool": "presets.list", "reviewed": false}
+{"text": "इस महीने मेरे कितने क्रेडिट बचे हैं", "language": "hi", "tool": "credits.summary", "reviewed": false}
+{"text": "இந்த மாதம் எனக்கு எத்தனை கிரெடிட் மீதம் உள்ளது", "language": "ta", "tool": "credits.summary", "reviewed": false}

@@ -170,6 +170,17 @@ async def _cancel_requested(run_id: str) -> bool:
 
 def _worker(action: JobAction, payload: Any):
     async def work(doc: dict) -> dict:
+        """Run the action with the look of the pictures the person sent with the request (if any) in place, so a picture made here follows it too. The look was saved with the job
+        when it started (see `submit`), because a background job does not share the starting request's context."""
+        from app.pipelines.media import request_refs
+
+        token = request_refs.CURRENT.set(str(doc.get("style_line") or ""))
+        try:
+            return await work_steps(doc)
+        finally:
+            request_refs.CURRENT.reset(token)
+
+    async def work_steps(doc: dict) -> dict:
         from app.shared.llm import set_run_gate
 
         # The member's role may have changed since the request: check again, with a fresh load.
@@ -244,6 +255,9 @@ async def submit(
         return _same_request_or_refuse(existing, digest)
 
     await runs.assert_capacity(ctx.workspace_id)
+    from app.pipelines.media import request_refs
+
+    style_line = request_refs.active_line()        # set while an Ask request with reference pictures runs; empty for everything else
     try:
         # The key is also the run's start key: a unique index lets only one active run hold it, so two requests arriving together
         # cannot both start.
@@ -254,6 +268,7 @@ async def submit(
             active_key=action.active_key(parsed) if action.active_key else f"job:{key}",
             extra={"action": action_name, "idem_key": key, "payload_digest": digest, "restartable": action.restartable, "restart_attempts": 0,
                    "live_run_id": getattr(parsed, "live_run_id", None),
+                   **({"style_line": style_line} if style_line else {}),
                    **({"payload": parsed.model_dump(mode="json")} if action.restartable else {})},
         )
     except runs.RunAlreadyActive as already:
