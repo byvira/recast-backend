@@ -90,6 +90,18 @@ async def get_my_profile(
     return await _build_profile_response(current_user, x_workspace_id)
 
 
+@router.get("/me/export")
+@limiter.limit("5/hour")
+async def export_my_data(request: Request, current_user: dict[str, Any] = Depends(get_current_user)) -> Response:
+    """A copy of the caller's own account data as a JSON download (see app.shared.account_export)."""
+    import json
+
+    from app.shared.account_export import export_account
+
+    body = json.dumps(await export_account(current_user["id"]), indent=2, default=str)
+    return Response(body, media_type="application/json", headers={"Content-Disposition": 'attachment; filename="my-ekavo-data.json"', "Cache-Control": "no-store"})
+
+
 class DeleteAccountBody(BaseModel):
     confirm: str = Field(..., max_length=20)
 
