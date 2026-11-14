@@ -21,7 +21,13 @@ def _extension(filename: str) -> str:
 
 
 def _text_file(data: bytes) -> str:
-    for encoding in ("utf-8-sig", "utf-16", "cp1252"):
+    """Text from bytes. UTF-16 only when the file says so (its byte-order mark): without that, any even run of Windows-encoded bytes also "decodes" as UTF-16, as garbage."""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return data.decode("utf-16")
+        except UnicodeError:
+            pass
+    for encoding in ("utf-8-sig", "cp1252"):
         try:
             return data.decode(encoding)
         except (UnicodeDecodeError, UnicodeError):

@@ -248,6 +248,8 @@ class CreateCampaignRequest(BaseModel):
     media_plan: CampaignMediaPlan = Field(default_factory=CampaignMediaPlan)
     text_options: CampaignTextOptions = Field(default_factory=CampaignTextOptions)
     language: Optional[str] = Field(default=None, max_length=16)
+    # When an automatic campaign makes its first batch (for example next Tuesday at nine). The server checks it is a sensible time; left out, it is due a few minutes after creating.
+    first_run_at: Optional[datetime] = None
 
     @field_validator("name")
     @classmethod

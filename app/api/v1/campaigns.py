@@ -65,6 +65,7 @@ def _check_platforms_by_day(platforms_by_day: Optional[list[list[str]]]) -> None
 
 #: How long after it is made (or its frequency changes) an automatic campaign first becomes due.
 FIRST_RUN_GRACE = timedelta(minutes=10)
+MAX_FIRST_RUN_AHEAD = timedelta(days=14)
 ALLOWED_THUMBNAIL_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 router = APIRouter()
@@ -283,6 +284,13 @@ async def create_campaign(
     # An automatic campaign is first due a few minutes from now, not at this instant: the page starts the first batch by hand
     # straight after creating it, and a scheduler tick landing in between used to start it first and make that start fail.
     cadence["next_run_at"] = now + FIRST_RUN_GRACE if cadence.get("frequency") != "manual" else None
+    if body.first_run_at is not None:
+        if cadence.get("frequency") == "manual":
+            raise HTTPException(status_code=422, detail="Only a campaign that repeats can start at a chosen time.")
+        chosen = body.first_run_at if body.first_run_at.tzinfo else body.first_run_at.replace(tzinfo=timezone.utc)
+        if chosen < now + FIRST_RUN_GRACE or chosen > now + MAX_FIRST_RUN_AHEAD:
+            raise HTTPException(status_code=422, detail="Pick a time from a few minutes from now up to two weeks ahead.")
+        cadence["next_run_at"] = chosen
     doc = {
         "id": str(uuid4()),
         "workspace_id": ctx.workspace_id,
