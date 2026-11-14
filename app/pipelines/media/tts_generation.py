@@ -500,11 +500,12 @@ async def _call_gemini_tts(*, text: str) -> bytes:
             data = r.json()["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError("Gemini speech returned no audio.") from exc
-        pcm = base64.b64decode(data)
-        if not pcm:
+        audio = base64.b64decode(data)
+        if not audio:
             raise RuntimeError("Gemini speech returned no audio.")
-
-        return await asyncio.to_thread(_to_mp3, pcm, "-f", "s16le", "-ar", "24000", "-ac", "1")
+        if audio[:4] == b"RIFF":                      # the newer speech models answer with a WAV file, which already says how to read itself
+            return await asyncio.to_thread(_to_mp3, audio)
+        return await asyncio.to_thread(_to_mp3, audio, "-f", "s16le", "-ar", "24000", "-ac", "1")        # older ones answer with raw 24 kHz audio
 
 
 class SpeechResult(BaseModel):

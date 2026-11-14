@@ -41,8 +41,7 @@ the code actually runs):
   3. Anti-generic gate
   4. Brand-fit gate
 A prompt that fails a gate gets one re-polish retry; if it still fails,
-this returns None and the caller (the default-image picker) falls through
-to the quote-card template — never silent, never blocks generation.
+this returns None and the caller (the default-image picker) leaves the post without a picture — never silent, never blocks generation.
 
 Separately, Row 12's QA gate runs *after* a real image comes back —
 call_vision checking the actual pixels against the brand's VisualIdentity,
@@ -398,8 +397,8 @@ async def _call_gemini(prompt: str) -> bytes:
 
 
 async def _call_gemini_raw(prompt: str) -> bytes:
-    """Real Gemini Nano Banana (gemini-2.5-flash-image) call — paid,
-    $0.039/image. Only ever reached via _generate_image_bytes's capped
+    """Real Gemini picture call (GeminiModel.IMAGE, gemini-3.1-flash-lite-image since 2026-11-14) — paid,
+    about $0.0336/image. Not yet exercised live with the new model (a live call costs money). Only ever reached via _generate_image_bytes's capped
     fallback path, never called directly elsewhere. Raises on any failure,
     same contract as _call_cloudflare."""
     client = get_gemini_client()
@@ -424,8 +423,8 @@ async def _generate_image_bytes(prompt: str, *, skip_primary: bool = False) -> O
     settings.CLOUDFLARE_API_TOKEN's docstring) first; only on failure
     (including real quota exhaustion — a live 429 was confirmed
     2026-09-25) does it check for a capped Gemini fallback slot. Returns
-    None if both are unavailable — the caller falls through to the
-    quote-card template (generate_brand_image) or leaves mascot_url unset
+    None if both are unavailable — the caller leaves the post without a
+    picture (generate_brand_image) or leaves mascot_url unset
     (generate_brand_mascot), never raises."""
     tried: list[str] = []
     if skip_primary:
@@ -798,7 +797,7 @@ async def generate_brand_image(
 ) -> Optional[MediaAsset]:
     """The one shared entry point every content-creation surface calls for
     real AI image generation. Never raises — any failure returns None and
-    the caller falls through to the quote-card template, same behaviour
+    the caller leaves the post without a picture, same behaviour
     as if this function didn't exist.
 
     provider defaults to Cloudflare Workers AI (free, ~173 images/day for
@@ -832,7 +831,7 @@ async def generate_brand_image(
 
     set_usage_workspace(workspace_id)
     # The picture's credits (`credit_action`) are set aside first and charged only when a picture comes back. Out of credits, the
-    # caller gets None and falls back to its free text card, unless it asked for the refusal itself.
+    # caller gets None and the post has no picture, unless it asked for the refusal itself.
     try:
         hold = await credits.reserve(workspace_id, user_id, credit_action, step=credit_action)
     except credits.CreditsExhausted as exc:

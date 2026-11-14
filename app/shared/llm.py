@@ -107,13 +107,14 @@ class GeminiModel(str, Enum):
     # DEF-024 in docs/DEFERRED_AND_PARTIAL_SCOPE.md — this is a Google
     # Cloud Console issue the app owner must resolve directly with Google;
     # no model-ID change here fixes it.
-    FLASH      = "gemini-3.5-flash"
+    # 2026-11-14: gemini-3.5-flash is no longer offered in AI Studio and its endpoint routes to gemini-3.6-flash, so the code names the real one.
+    FLASH      = "gemini-3.6-flash"
     FLASH_LITE = "gemini-3.5-flash-lite"
     PRO        = "gemini-3.1-pro-preview"
-    # Nano Banana — image generation, not text. Paid, no free tier
-    # ($0.039/image, verified live 2026-09-25). Only ever called from
+    # Image generation, not text. Paid, no free tier. gemini-2.5-flash-image ($0.039/image) shuts down 2027-03-15; its replacement
+    # gemini-3.1-flash-lite-image costs about $0.0336 per 1K picture (Google pricing page, 2026-11-14). Only ever called from
     # app.pipelines.media.image_generation's capped Cloudflare fallback.
-    IMAGE      = "gemini-2.5-flash-image"
+    IMAGE      = "gemini-3.1-flash-lite-image"
 
 
 # Embedding model for the personal-assistant voice baseline.

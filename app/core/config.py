@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -245,7 +246,8 @@ class Settings(BaseSettings):
     # Microsoft Edge neural voices: the last narration backup, for languages nothing else reads (Korean and Chinese are also covered by Cloudflare). An
     # unofficial endpoint with no contract, so it is off until switched on, and it never gets a member's own footage or recordings (see edge_voice.py).
     EDGE_TTS_ENABLED: bool = False
-    GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
+    # gemini-2.5-flash-preview-tts shuts down 2026-12-18; its replacement was checked live 2026-11-14 (free tier available, returns a WAV file).
+    GEMINI_TTS_MODEL: str = "gemini-3.8-flash-tts"
     GEMINI_TTS_VOICE: str = "Kore"
     VOXTRAL_MODEL: str = "voxtral-mini-latest"
     # Backup text embeddings, checked live 2026-11-11. Vectors from different models cannot be compared, so each answer says which model made it.
@@ -312,12 +314,12 @@ class Settings(BaseSettings):
     VAPID_PRIVATE_KEY: str = ""
     VAPID_SUBJECT: str = "mailto:hello@mail.byvirastudio.com"
 
-    # Gemini Nano Banana (gemini-2.5-flash-image) as a PAID fallback for
+    # Gemini picture model (gemini-3.1-flash-lite-image since 2026-11-14) as a PAID fallback for
     # image generation, only used once Cloudflare's free ~173/day is
-    # exhausted. $0.039/image — capped so an exhausted free tier can't turn
+    # exhausted. About $0.0336/image — capped so an exhausted free tier can't turn
     # into unbounded spend. 0 disables the fallback entirely (Cloudflare
-    # exhaustion then falls straight through to the quote-card template,
-    # the pre-2026-09-25 behavior). A settings value, not hardcoded, so the
+    # exhaustion then falls straight through to the open-model backups,
+    # and then to a post with no picture). A settings value, not hardcoded, so the
     # cap is a config change, not a code change.
     GEMINI_IMAGE_FALLBACK_DAILY_CAP: int = 100
 
@@ -340,6 +342,16 @@ class Settings(BaseSettings):
     # This API's own public base URL. Links that outside services open directly (the podcast feed address given to Spotify and
     # Apple) must point here, not at the frontend site, which does not serve /api.
     API_PUBLIC_URL: str = "https://recast-api.byvirastudio.com"
+
+    @field_validator("FRONTEND_URL", "API_PUBLIC_URL", mode="after")
+    @classmethod
+    def _web_address_needs_a_scheme(cls, value: str) -> str:
+        """An address saved as `ekavo.example.com` has no `https://`, so a link built from it is read as a path on the page it sits on.
+        A missing scheme is added here, and a trailing slash is dropped."""
+        text = (value or "").strip().rstrip("/")
+        if text and not text.lower().startswith(("http://", "https://")):
+            text = f"https://{text}"
+        return text
 
     # ── API docs gating ────────────────────────────────────────────────────
     # /docs, /redoc, /scalar and /openapi.json are open in development. In

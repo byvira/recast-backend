@@ -21,6 +21,7 @@ TARGET_USD_PER_CREDIT = 0.0035
 TOKEN_RATES: dict[str, tuple[float, float]] = {
     "openai/gpt-oss-120b": (0.15, 0.60),
     "openai/gpt-oss-20b": (0.075, 0.30),
+    "gemini-3.6-flash": (1.50, 7.50),      # from 2027-01-01; half of this until 2026-12-31
     "gemini-3.5-flash": (1.50, 9.00),
     "gemini-3.5-flash-lite": (0.30, 2.50),
     "gemini-2.5-flash": (0.30, 2.50),
@@ -34,6 +35,7 @@ FALLBACK_TOKEN_RATE = TOKEN_RATES["openai/gpt-oss-120b"]
 CALL_RATES: dict[str, float] = {
     "@cf/black-forest-labs/flux-1-schnell": 0.0006, "black-forest-labs/FLUX.1-schnell": 0.0006, "flux": 0.0006,
     "gemini-2.5-flash-image": 0.039,
+    "gemini-3.1-flash-lite-image": 0.0336,
 }
 # dollars per minute, priced from the ledger's minutes
 MINUTE_RATES: dict[str, float] = {
