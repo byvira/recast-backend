@@ -16,7 +16,7 @@ import asyncio
 import json
 import time
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -160,6 +160,7 @@ async def generate_stream(
     avoid_blacklist:  Optional[bool] = Query(None),
     pdf_export:       Optional[bool] = Query(None),
     default_picture:  Optional[bool] = Query(None, description="Attach a picture to the posts (2 credits a run); off: text only"),
+    picture_mode:     Optional[Literal["ai", "brand", "none"]] = Query(None, description="ai (made for the run, 2 credits), brand (the brand's own pictures, free) or none; not set: the brand's default"),
     batch_days:       Optional[int]  = Query(None, ge=1, le=14, description="Days in batch mode (default 7)"),
     # require_stream: EventSource can't send X-Workspace-Id, so the active
     # workspace also arrives as ?workspace_id= (same membership check).
@@ -222,7 +223,7 @@ async def generate_stream(
                 name: value for name, value in {
                     "hook_variations": hook_variations, "hashtags": hashtags, "auto_cta": auto_cta, "seo_meta": seo_meta,
                     "grammar_check": grammar_check, "plagiarism_check": plagiarism_check,
-                    "avoid_blacklist": avoid_blacklist, "pdf_export": pdf_export, "default_picture": default_picture,
+                    "avoid_blacklist": avoid_blacklist, "pdf_export": pdf_export, "default_picture": default_picture, "picture_mode": picture_mode,
                 }.items() if value is not None
             }),
         )

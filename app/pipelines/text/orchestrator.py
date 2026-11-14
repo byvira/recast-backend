@@ -37,7 +37,7 @@ from app.prompts.registry import load_prompt
 from app.agents.text.nodes import _extract_enforcement_data, merge_member_lexicon_enforcement
 from app.pipelines.text.seo import run_seo_agent, should_run_seo
 from app.pipelines.text.hook_agent import clamp_index, run_hook_agent, apply_recommended_hook
-from app.pipelines.media.default_image import pick_default_image
+from app.pipelines.media.default_image import pick_default_image, resolve_picture_mode
 from app.pipelines.media.pdf_export import generate_pieces_pdf
 from app.pipelines.publish.spine import platform_key, to_utc_datetime
 from app.shared.heavy_work import run_heavy
@@ -505,12 +505,16 @@ async def _run_text_pipeline(
     eligible = [p for p in pieces if p.content and not p.media]
     shared_asset: Optional[MediaAsset] = None
     # The member can choose posts without a picture; nothing is made or attached then.
-    if eligible and getattr(extras, "default_picture", True):
+    picture_mode = resolve_picture_mode(
+        picture_mode=getattr(extras, "picture_mode", None), default_picture=getattr(extras, "default_picture", True), brand_profile=brand_profile,
+    )
+    if eligible and picture_mode != "none":
         shared_asset = await pick_default_image(
             piece_content=eligible[0].content,
             brand_profile=brand_profile,
             workspace_id=workspace_id,
             user_id=user_id,
+            mode=picture_mode,
         )
 
     async def _attach_shared_image(piece: GeneratedPiece) -> None:

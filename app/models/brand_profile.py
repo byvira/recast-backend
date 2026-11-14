@@ -116,6 +116,9 @@ class VisualIdentity(BaseModel):
 
     logo_url: str = ""
     logo_alt_url: str = ""  # e.g. a white/reversed variant for dark backgrounds
+    # The picture each post gets unless a run says otherwise: "ai" (made for the post, uses credits), "brand" (one of the brand's own pictures
+    # below, no credits) or "none".
+    default_picture_mode: Literal["ai", "brand", "none"] = "ai"
     colors: BrandColors = Field(default_factory=BrandColors)
     fonts: BrandFonts = Field(default_factory=BrandFonts)
     # Free text, mirrors voice_tone.style but for imagery — "minimalist",

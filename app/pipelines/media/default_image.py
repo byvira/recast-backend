@@ -40,11 +40,28 @@ async def _pick_brand_asset(reference_media_ids: list[str], workspace_id: str) -
     return MediaAsset(**doc) if doc else None
 
 
+PICTURE_MODES = ("ai", "brand", "none")
+
+
+def resolve_picture_mode(*, picture_mode: Optional[str], default_picture: bool, brand_profile: dict) -> str:
+    """Which picture a run's posts get: what the run asked for, else "none" when it switched the picture off (older callers send only that), else the
+    brand's own default, else an AI picture."""
+    if picture_mode in PICTURE_MODES:
+        return str(picture_mode)
+    if default_picture is False:
+        return "none"
+    brands_own = (brand_profile.get("visual_identity") or {}).get("default_picture_mode")
+    return brands_own if brands_own in PICTURE_MODES else "ai"
+
+
 async def pick_default_image(
-    *, piece_content: str, brand_profile: dict, workspace_id: str, user_id: str,
+    *, piece_content: str, brand_profile: dict, workspace_id: str, user_id: str, mode: str = "ai",
 ) -> Optional[MediaAsset]:
     """The single entry point run_text_pipeline calls right after a piece's
-    text is final. Never raises."""
+    text is final. Never raises. `mode` "none" makes nothing, "brand" only ever uses one of the brand's own
+    pictures (no credits), "ai" tries those first and then makes one."""
+    if mode == "none":
+        return None
     visual_identity = brand_profile.get("visual_identity") or {}
     reference_ids = visual_identity.get("reference_media_ids") or []
 
@@ -55,6 +72,8 @@ async def pick_default_image(
     except Exception as exc:  # noqa: BLE001
         logger.error("Brand-asset match failed for workspace %s: %s", workspace_id, exc)
 
+    if mode == "brand":
+        return None                                   # only the brand's own pictures were wanted, and it has none to use
     try:
         topic = _scene_topic(piece_content)
         ai_asset = await generate_brand_image(

@@ -162,6 +162,9 @@ class ExtrasConfig(BaseModel):
     enforce_char_limits: bool = True
     # Attach a picture to the posts: one of the brand's own, or one made for the run. Off: the posts are text only.
     default_picture: bool = True
+    # How the picture is made: "ai" (made for the run, 2 credits), "brand" (one of the brand's own pictures, no credits) or "none". Not set: the
+    # brand's own default applies, and an AI picture when it has none. `default_picture` off still means "none", so older callers behave as before.
+    picture_mode: Optional[Literal["ai", "brand", "none"]] = None
 
 
 def _each_platform_once(platforms):

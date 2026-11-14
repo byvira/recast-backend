@@ -172,6 +172,8 @@ class CampaignTextOptions(BaseModel):
     enforce_char_limits: bool = True
     # Attach a picture to each post. Off: text only.
     default_picture: bool = True
+    # "ai", "brand" or "none"; not set means the brand's own default (see ExtrasConfig.picture_mode).
+    picture_mode: Optional[Literal["ai", "brand", "none"]] = None
 
 
 class Campaign(BaseModel):

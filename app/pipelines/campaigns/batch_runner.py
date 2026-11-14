@@ -98,6 +98,7 @@ async def generate_campaign_batch(
         carousel_format=bool(text_options.get("carousel_format", False)),
         enforce_char_limits=bool(text_options.get("enforce_char_limits", True)),
         default_picture=bool(text_options.get("default_picture", True)),
+        picture_mode=text_options.get("picture_mode") if text_options.get("picture_mode") in ("ai", "brand", "none") else None,
     )
 
     new_piece_ids: list[str] = []
